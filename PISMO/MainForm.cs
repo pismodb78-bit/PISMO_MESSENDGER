@@ -150,6 +150,7 @@ namespace PISMO
             lblCurrentUser.Text = UserSession.UserName;
 
             InitMessageActions();
+            StartPresence();
 
             if (UserSession.Role == "admin" && !UserSession.IsImpersonating)
                 LoadAllUsersForAdmin();
@@ -737,6 +738,7 @@ namespace PISMO
                 var sz = e.Graphics.MeasureString(letter, f);
                 e.Graphics.DrawString(letter, f, Brushes.White,
                     (avatar.Width - sz.Width) / 2, (avatar.Height - sz.Height) / 2);
+                DrawPresenceDot(e.Graphics, avatar.Width, avatar.Height, uid);
             };
 
             var lblName = new Label
@@ -819,6 +821,7 @@ namespace PISMO
                 var sz = e.Graphics.MeasureString(letter, f);
                 e.Graphics.DrawString(letter, f, Brushes.White,
                     (avatar.Width - sz.Width) / 2, (avatar.Height - sz.Height) / 2);
+                DrawPresenceDot(e.Graphics, avatar.Width, avatar.Height, uid);
             };
 
             var lblName = new Label
@@ -2638,10 +2641,28 @@ namespace PISMO
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             _pollTimer?.Stop();
+            _presenceTimer?.Stop();
+            MarkSelfOffline();
             _trayIcon.Visible = false;
             _waveIn?.Dispose();
             _waveOut?.Dispose();
             base.OnFormClosed(e);
+        }
+
+        /// <summary>Помечает себя «не в сети» при выходе (best-effort), чтобы
+        /// собеседники сразу увидели офлайн, не дожидаясь таймаута heartbeat.</summary>
+        private void MarkSelfOffline()
+        {
+            if (!_presenceColumnsOk) return;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "UPDATE users SET last_seen = DATE_SUB(NOW(), INTERVAL 1 HOUR) WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", UserSession.EffectiveId);
+                cmd.ExecuteNonQuery();
+            }
+            catch { }
         }
 
         // Обработчики событий, на которые ссылается Designer.

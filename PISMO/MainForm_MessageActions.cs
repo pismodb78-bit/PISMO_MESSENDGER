@@ -720,6 +720,11 @@ namespace PISMO
             };
         }
 
+        // Звонки, по которым уже показали окно входящего — чтобы не дёргать
+        // повторно на каждом опросе. Заменяет ненадёжный фильтр "id > last",
+        // из-за которого часть звонков пропускалась ("не всегда приходит").
+        private readonly System.Collections.Generic.HashSet<int> _shownCallIds = new();
+
         private void CheckIncomingCalls()
         {
             if (_activeCall != null && !_activeCall.IsDisposed) return;
@@ -728,6 +733,10 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
+                // Берём ВСЕ звонки в статусе ringing, адресованные мне (личные
+                // по callee_id или групповые по членству), кроме своих же.
+                // Фильтрацию "уже показанных" делаем на стороне клиента через
+                // _shownCallIds — это надёжнее, чем sql-гейт по id.
                 const string sql = @"
                     SELECT cs.id, cs.caller_id, cs.has_video, cs.group_id,
                            TRIM(CONCAT(u.Name,' ',u.Surname)) AS caller_name, u.login
@@ -737,10 +746,9 @@ namespace PISMO
                     WHERE (cs.callee_id = @me OR gm.user_id = @me)
                       AND cs.status = 'ringing'
                       AND cs.caller_id != @me
-                      AND cs.id > @last";
+                    ORDER BY cs.id ASC";
                 using var cmd = new MySqlCommand(sql, conn);
                 cmd.Parameters.AddWithValue("@me", myId);
-                cmd.Parameters.AddWithValue("@last", _lastCheckedCallId);
 
                 var dt = new DataTable();
                 new MySqlDataAdapter(cmd).Fill(dt);
@@ -748,13 +756,13 @@ namespace PISMO
                 foreach (DataRow row in dt.Rows)
                 {
                     int sid = Convert.ToInt32(row["id"]);
+                    if (!_shownCallIds.Add(sid)) continue; // уже показывали это окно
+
                     int callerId = Convert.ToInt32(row["caller_id"]);
                     bool hasVid = Convert.ToBoolean(row["has_video"]);
                     int groupId = row["group_id"] == DBNull.Value ? -1 : Convert.ToInt32(row["group_id"]);
                     string cname = row["caller_name"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(cname)) cname = row["login"].ToString();
-
-                    _lastCheckedCallId = Math.Max(_lastCheckedCallId, sid);
 
                     // Показываем входящий звонок
                     var incoming = new IncomingCallForm(sid, cname, callerId);
