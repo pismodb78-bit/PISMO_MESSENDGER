@@ -35,6 +35,14 @@ namespace PISMO
         public event Action Connected;
         public event Action RemoteParticipantLeft;
 
+        // --- Многоучастниковая «плитка» (Discord-grid) ---
+        public event Action<string, string> ParticipantJoined;   // (pid, name)
+        public event Action<string> ParticipantLeftById;          // (pid)
+        public event Action<string, string, string> RemoteTileStarted; // (pid, name, source: camera|screen)
+        public event Action<string, string> RemoteTileStopped;    // (pid, source)
+        public event Action<string, string, byte[]> RemoteTileFrame;  // (pid, source, jpeg)
+        public event Action<string> ActiveSpeakers;               // JSON-массив pid говорящих
+
         // --- Видео-трек демонстрации экрана ---
         public event Action<byte[]> RemoteScreenFrameReceived; // декодированный JPEG-кадр из видео-трека
         public event Action RemoteScreenStarted;
@@ -235,10 +243,19 @@ async function connectRoom(url, token){
         room.on(LK.RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
         room.on(LK.RoomEvent.Disconnected, () => post({type:'disconnected'}));
         room.on(LK.RoomEvent.Reconnected, () => post({type:'connected'}));
-        room.on(LK.RoomEvent.ParticipantDisconnected, () => post({type:'remoteLeft'}));
+        room.on(LK.RoomEvent.ParticipantConnected, (p) => post({type:'participantJoined', pid:p.identity, name:pidName(p)}));
+        room.on(LK.RoomEvent.ParticipantDisconnected, (p) => { cleanupParticipant(p.identity); post({type:'participantLeft', pid:p.identity}); post({type:'remoteLeft'}); });
+        room.on(LK.RoomEvent.ActiveSpeakersChanged, (speakers) => {
+            try { post({type:'activeSpeakers', pids: JSON.stringify((speakers||[]).map(s => s.identity))}); } catch(e){}
+        });
 
         await room.connect(url, token);
         post({type:'connected'});
+
+        // Сообщаем об уже присутствующих участниках (мы зашли в идущий звонок).
+        try {
+            room.remoteParticipants.forEach((p) => post({type:'participantJoined', pid:p.identity, name:pidName(p)}));
+        } catch(e){ console.error('enum participants', String(e)); }
 
         // Микрофон публикуем сразу — аудиозвонок начинается мгновенно.
         try { await room.localParticipant.setMicrophoneEnabled(true); } catch(e){ console.error('mic enable', String(e)); }
@@ -254,20 +271,29 @@ function srcFor(publication){
     return publication ? publication.source : null;
 }
 
+function pidName(p){ return p ? (p.name || p.identity || '') : ''; }
+
+// Видео-элементы и циклы извлечения по ключу 'pid|source'.
+let remoteVideoMap = {}; // key -> { el, loop }
+
+function tileKey(pid, source){ return pid + '|' + source; }
+
 function onTrackSubscribed(track, publication, participant){
     const src = srcFor(publication);
+    const pid = participant ? participant.identity : 'unknown';
+    const name = pidName(participant);
     if (track.kind === 'video'){
-        if (src === LK.Track.Source.ScreenShare){
-            if (!remoteScreenVideoEl){ remoteScreenVideoEl = makeHiddenVideo(); }
-            track.attach(remoteScreenVideoEl);
-            post({type:'remoteScreenStart'});
-            startRemoteScreenExtraction();
-        } else {
-            if (!remoteCameraVideoEl){ remoteCameraVideoEl = makeHiddenVideo(); }
-            track.attach(remoteCameraVideoEl);
-            post({type:'remoteCameraStart'});
-            startRemoteCameraExtraction();
+        const source = (src === LK.Track.Source.ScreenShare) ? 'screen' : 'camera';
+        const key = tileKey(pid, source);
+        let entry = remoteVideoMap[key];
+        if (!entry){ entry = { el: makeHiddenVideo() }; remoteVideoMap[key] = entry; }
+        track.attach(entry.el);
+        post({type:'remoteTileStart', pid: pid, name: name, source: source});
+        if (!entry.loop){
+            const capEl = entry.el;
+            entry.loop = makeExtractorTile(() => capEl, pid, source, source === 'screen' ? 20 : 18, source === 'screen' ? 0 : 480);
         }
+        entry.loop.start();
     } else if (track.kind === 'audio'){
         const el = track.attach(); // воспроизводится автоматически
         el.style.display = 'none';
@@ -284,15 +310,14 @@ function onTrackSubscribed(track, publication, participant){
 
 function onTrackUnsubscribed(track, publication, participant){
     const src = srcFor(publication);
+    const pid = participant ? participant.identity : 'unknown';
     try { track.detach(); } catch(e){}
     if (track.kind === 'video'){
-        if (src === LK.Track.Source.ScreenShare){
-            stopRemoteScreenExtraction();
-            post({type:'remoteScreenStop'});
-        } else {
-            stopRemoteCameraExtraction();
-            post({type:'remoteCameraStop'});
-        }
+        const source = (src === LK.Track.Source.ScreenShare) ? 'screen' : 'camera';
+        const key = tileKey(pid, source);
+        const entry = remoteVideoMap[key];
+        if (entry){ if (entry.loop) entry.loop.stop(); if (entry.el) entry.el.srcObject = null; delete remoteVideoMap[key]; }
+        post({type:'remoteTileStop', pid: pid, source: source});
     } else if (track.kind === 'audio'){
         if (src === LK.Track.Source.ScreenShareAudio){
             remoteScreenAudioTrack = null;
@@ -300,6 +325,52 @@ function onTrackUnsubscribed(track, publication, participant){
             remoteVoiceTracks = remoteVoiceTracks.filter(t => t !== track);
         }
     }
+}
+
+// Останавливает все видео-циклы ушедшего участника.
+function cleanupParticipant(pid){
+    Object.keys(remoteVideoMap).forEach((key) => {
+        if (key.indexOf(pid + '|') === 0){
+            const entry = remoteVideoMap[key];
+            if (entry){ if (entry.loop) entry.loop.stop(); if (entry.el) entry.el.srcObject = null; }
+            delete remoteVideoMap[key];
+        }
+    });
+}
+
+// Извлечение кадров плитки: постит remoteTileFrame с pid+source.
+function makeExtractorTile(getVideoEl, pid, source, fps, maxW){
+    let handle = null;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let lastSent = 0;
+    const interval = 1000 / fps;
+    function loop(){
+        const v = getVideoEl();
+        if (!v || v.readyState < 2){ handle = requestAnimationFrame(loop); return; }
+        const now = performance.now();
+        if (now - lastSent >= interval){
+            let vw = v.videoWidth, vh = v.videoHeight;
+            if (vw > 0 && vh > 0){
+                let tw = vw, th = vh;
+                if (maxW && vw > maxW){ tw = maxW; th = Math.round(vh * (maxW/vw)); }
+                if (canvas.width !== tw || canvas.height !== th){ canvas.width = tw; canvas.height = th; }
+                ctx.drawImage(v, 0, 0, tw, th);
+                canvas.toBlob((blob) => {
+                    if (!blob) return;
+                    const reader = new FileReader();
+                    reader.onload = () => post({type:'remoteTileFrame', pid: pid, source: source, data: reader.result.split(',')[1]});
+                    reader.readAsDataURL(blob);
+                }, 'image/jpeg', 0.8);
+                lastSent = now;
+            }
+        }
+        handle = requestAnimationFrame(loop);
+    }
+    return {
+        start(){ if (!handle) handle = requestAnimationFrame(loop); },
+        stop(){ if (handle){ cancelAnimationFrame(handle); handle = null; } }
+    };
 }
 
 function makeHiddenVideo(){
@@ -557,6 +628,25 @@ window.chrome.webview.addEventListener('message', (e) => {
                         break;
                     case "remoteLeft":
                         RemoteParticipantLeft?.Invoke();
+                        break;
+                    case "participantJoined":
+                        ParticipantJoined?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "name"));
+                        break;
+                    case "participantLeft":
+                        ParticipantLeftById?.Invoke(SafeStr(msg, "pid"));
+                        break;
+                    case "remoteTileStart":
+                        RemoteTileStarted?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "name"), SafeStr(msg, "source"));
+                        break;
+                    case "remoteTileStop":
+                        RemoteTileStopped?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "source"));
+                        break;
+                    case "remoteTileFrame":
+                        RemoteTileFrame?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "source"),
+                            Convert.FromBase64String(msg.GetProperty("data").GetString()));
+                        break;
+                    case "activeSpeakers":
+                        ActiveSpeakers?.Invoke(SafeStr(msg, "pids"));
                         break;
                     case "fatal":
                         System.Diagnostics.Debug.WriteLine($"[LiveKit FATAL] {SafeStr(msg, "error")}");
