@@ -65,7 +65,13 @@ namespace PISMO
         private Button _btnMute;
         private Button _btnCamera;
         private Button _btnScreen;
+        private Button _btnAudio;
         private Button _btnHangup;
+
+        // Громкость голоса собеседников и состояние «заглушить всех».
+        private float _remoteVoiceVolume = 1.0f;
+        private bool _remoteAllMuted = false;
+        private Form _audioPanel;
         private Label _lblScreenBadge;
         private Label _lblZoom;
         private Panel _pnlButtons;
@@ -278,12 +284,14 @@ namespace PISMO
             _btnCamera = MakeBtn("📷", 1);
             _btnCamera.Visible = _hasVideo;
             _btnScreen = MakeBtn("🖥", 2);
-            _btnHangup = MakeBtn("📵", 3);
+            _btnAudio = MakeBtn("🔊", 3);
+            _btnHangup = MakeBtn("📵", 4);
             _btnHangup.BackColor = Color.FromArgb(240, 71, 71);
 
             _btnMute.Click += (s, e) => ToggleMute();
             _btnCamera.Click += (s, e) => ToggleCamera();
             _btnScreen.Click += (s, e) => ToggleScreen();
+            _btnAudio.Click += (s, e) => ToggleAudioPanel();
             _btnHangup.Click += (s, e) => EndCall();
 
             // Ползунок громкости звука демонстрации экрана собеседника.
@@ -312,7 +320,7 @@ namespace PISMO
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
             };
 
-            _pnlButtons.Controls.AddRange(new Control[] { _btnMute, _btnCamera, _btnScreen, _btnHangup });
+            _pnlButtons.Controls.AddRange(new Control[] { _btnMute, _btnCamera, _btnScreen, _btnAudio, _btnHangup });
 
             _pnlParticipants = new Panel
             {
@@ -422,12 +430,12 @@ namespace PISMO
             _lblScreenAudioVolume.Location = new Point(w - 150, 70);
             _tbScreenAudioVolume.Location = new Point(w - 150, 90);
 
-            int btnCount = 4;
+            int btnCount = 5;
             int btnW = 56, btnH = 56, gap = 12;
             int totalW = btnCount * btnW + (btnCount - 1) * gap;
             int startX = (_pnlButtons.Width - totalW) / 2;
             int btnY = (_pnlButtons.Height - btnH) / 2;
-            var btns = new Button[] { _btnMute, _btnCamera, _btnScreen, _btnHangup };
+            var btns = new Button[] { _btnMute, _btnCamera, _btnScreen, _btnAudio, _btnHangup };
             for (int i = 0; i < btns.Length; i++)
                 btns[i].Location = new Point(startX + i * (btnW + gap), btnY);
         }
@@ -704,6 +712,8 @@ namespace PISMO
             _lblScreenAudioVolume.Visible = true;
             _lblScreenBadge.Text = "🖥 Собеседник показывает экран";
             _lblScreenBadge.Visible = true;
+            // Экран занимает основную область — камера (если есть) уходит в PiP.
+            if (_remoteCameraActive) _pbRemoteCamera.Visible = true;
         }
 
         private void OnRemoteScreenStopped()
@@ -713,6 +723,21 @@ namespace PISMO
             _lblScreenAudioVolume.Visible = false;
             if (_lblScreenBadge.Visible && _lblScreenBadge.Text.Contains("Собеседник"))
                 _lblScreenBadge.Visible = false;
+
+            // Экран больше не идёт — чистим основную область от последнего кадра
+            // экрана. Если камера активна, она снова начнёт рисоваться в основной
+            // области (и PiP прячем), иначе вернётся «Ожидание видео».
+            var old = _pbRemote.Image;
+            _pbRemote.Image = null;
+            old?.Dispose();
+            _pbRemote.Invalidate();
+            if (_remoteCameraActive)
+            {
+                _pbRemoteCamera.Visible = false;
+                var oldC = _pbRemoteCamera.Image;
+                _pbRemoteCamera.Image = null;
+                oldC?.Dispose();
+            }
         }
 
         private void OnLocalScreenStarted()
@@ -750,17 +775,35 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════
         //  КАМЕРА — обработчики событий video track
         // ════════════════════════════════════════════════════════════
+        private bool _remoteCameraActive = false;
+
         private void OnRemoteCameraStarted()
         {
-            _pbRemoteCamera.Visible = true;
+            _remoteCameraActive = true;
+            // Если собеседник одновременно демонстрирует экран — камера идёт в
+            // маленький PiP-уголок (главную область занимает экран). Иначе
+            // камера показывается в основной области (_pbRemote), чтобы не
+            // оставалось «Ожидание видео».
+            _pbRemoteCamera.Visible = _peerScreenSharing;
         }
 
         private void OnRemoteCameraStopped()
         {
+            _remoteCameraActive = false;
             _pbRemoteCamera.Visible = false;
-            var old = _pbRemoteCamera.Image;
+            var oldC = _pbRemoteCamera.Image;
             _pbRemoteCamera.Image = null;
-            old?.Dispose();
+            oldC?.Dispose();
+
+            // Если камера показывалась в основной области и экран не
+            // демонстрируется — очищаем основную область (вернётся «Ожидание видео»).
+            if (!_peerScreenSharing)
+            {
+                var oldR = _pbRemote.Image;
+                _pbRemote.Image = null;
+                oldR?.Dispose();
+                _pbRemote.Invalidate();
+            }
         }
 
         private void OnLocalCameraStarted()
@@ -809,6 +852,80 @@ namespace PISMO
             _btnMute.BackColor = _muted
                 ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
             try { _transport?.SetMicrophoneEnabled(!_muted); } catch { }
+        }
+
+        // ── Панель управления входящим звуком: громкость голоса собеседников,
+        //    громкость демонстрации экрана и тумблер «заглушить всех». ──
+        private void ToggleAudioPanel()
+        {
+            if (_audioPanel != null && !_audioPanel.IsDisposed)
+            {
+                try { _audioPanel.Close(); } catch { }
+                _audioPanel = null;
+                return;
+            }
+
+            _audioPanel = new Form
+            {
+                Text = "Звук",
+                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.Manual,
+                ShowInTaskbar = false,
+                BackColor = Color.FromArgb(40, 42, 46),
+                ClientSize = new Size(240, 200)
+            };
+            // Над панелью кнопок, по центру окна звонка.
+            var anchor = PointToScreen(new Point(_pnlButtons.Left, _pnlButtons.Top));
+            _audioPanel.Location = new Point(
+                Math.Max(0, anchor.X + (_pnlButtons.Width - 240) / 2),
+                Math.Max(0, anchor.Y - 210));
+
+            Label MkLbl(string t, int y) => new Label
+            {
+                Text = t, ForeColor = Color.FromArgb(220, 221, 222),
+                AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 9f)
+            };
+
+            var lblVoice = MkLbl("🔊 Громкость собеседников", 12);
+            var tbVoice = new TrackBar
+            {
+                Minimum = 0, Maximum = 200, Value = (int)(_remoteVoiceVolume * 100),
+                TickStyle = TickStyle.None, Location = new Point(8, 34), Size = new Size(224, 30)
+            };
+            tbVoice.ValueChanged += (s, e) =>
+            {
+                _remoteVoiceVolume = tbVoice.Value / 100f;
+                try { _transport?.SetRemoteVoiceVolume(_remoteVoiceVolume); } catch { }
+            };
+
+            var lblScreen = MkLbl("🖥 Громкость демонстрации", 74);
+            var tbScreen = new TrackBar
+            {
+                Minimum = 0, Maximum = 200, Value = (int)(_remoteScreenAudioVolume * 100),
+                TickStyle = TickStyle.None, Location = new Point(8, 96), Size = new Size(224, 30)
+            };
+            tbScreen.ValueChanged += (s, e) =>
+            {
+                _remoteScreenAudioVolume = tbScreen.Value / 100f;
+                try { _transport?.SetRemoteScreenAudioVolume(_remoteScreenAudioVolume); } catch { }
+            };
+
+            var chkMute = new CheckBox
+            {
+                Text = "🔇 Заглушить весь звук",
+                ForeColor = Color.FromArgb(220, 221, 222),
+                AutoSize = true, Location = new Point(14, 150), Checked = _remoteAllMuted,
+                Font = new Font("Segoe UI", 9.5f)
+            };
+            chkMute.CheckedChanged += (s, e) =>
+            {
+                _remoteAllMuted = chkMute.Checked;
+                try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { }
+            };
+
+            _audioPanel.Controls.AddRange(new Control[] { lblVoice, tbVoice, lblScreen, tbScreen, chkMute });
+            _audioPanel.FormClosed += (s, e) => _audioPanel = null;
+            _audioPanel.Show(this);
         }
 
         // ════════════════════════════════════════════════════════════
@@ -908,9 +1025,11 @@ namespace PISMO
             else img.Dispose();
         }
 
-        /// <summary>Кадр камеры собеседника — отдельная область отображения
-        /// (_pbRemoteCamera) от демонстрации экрана (_pbRemote), так как оба
-        /// видео-трека могут идти одновременно.</summary>
+        /// <summary>Кадр камеры собеседника. Если собеседник одновременно
+        /// демонстрирует экран — камера идёт в маленький PiP-уголок
+        /// (_pbRemoteCamera), а экран занимает основную область. Если экрана
+        /// нет — камера показывается прямо в основной области (_pbRemote),
+        /// чтобы не висело «Ожидание видео».</summary>
         private void ShowRemoteCameraFrame(byte[] jpegBytes)
         {
             Bitmap img = null;
@@ -928,9 +1047,20 @@ namespace PISMO
                     BeginInvoke(() =>
                     {
                         if (IsDisposed) { img.Dispose(); return; }
-                        var old = _pbRemoteCamera.Image;
-                        _pbRemoteCamera.Image = img;
-                        old?.Dispose();
+                        if (_peerScreenSharing)
+                        {
+                            _pbRemoteCamera.Visible = true;
+                            var old = _pbRemoteCamera.Image;
+                            _pbRemoteCamera.Image = img;
+                            old?.Dispose();
+                        }
+                        else
+                        {
+                            var old = _pbRemote.Image;
+                            _pbRemote.Image = img;
+                            old?.Dispose();
+                            _pbRemote.Invalidate();
+                        }
                     });
                 }
                 catch (ObjectDisposedException) { img.Dispose(); }

@@ -193,6 +193,9 @@ let localCameraLoop = null, remoteCameraLoop = null, remoteScreenLoop = null, sc
 
 let remoteScreenAudioTrack = null;
 let remoteScreenAudioVolume = 1.0;
+let remoteVoiceTracks = [];   // голосовые аудио-треки всех собеседников
+let remoteVoiceVolume = 1.0;
+let remoteVoiceMuted = false;
 
 function post(msg){ window.chrome.webview.postMessage(msg); }
 
@@ -211,7 +214,22 @@ async function connectRoom(url, token){
     const ok = await waitForLK();
     if (!ok){ post({type:'fatal', error:'livekit-client не загрузился (нет интернета/CDN недоступен)'}); post({type:'disconnected'}); return; }
     try {
-        room = new LK.Room({ adaptiveStream: true, dynacast: true });
+        // adaptiveStream/dynacast ОБЯЗАТЕЛЬНО выключены: при включённом
+        // adaptiveStream LiveKit ставит видео на паузу, если <video> не виден
+        // на экране — а мы намеренно держим элементы display:none и сами
+        // извлекаем кадры в canvas. Из-за этого камера/демка не доходили до
+        // собеседника ('ожидание видео'). С отключённым adaptiveStream видео
+        // передаётся всегда. audioCaptureDefaults включают шумоподавление,
+        // эхоподавление и авто-усиление микрофона.
+        room = new LK.Room({
+            adaptiveStream: false,
+            dynacast: false,
+            audioCaptureDefaults: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
 
         room.on(LK.RoomEvent.TrackSubscribed, onTrackSubscribed);
         room.on(LK.RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
@@ -257,6 +275,9 @@ function onTrackSubscribed(track, publication, participant){
         if (src === LK.Track.Source.ScreenShareAudio){
             remoteScreenAudioTrack = track;
             try { track.setVolume(remoteScreenAudioVolume); } catch(e){}
+        } else {
+            remoteVoiceTracks.push(track);
+            try { track.setVolume(remoteVoiceMuted ? 0 : remoteVoiceVolume); } catch(e){}
         }
     }
 }
@@ -272,8 +293,12 @@ function onTrackUnsubscribed(track, publication, participant){
             stopRemoteCameraExtraction();
             post({type:'remoteCameraStop'});
         }
-    } else if (track.kind === 'audio' && src === LK.Track.Source.ScreenShareAudio){
-        remoteScreenAudioTrack = null;
+    } else if (track.kind === 'audio'){
+        if (src === LK.Track.Source.ScreenShareAudio){
+            remoteScreenAudioTrack = null;
+        } else {
+            remoteVoiceTracks = remoteVoiceTracks.filter(t => t !== track);
+        }
     }
 }
 
@@ -470,6 +495,19 @@ function setScreenAudioVolume(v){
     if (remoteScreenAudioTrack){ try{ remoteScreenAudioTrack.setVolume(v); }catch(e){} }
 }
 
+function setVoiceVolume(v){
+    remoteVoiceVolume = v;
+    if (!remoteVoiceMuted){
+        remoteVoiceTracks.forEach(t => { try{ t.setVolume(v); }catch(e){} });
+    }
+}
+
+function setRemoteMuted(muted){
+    remoteVoiceMuted = muted;
+    remoteVoiceTracks.forEach(t => { try{ t.setVolume(muted ? 0 : remoteVoiceVolume); }catch(e){} });
+    if (remoteScreenAudioTrack){ try{ remoteScreenAudioTrack.setVolume(muted ? 0 : remoteScreenAudioVolume); }catch(e){} }
+}
+
 async function disconnectRoom(){
     try { if (room) await room.disconnect(); } catch(e){}
 }
@@ -491,6 +529,8 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'enumerateDevices': enumerateDevices(); break;
         case 'setMicEnabled': setMicEnabled(msg.enabled); break;
         case 'setScreenAudioVolume': setScreenAudioVolume(msg.volume); break;
+        case 'setVoiceVolume': setVoiceVolume(msg.volume); break;
+        case 'setRemoteMuted': setRemoteMuted(msg.muted); break;
         case 'disconnect': disconnectRoom(); break;
     }
 });
@@ -711,6 +751,14 @@ window.chrome.webview.addEventListener('message', (e) => {
         /// <summary>Громкость звука демонстрации экрана собеседника (0.0–1.0).</summary>
         public void SetRemoteScreenAudioVolume(float volume)
             => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenAudioVolume", volume }));
+
+        /// <summary>Громкость голоса собеседников (0.0–1.0+, можно усилить выше 1).</summary>
+        public void SetRemoteVoiceVolume(float volume)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setVoiceVolume", volume }));
+
+        /// <summary>Полностью заглушить весь входящий звук (голос + демка).</summary>
+        public void SetRemoteMuted(bool muted)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setRemoteMuted", muted }));
 
         private void SendToJs(string json)
         {
