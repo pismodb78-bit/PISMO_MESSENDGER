@@ -1075,8 +1075,10 @@ namespace PISMO
                     var (img, audio, video, fileData) = LoadMediaForMessage(
                         msgId, fileName, hasImg, hasAudio, hasVideo, hasFile, isGroup: true);
 
+                    long fileSize = row.Table.Columns.Contains("file_size") && row["file_size"] != DBNull.Value
+                        ? Convert.ToInt64(row["file_size"]) : -1;
                     var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
-                        fileData, fileName, msgId, isGroup: true, replyToId, isDeleted, isEdited);
+                        fileData, fileName, msgId, isGroup: true, replyToId, isDeleted, isEdited, fileSize);
                     bubble.Top = yOffset;
                     PositionBubble(bubble, isMine);
                     bubble.Tag = isMine;
@@ -1104,6 +1106,17 @@ namespace PISMO
         {
             int myId = UserSession.EffectiveId;
 
+            if (fileData != null && fileData.LongLength > 0)
+            {
+                bool ok = SendFileWithProgress(isGroup: true, target: _currentGroupId, myId: myId, text: text,
+                    imageData: imageData, audioData: audioData, videoData: videoData,
+                    fileData: fileData, fileName: fileName);
+                if (ok)
+                    WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _currentGroupId, "group");
+                else
+                    return;
+            }
+            else
             try
             {
                 using var conn = DBHelper.OpenConnection();
@@ -1250,8 +1263,10 @@ namespace PISMO
                     var (img, audio, video, fileData) = LoadMediaForMessage(
                         msgId, fileName, hasImg, hasAudio, hasVideo, hasFile, isGroup: false);
 
+                    long fileSize = row.Table.Columns.Contains("file_size") && row["file_size"] != DBNull.Value
+                        ? Convert.ToInt64(row["file_size"]) : -1;
                     var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
-                        fileData, fileName, msgId, isGroup: false, replyToId, isDeleted, isEdited);
+                        fileData, fileName, msgId, isGroup: false, replyToId, isDeleted, isEdited, fileSize);
                     bubble.Top = yOffset;
                     PositionBubble(bubble, isMine);
                     bubble.Tag = isMine;
@@ -1301,7 +1316,7 @@ namespace PISMO
                                    byte[] fileData = null, string fileName = null,
                                    int msgId = -1, bool isGroup = false,
                                    int replyToId = 0, bool isDeleted = false,
-                                   bool isEdited = false)
+                                   bool isEdited = false, long fileSize = -1)
         {
             const int MAX_W = 480;
             const int PAD = 12;
@@ -1528,7 +1543,7 @@ namespace PISMO
             // Документ / архив (теперь проверяем только fileName, так как fileData загружается по требованию)
             if (!string.IsNullOrWhiteSpace(fileName))
             {
-                var pnlFile = BuildFileCard(fileData, fileName, isMine, innerW, msgId, isGroup);
+                var pnlFile = BuildFileCard(fileData, fileName, isMine, innerW, msgId, isGroup, fileSize);
                 pnlFile.Location = new Point(PAD, innerY);
                 bubble.Controls.Add(pnlFile);
                 innerY += pnlFile.Height + 6;
@@ -1840,6 +1855,18 @@ namespace PISMO
             }
             catch { /* если проверка по какой-то причине упала — допускаем отправку */ }
 
+            // Файл крупного размера отправляем чанками с круговым прогрессом.
+            if (fileData != null && fileData.LongLength > 0)
+            {
+                bool ok = SendFileWithProgress(isGroup: false, target: themId, myId: myId, text: text,
+                    imageData: imageData, audioData: audioData, videoData: videoData,
+                    fileData: fileData, fileName: fileName);
+                if (ok)
+                    WebSocketSignalingClient.Instance.SendMessage("new_message", themId, 0, "direct");
+                else
+                    return;
+            }
+            else
             try
             {
                 using var conn = DBHelper.OpenConnection();
@@ -1875,6 +1902,115 @@ namespace PISMO
                 LoadConversations();
 
             OpenChat(_currentChatPartnerId, _currentChatPartnerName);
+        }
+
+        /// <summary>
+        /// Загружает файловое сообщение на сервер чанками с круговым индикатором
+        /// прогресса. Сначала вставляет строку с метаданными (file_data=NULL),
+        /// затем дописывает file_data порциями (виден заполняющийся кружок).
+        /// Возвращает true при успехе. При любой ошибке/больших файлах вызывающий
+        /// код может откатиться на обычную единоразовую вставку.
+        /// </summary>
+        private bool SendFileWithProgress(bool isGroup, int target, int myId, string text,
+            byte[] imageData, byte[] audioData, byte[] videoData, byte[] fileData, string fileName)
+        {
+            long total = fileData.LongLength;
+            string table = isGroup ? "group_messages" : "messages";
+
+            var dlg = new Form
+            {
+                Text = "Отправка файла",
+                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.CenterParent,
+                ShowInTaskbar = false,
+                ClientSize = new Size(300, 150),
+                BackColor = Color.FromArgb(40, 42, 46),
+                ControlBox = false
+            };
+            double prog = 0;
+            var pic = new Panel { Size = new Size(72, 72), Location = new Point(114, 14), BackColor = Color.Transparent };
+            pic.Paint += (s, e) =>
+            {
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                var rect = new Rectangle(6, 6, 58, 58);
+                using var track = new Pen(Color.FromArgb(90, 255, 255, 255), 6);
+                using var arc = new Pen(Color.FromArgb(88, 101, 242), 6);
+                e.Graphics.DrawEllipse(track, rect);
+                e.Graphics.DrawArc(arc, rect, -90, (float)(360 * Math.Min(1.0, prog)));
+                using var f = new Font("Segoe UI Semibold", 10f, FontStyle.Bold);
+                using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                e.Graphics.DrawString($"{(int)(prog * 100)}%", f, Brushes.White, rect, sf);
+            };
+            var lbl = new Label
+            {
+                Text = $"Отправка {fileName}\n({FormatFileSize(total)})",
+                ForeColor = Color.FromArgb(220, 221, 222),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Location = new Point(10, 92), Size = new Size(280, 46),
+                Font = new Font("Segoe UI", 9f)
+            };
+            dlg.Controls.Add(pic);
+            dlg.Controls.Add(lbl);
+
+            bool success = false;
+            string err = null;
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    long newId;
+
+                    // 1) Вставляем строку с метаданными, file_data пока NULL.
+                    string insSql = isGroup
+                        ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@g,@s,@t,@img,@aud,@vid,NULL,@fn)"
+                        : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@s,@r,@t,@img,@aud,@vid,NULL,@fn)";
+                    using (var ins = new MySqlCommand(insSql, conn))
+                    {
+                        if (isGroup) { ins.Parameters.AddWithValue("@g", target); ins.Parameters.AddWithValue("@s", myId); }
+                        else { ins.Parameters.AddWithValue("@s", myId); ins.Parameters.AddWithValue("@r", target); }
+                        ins.Parameters.AddWithValue("@t", text ?? "");
+                        AddBlob(ins, "@img", imageData);
+                        AddBlob(ins, "@aud", audioData);
+                        AddBlob(ins, "@vid", videoData);
+                        ins.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
+                        ins.ExecuteNonQuery();
+                        newId = ins.LastInsertedId;
+                    }
+
+                    // 2) Дописываем файл порциями (виден прогресс).
+                    const int CHUNK = 512 * 1024; // 512 КБ
+                    long off = 0;
+                    while (off < total)
+                    {
+                        int len = (int)Math.Min(CHUNK, total - off);
+                        var chunk = new byte[len];
+                        Array.Copy(fileData, off, chunk, 0, len);
+                        using (var upd = new MySqlCommand(
+                            $"UPDATE {table} SET file_data = CONCAT(IFNULL(file_data, _binary''), @c) WHERE id=@id", conn))
+                        {
+                            upd.Parameters.Add("@c", MySqlDbType.LongBlob).Value = chunk;
+                            upd.Parameters.AddWithValue("@id", newId);
+                            upd.ExecuteNonQuery();
+                        }
+                        off += len;
+                        double p = (double)off / total;
+                        try { dlg.BeginInvoke(() => { prog = p; pic.Invalidate(); }); } catch { }
+                    }
+
+                    success = true;
+                }
+                catch (Exception ex) { err = ex.Message; }
+
+                try { dlg.BeginInvoke(() => { dlg.Close(); }); } catch { }
+            });
+
+            dlg.ShowDialog(this);
+            if (!success && err != null)
+                MessageBox.Show("Ошибка отправки файла: " + err, "PISMO",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return success;
         }
 
         /// <summary>Добавляет BLOB-параметр (LongBlob) или DBNull, если данных нет.</summary>
@@ -2095,12 +2231,29 @@ namespace PISMO
             Location = new Point(x, y)
         };
 
-        /// <summary>Карточка документа/архива внутри пузырька — клик загружает с сервера, сохраняет и открывает файл.</summary>
-        private static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup)
+        /// <summary>Человекочитаемый размер файла.</summary>
+        private static string FormatFileSize(long bytes)
+        {
+            if (bytes <= 0) return "";
+            double kb = bytes / 1024.0;
+            return kb > 1024 ? $"{kb / 1024.0:F1} МБ" : $"{Math.Max(1, (long)kb)} КБ";
+        }
+
+        /// <summary>Карточка документа/архива внутри пузырька — клик загружает с сервера
+        /// (с круговым индикатором прогресса), сохраняет и открывает файл.
+        /// knownSize — размер файла в байтах (показывается ДО загрузки).</summary>
+        private static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup, long knownSize = -1)
         {
             string ext = Path.GetExtension(fileName).ToLowerInvariant().TrimStart('.');
-            long kb = fileData != null ? fileData.Length / 1024 : 0;
-            string szStr = fileData != null ? (kb > 1024 ? $"{kb / 1024.0:F1} МБ" : $"{kb} КБ") : "💾 Нажмите для загрузки";
+            long displaySize = fileData != null ? fileData.Length : knownSize;
+            // Размер показываем сразу (если известен), даже до загрузки самого файла.
+            string szStr = fileData != null
+                ? FormatFileSize(fileData.Length)
+                : (displaySize > 0 ? $"{FormatFileSize(displaySize)} · нажмите для загрузки" : "💾 Нажмите для загрузки");
+
+            // Прогресс загрузки: -1 = не идёт, 0..1 = доля. Рисуется поверх иконки.
+            double dlProgress = -1;
+            bool downloading = false;
 
             Color iconBg = ext switch
             {
@@ -2130,6 +2283,18 @@ namespace PISMO
                 using var f = new Font("Segoe UI Black", lbl.Length > 3 ? 6.5f : 8.5f, FontStyle.Bold);
                 using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
                 e.Graphics.DrawString(lbl, f, Brushes.White, new RectangleF(0, 0, 40, 40), sf);
+
+                // Круговой индикатор загрузки поверх иконки.
+                if (dlProgress >= 0)
+                {
+                    using var shade = new SolidBrush(Color.FromArgb(150, 0, 0, 0));
+                    e.Graphics.FillRoundedRectangle(shade, 0, 0, 39, 39, 6);
+                    var rect = new Rectangle(8, 8, 23, 23);
+                    using var track = new Pen(Color.FromArgb(90, 255, 255, 255), 3);
+                    using var arc = new Pen(Color.White, 3);
+                    e.Graphics.DrawEllipse(track, rect);
+                    e.Graphics.DrawArc(arc, rect, -90, (float)(360 * Math.Min(1.0, dlProgress)));
+                }
             };
             card.Controls.Add(iconPnl);
 
@@ -2154,58 +2319,114 @@ namespace PISMO
             };
             card.Controls.Add(lblSz);
 
-            void DoOpen(object s, EventArgs ev)
+            void SaveAndOpen()
             {
-                if (fileData == null)
-                {
-                    // Пробуем взять из кеша
-                    if (MediaCache.Has(msgId, "file", fileName))
-                    {
-                        fileData = MediaCache.Get(msgId, "file", fileName);
-                    }
-                    else
-                    {
-                        lblSz.Text = "Загрузка с сервера...";
-                        Application.DoEvents();
-                        try
-                        {
-                            string table = isGroup ? "group_messages" : "messages";
-                            using var conn = DBHelper.OpenConnection();
-                            using var cmd = new MySqlCommand($"SELECT file_data FROM {table} WHERE id=@id", conn);
-                            cmd.Parameters.AddWithValue("@id", msgId);
-                            var obj = cmd.ExecuteScalar();
-                            if (obj != null && obj != DBNull.Value)
-                            {
-                                fileData = (byte[])obj;
-                                MediaCache.Put(msgId, "file", fileData, fileName);
-                                long newKb = fileData.Length / 1024;
-                                lblSz.Text = newKb > 1024 ? $"{newKb / 1024.0:F1} МБ" : $"{newKb} КБ";
-                            }
-                            else
-                            {
-                                lblSz.Text = "Ошибка загрузки";
-                                return;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            lblSz.Text = "Ошибка: " + ex.Message;
-                            return;
-                        }
-                    }
-                }
-
-                using var save = new SaveFileDialog
-                {
-                    FileName = fileName,
-                    Title = "Сохранить файл"
-                };
+                using var save = new SaveFileDialog { FileName = fileName, Title = "Сохранить файл" };
                 if (save.ShowDialog() == DialogResult.OK)
                 {
                     File.WriteAllBytes(save.FileName, fileData);
                     try { Process.Start(new ProcessStartInfo(save.FileName) { UseShellExecute = true }); }
                     catch { }
                 }
+            }
+
+            void DoOpen(object s, EventArgs ev)
+            {
+                if (downloading) return;
+
+                if (fileData != null) { SaveAndOpen(); return; }
+
+                // Кеш — мгновенно.
+                if (MediaCache.Has(msgId, "file", fileName))
+                {
+                    fileData = MediaCache.Get(msgId, "file", fileName);
+                    if (fileData != null) { lblSz.Text = FormatFileSize(fileData.Length); SaveAndOpen(); return; }
+                }
+
+                // Чанковая загрузка с сервера с круговым индикатором прогресса.
+                downloading = true;
+                dlProgress = 0;
+                lblSz.Text = "Загрузка… 0%";
+                try { iconPnl.Invalidate(); } catch { }
+
+                string table = isGroup ? "group_messages" : "messages";
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    byte[] result = null;
+                    string err = null;
+                    try
+                    {
+                        using var conn = DBHelper.OpenConnection();
+
+                        long total = knownSize;
+                        if (total <= 0)
+                        {
+                            using var szCmd = new MySqlCommand($"SELECT OCTET_LENGTH(file_data) FROM {table} WHERE id=@id", conn);
+                            szCmd.Parameters.AddWithValue("@id", msgId);
+                            var o = szCmd.ExecuteScalar();
+                            total = (o != null && o != DBNull.Value) ? Convert.ToInt64(o) : 0;
+                        }
+
+                        if (total <= 0) { err = "Файл пуст"; }
+                        else
+                        {
+                            const int CHUNK = 256 * 1024; // 256 КБ
+                            using var ms = new MemoryStream((int)Math.Min(total, int.MaxValue));
+                            long off = 0;
+                            while (off < total)
+                            {
+                                int len = (int)Math.Min(CHUNK, total - off);
+                                // MySQL SUBSTRING — 1-based смещение.
+                                using var cmd = new MySqlCommand(
+                                    $"SELECT SUBSTRING(file_data, @off, @len) FROM {table} WHERE id=@id", conn);
+                                cmd.Parameters.AddWithValue("@off", off + 1);
+                                cmd.Parameters.AddWithValue("@len", len);
+                                cmd.Parameters.AddWithValue("@id", msgId);
+                                var chunk = cmd.ExecuteScalar() as byte[];
+                                if (chunk == null || chunk.Length == 0) break;
+                                ms.Write(chunk, 0, chunk.Length);
+                                off += chunk.Length;
+
+                                double p = (double)off / total;
+                                try
+                                {
+                                    card.BeginInvoke(() =>
+                                    {
+                                        dlProgress = p;
+                                        lblSz.Text = $"Загрузка… {(int)(p * 100)}%";
+                                        try { iconPnl.Invalidate(); } catch { }
+                                    });
+                                }
+                                catch { }
+                            }
+                            result = ms.ToArray();
+                        }
+                    }
+                    catch (Exception ex) { err = ex.Message; }
+
+                    try
+                    {
+                        card.BeginInvoke(() =>
+                        {
+                            downloading = false;
+                            dlProgress = -1;
+                            try { iconPnl.Invalidate(); } catch { }
+
+                            if (result != null && result.Length > 0)
+                            {
+                                fileData = result;
+                                MediaCache.Put(msgId, "file", fileData, fileName);
+                                lblSz.Text = FormatFileSize(fileData.Length);
+                                SaveAndOpen();
+                            }
+                            else
+                            {
+                                lblSz.Text = "Ошибка: " + (err ?? "нет данных");
+                            }
+                        });
+                    }
+                    catch { }
+                });
             }
 
             card.Click += DoOpen;

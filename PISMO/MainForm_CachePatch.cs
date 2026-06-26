@@ -164,7 +164,8 @@ namespace PISMO
                        (m.image_data IS NOT NULL) AS has_img,
                        (m.audio_data IS NOT NULL) AS has_audio,
                        (m.video_data IS NOT NULL) AS has_video,
-                       (m.file_data  IS NOT NULL) AS has_file
+                       (m.file_data  IS NOT NULL) AS has_file,
+                       OCTET_LENGTH(m.file_data) AS file_size
                 FROM messages m
                 JOIN users u ON u.id = m.sender_id
                 WHERE (m.sender_id=@me AND m.receiver_id=@them)
@@ -195,7 +196,8 @@ namespace PISMO
                        (gm.image_data IS NOT NULL) AS has_img,
                        (gm.audio_data IS NOT NULL) AS has_audio,
                        (gm.video_data IS NOT NULL) AS has_video,
-                       (gm.file_data  IS NOT NULL) AS has_file
+                       (gm.file_data  IS NOT NULL) AS has_file,
+                       OCTET_LENGTH(gm.file_data) AS file_size
                 FROM group_messages gm
                 JOIN users u ON u.id = gm.sender_id
                 WHERE gm.group_id=@g
