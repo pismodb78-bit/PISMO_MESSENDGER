@@ -10,17 +10,12 @@
 --    • в сети       — heartbeat свежий (<45 c) и была активность (<5 мин);
 --    • бездействует  — heartbeat свежий, но активности нет >5 мин;
 --    • не в сети     — heartbeat старше 45 c (приложение закрыто).
---
---  Скрипт идемпотентный: повторный запуск не навредит.
 -- ============================================================
 
-ALTER TABLE `users`
-  ADD COLUMN IF NOT EXISTS `last_seen`   DATETIME NULL DEFAULT NULL,
-  ADD COLUMN IF NOT EXISTS `last_active` DATETIME NULL DEFAULT NULL;
+-- ВНИМАНИЕ: обычный MySQL (в отличие от MariaDB) НЕ поддерживает
+-- "ADD COLUMN IF NOT EXISTS". Поэтому выполняем простые ALTER.
+-- Если колонка уже существует — MySQL вернёт "Duplicate column name",
+-- эту ошибку можно проигнорировать (значит, колонка уже создана).
 
--- Если ваша версия MySQL не поддерживает "ADD COLUMN IF NOT EXISTS",
--- закомментируйте блок выше и выполните вместо него (по одной строке,
--- игнорируя ошибку "Duplicate column", если колонка уже есть):
---
--- ALTER TABLE `users` ADD COLUMN `last_seen`   DATETIME NULL DEFAULT NULL;
--- ALTER TABLE `users` ADD COLUMN `last_active` DATETIME NULL DEFAULT NULL;
+ALTER TABLE `users` ADD COLUMN `last_seen`   DATETIME NULL DEFAULT NULL;
+ALTER TABLE `users` ADD COLUMN `last_active` DATETIME NULL DEFAULT NULL;
