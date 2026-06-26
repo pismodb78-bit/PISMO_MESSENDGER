@@ -31,17 +31,13 @@ namespace PISMO
 
         // TURN кредо теперь управляются внутри CallTransport через TurnSettings.GetCredentials()
 
-        private WaveInEvent _waveIn;
-        private WaveOutEvent _waveOut;
-        private BufferedWaveProvider _waveProvider;
+        // Аудио (микрофон + воспроизведение голоса/звука демки) полностью на
+        // стороне LiveKit — NAudio для звонка больше не используется.
         // Громкость звука демонстрации экрана собеседника (0.0 - 1.0), отдельно от голоса
         private float _remoteScreenAudioVolume = 1.0f;
         private TrackBar _tbScreenAudioVolume;
         private Label _lblScreenAudioVolume;
         private bool _muted = false;
-
-        private WasapiLoopbackCapture _loopback;
-        private bool _screenAudio = false;
 
         // Камера теперь как настоящий WebRTC video track (getUserMedia внутри
         // WebRtcTransport), а не AForge VideoCaptureDevice + JPEG-over-DataChannel.
@@ -305,6 +301,7 @@ namespace PISMO
             _tbScreenAudioVolume.ValueChanged += (s, e) =>
             {
                 _remoteScreenAudioVolume = _tbScreenAudioVolume.Value / 100f;
+                try { _transport?.SetRemoteScreenAudioVolume(_remoteScreenAudioVolume); } catch { }
             };
             _lblScreenAudioVolume = new Label
             {
@@ -514,13 +511,20 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════
         //  СИГНАЛИНГ
         // ════════════════════════════════════════════════════════════
+        /// <summary>Имя комнаты LiveKit — общее для всех участников одного звонка.</summary>
+        private string RoomName => "call_" + _sessionId;
+
         private async void StartCallSetup()
         {
             _transport = new WebRtcTransport();
-            _transport.FrameReceived += OnFrameReceived;
             _transport.Disconnected += OnPeerDisconnected;
-            _transport.IceCandidateReady += candidate => DbAppendIceCandidate(_isCaller, candidate);
             _transport.Connected += OnConnected;
+            // В личном звонке уход единственного собеседника = конец звонка.
+            // В групповом — остальные продолжают, поэтому событие игнорируем.
+            _transport.RemoteParticipantLeft += () =>
+            {
+                if (_groupId < 0) UiInvoke(OnPeerDisconnected);
+            };
 
             // --- Видео-трек демонстрации экрана (настоящий WebRTC, не DataChannel) ---
             _transport.RemoteScreenFrameReceived += frame => UiInvoke(() => ShowRemoteScreenFrame(frame));
@@ -551,30 +555,44 @@ namespace PISMO
             _transport.LocalCameraStopped += () => UiInvoke(OnLocalCameraStopped);
             _transport.LocalCameraError += err => UiInvoke(() => OnLocalCameraError(err));
 
-            // --- Renegotiation (нужна и для экрана, и для камеры — оба добавляют
-            // video track после первоначального offer/answer) ---
-            _transport.RenegotiationOfferReady += (sdp, trackKinds) => DbSendRenegotiationOffer(sdp, trackKinds);
-            _transport.RenegotiationAnswerReady += (sdp, trackKinds) => DbSendRenegotiationAnswer(sdp, trackKinds);
+            // --- LiveKit: подключение к комнате ---
+            // Сигналинг, ICE/TURN, renegotiation и многосторонность берёт на себя
+            // LiveKit-сервер. От нас нужно только сгенерировать access-токен и
+            // подключиться к общей комнате (имя = id call-сессии).
+            try
+            {
+                string identity = UserSession.EffectiveId.ToString();
+                string displayName = string.IsNullOrWhiteSpace(UserSession.EffectiveName)
+                    ? identity : UserSession.EffectiveName;
+                string token = LiveKitSettings.CreateToken(RoomName, identity, displayName);
 
-            // Ждём готовности WebView2 ПЕРЕД любым WebRTC
-            await _transport.InitAsync(this);
+                UiInvoke(() => _lblStatus.Text = "Подключение к серверу…");
 
-            if (_isCaller)
-                _ = CallerSetupAsync();
-            else
-                _ = CalleeSetupAsync();
+                // Статус сессии (ringing → active → ended/rejected) ведёт общий
+                // флоу: INSERT создаёт 'ringing', приём звонка ставит 'active'.
+                // CallForm его не трогает — иначе звонящий, мгновенно подключаясь
+                // к комнате LiveKit, преждевременно переводил бы сессию в 'active'
+                // и у вызываемого не появлялся бы экран входящего звонка.
+                await _transport.InitAsync(this, LiveKitSettings.Url, token);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[LIVEKIT SETUP ERROR] {ex.Message}");
+                UiInvoke(() => _lblStatus.Text = $"Ошибка: {ex.Message}");
+            }
 
             WebSocketSignalingClient.Instance.OnMessageReceived += OnWebSocketMessage;
 
-            StartAudio();
-            // КРИТИЧНО: НЕ запускаем StartVideo() до установления соединения!
-            // Раньше StartVideo() вызывался здесь, что приводило к тому что
-            // камера добавлялась через renegotiate() ДО завершения ICE gathering.
-            // Это вызывало race condition: SDP отправлялся с неполными кандидатами,
-            // что приводило к failed connection state → звонок сбрасывался.
-            // Теперь камера стартует только после OnConnected() (через StartVideoAfterConnect).
+            // Камеру стартуем только после установления соединения (OnConnected),
+            // чтобы превью открывалось, когда комната уже готова принять трек.
             if (_hasVideo)
                 _pendingVideoStart = true;
+
+            // Постоянный опрос статуса — для корректного закрытия формы при
+            // отклонении/завершении звонка собеседником.
+            _signalTimer = new System.Windows.Forms.Timer { Interval = 800 };
+            _signalTimer.Tick += (s, e) => PollCallStatus();
+            _signalTimer.Start();
         }
 
         private void OnWebSocketMessage(string type, int senderId, int sessionId, string payload)
@@ -583,17 +601,7 @@ namespace PISMO
             UiInvoke(() =>
             {
                 if (type == "call_status" || type == "incoming_call")
-                {
                     PollCallStatus();
-                }
-                else if (type == "ice_candidate")
-                {
-                    _ = PollAndApplyRemoteCandidatesAsync(callerSide: _isCaller);
-                }
-                else if (type == "renego_offer" || type == "renego_answer")
-                {
-                    _ = PollRenegotiationAsync();
-                }
             });
         }
 
@@ -609,161 +617,27 @@ namespace PISMO
             catch (InvalidOperationException) { }
         }
 
-        private async Task CallerSetupAsync()
-        {
-            try
-            {
-                UiInvoke(() => _lblStatus.Text = $"Вызов {_peerName}… подготовка");
-
-                string offerSdp = await _transport.CreateOfferAsync();
-
-                using (var conn = DBHelper.OpenConnection())
-                using (var cmd = new MySqlCommand(
-                    "UPDATE call_sessions SET caller_sdp=@sdp, status='ringing' WHERE id=@id", conn))
-                {
-                    cmd.Parameters.AddWithValue("@sdp", offerSdp);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    cmd.ExecuteNonQuery();
-                }
-
-                System.Diagnostics.Debug.WriteLine("[CALLER] Offer записан в БД, ждём answer…");
-                UiInvoke(() => _lblStatus.Text = $"Вызов {_peerName}… ожидание ответа");
-
-                _signalTimer = new System.Windows.Forms.Timer { Interval = 500 };
-                _signalTimer.Tick += (s, e) => PollCallStatus();
-                _signalTimer.Start();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[CALLER SETUP ERROR] {ex.Message}");
-                UiInvoke(() => _lblStatus.Text = $"Ошибка: {ex.Message}");
-            }
-        }
-
-        private async Task CalleeSetupAsync()
-        {
-            try
-            {
-                UiInvoke(() => _lblStatus.Text = "Подключение…");
-
-                string offerSdp = null;
-                bool hv = false;
-                for (int i = 0; i < 60 && !_ended; i++)
-                {
-                    using (var conn = DBHelper.OpenConnection())
-                    using (var cmd = new MySqlCommand(
-                        "SELECT caller_sdp, has_video FROM call_sessions WHERE id=@id", conn))
-                    {
-                        cmd.Parameters.AddWithValue("@id", _sessionId);
-                        using var r = cmd.ExecuteReader();
-                        if (r.Read())
-                        {
-                            offerSdp = r["caller_sdp"] == DBNull.Value ? null : r["caller_sdp"].ToString();
-                            hv = Convert.ToBoolean(r["has_video"]);
-                        }
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(offerSdp)) break;
-
-                    System.Diagnostics.Debug.WriteLine("[CALLEE] Ждём offer от звонящего…");
-                    await Task.Delay(500);
-                }
-
-                if (string.IsNullOrWhiteSpace(offerSdp))
-                {
-                    UiInvoke(() => _lblStatus.Text = "Нет ответа от звонящего");
-                    return;
-                }
-
-                _hasVideo = hv;
-                UiInvoke(() => _btnCamera.Visible = _hasVideo);
-
-                string answerSdp = await _transport.CreateAnswerAsync(offerSdp);
-
-                using (var conn = DBHelper.OpenConnection())
-                using (var cmd = new MySqlCommand(
-                    "UPDATE call_sessions SET callee_sdp=@sdp, status='active' WHERE id=@id", conn))
-                {
-                    cmd.Parameters.AddWithValue("@sdp", answerSdp);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    cmd.ExecuteNonQuery();
-                }
-
-                System.Diagnostics.Debug.WriteLine("[CALLEE] Answer записан в БД");
-
-
-
-                _signalTimer = new System.Windows.Forms.Timer { Interval = 400 };
-                _signalTimer.Tick += async (s, e) =>
-                {
-                    await PollAndApplyRemoteCandidatesAsync(callerSide: true);
-                    if (_connected) _signalTimer?.Stop();
-                };
-                _signalTimer.Start();
-
-                // StartVideo() уже вызывается единообразно для caller и callee
-                // сразу после _transport.InitAsync() в StartCallSetup — повторный
-                // вызов здесь создавал гонку: если пользователь уже подтвердил
-                // первое превью к моменту завершения этого асинхронного метода
-                // (а CalleeSetupAsync может занять несколько секунд на сетевые
-                // операции с БД), _cameraPreviewForm уже снова null (сброшен
-                // после подтверждения), защитная проверка не срабатывала, и
-                // StartVideo() вызывался второй раз — отсюда повторное окно
-                // выбора камеры через ~10 секунд после звонка.
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[CALLEE SETUP ERROR] {ex.Message}\n{ex.StackTrace}");
-                UiInvoke(() => _lblStatus.Text = "Ошибка подключения");
-            }
-        }
-
+        /// <summary>Опрос статуса call-сессии. С LiveKit это нужно только для
+        /// корректного закрытия формы, когда собеседник отклонил или завершил
+        /// звонок — само медиа-соединение поднимает LiveKit-сервер.</summary>
         private void PollCallStatus()
         {
-            if (_connected || _ended) return;
+            if (_ended) return;
 
             try
             {
                 string status = null;
-                string answerSdp = null;
-
                 using (var conn = DBHelper.OpenConnection())
                 using (var cmd = new MySqlCommand(
-                    "SELECT status, callee_sdp FROM call_sessions WHERE id=@id", conn))
+                    "SELECT status FROM call_sessions WHERE id=@id", conn))
                 {
                     cmd.Parameters.AddWithValue("@id", _sessionId);
                     using var reader = cmd.ExecuteReader();
                     if (reader.Read())
-                    {
                         status = reader["status"]?.ToString();
-                        answerSdp = reader["callee_sdp"] == DBNull.Value ? null : reader["callee_sdp"].ToString();
-                    }
                 }
 
-                System.Diagnostics.Debug.WriteLine(
-                    $"[CALLER POLL] status={status}, answerSdp={(!string.IsNullOrEmpty(answerSdp) ? "получен" : "нет")}");
-
-                if (status == "active" && !string.IsNullOrWhiteSpace(answerSdp))
-                {
-                    _signalTimer?.Stop();
-                    _transport.ApplyAnswer(answerSdp);
-                    System.Diagnostics.Debug.WriteLine("[CALLER] Answer применён");
-
-                    Task.Run(async () =>
-                    {
-                        await Task.Delay(200);
-                        await PollAndApplyRemoteCandidatesAsync(callerSide: false);
-
-                        var pollTimer = new System.Windows.Forms.Timer { Interval = 400 };
-                        pollTimer.Tick += async (s, e) =>
-                        {
-                            await PollAndApplyRemoteCandidatesAsync(callerSide: false);
-                            if (_connected) pollTimer.Stop();
-                        };
-                        pollTimer.Start();
-                    });
-                }
-                else if (status == "rejected" || status == "ended")
+                if (status == "rejected" || status == "ended")
                 {
                     _lblStatus.Text = status == "rejected" ? "Звонок отклонён" : "Завершён";
                     if (!_ended) MarkCallEnded();
@@ -777,131 +651,31 @@ namespace PISMO
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[CALLER POLL ERROR] {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[CALL POLL ERROR] {ex.Message}");
             }
         }
-
-        private readonly System.Collections.Generic.HashSet<string> _appliedCandidates = new();
-
-        private async Task PollAndApplyRemoteCandidatesAsync(bool callerSide)
-        {
-            try
-            {
-                string column = callerSide ? "caller_ice" : "callee_ice";
-                string rawJson = null;
-
-                // Та же причина, что и в PollRenegotiationAsync — синхронный
-                // SQL-вызов переносим на фоновый поток, чтобы не блокировать
-                // UI-поток таймера на время сетевого round-trip к БД.
-                await Task.Run(() =>
-                {
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        $"SELECT {column} FROM call_sessions WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    using var r = cmd.ExecuteReader();
-                    if (r.Read() && r[column] != DBNull.Value)
-                        rawJson = r[column].ToString();
-                });
-
-                if (string.IsNullOrWhiteSpace(rawJson)) return;
-
-                var candidates = System.Text.Json.JsonSerializer.Deserialize<
-                    System.Collections.Generic.List<string>>(rawJson);
-                if (candidates == null) return;
-
-                foreach (var c in candidates)
-                {
-                    if (!_appliedCandidates.Add(c)) continue;
-                    _transport.AddRemoteIceCandidate(c);
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[ICE POLL] Ошибка: {ex.Message}");
-            }
-        }
-
-        private void DbAppendIceCandidate(bool isCaller, string candidateJson)
-        {
-            // Вызывается напрямую из C#-события _transport.IceCandidateReady,
-            // которое срабатывает на UI-потоке (через WebView2 message loop).
-            // Переносим блокирующий SQL на фоновый поток, не блокируя вызывающий.
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    string column = isCaller ? "caller_ice" : "callee_ice";
-                    string existing = null;
-
-                    using var conn = DBHelper.OpenConnection();
-
-                    using (var sel = new MySqlCommand(
-                        $"SELECT {column} FROM call_sessions WHERE id=@id", conn))
-                    {
-                        sel.Parameters.AddWithValue("@id", _sessionId);
-                        using var r = sel.ExecuteReader();
-                        if (r.Read() && r[column] != DBNull.Value)
-                            existing = r[column].ToString();
-                    }
-
-                    var list = string.IsNullOrWhiteSpace(existing)
-                        ? new System.Collections.Generic.List<string>()
-                        : System.Text.Json.JsonSerializer.Deserialize<
-                              System.Collections.Generic.List<string>>(existing)
-                          ?? new System.Collections.Generic.List<string>();
-
-                    list.Add(candidateJson);
-                    string newJson = System.Text.Json.JsonSerializer.Serialize(list);
-
-                    using var upd = new MySqlCommand(
-                        $"UPDATE call_sessions SET {column}=@v WHERE id=@id", conn);
-                    upd.Parameters.AddWithValue("@v", newJson);
-                    upd.Parameters.AddWithValue("@id", _sessionId);
-                    upd.ExecuteNonQuery();
-                    WebSocketSignalingClient.Instance.SendMessage("ice_candidate", _peerId, _sessionId, candidateJson);
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[ICE DB WRITE] Ошибка: {ex.Message}");
-                }
-            });
-        }
-
-        private System.Windows.Forms.Timer _renegoTimer;
 
         private void OnConnected()
         {
             if (_connected) return;
             _connected = true;
             _startTime = DateTime.Now;
-            _signalTimer?.Stop();
             _lblStatus.Text = "Соединение установлено";
             _durationTimer.Start();
 
-            // КРИТИЧНО: запускаем камеру только ПОСЛЕ установления соединения.
-            // Раньше StartVideo() вызывался в StartCallSetup() до ICE completion,
-            // что приводило к race condition: renegotiation поверх незавершённого
-            // ICE gathering → SDP с неполными кандидатами → connection state failed.
+            // Камеру запускаем только после подключения к комнате — превью
+            // открывается, когда транспорт уже готов опубликовать трек.
             if (_pendingVideoStart)
             {
                 _pendingVideoStart = false;
                 StartVideo();
             }
-
-            // Renegotiation (добавление/удаление video track демонстрации экрана)
-            // происходит уже во время активного звонка, поэтому этот таймер
-            // работает постоянно, в отличие от _signalTimer для первоначального ICE.
-            _renegoTimer = new System.Windows.Forms.Timer { Interval = 400 };
-            _renegoTimer.Tick += async (s, e) => await PollRenegotiationAsync();
-            _renegoTimer.Start();
         }
 
         private void OnPeerDisconnected()
         {
             if (_ended) return;
             _lblStatus.Text = "Соединение разорвано";
-            _renegoTimer?.Stop();
 
             MarkCallEnded();
 
@@ -971,13 +745,6 @@ namespace PISMO
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
             HideScreenSharePip();
-
-            if (_screenAudio)
-            {
-                try { _loopback?.StopRecording(); _loopback?.Dispose(); } catch { }
-                _loopback = null;
-                _screenAudio = false;
-            }
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1030,215 +797,18 @@ namespace PISMO
             }
         }
 
-        // --- Renegotiation: новый offer/answer цикл при добавлении/удалении
-        // video track после первоначального соединения. Использует те же
-        // принципы, что и первоначальный сигналинг (через call_sessions),
-        // но отдельные nullable-поля, чтобы не конфликтовать с caller_sdp/callee_sdp.
-        // trackKinds — JSON-карта track.id -> "screen"/"camera", нужна собеседнику
-        // для надёжного различения входящих видео-треков в pc.ontrack, так как
-        // теперь camera и screen могут идти одновременно.
-
-        private long _lastSeenRenegoVersion = 0;
-
-        private void DbSendRenegotiationOffer(string sdp, string trackKindsJson)
-        {
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    string sdpCol = _isCaller ? "caller_renego_offer" : "callee_renego_offer";
-                    string tkCol = _isCaller ? "caller_renego_offer_kinds" : "callee_renego_offer_kinds";
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        $"UPDATE call_sessions SET {sdpCol}=@sdp, {tkCol}=@tk, renego_version = renego_version + 1 WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@sdp", sdp);
-                    cmd.Parameters.AddWithValue("@tk", (object)trackKindsJson ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    cmd.ExecuteNonQuery();
-                    System.Diagnostics.Debug.WriteLine("[RENEGO] Offer записан в БД");
-                    WebSocketSignalingClient.Instance.SendMessage("renego_offer", _peerId, _sessionId, System.Text.Json.JsonSerializer.Serialize(new { sdp, trackKinds = trackKindsJson }));
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[RENEGO OFFER WRITE ERROR] {ex.Message}");
-                }
-            });
-        }
-
-        private void DbSendRenegotiationAnswer(string sdp, string trackKindsJson)
-        {
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    string sdpCol = _isCaller ? "caller_renego_answer" : "callee_renego_answer";
-                    string tkCol = _isCaller ? "caller_renego_answer_kinds" : "callee_renego_answer_kinds";
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        $"UPDATE call_sessions SET {sdpCol}=@sdp, {tkCol}=@tk WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@sdp", sdp);
-                    cmd.Parameters.AddWithValue("@tk", (object)trackKindsJson ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    cmd.ExecuteNonQuery();
-                    System.Diagnostics.Debug.WriteLine("[RENEGO] Answer записан в БД");
-                    WebSocketSignalingClient.Instance.SendMessage("renego_answer", _peerId, _sessionId, System.Text.Json.JsonSerializer.Serialize(new { sdp, trackKinds = trackKindsJson }));
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[RENEGO ANSWER WRITE ERROR] {ex.Message}");
-                }
-            });
-        }
-
-        /// <summary>Опрашивает БД на новый renegotiation offer/answer от собеседника.
-        /// Вызывается из постоянного _renegoTimer, запущенного в OnConnected.</summary>
-        private async Task PollRenegotiationAsync()
-        {
-            if (_ended || _transport == null) return;
-            try
-            {
-                string peerOfferSdpCol = _isCaller ? "callee_renego_offer" : "caller_renego_offer";
-                string peerOfferKindsCol = _isCaller ? "callee_renego_offer_kinds" : "caller_renego_offer_kinds";
-                string peerAnswerSdpCol = _isCaller ? "callee_renego_answer" : "caller_renego_answer";
-                string peerAnswerKindsCol = _isCaller ? "callee_renego_answer_kinds" : "caller_renego_answer_kinds";
-                string myOfferCol = _isCaller ? "caller_renego_offer" : "callee_renego_offer";
-
-                string peerOfferSdp = null, peerOfferKinds = null;
-                string peerAnswerSdp = null, peerAnswerKinds = null;
-                string myLastOffer = null;
-                long version = 0;
-
-                // ВАЖНО: вызов MySQL (OpenConnection/ExecuteReader) синхронный
-                // и блокирующий. Метод вызывается каждые 400мс из Timer.Tick,
-                // который выполняется на UI-потоке — без Task.Run каждый такой
-                // вызов блокировал UI-поток на время сетевого round-trip к БД,
-                // что вызывало прерывистый звук (аудио-обработка частично
-                // зависит от своевременности UI-потока в WinForms/NAudio).
-                await Task.Run(() =>
-                {
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        $@"SELECT {peerOfferSdpCol}, {peerOfferKindsCol}, {peerAnswerSdpCol}, {peerAnswerKindsCol},
-                                  {myOfferCol}, renego_version FROM call_sessions WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    using var r = cmd.ExecuteReader();
-                    if (r.Read())
-                    {
-                        peerOfferSdp = r[peerOfferSdpCol] == DBNull.Value ? null : r[peerOfferSdpCol].ToString();
-                        peerOfferKinds = r[peerOfferKindsCol] == DBNull.Value ? null : r[peerOfferKindsCol].ToString();
-                        peerAnswerSdp = r[peerAnswerSdpCol] == DBNull.Value ? null : r[peerAnswerSdpCol].ToString();
-                        peerAnswerKinds = r[peerAnswerKindsCol] == DBNull.Value ? null : r[peerAnswerKindsCol].ToString();
-                        myLastOffer = r[myOfferCol] == DBNull.Value ? null : r[myOfferCol].ToString();
-                        version = Convert.ToInt64(r["renego_version"]);
-                    }
-                });
-
-                if (version == _lastSeenRenegoVersion) return;
-                _lastSeenRenegoVersion = version;
-
-                // Если у собеседника появился новый offer — отвечаем.
-                if (!string.IsNullOrWhiteSpace(peerOfferSdp) && peerOfferSdp != _lastAppliedPeerRenegoOffer)
-                {
-                    _lastAppliedPeerRenegoOffer = peerOfferSdp;
-                    _transport.ApplyRenegotiationOffer(peerOfferSdp, peerOfferKinds);
-                }
-                // Если это ответ на наш собственный offer — применяем answer.
-                else if (!string.IsNullOrWhiteSpace(peerAnswerSdp) && peerAnswerSdp != _lastAppliedPeerRenegoAnswer
-                         && !string.IsNullOrWhiteSpace(myLastOffer))
-                {
-                    _lastAppliedPeerRenegoAnswer = peerAnswerSdp;
-                    _transport.ApplyRenegotiationAnswer(peerAnswerSdp, peerAnswerKinds);
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[RENEGO POLL ERROR] {ex.Message}");
-            }
-        }
-
-        private string _lastAppliedPeerRenegoOffer;
-        private string _lastAppliedPeerRenegoAnswer;
-
         // ════════════════════════════════════════════════════════════
-        //  АУДИО
+        //  АУДИО — полностью на стороне LiveKit (публикация микрофона и
+        //  воспроизведение голоса/звука демки делает сам SDK). Здесь остаётся
+        //  только переключение mute.
         // ════════════════════════════════════════════════════════════
-        private void StartAudio()
-        {
-            try
-            {
-                _waveProvider = new BufferedWaveProvider(new WaveFormat(16000, 1))
-                {
-                    // 500мс оптимально для сглаживания джиттера сети при демонстрации экрана,
-                    // предотвращает потерю пакетов и прерывания звука при скачках пинга.
-                    BufferDuration = TimeSpan.FromMilliseconds(500),
-                    DiscardOnBufferOverflow = true
-                };
-                // DesiredLatency по умолчанию ~300мс — снижаем для меньшей сквозной
-                // задержки голоса. NumberOfBuffers=2 — минимум для избежания тресков.
-                _waveOut = new WaveOutEvent { DesiredLatency = 100, NumberOfBuffers = 2 };
-                _waveOut.Init(_waveProvider);
-                _waveOut.Play();
-
-                _waveIn = new WaveInEvent { WaveFormat = new WaveFormat(16000, 1) };
-                if (DeviceSettings.MicrophoneIndex >= 0
-                    && DeviceSettings.MicrophoneIndex < WaveInEvent.DeviceCount)
-                    _waveIn.DeviceNumber = DeviceSettings.MicrophoneIndex;
-
-                _waveIn.DataAvailable += (s, ev) =>
-                {
-                    try
-                    {
-                        // Микрофон отправляется всегда (если не muted и есть соединение).
-                        // Раньше здесь было дополнительное условие "|| _screenAudio",
-                        // которое полностью отключало отправку голоса на всё время
-                        // демонстрации экрана — у того, кто демонстрирует, пропадал
-                        // голос у собеседника. Микрофон (TypeAudio) и системный звук
-                        // демки (TypeScreenAudio) идут раздельными каналами и не
-                        // конфликтуют друг с другом, поэтому блокировка не нужна.
-                        if (_muted || !_connected) return;
-                        int bytes = ev.BytesRecorded;
-                        float gain = DeviceSettings.MicrophoneGain;
-                        byte[] buf = gain != 1f
-                            ? ApplyGain(ev.Buffer, bytes, gain)
-                            : ev.Buffer[..bytes];
-
-                        // Логируем отправку аудио (маленький объём)
-                        System.Diagnostics.Debug.WriteLine($"[AUDIO SEND] bytes={buf.Length}, connected={_connected}");
-
-                        _transport.Send(CallTransport.TypeAudio, buf);
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[AUDIO SEND ERROR] {ex.Message}");
-                    }
-                };
-                _waveIn.StartRecording();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[START AUDIO ERROR] {ex.Message}");
-            }
-        }
-
-        private static byte[] ApplyGain(byte[] buf, int len, float gain)
-        {
-            var result = new byte[len];
-            for (int i = 0; i + 1 < len; i += 2)
-            {
-                short sample = (short)((buf[i + 1] << 8) | buf[i]);
-                int amplified = Math.Clamp((int)(sample * gain), short.MinValue, short.MaxValue);
-                result[i] = (byte)(amplified & 0xFF);
-                result[i + 1] = (byte)((amplified >> 8) & 0xFF);
-            }
-            return result;
-        }
-
         private void ToggleMute()
         {
             _muted = !_muted;
             _btnMute.Text = _muted ? "🔇" : "🎤";
             _btnMute.BackColor = _muted
                 ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
+            try { _transport?.SetMicrophoneEnabled(!_muted); } catch { }
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1424,40 +994,14 @@ namespace PISMO
             }
         }
 
-        /// <summary>Запускает захват системного звука для демонстрации. Сам видео-захват
-        /// экрана теперь идёт через getDisplayMedia/addTrack внутри WebRtcTransport —
-        /// см. _transport.PreviewScreen()/ConfirmScreenShare(), вызванные из ToggleScreen().</summary>
-        private void StartScreenAudioCapture()
-        {
-            try
-            {
-                _loopback = new WasapiLoopbackCapture();
-                _loopback.DataAvailable += (s, ev) =>
-                {
-                    if (!_connected || ev.BytesRecorded == 0) return;
-                    var pcm = ConvertLoopbackToPcm16(ev.Buffer, ev.BytesRecorded, _loopback.WaveFormat);
-                    if (pcm.Length > 0) _transport.Send(CallTransport.TypeScreenAudio, pcm);
-                };
-                _loopback.StartRecording();
-                _screenAudio = true;
-            }
-            catch { _screenAudio = false; }
-        }
-
         private void StopScreenShare()
         {
             _screenSharing = false;
             _screenPreviewPending = false;
 
-            if (_screenAudio)
-            {
-                try { _loopback?.StopRecording(); _loopback?.Dispose(); } catch { }
-                _loopback = null;
-                _screenAudio = false;
-            }
-
-            // Останавливаем настоящий video track — это вызовет renegotiation,
-            // и LocalScreenStopped придёт после её завершения.
+            // Звук демонстрации публикуется/останавливается вместе с видео-треком
+            // средствами LiveKit (createLocalScreenTracks({audio:true})) — отдельный
+            // WASAPI-loopback больше не нужен.
             _transport.StopScreenShareTrack();
 
             _btnScreen.BackColor = Color.FromArgb(64, 68, 75);
@@ -1712,29 +1256,6 @@ namespace PISMO
             return dst;
         }
 
-        private static byte[] ConvertLoopbackToPcm16(byte[] buf, int len, WaveFormat fmt)
-        {
-            try
-            {
-                int floatCount = len / 4;
-                double ratio = fmt.SampleRate / 16000.0;
-                int step = fmt.Channels;
-                var result = new List<byte>(floatCount / step);
-                double pos = 0; int idx = 0;
-                while (idx < floatCount)
-                {
-                    float sample = BitConverter.ToSingle(buf, idx * 4);
-                    short s16 = (short)Math.Clamp((int)(sample * 32767f),
-                                       short.MinValue, short.MaxValue);
-                    result.Add((byte)(s16 & 0xFF));
-                    result.Add((byte)((s16 >> 8) & 0xFF));
-                    pos += ratio * step; idx = (int)pos;
-                }
-                return result.ToArray();
-            }
-            catch { return Array.Empty<byte>(); }
-        }
-
         private static Bitmap ScaleDown(Bitmap src, int maxW)
         {
             if (src.Width <= maxW) return src;
@@ -1763,62 +1284,9 @@ namespace PISMO
         }
 
         // ════════════════════════════════════════════════════════════
-        //  ПРИЁМ ДАННЫХ
+        //  ПРИЁМ ДАННЫХ — аудио теперь воспроизводит LiveKit напрямую,
+        //  видео-кадры приходят отдельными событиями transport.
         // ════════════════════════════════════════════════════════════
-        private void OnFrameReceived(byte type, byte[] payload)
-        {
-            if (IsDisposed || !IsHandleCreated) return;
-            try
-            {
-                // Лог входящих данных — поможет понять, доходит ли что-либо
-                if (type == CallTransport.TypeAudio)
-                    System.Diagnostics.Debug.WriteLine($"[FRAME RECV] AUDIO size={payload?.Length ?? 0}");
-
-                switch (type)
-                {
-                    case CallTransport.TypeAudio:
-                        // Голос собеседника и звук его демонстрации экрана идут по разным
-                        // каналам (TypeAudio для микрофона, TypeScreenAudio для звука
-                        // демки) — оба должны воспроизводиться всегда, без блокировки
-                        // во время screen share.
-                        try
-                        {
-                            _waveProvider?.AddSamples(payload, 0, payload.Length);
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[AUDIO PLAY ERROR] {ex.Message}");
-                        }
-                        break;
-
-                    case CallTransport.TypeScreenAudio:
-                        // Звук демонстрации экрана собеседника — отдельный канал,
-                        // с собственной регулируемой громкостью (ползунок в UI).
-                        try
-                        {
-                            byte[] adjusted = _remoteScreenAudioVolume >= 0.999f
-                                ? payload
-                                : ApplyGain(payload, payload.Length, _remoteScreenAudioVolume);
-                            _waveProvider?.AddSamples(adjusted, 0, adjusted.Length);
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[SCREEN AUDIO PLAY ERROR] {ex.Message}");
-                        }
-                        break;
-
-                        // TypeVideo/TypeScreen/TypeScreenStop больше не используются —
-                        // камера и демонстрация экрана теперь идут через настоящие
-                        // WebRTC video track (см. RemoteScreenStarted/Stopped и
-                        // RemoteCameraStarted/Stopped события transport, подключённые
-                        // в StartCallSetup), а не через эти DataChannel-пакеты.
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[ONFRAME ERROR] {ex.Message}");
-            }
-        }
         private void ShowRemoteImage(byte[] payload, bool isScreen)
         {
             Bitmap img = null;
@@ -1884,7 +1352,6 @@ namespace PISMO
         {
             if (_ended) return;
             _ended = true;
-            _transport?.SendHangup();
             MarkCallEnded();
             Close();
         }
@@ -1994,7 +1461,6 @@ namespace PISMO
 
                 _signalTimer?.Stop(); _signalTimer?.Dispose();
                 _durationTimer?.Stop(); _durationTimer?.Dispose();
-                _renegoTimer?.Stop(); _renegoTimer?.Dispose();
 
                 StopScreenShare();
                 if (_cameraStarted)
@@ -2002,11 +1468,6 @@ namespace PISMO
                     try { _transport?.StopCameraTrack(); } catch { }
                     _cameraStarted = false;
                 }
-
-                try { _waveIn?.StopRecording(); } catch { }
-                _waveIn?.Dispose();
-                _waveOut?.Stop();
-                _waveOut?.Dispose();
 
                 _pbLocal.Image?.Dispose();
                 _pbRemote.Image?.Dispose();

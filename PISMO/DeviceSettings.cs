@@ -76,6 +76,8 @@ namespace PISMO
 
             // Загружаем также TURN настройки
             TurnSettings.Load();
+            // LiveKit (SFU) — основной транспорт звонков
+            LiveKitSettings.Load();
         }
 
         public static void Save()
