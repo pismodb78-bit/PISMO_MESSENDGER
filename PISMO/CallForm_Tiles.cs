@@ -1,0 +1,358 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Text.Json;
+using System.Windows.Forms;
+
+namespace PISMO
+{
+    /// <summary>
+    /// Плиточная сетка участников звонка в стиле Discord. Каждый участник —
+    /// плитка с камерой (или аватаром-заглушкой), именем и подсветкой, когда
+    /// говорит. Демонстрация экрана участника — отдельная плитка.
+    ///
+    /// Кадры приходят из WebRtcTransport (LiveKit) по событиям RemoteTileFrame
+    /// с привязкой к pid (id участника) и source (camera|screen).
+    /// </summary>
+    public partial class CallForm
+    {
+        private sealed class CallTile
+        {
+            public string Pid;
+            public string Name;
+            public string Source;      // "camera" | "screen"
+            public Panel Panel;
+            public PictureBox Pb;
+            public Label Lbl;
+            public bool Speaking;
+            public bool HasVideo;
+        }
+
+        private Panel _tilesHost;
+        private readonly Dictionary<string, CallTile> _tiles = new();
+        private readonly List<string> _tileOrder = new();           // порядок плиток
+        private readonly Dictionary<string, string> _participants = new(); // pid -> name
+        private string SelfPid => UserSession.EffectiveId.ToString();
+
+        private static string TileKey(string pid, string source) => pid + "|" + source;
+
+        /// <summary>Создаёт контейнер плиток поверх старой области видео и прячет
+        /// одиночные PictureBox'ы (теперь всё рисуется плитками).</summary>
+        private void BuildTilesHost()
+        {
+            if (_tilesHost != null) return;
+
+            _tilesHost = new Panel
+            {
+                BackColor = Color.FromArgb(24, 25, 28),
+                Location = new Point(0, 56),
+                Size = new Size(ClientSize.Width, Math.Max(50, ClientSize.Height - 56 - _pnlButtons.Height)),
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+            };
+            _tilesHost.Resize += (s, e) => LayoutTiles();
+
+            // Прячем старую одиночную раскладку видео.
+            try { _pbRemote.Visible = false; } catch { }
+            try { _pbLocal.Visible = false; } catch { }
+            try { _pbRemoteCamera.Visible = false; } catch { }
+
+            Controls.Add(_tilesHost);
+            _tilesHost.SendToBack();
+
+            // Поднимаем поверх плиток все накладки и панель кнопок.
+            try
+            {
+                _pnlButtons.BringToFront();
+                _pnlParticipants?.BringToFront();
+                _lblName.BringToFront();
+                _lblStatus.BringToFront();
+                _lblDuration.BringToFront();
+                _lblScreenBadge.BringToFront();
+            }
+            catch { }
+
+            // Своя плитка камеры всегда присутствует (аватар, пока камера выключена).
+            AddParticipantTile(SelfPid, "Вы");
+        }
+
+        // ── Участники ───────────────────────────────────────────────────
+        private void AddParticipant(string pid, string name)
+        {
+            if (string.IsNullOrEmpty(pid) || pid == SelfPid) return;
+            _participants[pid] = name;
+            AddParticipantTile(pid, name);
+        }
+
+        private void RemoveParticipant(string pid)
+        {
+            if (string.IsNullOrEmpty(pid)) return;
+            _participants.Remove(pid);
+            RemoveTile(TileKey(pid, "camera"));
+            RemoveTile(TileKey(pid, "screen"));
+            LayoutTiles();
+        }
+
+        /// <summary>Гарантирует наличие плитки участника (камера-плитка = основная).</summary>
+        private CallTile AddParticipantTile(string pid, string name)
+        {
+            return EnsureTile(pid, name, "camera");
+        }
+
+        private CallTile EnsureTile(string pid, string name, string source)
+        {
+            if (_tilesHost == null) return null;
+            string key = TileKey(pid, source);
+            if (_tiles.TryGetValue(key, out var existing))
+            {
+                if (!string.IsNullOrWhiteSpace(name)) existing.Name = name;
+                return existing;
+            }
+
+            var tile = new CallTile { Pid = pid, Name = string.IsNullOrWhiteSpace(name) ? pid : name, Source = source };
+
+            tile.Panel = new Panel { BackColor = Color.FromArgb(47, 49, 54) };
+            tile.Pb = new PictureBox
+            {
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.FromArgb(32, 34, 37),
+                Visible = false
+            };
+            tile.Lbl = new Label
+            {
+                AutoSize = false,
+                Height = 20,
+                Dock = DockStyle.Bottom,
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(160, 20, 21, 24),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 0, 0),
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                Text = (source == "screen" ? "🖥 " : "") + tile.Name
+            };
+
+            string capPid = pid, capSource = source;
+            tile.Panel.Paint += (s, e) => PaintTile(e.Graphics, tile);
+
+            tile.Panel.Controls.Add(tile.Pb);
+            tile.Panel.Controls.Add(tile.Lbl);
+            tile.Lbl.BringToFront();
+
+            _tilesHost.Controls.Add(tile.Panel);
+            _tiles[key] = tile;
+            _tileOrder.Add(key);
+            LayoutTiles();
+            return tile;
+        }
+
+        private void RemoveTile(string key)
+        {
+            if (_tiles.TryGetValue(key, out var tile))
+            {
+                try
+                {
+                    var old = tile.Pb.Image; tile.Pb.Image = null; old?.Dispose();
+                    _tilesHost.Controls.Remove(tile.Panel);
+                    tile.Panel.Dispose();
+                }
+                catch { }
+                _tiles.Remove(key);
+                _tileOrder.Remove(key);
+            }
+        }
+
+        // ── События треков ──────────────────────────────────────────────
+        private void OnTileStarted(string pid, string name, string source)
+        {
+            if (pid == SelfPid && source == "camera") return; // своя камера — отдельный поток кадров
+            var tile = EnsureTile(pid, name, source);
+            if (tile != null) tile.HasVideo = true;
+
+            if (source == "screen")
+            {
+                _peerScreenSharing = true;
+                _tbScreenAudioVolume.Visible = true;
+                _lblScreenAudioVolume.Visible = true;
+                _lblScreenBadge.Text = "🖥 Идёт демонстрация экрана";
+                _lblScreenBadge.Visible = true;
+            }
+        }
+
+        private void OnTileStopped(string pid, string source)
+        {
+            string key = TileKey(pid, source);
+            if (source == "screen")
+            {
+                RemoveTile(key);
+                LayoutTiles();
+                // Если больше никто не шарит экран — прячем бейдж/громкость.
+                bool anyScreen = false;
+                foreach (var k in _tileOrder) if (k.EndsWith("|screen")) { anyScreen = true; break; }
+                if (!anyScreen)
+                {
+                    _peerScreenSharing = false;
+                    _tbScreenAudioVolume.Visible = false;
+                    _lblScreenAudioVolume.Visible = false;
+                    if (_lblScreenBadge.Visible && _lblScreenBadge.Text.Contains("демонстрац"))
+                        _lblScreenBadge.Visible = false;
+                }
+            }
+            else
+            {
+                // Камера выключена — плитка остаётся, показываем аватар.
+                if (_tiles.TryGetValue(key, out var tile))
+                {
+                    tile.HasVideo = false;
+                    tile.Pb.Visible = false;
+                    var old = tile.Pb.Image; tile.Pb.Image = null; old?.Dispose();
+                    tile.Panel.Invalidate();
+                }
+            }
+        }
+
+        private void OnTileFrame(string pid, string source, byte[] jpeg)
+        {
+            string key = TileKey(pid, source);
+            if (!_tiles.TryGetValue(key, out var tile))
+            {
+                tile = EnsureTile(pid, _participants.TryGetValue(pid, out var nm) ? nm : pid, source);
+                if (tile == null) return;
+            }
+            SetTileImage(tile, jpeg);
+        }
+
+        /// <summary>Кадр своей камеры (из LocalCameraFrameReceived).</summary>
+        private void OnSelfCameraFrame(byte[] jpeg)
+        {
+            // Пока открыто окно превью «Включить камеру» — кадры идут туда.
+            if (_cameraPreviewForm != null)
+            {
+                try { _cameraPreviewForm.UpdateFrame(jpeg); } catch { }
+                return;
+            }
+            if (_tilesHost == null) return;
+            if (!_tiles.TryGetValue(TileKey(SelfPid, "camera"), out var tile))
+                tile = AddParticipantTile(SelfPid, "Вы");
+            if (tile != null) SetTileImage(tile, jpeg);
+        }
+
+        private void OnSelfCameraStopped()
+        {
+            if (_tiles.TryGetValue(TileKey(SelfPid, "camera"), out var tile))
+            {
+                tile.HasVideo = false;
+                tile.Pb.Visible = false;
+                var old = tile.Pb.Image; tile.Pb.Image = null; old?.Dispose();
+                tile.Panel.Invalidate();
+            }
+        }
+
+        private void SetTileImage(CallTile tile, byte[] jpeg)
+        {
+            Bitmap img;
+            try { using var ms = new MemoryStream(jpeg); img = new Bitmap(ms); }
+            catch { return; }
+            var old = tile.Pb.Image;
+            tile.Pb.Image = img;
+            tile.HasVideo = true;
+            if (!tile.Pb.Visible) tile.Pb.Visible = true;
+            old?.Dispose();
+        }
+
+        private void OnActiveSpeakers(string pidsJson)
+        {
+            HashSet<string> speaking = new();
+            try
+            {
+                var arr = JsonSerializer.Deserialize<string[]>(pidsJson);
+                if (arr != null) foreach (var p in arr) speaking.Add(p);
+            }
+            catch { }
+
+            foreach (var kv in _tiles)
+            {
+                var tile = kv.Value;
+                bool sp = tile.Source == "camera" && speaking.Contains(tile.Pid);
+                if (sp != tile.Speaking)
+                {
+                    tile.Speaking = sp;
+                    try { tile.Panel.Invalidate(); } catch { }
+                }
+            }
+        }
+
+        // ── Отрисовка плитки (аватар + рамка говорящего) ────────────────
+        private void PaintTile(Graphics g, CallTile tile)
+        {
+            var p = tile.Panel;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            if (!tile.HasVideo)
+            {
+                // Аватар-заглушка: цветной круг с первой буквой имени.
+                int d = Math.Min(p.Width, p.Height) / 3;
+                if (d > 12)
+                {
+                    int x = (p.Width - d) / 2, y = (p.Height - d) / 2 - 6;
+                    using var br = new SolidBrush(AvatarColorFor(tile.Pid));
+                    g.FillEllipse(br, x, y, d, d);
+                    string letter = !string.IsNullOrEmpty(tile.Name) ? tile.Name.Substring(0, 1).ToUpper() : "?";
+                    using var f = new Font("Segoe UI Black", d * 0.4f, FontStyle.Bold);
+                    using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                    g.DrawString(letter, f, Brushes.White, new RectangleF(x, y, d, d), sf);
+                }
+            }
+
+            if (tile.Speaking)
+            {
+                using var pen = new Pen(Color.FromArgb(59, 165, 93), 3);
+                g.DrawRectangle(pen, 1, 1, p.Width - 3, p.Height - 3);
+            }
+        }
+
+        private static Color AvatarColorFor(string pid)
+        {
+            int h = 0; foreach (char c in pid ?? "") h = (h * 31 + c) & 0x7fffffff;
+            Color[] palette =
+            {
+                Color.FromArgb(88,101,242), Color.FromArgb(235,69,158), Color.FromArgb(59,165,93),
+                Color.FromArgb(250,166,26), Color.FromArgb(0,176,244), Color.FromArgb(156,89,182),
+            };
+            return palette[h % palette.Length];
+        }
+
+        // ── Раскладка сетки ─────────────────────────────────────────────
+        private void LayoutTiles()
+        {
+            if (_tilesHost == null) return;
+            int n = _tileOrder.Count;
+            if (n == 0) return;
+
+            int w = _tilesHost.ClientSize.Width;
+            int h = _tilesHost.ClientSize.Height;
+            if (w <= 0 || h <= 0) return;
+
+            int cols = (int)Math.Ceiling(Math.Sqrt(n));
+            int rows = (int)Math.Ceiling((double)n / cols);
+            const int gap = 6;
+            int cellW = (w - gap * (cols + 1)) / cols;
+            int cellH = (h - gap * (rows + 1)) / rows;
+            if (cellW < 40 || cellH < 30) { cellW = Math.Max(40, cellW); cellH = Math.Max(30, cellH); }
+
+            for (int i = 0; i < n; i++)
+            {
+                if (!_tiles.TryGetValue(_tileOrder[i], out var tile)) continue;
+                int r = i / cols, c = i % cols;
+                // Последний неполный ряд центрируем.
+                int itemsInRow = (r == rows - 1) ? (n - r * cols) : cols;
+                int rowWidth = itemsInRow * cellW + (itemsInRow - 1) * gap;
+                int startX = (w - rowWidth) / 2;
+                int x = startX + c * (cellW + gap);
+                int y = gap + r * (cellH + gap);
+                tile.Panel.SetBounds(x, y, cellW, cellH);
+                tile.Panel.Invalidate();
+            }
+        }
+    }
+}

@@ -13,7 +13,7 @@ using NAudio.CoreAudioApi;
 
 namespace PISMO
 {
-    public class CallForm : Form
+    public partial class CallForm : Form
     {
         // ── Поля ────────────────────────────────────────────────────
         private readonly int _sessionId;
@@ -524,6 +524,9 @@ namespace PISMO
 
         private async void StartCallSetup()
         {
+            // Плиточная сетка участников (Discord-style).
+            BuildTilesHost();
+
             _transport = new WebRtcTransport();
             _transport.Disconnected += OnPeerDisconnected;
             _transport.Connected += OnConnected;
@@ -534,10 +537,15 @@ namespace PISMO
                 if (_groupId < 0) UiInvoke(OnPeerDisconnected);
             };
 
-            // --- Видео-трек демонстрации экрана (настоящий WebRTC, не DataChannel) ---
-            _transport.RemoteScreenFrameReceived += frame => UiInvoke(() => ShowRemoteScreenFrame(frame));
-            _transport.RemoteScreenStarted += () => UiInvoke(OnRemoteScreenStarted);
-            _transport.RemoteScreenStopped += () => UiInvoke(OnRemoteScreenStopped);
+            // --- Плитки участников (камера/экран каждого собеседника) ---
+            _transport.ParticipantJoined += (pid, name) => UiInvoke(() => AddParticipant(pid, name));
+            _transport.ParticipantLeftById += pid => UiInvoke(() => RemoveParticipant(pid));
+            _transport.RemoteTileStarted += (pid, name, source) => UiInvoke(() => OnTileStarted(pid, name, source));
+            _transport.RemoteTileStopped += (pid, source) => UiInvoke(() => OnTileStopped(pid, source));
+            _transport.RemoteTileFrame += (pid, source, frame) => UiInvoke(() => OnTileFrame(pid, source, frame));
+            _transport.ActiveSpeakers += json => UiInvoke(() => OnActiveSpeakers(json));
+
+            // --- Демонстрация экрана (своя) ---
             _transport.LocalScreenStarted += () => UiInvoke(OnLocalScreenStarted);
             _transport.LocalScreenStopped += () => UiInvoke(OnLocalScreenStopped);
             _transport.LocalScreenError += err => UiInvoke(() => OnLocalScreenError(err));
@@ -553,14 +561,11 @@ namespace PISMO
                 ShowScreenSharePipContainer();
             });
 
-            // --- Видео-трек камеры (настоящий WebRTC, не DataChannel) ---
-            _transport.LocalCameraFrameReceived += frame => ShowLocalCameraFrame(frame);
+            // --- Своя камера: кадры идут в собственную плитку ---
+            _transport.LocalCameraFrameReceived += frame => UiInvoke(() => OnSelfCameraFrame(frame));
             _transport.CameraPreviewReady += () => UiInvoke(() => _cameraPreviewForm?.SetConfirmEnabled(true));
-            _transport.RemoteCameraFrameReceived += frame => UiInvoke(() => ShowRemoteCameraFrame(frame));
-            _transport.RemoteCameraStarted += () => UiInvoke(OnRemoteCameraStarted);
-            _transport.RemoteCameraStopped += () => UiInvoke(OnRemoteCameraStopped);
             _transport.LocalCameraStarted += () => UiInvoke(OnLocalCameraStarted);
-            _transport.LocalCameraStopped += () => UiInvoke(OnLocalCameraStopped);
+            _transport.LocalCameraStopped += () => UiInvoke(() => { OnLocalCameraStopped(); OnSelfCameraStopped(); });
             _transport.LocalCameraError += err => UiInvoke(() => OnLocalCameraError(err));
 
             // --- LiveKit: подключение к комнате ---

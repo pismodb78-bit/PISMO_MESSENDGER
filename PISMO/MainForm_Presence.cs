@@ -82,7 +82,7 @@ namespace PISMO
             catch { }
 
             // Сразу отметимся в сети.
-            _ = Task.Run(WriteHeartbeat);
+            _ = Task.Run(() => WriteHeartbeat());
 
             _presenceTimer = new System.Windows.Forms.Timer { Interval = 10000 };
             _presenceTimer.Tick += (s, e) => PresenceTick();
