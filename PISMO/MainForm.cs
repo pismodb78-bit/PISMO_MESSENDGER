@@ -128,6 +128,25 @@ namespace PISMO
         }
         private void MainForm_Load(object sender, EventArgs e)
         {
+            // КРИТИЧНО для пуш-уведомлений: NotifyIcon.ShowBalloonTip() молча
+            // ничего не показывает, если у иконки не задан Icon. Раньше _trayIcon
+            // создавался без иконки — отсюда «уведомления не приходят». Назначаем
+            // иконку приложения и трею, и самой форме.
+            try
+            {
+                var icoPath = System.IO.Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory, "pismo.ico");
+                System.Drawing.Icon appIcon = System.IO.File.Exists(icoPath)
+                    ? new System.Drawing.Icon(icoPath)
+                    : System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (appIcon != null)
+                {
+                    this.Icon = appIcon;
+                    if (_trayIcon != null) { _trayIcon.Icon = appIcon; _trayIcon.Visible = true; }
+                }
+            }
+            catch { /* иконка не критична для работы */ }
+
             lblCurrentUser.Text = UserSession.UserName;
 
             InitMessageActions();
