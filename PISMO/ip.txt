@@ -1,0 +1,1 @@
+server=85.174.248.59;port=3307;uid=user1;password=scent01;database=bdauth
