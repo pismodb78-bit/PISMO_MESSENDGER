@@ -57,10 +57,12 @@ namespace PISMO
             };
             _tilesHost.Resize += (s, e) => LayoutTiles();
 
-            // Прячем старую одиночную раскладку видео.
-            try { _pbRemote.Visible = false; } catch { }
-            try { _pbLocal.Visible = false; } catch { }
-            try { _pbRemoteCamera.Visible = false; } catch { }
+            // Прячем старую одиночную раскладку видео. В режиме плиток эти
+            // PictureBox'ы вообще не нужны — убираем их из формы, чтобы пустой
+            // прямоугольник с рамкой (FixedSingle) не висел поверх плиток.
+            try { _pbRemote.Visible = false; Controls.Remove(_pbRemote); } catch { }
+            try { _pbLocal.Visible = false; Controls.Remove(_pbLocal); } catch { }
+            try { _pbRemoteCamera.Visible = false; Controls.Remove(_pbRemoteCamera); } catch { }
 
             Controls.Add(_tilesHost);
             _tilesHost.SendToBack();

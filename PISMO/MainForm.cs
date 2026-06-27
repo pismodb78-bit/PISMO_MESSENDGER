@@ -862,7 +862,9 @@ namespace PISMO
 
             pnl.MouseEnter += (s, e) => SetHover(true);
             pnl.MouseLeave += (s, e) => SetHover(false);
-            pnl.Click += (s, e) => OpenGroup(gid, name);
+            // ЛКМ открывает группу; ПКМ — только меню (иначе Panel/Label вызывают
+            // Click и на правую кнопку, и чат открывался вместе с меню).
+            pnl.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) OpenGroup(gid, name); };
 
             // Контекстное меню: участники / добавление / выход из группы
             var ctxMenu = new ContextMenuStrip();
@@ -876,7 +878,7 @@ namespace PISMO
             {
                 c.MouseEnter += (s, e) => SetHover(true);
                 c.MouseLeave += (s, e) => SetHover(false);
-                c.Click += (s, e) => OpenGroup(gid, name);
+                c.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) OpenGroup(gid, name); };
                 c.ContextMenuStrip = ctxMenu;
             }
 
@@ -1050,13 +1052,15 @@ namespace PISMO
 
             pnl.MouseEnter += (s, e) => SetHover(true);
             pnl.MouseLeave += (s, e) => SetHover(false);
-            pnl.Click += (s, e) => OpenChat(uid, name);
+            // ЛКМ открывает чат; ПКМ — только меню действий (Panel/Label иначе
+            // вызывают Click и на правую кнопку → чат открывался вместе с меню).
+            pnl.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) OpenChat(uid, name); };
 
             foreach (Control c in pnl.Controls)
             {
                 c.MouseEnter += (s, e) => SetHover(true);
                 c.MouseLeave += (s, e) => SetHover(false);
-                c.Click += (s, e) => OpenChat(uid, name);
+                c.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) OpenChat(uid, name); };
             }
 
             // ВАЖНО: задействуем контекстное меню из partial (AttachConversationContextMenu)

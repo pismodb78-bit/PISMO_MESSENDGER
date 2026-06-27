@@ -389,6 +389,7 @@ namespace PISMO
                 }
             };
 
+            // Имя занимает меньше места, если есть бейдж «В ЭФИРЕ».
             var lbl = new Label
             {
                 Text = name,
@@ -396,7 +397,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(210, 211, 213),
                 Font = new Font("Segoe UI", 8.5f),
                 Location = new Point(28, 0),
-                Size = new Size(108, 30),
+                Size = new Size(streaming ? 90 : 148, 30),
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
@@ -411,13 +412,14 @@ namespace PISMO
                     Text = "В ЭФИРЕ",
                     ForeColor = Color.White,
                     BackColor = Color.FromArgb(237, 66, 69),
-                    Font = new Font("Segoe UI Semibold", 6.5f, FontStyle.Bold),
-                    AutoSize = false,
-                    Size = new Size(48, 16),
-                    Location = new Point(130, 7),
+                    Font = new Font("Segoe UI Semibold", 7f, FontStyle.Bold),
+                    AutoSize = true,                       // авторазмер — текст не обрежется
+                    Padding = new Padding(4, 1, 4, 1),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     TextAlign = ContentAlignment.MiddleCenter
                 };
                 row.Controls.Add(badge);
+                badge.Location = new Point(row.Width - badge.PreferredWidth - 2, 6);
             }
             // Аватар может подгрузиться позже — перерисуем кружок.
             AvatarStore.EnsureLoaded(uid);

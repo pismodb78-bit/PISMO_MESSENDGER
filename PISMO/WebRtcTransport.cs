@@ -42,6 +42,7 @@ namespace PISMO
         public event Action<string, string> RemoteTileStopped;    // (pid, source)
         public event Action<string, string, byte[]> RemoteTileFrame;  // (pid, source, jpeg)
         public event Action<string> ActiveSpeakers;               // JSON-массив pid говорящих
+        public event Action<int> PingUpdated;                      // RTT в миллисекундах
 
         // --- Видео-трек демонстрации экрана ---
         public event Action<byte[]> RemoteScreenFrameReceived; // декодированный JPEG-кадр из видео-трека
@@ -276,6 +277,11 @@ async function connectRoom(url, token){
 
         // Микрофон публикуем сразу — аудиозвонок начинается мгновенно.
         try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); } catch(e){ console.error('mic enable', String(e)); }
+
+        // Периодически читаем RTT (пинг) из WebRTC-статистики и шлём в C#.
+        try { if (window.__pingTimer) clearInterval(window.__pingTimer); } catch(e){}
+        window.__pingTimer = setInterval(readPing, 2000);
+        readPing();
     } catch(err) {
         console.error('connect error', String(err));
         post({type:'fatal', error:String(err)});
@@ -286,6 +292,37 @@ async function connectRoom(url, token){
 function srcFor(publication){
     // LK.Track.Source: Camera, Microphone, ScreenShare, ScreenShareAudio
     return publication ? publication.source : null;
+}
+
+// Чтение пинга (RTT) из WebRTC getStats() по обоим PeerConnection'ам.
+// LiveKit в разных версиях хранит pc по-разному — пробуем все варианты.
+async function readPing(){
+    try {
+        let pcs = [];
+        const eng = room && room.engine;
+        if (eng) {
+            const pm = eng.pcManager;
+            if (pm) {
+                if (pm.publisher && pm.publisher.pc) pcs.push(pm.publisher.pc);
+                if (pm.subscriber && pm.subscriber.pc) pcs.push(pm.subscriber.pc);
+            }
+            if (eng.publisher && eng.publisher.pc) pcs.push(eng.publisher.pc);
+            if (eng.subscriber && eng.subscriber.pc) pcs.push(eng.subscriber.pc);
+        }
+        let best = null;
+        for (const pc of pcs) {
+            if (!pc || !pc.getStats) continue;
+            const stats = await pc.getStats();
+            stats.forEach(r => {
+                if (r.type === 'candidate-pair' && (r.nominated || r.state === 'succeeded')
+                    && typeof r.currentRoundTripTime === 'number') {
+                    const ms = Math.round(r.currentRoundTripTime * 1000);
+                    if (best === null || ms < best) best = ms;
+                }
+            });
+        }
+        if (best !== null) post({type:'ping', ms: best});
+    } catch(e) {}
 }
 
 function pidName(p){ return p ? (p.name || p.identity || '') : ''; }
@@ -725,6 +762,9 @@ window.chrome.webview.addEventListener('message', (e) => {
                         break;
                     case "activeSpeakers":
                         ActiveSpeakers?.Invoke(SafeStr(msg, "pids"));
+                        break;
+                    case "ping":
+                        try { PingUpdated?.Invoke(msg.GetProperty("ms").GetInt32()); } catch { }
                         break;
                     case "fatal":
                         System.Diagnostics.Debug.WriteLine($"[LiveKit FATAL] {SafeStr(msg, "error")}");

@@ -47,7 +47,7 @@ namespace PISMO
 
         // Камера теперь как настоящий WebRTC video track (getUserMedia внутри
         // WebRtcTransport), а не AForge VideoCaptureDevice + JPEG-over-DataChannel.
-        private bool _cameraOff = false;
+        private bool _cameraOff = true;  // камера по умолчанию ВЫКЛЮЧЕНА при входе в звонок
         private bool _cameraStarted = false;
         private bool _pendingVideoStart = false; // ждём установления соединения перед запуском камеры
 
@@ -67,6 +67,7 @@ namespace PISMO
         private PictureBox _pbRemoteCamera; // отдельная область для камеры собеседника, не конфликтует с экраном
         private Label _lblStatus;
         private Label _lblDuration;
+        private Label _lblPing;
         private Label _lblName;
         private Button _btnMute;
         private Button _btnCamera;
@@ -198,6 +199,19 @@ namespace PISMO
                 Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 Location = new Point(600, 10)
             };
+            // Плашка пинга (RTT) во время звонка.
+            _lblPing = new Label
+            {
+                Text = "",
+                Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(120, 220, 130),
+                BackColor = Color.FromArgb(20, 21, 24),
+                AutoSize = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Padding = new Padding(5, 2, 5, 2),
+                Location = new Point(600, 30),
+                Visible = false
+            };
             _lblScreenBadge = new Label
             {
                 Text = "🖥 Демонстрация",
@@ -310,8 +324,10 @@ namespace PISMO
             };
 
             _btnMute = MakeBtn("🎤", 0);
-            _btnCamera = MakeBtn("📷", 1);
+            _btnCamera = MakeBtn("🚫", 1);
             _btnCamera.Visible = true; // камеру можно включить в любом звонке (одна кнопка звонка)
+            // Камера выключена при входе — кнопка красная, как в Discord.
+            _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
             _btnScreen = MakeBtn("🖥", 2);
             _btnAudio = MakeBtn("🔊", 3);
             _btnHangup = MakeBtn("📵", 4);
@@ -373,12 +389,13 @@ namespace PISMO
             Controls.AddRange(new Control[]
             {
                 _pbRemote, _pbLocal, _pbRemoteCamera,
-                _lblName, _lblStatus, _lblDuration,
+                _lblName, _lblStatus, _lblDuration, _lblPing,
                 _lblScreenBadge, _lblZoom,
                 _tbScreenAudioVolume, _lblScreenAudioVolume,
                 _pnlButtons, _pnlParticipants
             });
             _pnlParticipants.BringToFront();
+            _lblPing.BringToFront();
 
             Resize += (s, e) => LayoutControls();
             LayoutControls();
@@ -477,6 +494,7 @@ namespace PISMO
             if (_pnlParticipants != null) _pnlParticipants.Location = new Point(w - 190, 10);
             _pbRemoteCamera.Location = new Point(10, _pbRemote.Bottom - 100);
             _lblDuration.Location = new Point(w - 260, 10);
+            if (_lblPing != null) _lblPing.Location = new Point(w - 260, 32);
             _lblZoom.Location = new Point(8, _pbRemote.Bottom - 24);
 
             _lblScreenAudioVolume.Location = new Point(w - 150, 70);
@@ -597,6 +615,7 @@ namespace PISMO
             _transport.RemoteTileStopped += (pid, source) => UiInvoke(() => OnTileStopped(pid, source));
             _transport.RemoteTileFrame += (pid, source, frame) => OnTileFrameOffThread(pid, source, frame);
             _transport.ActiveSpeakers += json => UiInvoke(() => OnActiveSpeakers(json));
+            _transport.PingUpdated += ms => UiInvoke(() => UpdatePing(ms));
 
             // --- Демонстрация экрана (своя) ---
             _transport.LocalScreenStarted += () => UiInvoke(OnLocalScreenStarted);
@@ -1192,6 +1211,17 @@ namespace PISMO
                 catch (ObjectDisposedException) { img.Dispose(); }
             }
             else img.Dispose();
+        }
+
+        /// <summary>Обновляет плашку пинга (RTT) и красит её по качеству связи.</summary>
+        private void UpdatePing(int ms)
+        {
+            if (_lblPing == null || _lblPing.IsDisposed) return;
+            _lblPing.Text = $"📶 {ms} ms";
+            _lblPing.ForeColor = ms < 80 ? Color.FromArgb(120, 220, 130)   // хорошо — зелёный
+                               : ms < 180 ? Color.FromArgb(240, 200, 90)   // средне — жёлтый
+                               : Color.FromArgb(240, 110, 100);            // плохо — красный
+            if (!_lblPing.Visible) _lblPing.Visible = true;
         }
 
         private void ToggleCamera()
