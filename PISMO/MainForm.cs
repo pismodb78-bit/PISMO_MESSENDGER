@@ -188,30 +188,43 @@ namespace PISMO
         {
             if (_pollBusy) return;
             _pollBusy = true;
-            try
+
+            // Оптимизация: все запросы к БД (особенно болезненные при работе через
+            // VPN с высоким пингом) выполняем в фоне, чтобы не подвешивать UI-поток.
+            // На UI возвращаемся только для перерисовки сообщений/бейджей.
+            System.Threading.Tasks.Task.Run(() =>
             {
-                if (_currentGroupId >= 0)
+                try
                 {
-                    int gcnt = GetGroupMsgCount();
-                    if (gcnt != _lastGroupMsgCount)
+                    bool reloadDirect = false, reloadGroup = false;
+                    if (_currentGroupId >= 0)
                     {
-                        _lastGroupMsgCount = gcnt;
-                        LoadGroupMessages();
+                        int gcnt = GetGroupMsgCount();
+                        if (gcnt != _lastGroupMsgCount) { _lastGroupMsgCount = gcnt; reloadGroup = true; }
                     }
-                }
-                else if (_currentChatPartnerId >= 0)
-                {
-                    int cnt = GetMsgCount();
-                    if (cnt != _lastMsgCount)
+                    else if (_currentChatPartnerId >= 0)
                     {
-                        _lastMsgCount = cnt;
-                        LoadMessages();
+                        int cnt = GetMsgCount();
+                        if (cnt != _lastMsgCount) { _lastMsgCount = cnt; reloadDirect = true; }
                     }
+
+                    var unread = ReadUnreadCounts();
+
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            if (reloadGroup) LoadGroupMessages();
+                            else if (reloadDirect) LoadMessages();
+                            if (unread != null) ApplyUnreadAndNotify(unread);
+                        }
+                        catch { }
+                    }));
                 }
-                RefreshUnreadAndNotify();
-            }
-            catch { }
-            finally { _pollBusy = false; }
+                catch { }
+                finally { _pollBusy = false; }
+            });
         }
 
         private int GetGroupMsgCount()
@@ -235,12 +248,11 @@ namespace PISMO
             return Convert.ToInt32(cmd.ExecuteScalar());
         }
 
-        // ── Обновление бейджей + уведомления ─────────────────────────
-        private void RefreshUnreadAndNotify()
+        // ── Чтение непрочитанных (DB, выполняется в фоне) ─────────────
+        private Dictionary<int, int> ReadUnreadCounts()
         {
             int myId = UserSession.EffectiveId;
             var current = new Dictionary<int, int>();
-
             try
             {
                 using var conn = DBHelper.OpenConnection();
@@ -255,20 +267,21 @@ namespace PISMO
                 {
                     int sid = Convert.ToInt32(row["sender_id"]);
                     int cnt = Convert.ToInt32(row["cnt"]);
-
-                    // Игнорируем уведомления от заблокированных пользователем (и от тех, кто заблокировал пользователя)
                     try
                     {
-                        if (IsUserBlocked(myId, sid) || IsUserBlocked(sid, myId))
-                            continue;
+                        if (IsUserBlocked(myId, sid) || IsUserBlocked(sid, myId)) continue;
                     }
-                    catch { /* если проверка упала — не фильтруем */ }
-
+                    catch { }
                     current[sid] = cnt;
                 }
             }
-            catch { return; }
+            catch { return null; }
+            return current;
+        }
 
+        // ── Применение бейджей + уведомления (UI-поток) ───────────────
+        private void ApplyUnreadAndNotify(Dictionary<int, int> current)
+        {
             foreach (var kv in current)
             {
                 int sid = kv.Key;

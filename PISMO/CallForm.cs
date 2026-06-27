@@ -130,6 +130,7 @@ namespace PISMO
         private void BuildUi()
         {
             Text = "PISMO — Звонок";
+            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             ClientSize = new Size(660, 540);
             MinimumSize = new Size(480, 400);
             FormBorderStyle = FormBorderStyle.Sizable;
@@ -542,7 +543,7 @@ namespace PISMO
             _transport.ParticipantLeftById += pid => UiInvoke(() => RemoveParticipant(pid));
             _transport.RemoteTileStarted += (pid, name, source) => UiInvoke(() => OnTileStarted(pid, name, source));
             _transport.RemoteTileStopped += (pid, source) => UiInvoke(() => OnTileStopped(pid, source));
-            _transport.RemoteTileFrame += (pid, source, frame) => UiInvoke(() => OnTileFrame(pid, source, frame));
+            _transport.RemoteTileFrame += (pid, source, frame) => OnTileFrameOffThread(pid, source, frame);
             _transport.ActiveSpeakers += json => UiInvoke(() => OnActiveSpeakers(json));
 
             // --- Демонстрация экрана (своя) ---
@@ -877,28 +878,28 @@ namespace PISMO
                 StartPosition = FormStartPosition.Manual,
                 ShowInTaskbar = false,
                 BackColor = Color.FromArgb(40, 42, 46),
-                ClientSize = new Size(310, 470)
+                ClientSize = new Size(310, 510)
             };
             var anchor = PointToScreen(new Point(_pnlButtons.Left, _pnlButtons.Top));
             _audioPanel.Location = new Point(
                 Math.Max(0, anchor.X + (_pnlButtons.Width - 310) / 2),
-                Math.Max(0, anchor.Y - 480));
+                Math.Max(0, anchor.Y - 520));
 
             int y = 12;
             Label MkLbl(string t)
             {
                 var l = new Label { Text = t, ForeColor = Color.FromArgb(220, 221, 222), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 9f) };
-                _audioPanel.Controls.Add(l); y += 20; return l;
+                _audioPanel.Controls.Add(l); y += 22; return l;
             }
             ComboBox MkCombo()
             {
                 var cb = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
-                _audioPanel.Controls.Add(cb); y += 34; return cb;
+                _audioPanel.Controls.Add(cb); y += 38; return cb;
             }
             TrackBar MkTb(int val)
             {
                 var tb = new TrackBar { Minimum = 0, Maximum = 200, Value = Math.Min(200, val), TickStyle = TickStyle.None, Location = new Point(8, y), Size = new Size(290, 40) };
-                _audioPanel.Controls.Add(tb); y += 46; return tb;
+                _audioPanel.Controls.Add(tb); y += 58; return tb;
             }
 
             MkLbl("🎤 Микрофон");
@@ -946,7 +947,10 @@ namespace PISMO
             chkMute.CheckedChanged += (s, e) => { _remoteAllMuted = chkMute.Checked; try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { } };
             _audioPanel.Controls.Add(chkMute);
 
-            // Заполняем списки устройств из браузера.
+            // КРИТИЧНО: при программном заполнении списков НЕ дёргаем смену
+            // устройства — иначе открытие панели само включало камеру (зелёный
+            // экран/предпросмотр не пропадал) и сбрасывало микрофон.
+            bool populating = false;
             void OnDevices(string camsJson, string micsJson, string spkJson)
             {
                 try
@@ -957,6 +961,7 @@ namespace PISMO
                     UiInvoke(() =>
                     {
                         if (_audioPanel == null || _audioPanel.IsDisposed) return;
+                        populating = true;
                         cmbMic.Items.Clear(); cmbMic.Items.AddRange(mics);
                         cmbSpk.Items.Clear(); cmbSpk.Items.AddRange(spk);
                         cmbCam.Items.Clear(); cmbCam.Items.AddRange(cams);
@@ -965,14 +970,25 @@ namespace PISMO
                         if (cmbSpk.Items.Count > 0) cmbSpk.SelectedIndex = 0;
                         if (!string.IsNullOrEmpty(DeviceSettings.CameraName)) cmbCam.SelectedItem = DeviceSettings.CameraName;
                         if (cmbCam.SelectedIndex < 0 && cmbCam.Items.Count > 0) cmbCam.SelectedIndex = 0;
+                        populating = false;
                     });
                 }
                 catch { }
             }
             _transport.DevicesEnumerated += OnDevices;
-            cmbMic.SelectedIndexChanged += (s, e) => { if (cmbMic.SelectedItem is string m) { DeviceSettings.MicrophoneName = m; try { DeviceSettings.Save(); } catch { } _transport?.SetInputDevice(m); } };
-            cmbSpk.SelectedIndexChanged += (s, e) => { if (cmbSpk.SelectedItem is string sp) _transport?.SetOutputDevice(sp); };
-            cmbCam.SelectedIndexChanged += (s, e) => { if (cmbCam.SelectedItem is string cm) { DeviceSettings.CameraName = cm; try { DeviceSettings.Save(); } catch { } _transport?.SwitchCameraDevice(cm); } };
+            cmbMic.SelectedIndexChanged += (s, e) => { if (populating) return; if (cmbMic.SelectedItem is string m) { DeviceSettings.MicrophoneName = m; try { DeviceSettings.Save(); } catch { } _transport?.SetInputDevice(m); } };
+            cmbSpk.SelectedIndexChanged += (s, e) => { if (populating) return; if (cmbSpk.SelectedItem is string sp) _transport?.SetOutputDevice(sp); };
+            cmbCam.SelectedIndexChanged += (s, e) =>
+            {
+                if (populating) return;
+                if (cmbCam.SelectedItem is string cm)
+                {
+                    DeviceSettings.CameraName = cm; try { DeviceSettings.Save(); } catch { }
+                    // Переключаем «живую» камеру только если она сейчас включена,
+                    // иначе просто запоминаем выбор (не включаем захват).
+                    if (_cameraStarted) _transport?.SwitchCameraDevice(cm);
+                }
+            };
 
             _audioPanel.FormClosed += (s, e) => { try { _transport.DevicesEnumerated -= OnDevices; } catch { } _audioPanel = null; };
             _audioPanel.Show(this);

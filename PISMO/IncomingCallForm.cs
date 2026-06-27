@@ -19,6 +19,7 @@ namespace PISMO
         {
             _sessionId = sessionId;
             Text            = "PISMO — Входящий звонок";
+            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             ClientSize      = new Size(340, 160);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox     = false;

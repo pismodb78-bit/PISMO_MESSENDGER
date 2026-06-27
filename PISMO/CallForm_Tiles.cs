@@ -240,6 +240,38 @@ namespace PISMO
             SetTileImage(tile, jpeg);
         }
 
+        /// <summary>Оптимизация: декодируем JPEG в фоне (не на UI-потоке), на UI
+        /// только присваиваем готовый Bitmap. Декод многих кадров на UI-потоке
+        /// был основной причиной лагов в звонке.</summary>
+        private void OnTileFrameOffThread(string pid, string source, byte[] jpeg)
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                Bitmap img;
+                try { using var ms = new MemoryStream(jpeg); img = new Bitmap(ms); }
+                catch { return; }
+                if (IsDisposed || !IsHandleCreated) { img.Dispose(); return; }
+                try { BeginInvoke(new Action(() => AssignTileImage(pid, source, img))); }
+                catch { img.Dispose(); }
+            });
+        }
+
+        private void AssignTileImage(string pid, string source, Bitmap img)
+        {
+            if (IsDisposed) { img.Dispose(); return; }
+            string key = TileKey(pid, source);
+            if (!_tiles.TryGetValue(key, out var tile))
+            {
+                tile = EnsureTile(pid, _participants.TryGetValue(pid, out var nm) ? nm : pid, source);
+                if (tile == null) { img.Dispose(); return; }
+            }
+            var old = tile.Pb.Image;
+            tile.Pb.Image = img;
+            tile.HasVideo = true;
+            if (!tile.Pb.Visible) tile.Pb.Visible = true;
+            old?.Dispose();
+        }
+
         /// <summary>Кадр своей камеры (из LocalCameraFrameReceived).</summary>
         private void OnSelfCameraFrame(byte[] jpeg)
         {

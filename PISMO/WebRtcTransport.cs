@@ -296,7 +296,7 @@ function onTrackSubscribed(track, publication, participant){
         post({type:'remoteTileStart', pid: pid, name: name, source: source});
         if (!entry.loop){
             const capEl = entry.el;
-            entry.loop = makeExtractorTile(() => capEl, pid, source, source === 'screen' ? 20 : 18, source === 'screen' ? 0 : 480);
+            entry.loop = makeExtractorTile(() => capEl, pid, source, source === 'screen' ? 20 : 15, source === 'screen' ? 0 : 360);
         }
         entry.loop.start();
     } else if (track.kind === 'audio'){
@@ -477,11 +477,14 @@ async function deviceIdByLabel(kind, label){
 }
 
 async function openCamera(deviceId){
+    // Камеру держим в 480p@24 — для плиток этого с запасом, а CPU/полоса
+    // заметно меньше, чем при 720p/1080p по умолчанию (оптимизация).
+    const camOpts = { resolution: { width: 640, height: 480, frameRate: 24 } };
+    if (deviceId) camOpts.deviceId = { exact: deviceId };
     if (cameraTrack){
-        // уже есть трек — переоткрываем на новом устройстве
-        await cameraTrack.restartTrack(deviceId ? { deviceId: { exact: deviceId } } : {});
+        await cameraTrack.restartTrack(camOpts);
     } else {
-        cameraTrack = await LK.createLocalVideoTrack(deviceId ? { deviceId: { exact: deviceId } } : {});
+        cameraTrack = await LK.createLocalVideoTrack(camOpts);
     }
     if (!localCameraVideoEl){ localCameraVideoEl = makeHiddenVideo(); }
     cameraTrack.attach(localCameraVideoEl);
