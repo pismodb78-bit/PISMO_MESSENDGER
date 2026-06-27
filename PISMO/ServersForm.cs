@@ -42,6 +42,14 @@ namespace PISMO
         // Контейнеры участников «в эфире» под каждым голосовым каналом.
         private readonly Dictionary<int, FlowLayoutPanel> _voiceContainers = new();
 
+        // Ответ (reply) на сообщение канала.
+        private Panel _replyBar;
+        private Panel _bottomDock;
+        private Label _lblReply;
+        private int _replyToId = -1;
+        private static bool _replyColOk = true; // есть ли колонка reply_to_id (миграция)
+        private readonly Dictionary<int, Control> _msgControls = new(); // id сообщения -> контрол для перехода
+
         // Автоподсказка @упоминаний при вводе.
         private Form _mentionPopup;
         private ListBox _mentionList;
@@ -142,8 +150,24 @@ namespace PISMO
             _pnlInput.Controls.Add(btnGif);
             _pnlInput.Controls.Add(btnSend);
 
+            // Полоска «Ответ на …» над полем ввода.
+            _replyBar = new Panel { Dock = DockStyle.Top, Height = 0, BackColor = Color.FromArgb(54, 57, 63), Visible = false };
+            _lblReply = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(0, 176, 244), Font = new Font("Segoe UI", 8.5f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10, 0, 0, 0) };
+            var btnReplyCancel = new Button { Dock = DockStyle.Right, Width = 36, Text = "✕", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(54, 57, 63), ForeColor = Color.White, Cursor = Cursors.Hand };
+            btnReplyCancel.FlatAppearance.BorderSize = 0;
+            btnReplyCancel.Click += (s, e) => CancelServerReply();
+            _replyBar.Controls.Add(_lblReply);
+            _replyBar.Controls.Add(btnReplyCancel);
+
+            // Низ центра: контейнер с полоской ответа над полем ввода.
+            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 52 };
+            _pnlInput.Dock = DockStyle.Fill;
+            bottom.Controls.Add(_pnlInput);
+            bottom.Controls.Add(_replyBar);
+            _bottomDock = bottom;
+
             center.Controls.Add(_pnlMessages);
-            center.Controls.Add(_pnlInput);
+            center.Controls.Add(bottom);
             center.Controls.Add(_lblTitle);
 
             Controls.Add(center);
@@ -463,9 +487,11 @@ namespace PISMO
             _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1;
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
             _pnlMessages.Controls.Clear();
+            CancelServerReply();
 
             if (type == "voice")
             {
+                if (_bottomDock != null) _bottomDock.Visible = false;
                 _pnlInput.Visible = false;
                 var join = new Button
                 {
@@ -488,9 +514,30 @@ namespace PISMO
             }
             else
             {
+                if (_bottomDock != null) _bottomDock.Visible = true;
                 _pnlInput.Visible = true;
                 LoadMessages();
             }
+        }
+
+        // ── Ответы (reply) ──────────────────────────────────────────────
+        private void BeginServerReply(int id, string text)
+        {
+            _replyToId = id;
+            string preview = text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)
+                ? "[GIF]" : (text.Length > 60 ? text.Substring(0, 60) + "…" : text);
+            _lblReply.Text = "↩ Ответ: " + preview;
+            _replyBar.Height = 26;
+            _replyBar.Visible = true;
+            if (_bottomDock != null) _bottomDock.Height = 52 + 26;
+            _txtInput.Focus();
+        }
+
+        private void CancelServerReply()
+        {
+            _replyToId = -1;
+            if (_replyBar != null) { _replyBar.Visible = false; _replyBar.Height = 0; }
+            if (_bottomDock != null) _bottomDock.Height = 52;
         }
 
         // ── Сообщения канала ────────────────────────────────────────────
@@ -512,15 +559,24 @@ namespace PISMO
             if (_channelId <= 0 || _channelType != "text") return;
             try
             {
+                string replyCols = _replyColOk
+                    ? ", sm.reply_to_id, " +
+                      "(SELECT TRIM(CONCAT(ru.Name,' ',ru.Surname)) FROM server_messages rsm JOIN users ru ON ru.id=rsm.sender_id WHERE rsm.id=sm.reply_to_id) AS r_sender, " +
+                      "(SELECT ru.login FROM server_messages rsm JOIN users ru ON ru.id=rsm.sender_id WHERE rsm.id=sm.reply_to_id) AS r_login, " +
+                      "(SELECT rsm.text FROM server_messages rsm WHERE rsm.id=sm.reply_to_id) AS r_text"
+                    : "";
+
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT sm.id, sm.sender_id, sm.text, sm.created_at, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login " +
-                    "FROM server_messages sm JOIN users u ON u.id=sm.sender_id WHERE sm.channel_id=@c ORDER BY sm.id ASC", conn);
+                    "SELECT sm.id, sm.sender_id, sm.text, sm.created_at, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login" +
+                    replyCols +
+                    " FROM server_messages sm JOIN users u ON u.id=sm.sender_id WHERE sm.channel_id=@c ORDER BY sm.id ASC", conn);
                 cmd.Parameters.AddWithValue("@c", _channelId);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
 
                 _pnlMessages.SuspendLayout();
                 _pnlMessages.Controls.Clear();
+                _msgControls.Clear();
                 int msgWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 40);
                 foreach (DataRow r in dt.Rows)
                 {
@@ -540,20 +596,48 @@ namespace PISMO
                         Margin = new Padding(0, 2, 0, 6),
                         BackColor = mine ? Color.FromArgb(40, 59, 165, 93) : Color.Transparent
                     };
+                    int y = 0;
+
+                    // Цитата отвечаемого сообщения (если это ответ).
+                    int replyToId = _replyColOk && dt.Columns.Contains("reply_to_id") && r["reply_to_id"] != DBNull.Value
+                        ? Convert.ToInt32(r["reply_to_id"]) : 0;
+                    if (replyToId > 0)
+                    {
+                        string rs = dt.Columns.Contains("r_sender") && r["r_sender"] != DBNull.Value ? r["r_sender"].ToString().Trim() : "";
+                        if (string.IsNullOrWhiteSpace(rs) && dt.Columns.Contains("r_login") && r["r_login"] != DBNull.Value) rs = r["r_login"].ToString();
+                        string rt = dt.Columns.Contains("r_text") && r["r_text"] != DBNull.Value ? Crypto.Dec(r["r_text"].ToString()) : "";
+                        if (rt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)) rt = "[GIF]";
+                        var quote = new Label
+                        {
+                            AutoSize = false,
+                            Size = new Size(msgWidth - 14, 16),
+                            Location = new Point(3, y),
+                            ForeColor = Color.FromArgb(0, 176, 244),
+                            Font = new Font("Segoe UI", 8f),
+                            Cursor = Cursors.Hand,
+                            Text = $"↩ {rs}: {(rt.Length > 60 ? rt.Substring(0, 60) + "…" : rt)}"
+                        };
+                        int targetId = replyToId;
+                        quote.Click += (s, e) => ScrollToServerMessage(targetId);
+                        holder.Controls.Add(quote);
+                        y += 18;
+                    }
+
                     var head = new Label
                     {
                         AutoSize = true,
                         ForeColor = Color.FromArgb(150, 152, 158),
                         Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                        Location = new Point(0, 0),
+                        Location = new Point(0, y),
                         Text = $"{nm} · {time}"
                     };
                     holder.Controls.Add(head);
+                    y += 18;
 
                     // GIF-сообщение: "gif:<url>" — анимированная картинка.
                     if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
                     {
-                        var ph = new Panel { Location = new Point(0, 20), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
+                        var ph = new Panel { Location = new Point(0, y), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
                         holder.Controls.Add(ph);
                         _ = LoadServerGifAsync(ph, text.Substring(4));
                     }
@@ -563,18 +647,40 @@ namespace PISMO
                             ? Color.FromArgb(54, 57, 63) : Color.FromArgb(50, 70, 60),
                             Color.FromArgb(220, 221, 222), new Font("Segoe UI", 10f),
                             msgWidth - 10);
-                        body.Location = new Point(0, 18);
+                        body.Location = new Point(0, y);
                         holder.Controls.Add(body);
                     }
 
                     AttachServerMsgMenu(holder, head, id, senderId, text);
+                    _msgControls[id] = holder;
                     _pnlMessages.Controls.Add(holder);
                 }
                 _lastMsgCount = dt.Rows.Count;
                 _pnlMessages.ResumeLayout();
                 _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);
             }
+            catch (MySqlException mex) when (mex.Number == 1054)
+            {
+                _replyColOk = false; // колонки reply_to_id ещё нет — грузим без неё
+                LoadMessages();
+            }
             catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        /// <summary>Прокручивает к исходному сообщению (по клику на цитату) и подсвечивает.</summary>
+        private void ScrollToServerMessage(int id)
+        {
+            if (!_msgControls.TryGetValue(id, out var ctrl) || ctrl.IsDisposed) return;
+            try
+            {
+                _pnlMessages.ScrollControlIntoView(ctrl);
+                var orig = ctrl.BackColor;
+                ctrl.BackColor = Color.FromArgb(60, 90, 130);
+                var t = new System.Windows.Forms.Timer { Interval = 900 };
+                t.Tick += (s, e) => { t.Stop(); t.Dispose(); if (!ctrl.IsDisposed) ctrl.BackColor = orig; };
+                t.Start();
+            }
+            catch { }
         }
 
         /// <summary>Контекстное меню сообщения канала: ответить/переслать/копировать/
@@ -586,13 +692,7 @@ namespace PISMO
 
             var menu = new ContextMenuStrip { BackColor = Color.FromArgb(24, 25, 28), ForeColor = Color.FromArgb(220, 221, 222) };
 
-            menu.Items.Add("↩  Ответить", null, (s, e) =>
-            {
-                string quote = isGif ? "[GIF]" : (text.Length > 80 ? text.Substring(0, 80) + "…" : text);
-                _txtInput.Text = $"> {quote}\n";
-                _txtInput.SelectionStart = _txtInput.Text.Length;
-                _txtInput.Focus();
-            });
+            menu.Items.Add("↩  Ответить", null, (s, e) => BeginServerReply(id, text));
 
             // Переслать в другой текстовый канал этого сервера.
             var fwd = new ToolStripMenuItem("↪  Переслать в…");
@@ -901,17 +1001,34 @@ namespace PISMO
         private void SendChannelRaw(string rawText)
         {
             if (string.IsNullOrEmpty(rawText) || _channelId <= 0) return;
+            int replyId = _replyToId;
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand("INSERT INTO server_messages (channel_id, sender_id, text) VALUES (@c,@s,@t)", conn);
+                MySqlCommand cmd;
+                if (_replyColOk && replyId > 0)
+                {
+                    cmd = new MySqlCommand("INSERT INTO server_messages (channel_id, sender_id, text, reply_to_id) VALUES (@c,@s,@t,@r)", conn);
+                    cmd.Parameters.AddWithValue("@r", replyId);
+                }
+                else
+                {
+                    cmd = new MySqlCommand("INSERT INTO server_messages (channel_id, sender_id, text) VALUES (@c,@s,@t)", conn);
+                }
                 cmd.Parameters.AddWithValue("@c", _channelId);
                 cmd.Parameters.AddWithValue("@s", _me);
                 cmd.Parameters.AddWithValue("@t", Crypto.Enc(rawText));
                 cmd.ExecuteNonQuery();
+                cmd.Dispose();
+                CancelServerReply();
                 WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
                 NotifyMentions(rawText);
                 LoadMessages();
+            }
+            catch (MySqlException mex) when (mex.Number == 1054)
+            {
+                _replyColOk = false; // колонки reply_to_id нет — миграция не выполнена
+                SendChannelRaw(rawText);
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
