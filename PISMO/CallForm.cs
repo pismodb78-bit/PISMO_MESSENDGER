@@ -21,6 +21,10 @@ namespace PISMO
         private readonly string _peerName;
         private readonly int _peerId;
         private bool _hasVideo;
+        // Режим голосового канала сервера (постоянная LiveKit-комната, без
+        // call_sessions/ringing). _channelRoom задаёт имя комнаты.
+        private readonly bool _isChannel;
+        private readonly string _channelRoom;
         private WebRtcTransport _transport = null;
         private System.Windows.Forms.Timer _signalTimer = null;  // ← явная инициализация
         private System.Windows.Forms.Timer _durationTimer = null;  // ← явная инициализация
@@ -120,6 +124,23 @@ namespace PISMO
             // ← Инициализируем таймер ДО BuildUi (т.к. BuildUi на него ссылается)
             _durationTimer = new System.Windows.Forms.Timer { Interval = 1000 };
 
+            BuildUi();
+            StartCallSetup();
+        }
+
+        // ── Конструктор для голосового канала сервера ───────────────
+        public CallForm(string channelRoom, string channelTitle)
+        {
+            _isChannel = true;
+            _channelRoom = channelRoom;
+            _sessionId = -1;
+            _isCaller = false;
+            _peerName = channelTitle;
+            _peerId = -1;
+            _hasVideo = false;
+            _groupId = 0; // как групповой: не завершаем при уходе одного участника
+
+            _durationTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             BuildUi();
             StartCallSetup();
         }
@@ -360,6 +381,20 @@ namespace PISMO
                 if (_connected)
                     _lblDuration.Text = (DateTime.Now - _startTime).ToString(@"mm\:ss");
 
+                // Голосовой канал сервера: участников берём из плиток (нет call_participants).
+                if (_isChannel)
+                {
+                    try
+                    {
+                        var parts = new System.Collections.Generic.List<string> { "• Вы" };
+                        foreach (var n in _participants.Values) parts.Add("• " + n);
+                        if (_lblParticipants != null && !_lblParticipants.IsDisposed)
+                            _lblParticipants.Text = $"В канале ({parts.Count}):\n" + string.Join("\n", parts);
+                    }
+                    catch { }
+                    return;
+                }
+
                 // Проверка участников и таймера 3 минут
                 try
                 {
@@ -520,8 +555,9 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════
         //  СИГНАЛИНГ
         // ════════════════════════════════════════════════════════════
-        /// <summary>Имя комнаты LiveKit — общее для всех участников одного звонка.</summary>
-        private string RoomName => "call_" + _sessionId;
+        /// <summary>Имя комнаты LiveKit — общее для всех участников одного звонка
+        /// (или голосового канала сервера).</summary>
+        private string RoomName => _isChannel ? _channelRoom : "call_" + _sessionId;
 
         private async void StartCallSetup()
         {
@@ -602,11 +638,15 @@ namespace PISMO
             if (_hasVideo)
                 _pendingVideoStart = true;
 
-            // Постоянный опрос статуса — для корректного закрытия формы при
-            // отклонении/завершении звонка собеседником.
-            _signalTimer = new System.Windows.Forms.Timer { Interval = 800 };
-            _signalTimer.Tick += (s, e) => PollCallStatus();
-            _signalTimer.Start();
+            // Для голосового канала сервера статусов звонка нет — пропускаем опрос.
+            if (!_isChannel)
+            {
+                // Постоянный опрос статуса — для корректного закрытия формы при
+                // отклонении/завершении звонка собеседником.
+                _signalTimer = new System.Windows.Forms.Timer { Interval = 800 };
+                _signalTimer.Tick += (s, e) => PollCallStatus();
+                _signalTimer.Start();
+            }
         }
 
         private void OnWebSocketMessage(string type, int senderId, int sessionId, string payload)
@@ -1555,6 +1595,8 @@ namespace PISMO
 
         private void MarkCallEnded()
         {
+            if (_isChannel) return; // у голосового канала нет call_sessions/логов
+
             if (_isCaller && !_callLogged)
             {
                 LogCallToMessages();

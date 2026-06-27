@@ -33,6 +33,9 @@ namespace PISMO
         // Кнопка GIF-поиска в строке ввода (создаётся в коде, не в Designer)
         private Button btnGif;
 
+        // Окно серверов (как в Discord)
+        private ServersForm _serversForm;
+
         // Polling: обнаружение новых сообщений
         private System.Windows.Forms.Timer _pollTimer;
         private int _lastMsgCount = 0;
@@ -185,6 +188,37 @@ namespace PISMO
                 pnlInputBar.Controls.Add(btnGif);
                 btnGif.BringToFront();
                 pnlInputBar_Resize(this, EventArgs.Empty);
+            }
+            catch { }
+
+            // Кнопка «Серверы» (как в Discord) в шапке сайдбара.
+            try
+            {
+                var btnServers = new Button
+                {
+                    Text = "🗗",
+                    Font = new Font("Segoe UI", 13F),
+                    Dock = DockStyle.Right,
+                    Size = new Size(36, 48),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.Transparent,
+                    ForeColor = Color.FromArgb(185, 187, 190),
+                    Cursor = Cursors.Hand
+                };
+                btnServers.FlatAppearance.BorderSize = 0;
+                btnServers.Click += (s, e) =>
+                {
+                    if (_serversForm == null || _serversForm.IsDisposed)
+                    {
+                        _serversForm = new ServersForm();
+                        _serversForm.FormClosed += (a, b) => _serversForm = null;
+                        _serversForm.Show(this);
+                    }
+                    else _serversForm.Activate();
+                };
+                pnlSidebarHeader.Controls.Add(btnServers);
+                btnServers.BringToFront();
+                new ToolTip().SetToolTip(btnServers, "Серверы");
             }
             catch { }
 
