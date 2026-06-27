@@ -40,6 +40,12 @@ namespace PISMO
         /// не передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
         public static int VoiceThreshold { get; set; } = -40;
 
+        // Горячие клавиши в звонке (значение = (int)Keys с модификаторами; 0 = выкл).
+        // По умолчанию Ctrl+Alt+M / C / S.
+        public static int HotkeyMic { get; set; } = (int)(System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.M);
+        public static int HotkeyCamera { get; set; } = (int)(System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.C);
+        public static int HotkeyScreen { get; set; } = (int)(System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.S);
+
         public static void Load()
         {
             try
@@ -84,6 +90,15 @@ namespace PISMO
                         case "VoiceThreshold":
                             if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, -60, 0);
                             break;
+                        case "HotkeyMic":
+                            if (int.TryParse(val, out int hm)) HotkeyMic = hm;
+                            break;
+                        case "HotkeyCamera":
+                            if (int.TryParse(val, out int hc)) HotkeyCamera = hc;
+                            break;
+                        case "HotkeyScreen":
+                            if (int.TryParse(val, out int hs)) HotkeyScreen = hs;
+                            break;
                     }
                 }
             }
@@ -108,7 +123,10 @@ namespace PISMO
                     $"ScreenShareResolutionHeight={ScreenShareResolutionHeight}\n" +
                     $"ScreenShareFps={ScreenShareFps}\n" +
                     $"VoiceAutoSensitivity={(VoiceAutoSensitivity ? 1 : 0)}\n" +
-                    $"VoiceThreshold={VoiceThreshold}\n";
+                    $"VoiceThreshold={VoiceThreshold}\n" +
+                    $"HotkeyMic={HotkeyMic}\n" +
+                    $"HotkeyCamera={HotkeyCamera}\n" +
+                    $"HotkeyScreen={HotkeyScreen}\n";
 
                 File.WriteAllText(FilePath, content);
 

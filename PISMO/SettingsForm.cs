@@ -432,8 +432,70 @@ namespace PISMO
             pnlScreen.Controls.Add(lblScreenTitle);
             pnlScreen.Controls.Add(tblScreen);
 
-            // TURN-сервер больше НЕ нужен — звонки идут через LiveKit (SFU).
-            // Весь блок настроек TURN убран из UI.
+            // ── Горячие клавиши в звонке ────────────────────────────────
+            var pnlKeys = new Panel
+            {
+                BackColor = Color.FromArgb(47, 49, 54),
+                Location = new Point(20, pnlScreen.Bottom + 14),
+                Size = new Size(456, 150)
+            };
+            pnlKeys.Controls.Add(new Label
+            {
+                Text = "⌨ Горячие клавиши (в звонке)",
+                Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(14, 8)
+            });
+
+            Button MakeKeyRow(string caption, int y, Func<int> get, Action<int> set)
+            {
+                pnlKeys.Controls.Add(new Label
+                {
+                    Text = caption,
+                    Font = new Font("Segoe UI", 9.5f),
+                    ForeColor = Color.FromArgb(200, 201, 203),
+                    AutoSize = false,
+                    Size = new Size(200, 26),
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Location = new Point(14, y)
+                });
+                var btn = new Button
+                {
+                    Text = HotkeyToText(get()),
+                    BackColor = Color.FromArgb(32, 34, 37),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+                    Size = new Size(210, 28),
+                    Location = new Point(220, y - 1),
+                    Cursor = Cursors.Hand,
+                    TabStop = false
+                };
+                btn.FlatAppearance.BorderSize = 1;
+                btn.FlatAppearance.BorderColor = Color.FromArgb(80, 82, 88);
+                bool capturing = false;
+                btn.Click += (s, e) => { capturing = true; btn.Text = "Нажмите клавиши…"; btn.Focus(); };
+                btn.KeyDown += (s, e) =>
+                {
+                    if (!capturing) return;
+                    e.SuppressKeyPress = true;
+                    if (e.KeyCode == Keys.Escape) { capturing = false; btn.Text = HotkeyToText(get()); return; }
+                    if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Delete) { set(0); capturing = false; btn.Text = "—"; return; }
+                    // Игнорируем «голые» модификаторы — ждём основную клавишу.
+                    if (e.KeyCode is Keys.ControlKey or Keys.ShiftKey or Keys.Menu) return;
+                    int combo = (int)(e.KeyCode | (e.Control ? Keys.Control : 0) | (e.Alt ? Keys.Alt : 0) | (e.Shift ? Keys.Shift : 0));
+                    set(combo);
+                    capturing = false;
+                    btn.Text = HotkeyToText(combo);
+                };
+                pnlKeys.Controls.Add(btn);
+                return btn;
+            }
+
+            MakeKeyRow("Микрофон (вкл/выкл):", 40, () => DeviceSettings.HotkeyMic, v => DeviceSettings.HotkeyMic = v);
+            MakeKeyRow("Камера (вкл/выкл):", 74, () => DeviceSettings.HotkeyCamera, v => DeviceSettings.HotkeyCamera = v);
+            MakeKeyRow("Демонстрация (вкл/выкл):", 108, () => DeviceSettings.HotkeyScreen, v => DeviceSettings.HotkeyScreen = v);
 
             _btnSave = new Button
             {
@@ -450,7 +512,7 @@ namespace PISMO
             _btnSave.MouseEnter += (s, e) => _btnSave.BackColor = Color.FromArgb(71, 82, 196);
             _btnSave.MouseLeave += (s, e) => _btnSave.BackColor = Color.FromArgb(88, 101, 242);
 
-            _btnSave.Location = new Point(20, pnlScreen.Bottom + 20);
+            _btnSave.Location = new Point(20, pnlKeys.Bottom + 20);
 
             // Вычисляем реальную высоту всего контента
             int contentHeight = _btnSave.Bottom + 20;
@@ -468,7 +530,7 @@ namespace PISMO
             // Переносим все контролы в scrollPanel
             scrollPanel.Controls.AddRange(new Control[]
             {
-                lblTitle, pnlCamera, pnlMic, pnlScreen, _btnSave
+                lblTitle, pnlCamera, pnlMic, pnlScreen, pnlKeys, _btnSave
             });
 
             // Форма фиксирована — содержимое скроллится
@@ -477,6 +539,19 @@ namespace PISMO
 
             _levelTimer = new System.Windows.Forms.Timer { Interval = 40 };
             _levelTimer.Tick += (s, e) => UpdateLevelBar();
+        }
+
+        /// <summary>Человекочитаемое представление комбинации клавиш ((int)Keys).</summary>
+        private static string HotkeyToText(int value)
+        {
+            if (value == 0) return "—";
+            var k = (Keys)value;
+            var parts = new System.Collections.Generic.List<string>();
+            if ((k & Keys.Control) == Keys.Control) parts.Add("Ctrl");
+            if ((k & Keys.Alt) == Keys.Alt) parts.Add("Alt");
+            if ((k & Keys.Shift) == Keys.Shift) parts.Add("Shift");
+            parts.Add((k & Keys.KeyCode).ToString());
+            return string.Join(" + ", parts);
         }
 
         // ════════════════════════════════════════════════════════════

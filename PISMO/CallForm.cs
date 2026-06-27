@@ -1759,8 +1759,75 @@ namespace PISMO
             }
         }
 
+        // ── Глобальные горячие клавиши (микрофон/камера/демка) ──────────
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+        private const int WM_HOTKEY = 0x0312;
+        private bool _hotkeysRegistered;
+
+        private static (uint mods, uint vk) SplitHotkey(int value)
+        {
+            var k = (Keys)value;
+            uint mods = 0;
+            if ((k & Keys.Alt) == Keys.Alt) mods |= 0x1;       // MOD_ALT
+            if ((k & Keys.Control) == Keys.Control) mods |= 0x2; // MOD_CONTROL
+            if ((k & Keys.Shift) == Keys.Shift) mods |= 0x4;   // MOD_SHIFT
+            uint vk = (uint)(k & Keys.KeyCode);
+            return (mods, vk);
+        }
+
+        private void RegisterCallHotkeys()
+        {
+            if (_hotkeysRegistered) return;
+            try
+            {
+                void Reg(int id, int val)
+                {
+                    if (val == 0) return;
+                    var (m, vk) = SplitHotkey(val);
+                    if (vk != 0) RegisterHotKey(Handle, id, m, vk);
+                }
+                Reg(1, DeviceSettings.HotkeyMic);
+                Reg(2, DeviceSettings.HotkeyCamera);
+                Reg(3, DeviceSettings.HotkeyScreen);
+                _hotkeysRegistered = true;
+            }
+            catch { }
+        }
+
+        private void UnregisterCallHotkeys()
+        {
+            if (!_hotkeysRegistered) return;
+            try { UnregisterHotKey(Handle, 1); UnregisterHotKey(Handle, 2); UnregisterHotKey(Handle, 3); } catch { }
+            _hotkeysRegistered = false;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            RegisterCallHotkeys();
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_HOTKEY)
+            {
+                int id = m.WParam.ToInt32();
+                switch (id)
+                {
+                    case 1: ToggleMute(); break;
+                    case 2: ToggleCamera(); break;
+                    case 3: ToggleScreen(); break;
+                }
+            }
+            base.WndProc(ref m);
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            try { UnregisterCallHotkeys(); } catch { }
             try
             {
                 WebSocketSignalingClient.Instance.OnMessageReceived -= OnWebSocketMessage;
