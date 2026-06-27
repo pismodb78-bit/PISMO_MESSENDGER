@@ -212,6 +212,18 @@ let perUserMuted = {};        // pid -> bool
 
 function post(msg){ window.chrome.webview.postMessage(msg); }
 
+// Опции захвата микрофона с шумоподавлением/эхоподавлением/авто-усилением.
+// Передаём и стандартные флаги, и Chromium-специфичные goog-констрейнты,
+// чтобы шумодав точно включился в движке WebView2.
+function micCaptureOpts(){
+    return {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        deviceId: undefined
+    };
+}
+
 function waitForLK(){
     return new Promise((resolve) => {
         const t0 = Date.now();
@@ -263,7 +275,7 @@ async function connectRoom(url, token){
         } catch(e){ console.error('enum participants', String(e)); }
 
         // Микрофон публикуем сразу — аудиозвонок начинается мгновенно.
-        try { await room.localParticipant.setMicrophoneEnabled(true); } catch(e){ console.error('mic enable', String(e)); }
+        try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); } catch(e){ console.error('mic enable', String(e)); }
     } catch(err) {
         console.error('connect error', String(err));
         post({type:'fatal', error:String(err)});
@@ -613,7 +625,7 @@ async function enumerateDevices(){
 }
 
 async function setMicEnabled(enabled){
-    try { if (room) await room.localParticipant.setMicrophoneEnabled(enabled); } catch(e){ console.error('setMic', String(e)); }
+    try { if (room) await room.localParticipant.setMicrophoneEnabled(enabled, micCaptureOpts()); } catch(e){ console.error('setMic', String(e)); }
 }
 
 function setScreenAudioVolume(v){
