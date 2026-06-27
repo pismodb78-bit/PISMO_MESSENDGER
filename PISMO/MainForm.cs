@@ -179,9 +179,9 @@ namespace PISMO
             try
             {
                 pnlMyAvatar.Paint += PnlMyAvatar_Paint;
-                pnlMyAvatar.Click += (s, e) => UploadMyAvatar();
+                pnlMyAvatar.Click += (s, e) => OpenProfile();
                 var ttAv = new ToolTip();
-                ttAv.SetToolTip(pnlMyAvatar, "Нажмите, чтобы сменить аватар");
+                ttAv.SetToolTip(pnlMyAvatar, "Нажмите, чтобы открыть профиль");
                 AvatarStore.EnsureLoaded(UserSession.EffectiveId);
             }
             catch { }
@@ -337,7 +337,22 @@ namespace PISMO
             }
         }
 
-        private void LblCurrentUser_DoubleClick(object sender, EventArgs e) => UploadMyAvatar();
+        private void LblCurrentUser_DoubleClick(object sender, EventArgs e) => OpenProfile();
+
+        /// <summary>Открывает окно редактирования профиля и обновляет шапку/аватар.</summary>
+        private void OpenProfile()
+        {
+            using var pf = new ProfileForm(UserSession.EffectiveId);
+            pf.ShowDialog(this);
+            if (pf.Saved)
+            {
+                lblCurrentUser.Text = UserSession.UserName;
+                AvatarStore.Invalidate(UserSession.EffectiveId);
+                AvatarStore.EnsureLoaded(UserSession.EffectiveId);
+                InvalidateAvatarFor(UserSession.EffectiveId);
+                try { LoadConversations(); } catch { }
+            }
+        }
 
         /// <summary>Открывает окно поиска гифок (Giphy) и отправляет выбранную.</summary>
         private void OpenGifPicker()
@@ -2969,6 +2984,8 @@ namespace PISMO
                     ClearChat();
                     LoadAllUsersForAdmin();
                 });
+
+            menu.Items.Add("👤 Редактировать профиль", null, (s, ev) => OpenProfile());
 
             menu.Items.Add("🔑 Сменить пароль", null, (s, ev) =>
                 new ChangePasswordForm().ShowDialog(this));
