@@ -65,7 +65,7 @@ namespace PISMO
         public event Action ScreenPreviewReady;
         public event Action CameraPreviewReady;
         public event Action CameraDeviceSwitched;
-        public event Action<string, string> DevicesEnumerated; // (camerasJson, micsJson)
+        public event Action<string, string, string> DevicesEnumerated; // (camerasJson, micsJson, speakersJson)
 
         private string _tempHtmlDir;
         private const string VirtualHostName = "pismo-webrtc.local";
@@ -190,6 +190,8 @@ let cameraPublished = false;
 let screenVideoTrack = null;
 let screenAudioTrack = null;
 let screenPublished = false;
+let screenQualityH = 1080;  // выбранное разрешение демонстрации (высота)
+let screenQualityF = 30;    // выбранный fps демонстрации
 
 // Скрытые <video> для извлечения кадров.
 let localCameraVideoEl = null;
@@ -204,6 +206,9 @@ let remoteScreenAudioVolume = 1.0;
 let remoteVoiceTracks = [];   // голосовые аудио-треки всех собеседников
 let remoteVoiceVolume = 1.0;
 let remoteVoiceMuted = false;
+let remoteAudioByPid = {};    // pid -> [audioTrack,...]
+let perUserVolume = {};       // pid -> громкость 0..2
+let perUserMuted = {};        // pid -> bool
 
 function post(msg){ window.chrome.webview.postMessage(msg); }
 
@@ -303,9 +308,35 @@ function onTrackSubscribed(track, publication, participant){
             try { track.setVolume(remoteScreenAudioVolume); } catch(e){}
         } else {
             remoteVoiceTracks.push(track);
-            try { track.setVolume(remoteVoiceMuted ? 0 : remoteVoiceVolume); } catch(e){}
+            (remoteAudioByPid[pid] = remoteAudioByPid[pid] || []).push(track);
+            try { track.setVolume(effectiveVolume(pid)); } catch(e){}
         }
     }
+}
+
+// Итоговая громкость участника с учётом его персональных настроек и
+// глобального «заглушить весь звук».
+function effectiveVolume(pid){
+    if (remoteVoiceMuted) return 0;
+    if (perUserMuted[pid]) return 0;
+    let v = (pid in perUserVolume) ? perUserVolume[pid] : remoteVoiceVolume;
+    return v;
+}
+
+function applyPidVolume(pid){
+    const arr = remoteAudioByPid[pid] || [];
+    const v = effectiveVolume(pid);
+    arr.forEach(t => { try { t.setVolume(v); } catch(e){} });
+}
+
+function setParticipantVolume(pid, v){
+    perUserVolume[pid] = v;
+    applyPidVolume(pid);
+}
+
+function setParticipantMuted(pid, muted){
+    perUserMuted[pid] = muted;
+    applyPidVolume(pid);
 }
 
 function onTrackUnsubscribed(track, publication, participant){
@@ -323,11 +354,12 @@ function onTrackUnsubscribed(track, publication, participant){
             remoteScreenAudioTrack = null;
         } else {
             remoteVoiceTracks = remoteVoiceTracks.filter(t => t !== track);
+            if (remoteAudioByPid[pid]) remoteAudioByPid[pid] = remoteAudioByPid[pid].filter(t => t !== track);
         }
     }
 }
 
-// Останавливает все видео-циклы ушедшего участника.
+// Останавливает все видео-циклы ушедшего участника и чистит аудио.
 function cleanupParticipant(pid){
     Object.keys(remoteVideoMap).forEach((key) => {
         if (key.indexOf(pid + '|') === 0){
@@ -336,6 +368,7 @@ function cleanupParticipant(pid){
             delete remoteVideoMap[key];
         }
     });
+    delete remoteAudioByPid[pid];
 }
 
 // Извлечение кадров плитки: постит remoteTileFrame с pid+source.
@@ -493,9 +526,20 @@ async function stopCameraTrack(){
 }
 
 // ── Демонстрация экрана ──────────────────────────────────────────────
-async function previewScreen(){
+async function previewScreen(resHeight, fps){
     try {
-        const tracks = await LK.createLocalScreenTracks({ audio: true });
+        // Реально применяем выбранные разрешение и частоту кадров.
+        // resHeight: 1080/720/480/360; fps: 60/30/15...
+        let h = parseInt(resHeight) || 1080;
+        let f = parseInt(fps) || 30;
+        let w = Math.round(h * 16 / 9);
+        screenQualityH = h; screenQualityF = f;
+        const opts = {
+            audio: true,
+            resolution: { width: w, height: h, frameRate: f },
+            video: { frameRate: f, height: h, width: w }
+        };
+        const tracks = await LK.createLocalScreenTracks(opts);
         screenVideoTrack = tracks.find(t => t.kind === 'video') || null;
         screenAudioTrack = tracks.find(t => t.kind === 'audio') || null;
         if (!screenVideoTrack){ post({type:'localScreenError', error:'no screen video track'}); return; }
@@ -515,7 +559,17 @@ async function confirmScreenShare(){
     try {
         if (!screenVideoTrack){ post({type:'localScreenError', error:'no preview stream'}); return; }
         if (!screenPublished){
-            await room.localParticipant.publishTrack(screenVideoTrack, { source: LK.Track.Source.ScreenShare });
+            // Битрейт под выбранное разрешение — иначе LiveKit зажимает картинку
+            // (выглядело как «фиксированные 720»). Для экрана simulcast выключаем.
+            let maxBitrate = screenQualityH >= 1440 ? 8_000_000
+                           : screenQualityH >= 1080 ? 5_000_000
+                           : screenQualityH >= 720  ? 2_800_000
+                           : 1_200_000;
+            await room.localParticipant.publishTrack(screenVideoTrack, {
+                source: LK.Track.Source.ScreenShare,
+                simulcast: false,
+                videoEncoding: { maxBitrate: maxBitrate, maxFramerate: screenQualityF }
+            });
             if (screenAudioTrack){ try{ await room.localParticipant.publishTrack(screenAudioTrack, { source: LK.Track.Source.ScreenShareAudio }); }catch(e){} }
             screenPublished = true;
         }
@@ -553,7 +607,8 @@ async function enumerateDevices(){
         const devices = await navigator.mediaDevices.enumerateDevices();
         const cams = devices.filter(d=>d.kind==='videoinput').map(d=>d.label).filter(Boolean);
         const mics = devices.filter(d=>d.kind==='audioinput').map(d=>d.label).filter(Boolean);
-        post({type:'devicesEnumerated', cameras: JSON.stringify(cams), mics: JSON.stringify(mics)});
+        const spk = devices.filter(d=>d.kind==='audiooutput').map(d=>d.label).filter(Boolean);
+        post({type:'devicesEnumerated', cameras: JSON.stringify(cams), mics: JSON.stringify(mics), speakers: JSON.stringify(spk)});
     } catch(err){ console.error('enumerateDevices', String(err)); }
 }
 
@@ -568,15 +623,22 @@ function setScreenAudioVolume(v){
 
 function setVoiceVolume(v){
     remoteVoiceVolume = v;
-    if (!remoteVoiceMuted){
-        remoteVoiceTracks.forEach(t => { try{ t.setVolume(v); }catch(e){} });
-    }
+    Object.keys(remoteAudioByPid).forEach(applyPidVolume);
 }
 
 function setRemoteMuted(muted){
     remoteVoiceMuted = muted;
-    remoteVoiceTracks.forEach(t => { try{ t.setVolume(muted ? 0 : remoteVoiceVolume); }catch(e){} });
+    Object.keys(remoteAudioByPid).forEach(applyPidVolume);
     if (remoteScreenAudioTrack){ try{ remoteScreenAudioTrack.setVolume(muted ? 0 : remoteScreenAudioVolume); }catch(e){} }
+}
+
+async function setAudioDevice(kind, deviceLabel){
+    try {
+        if (!room) return;
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const m = devices.find(d => d.kind === kind && d.label === deviceLabel);
+        if (m) await room.switchActiveDevice(kind, m.deviceId);
+    } catch(e){ console.error('switchActiveDevice ' + kind, String(e)); }
 }
 
 async function disconnectRoom(){
@@ -593,7 +655,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'cancelCameraPreview': cancelCameraPreview(); break;
         case 'stopCameraTrack': stopCameraTrack(); break;
         case 'switchCameraDevice': switchCameraDevice(msg.deviceLabel); break;
-        case 'previewScreen': previewScreen(); break;
+        case 'previewScreen': previewScreen(msg.resHeight, msg.fps); break;
         case 'confirmScreenShare': confirmScreenShare(); break;
         case 'cancelScreenPreview': cancelScreenPreview(); break;
         case 'stopScreenTrack': stopScreenShareTrack(); break;
@@ -602,6 +664,10 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'setScreenAudioVolume': setScreenAudioVolume(msg.volume); break;
         case 'setVoiceVolume': setVoiceVolume(msg.volume); break;
         case 'setRemoteMuted': setRemoteMuted(msg.muted); break;
+        case 'setParticipantVolume': setParticipantVolume(msg.pid, msg.volume); break;
+        case 'setParticipantMuted': setParticipantMuted(msg.pid, msg.muted); break;
+        case 'setInputDevice': setAudioDevice('audioinput', msg.deviceLabel); break;
+        case 'setOutputDevice': setAudioDevice('audiooutput', msg.deviceLabel); break;
         case 'disconnect': disconnectRoom(); break;
     }
 });
@@ -712,7 +778,8 @@ window.chrome.webview.addEventListener('message', (e) => {
                         {
                             string camsJson = msg.TryGetProperty("cameras", out var camsEl) ? camsEl.GetString() : "[]";
                             string micsJson = msg.TryGetProperty("mics", out var micsEl) ? micsEl.GetString() : "[]";
-                            DevicesEnumerated?.Invoke(camsJson, micsJson);
+                            string spkJson = msg.TryGetProperty("speakers", out var spkEl) ? spkEl.GetString() : "[]";
+                            DevicesEnumerated?.Invoke(camsJson, micsJson, spkJson);
                         }
                         break;
                 }
@@ -734,7 +801,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         /// <summary>Запускает захват экрана (системный диалог выбора экрана/окна).
         /// Системный диалог уровня Windows привязан к HWND родителя WebView2 —
         /// поэтому на время выбора переносим контрол в отдельное видимое окно.</summary>
-        public void PreviewScreen()
+        public void PreviewScreen(int resHeight = 1080, int fps = 30)
         {
             try
             {
@@ -769,7 +836,7 @@ window.chrome.webview.addEventListener('message', (e) => {
             }
             catch { }
 
-            SendToJs(JsonSerializer.Serialize(new { cmd = "previewScreen" }));
+            SendToJs(JsonSerializer.Serialize(new { cmd = "previewScreen", resHeight, fps }));
         }
 
         /// <summary>Возвращает _webView обратно в форму звонка после закрытия
@@ -849,6 +916,22 @@ window.chrome.webview.addEventListener('message', (e) => {
         /// <summary>Полностью заглушить весь входящий звук (голос + демка).</summary>
         public void SetRemoteMuted(bool muted)
             => SendToJs(JsonSerializer.Serialize(new { cmd = "setRemoteMuted", muted }));
+
+        /// <summary>Громкость конкретного участника (0.0–2.0).</summary>
+        public void SetParticipantVolume(string pid, float volume)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setParticipantVolume", pid, volume }));
+
+        /// <summary>Заглушить конкретного участника.</summary>
+        public void SetParticipantMuted(string pid, bool muted)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setParticipantMuted", pid, muted }));
+
+        /// <summary>Сменить устройство микрофона по имени (label).</summary>
+        public void SetInputDevice(string deviceLabel)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setInputDevice", deviceLabel }));
+
+        /// <summary>Сменить устройство вывода (динамики) по имени (label).</summary>
+        public void SetOutputDevice(string deviceLabel)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setOutputDevice", deviceLabel }));
 
         private void SendToJs(string json)
         {

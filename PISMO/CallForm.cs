@@ -872,65 +872,111 @@ namespace PISMO
 
             _audioPanel = new Form
             {
-                Text = "Звук",
+                Text = "Звук и устройства",
                 FormBorderStyle = FormBorderStyle.FixedToolWindow,
                 StartPosition = FormStartPosition.Manual,
                 ShowInTaskbar = false,
                 BackColor = Color.FromArgb(40, 42, 46),
-                ClientSize = new Size(240, 200)
+                ClientSize = new Size(310, 470)
             };
-            // Над панелью кнопок, по центру окна звонка.
             var anchor = PointToScreen(new Point(_pnlButtons.Left, _pnlButtons.Top));
             _audioPanel.Location = new Point(
-                Math.Max(0, anchor.X + (_pnlButtons.Width - 240) / 2),
-                Math.Max(0, anchor.Y - 210));
+                Math.Max(0, anchor.X + (_pnlButtons.Width - 310) / 2),
+                Math.Max(0, anchor.Y - 480));
 
-            Label MkLbl(string t, int y) => new Label
+            int y = 12;
+            Label MkLbl(string t)
             {
-                Text = t, ForeColor = Color.FromArgb(220, 221, 222),
-                AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 9f)
-            };
+                var l = new Label { Text = t, ForeColor = Color.FromArgb(220, 221, 222), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 9f) };
+                _audioPanel.Controls.Add(l); y += 20; return l;
+            }
+            ComboBox MkCombo()
+            {
+                var cb = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
+                _audioPanel.Controls.Add(cb); y += 34; return cb;
+            }
+            TrackBar MkTb(int val)
+            {
+                var tb = new TrackBar { Minimum = 0, Maximum = 200, Value = Math.Min(200, val), TickStyle = TickStyle.None, Location = new Point(8, y), Size = new Size(290, 40) };
+                _audioPanel.Controls.Add(tb); y += 46; return tb;
+            }
 
-            var lblVoice = MkLbl("🔊 Громкость собеседников", 12);
-            var tbVoice = new TrackBar
-            {
-                Minimum = 0, Maximum = 200, Value = (int)(_remoteVoiceVolume * 100),
-                TickStyle = TickStyle.None, Location = new Point(8, 34), Size = new Size(224, 30)
-            };
-            tbVoice.ValueChanged += (s, e) =>
-            {
-                _remoteVoiceVolume = tbVoice.Value / 100f;
-                try { _transport?.SetRemoteVoiceVolume(_remoteVoiceVolume); } catch { }
-            };
+            MkLbl("🎤 Микрофон");
+            var cmbMic = MkCombo();
+            MkLbl("🔊 Устройство вывода");
+            var cmbSpk = MkCombo();
+            MkLbl("📷 Камера");
+            var cmbCam = MkCombo();
 
-            var lblScreen = MkLbl("🖥 Громкость демонстрации", 74);
-            var tbScreen = new TrackBar
+            MkLbl("🖥 Качество демонстрации");
+            var rowQ = y;
+            var cmbRes = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, rowQ), Size = new Size(135, 24), FlatStyle = FlatStyle.Flat };
+            var cmbFps = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(161, rowQ), Size = new Size(135, 24), FlatStyle = FlatStyle.Flat };
+            cmbRes.Items.AddRange(new object[] { "1080p", "720p", "480p", "360p" });
+            cmbFps.Items.AddRange(new object[] { "60 fps", "30 fps", "15 fps" });
+            cmbRes.SelectedItem = DeviceSettings.ScreenShareResolutionHeight + "p";
+            if (cmbRes.SelectedIndex < 0) cmbRes.SelectedIndex = 0;
+            cmbFps.SelectedItem = DeviceSettings.ScreenShareFps + " fps";
+            if (cmbFps.SelectedIndex < 0) cmbFps.SelectedIndex = 1;
+            cmbRes.SelectedIndexChanged += (s, e) =>
             {
-                Minimum = 0, Maximum = 200, Value = (int)(_remoteScreenAudioVolume * 100),
-                TickStyle = TickStyle.None, Location = new Point(8, 96), Size = new Size(224, 30)
+                int h = int.Parse(((string)cmbRes.SelectedItem).Replace("p", ""));
+                DeviceSettings.ScreenShareResolutionHeight = h; try { DeviceSettings.Save(); } catch { }
             };
-            tbScreen.ValueChanged += (s, e) =>
+            cmbFps.SelectedIndexChanged += (s, e) =>
             {
-                _remoteScreenAudioVolume = tbScreen.Value / 100f;
-                try { _transport?.SetRemoteScreenAudioVolume(_remoteScreenAudioVolume); } catch { }
+                int f = int.Parse(((string)cmbFps.SelectedItem).Replace(" fps", ""));
+                DeviceSettings.ScreenShareFps = f; try { DeviceSettings.Save(); } catch { }
             };
+            _audioPanel.Controls.Add(cmbRes);
+            _audioPanel.Controls.Add(cmbFps);
+            y = rowQ + 34;
+            var lblHint = new Label { Text = "(применится при следующем запуске демонстрации)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
+            _audioPanel.Controls.Add(lblHint); y += 24;
 
-            var chkMute = new CheckBox
-            {
-                Text = "🔇 Заглушить весь звук",
-                ForeColor = Color.FromArgb(220, 221, 222),
-                AutoSize = true, Location = new Point(14, 150), Checked = _remoteAllMuted,
-                Font = new Font("Segoe UI", 9.5f)
-            };
-            chkMute.CheckedChanged += (s, e) =>
-            {
-                _remoteAllMuted = chkMute.Checked;
-                try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { }
-            };
+            MkLbl("Громкость собеседников");
+            var tbVoice = MkTb((int)(_remoteVoiceVolume * 100));
+            tbVoice.ValueChanged += (s, e) => { _remoteVoiceVolume = tbVoice.Value / 100f; try { _transport?.SetRemoteVoiceVolume(_remoteVoiceVolume); } catch { } };
 
-            _audioPanel.Controls.AddRange(new Control[] { lblVoice, tbVoice, lblScreen, tbScreen, chkMute });
-            _audioPanel.FormClosed += (s, e) => _audioPanel = null;
+            MkLbl("Громкость демонстрации");
+            var tbScreen = MkTb((int)(_remoteScreenAudioVolume * 100));
+            tbScreen.ValueChanged += (s, e) => { _remoteScreenAudioVolume = tbScreen.Value / 100f; try { _transport?.SetRemoteScreenAudioVolume(_remoteScreenAudioVolume); } catch { } };
+
+            var chkMute = new CheckBox { Text = "🔇 Заглушить весь звук", ForeColor = Color.FromArgb(220, 221, 222), AutoSize = true, Location = new Point(14, y), Checked = _remoteAllMuted, Font = new Font("Segoe UI", 9.5f) };
+            chkMute.CheckedChanged += (s, e) => { _remoteAllMuted = chkMute.Checked; try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { } };
+            _audioPanel.Controls.Add(chkMute);
+
+            // Заполняем списки устройств из браузера.
+            void OnDevices(string camsJson, string micsJson, string spkJson)
+            {
+                try
+                {
+                    var cams = JsonSerializer.Deserialize<string[]>(camsJson) ?? Array.Empty<string>();
+                    var mics = JsonSerializer.Deserialize<string[]>(micsJson) ?? Array.Empty<string>();
+                    var spk = JsonSerializer.Deserialize<string[]>(spkJson) ?? Array.Empty<string>();
+                    UiInvoke(() =>
+                    {
+                        if (_audioPanel == null || _audioPanel.IsDisposed) return;
+                        cmbMic.Items.Clear(); cmbMic.Items.AddRange(mics);
+                        cmbSpk.Items.Clear(); cmbSpk.Items.AddRange(spk);
+                        cmbCam.Items.Clear(); cmbCam.Items.AddRange(cams);
+                        if (!string.IsNullOrEmpty(DeviceSettings.MicrophoneName)) cmbMic.SelectedItem = DeviceSettings.MicrophoneName;
+                        if (cmbMic.SelectedIndex < 0 && cmbMic.Items.Count > 0) cmbMic.SelectedIndex = 0;
+                        if (cmbSpk.Items.Count > 0) cmbSpk.SelectedIndex = 0;
+                        if (!string.IsNullOrEmpty(DeviceSettings.CameraName)) cmbCam.SelectedItem = DeviceSettings.CameraName;
+                        if (cmbCam.SelectedIndex < 0 && cmbCam.Items.Count > 0) cmbCam.SelectedIndex = 0;
+                    });
+                }
+                catch { }
+            }
+            _transport.DevicesEnumerated += OnDevices;
+            cmbMic.SelectedIndexChanged += (s, e) => { if (cmbMic.SelectedItem is string m) { DeviceSettings.MicrophoneName = m; try { DeviceSettings.Save(); } catch { } _transport?.SetInputDevice(m); } };
+            cmbSpk.SelectedIndexChanged += (s, e) => { if (cmbSpk.SelectedItem is string sp) _transport?.SetOutputDevice(sp); };
+            cmbCam.SelectedIndexChanged += (s, e) => { if (cmbCam.SelectedItem is string cm) { DeviceSettings.CameraName = cm; try { DeviceSettings.Save(); } catch { } _transport?.SwitchCameraDevice(cm); } };
+
+            _audioPanel.FormClosed += (s, e) => { try { _transport.DevicesEnumerated -= OnDevices; } catch { } _audioPanel = null; };
             _audioPanel.Show(this);
+            _transport.EnumerateDevices();
         }
 
         // ════════════════════════════════════════════════════════════
@@ -950,7 +996,7 @@ namespace PISMO
             // Запрашиваем список устройств у браузера, чтобы показать актуальный
             // выбор прямо в превью-окне (можно сменить камеру без выхода из звонка).
             _transport.EnumerateDevices();
-            void OnDevicesForPreview(string camsJson, string micsJson)
+            void OnDevicesForPreview(string camsJson, string micsJson, string speakersJson)
             {
                 try
                 {
@@ -1125,7 +1171,7 @@ namespace PISMO
                 // после того, как пользователь выбрал источник в системном
                 // диалоге, демка включается автоматически.
                 _screenPreviewPending = true;
-                _transport.PreviewScreen();
+                _transport.PreviewScreen(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps);
             }
         }
 

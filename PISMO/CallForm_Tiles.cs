@@ -35,6 +35,11 @@ namespace PISMO
         private readonly Dictionary<string, string> _participants = new(); // pid -> name
         private string SelfPid => UserSession.EffectiveId.ToString();
 
+        private string _fullscreenKey;  // ключ плитки на весь экран, либо null
+        private readonly Dictionary<string, float> _userVol = new();   // pid -> громкость
+        private readonly Dictionary<string, bool> _userMuted = new();  // pid -> заглушен
+        private Form _userAudioPopup;
+
         private static string TileKey(string pid, string source) => pid + "|" + source;
 
         /// <summary>Создаёт контейнер плиток поверх старой области видео и прячет
@@ -132,8 +137,20 @@ namespace PISMO
                 Text = (source == "screen" ? "🖥 " : "") + tile.Name
             };
 
-            string capPid = pid, capSource = source;
+            string capPid = pid, capSource = source, capKey = key;
             tile.Panel.Paint += (s, e) => PaintTile(e.Graphics, tile);
+
+            // Двойной клик — на весь экран; правый клик — громкость/мьют участника.
+            void OnDouble(object s, EventArgs e) => ToggleFullscreen(capKey);
+            void OnMouse(object s, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Right && capPid != SelfPid)
+                    ShowParticipantAudioMenu(capPid);
+            }
+            tile.Panel.DoubleClick += OnDouble;
+            tile.Pb.DoubleClick += OnDouble;
+            tile.Panel.MouseUp += OnMouse;
+            tile.Pb.MouseUp += OnMouse;
 
             tile.Panel.Controls.Add(tile.Pb);
             tile.Panel.Controls.Add(tile.Lbl);
@@ -159,6 +176,7 @@ namespace PISMO
                 catch { }
                 _tiles.Remove(key);
                 _tileOrder.Remove(key);
+                if (_fullscreenKey == key) _fullscreenKey = null;
             }
         }
 
@@ -322,6 +340,45 @@ namespace PISMO
             return palette[h % palette.Length];
         }
 
+        // ── Полноэкранная плитка (демка во весь экран) ──────────────────
+        private void ToggleFullscreen(string key)
+        {
+            if (_fullscreenKey == key) _fullscreenKey = null;
+            else if (_tiles.ContainsKey(key)) _fullscreenKey = key;
+            LayoutTiles();
+        }
+
+        // ── Индивидуальная громкость/мьют участника (правый клик) ────────
+        private void ShowParticipantAudioMenu(string pid)
+        {
+            if (_userAudioPopup != null && !_userAudioPopup.IsDisposed)
+            { try { _userAudioPopup.Close(); } catch { } _userAudioPopup = null; }
+
+            string name = _participants.TryGetValue(pid, out var nm) ? nm : pid;
+            float vol = _userVol.TryGetValue(pid, out var v) ? v : 1.0f;
+            bool muted = _userMuted.TryGetValue(pid, out var m) && m;
+
+            _userAudioPopup = new Form
+            {
+                Text = name,
+                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.Manual,
+                ShowInTaskbar = false,
+                BackColor = Color.FromArgb(40, 42, 46),
+                ClientSize = new Size(240, 110),
+                Location = Cursor.Position
+            };
+            var lbl = new Label { Text = "🔊 Громкость: " + name, ForeColor = Color.White, AutoSize = true, Location = new Point(12, 10), Font = new Font("Segoe UI", 9f) };
+            var tb = new TrackBar { Minimum = 0, Maximum = 200, Value = (int)(vol * 100), TickStyle = TickStyle.None, Location = new Point(8, 32), Size = new Size(224, 40) };
+            tb.ValueChanged += (s, e) => { _userVol[pid] = tb.Value / 100f; try { _transport?.SetParticipantVolume(pid, _userVol[pid]); } catch { } };
+            var chk = new CheckBox { Text = "🔇 Заглушить", ForeColor = Color.White, AutoSize = true, Location = new Point(12, 80), Checked = muted, Font = new Font("Segoe UI", 9.5f) };
+            chk.CheckedChanged += (s, e) => { _userMuted[pid] = chk.Checked; try { _transport?.SetParticipantMuted(pid, chk.Checked); } catch { } };
+            _userAudioPopup.Controls.AddRange(new Control[] { lbl, tb, chk });
+            _userAudioPopup.Deactivate += (s, e) => { try { _userAudioPopup?.Close(); } catch { } };
+            _userAudioPopup.FormClosed += (s, e) => _userAudioPopup = null;
+            _userAudioPopup.Show(this);
+        }
+
         // ── Раскладка сетки ─────────────────────────────────────────────
         private void LayoutTiles()
         {
@@ -332,6 +389,23 @@ namespace PISMO
             int w = _tilesHost.ClientSize.Width;
             int h = _tilesHost.ClientSize.Height;
             if (w <= 0 || h <= 0) return;
+
+            // Режим «на весь экран»: показываем только выбранную плитку.
+            if (_fullscreenKey != null && _tiles.ContainsKey(_fullscreenKey))
+            {
+                foreach (var k in _tileOrder)
+                {
+                    if (!_tiles.TryGetValue(k, out var t)) continue;
+                    if (k == _fullscreenKey)
+                    {
+                        t.Panel.Visible = true;
+                        t.Panel.SetBounds(0, 0, w, h);
+                        t.Panel.Invalidate();
+                    }
+                    else t.Panel.Visible = false;
+                }
+                return;
+            }
 
             int cols = (int)Math.Ceiling(Math.Sqrt(n));
             int rows = (int)Math.Ceiling((double)n / cols);
@@ -350,6 +424,7 @@ namespace PISMO
                 int startX = (w - rowWidth) / 2;
                 int x = startX + c * (cellW + gap);
                 int y = gap + r * (cellH + gap);
+                tile.Panel.Visible = true;
                 tile.Panel.SetBounds(x, y, cellW, cellH);
                 tile.Panel.Invalidate();
             }
