@@ -30,6 +30,9 @@ namespace PISMO
         // Список карточек в сайдбаре (для обновления бейджей без перезагрузки)
         private readonly List<Panel> _userPanels = new();
 
+        // Кнопка GIF-поиска в строке ввода (создаётся в коде, не в Designer)
+        private Button btnGif;
+
         // Polling: обнаружение новых сообщений
         private System.Windows.Forms.Timer _pollTimer;
         private int _lastMsgCount = 0;
@@ -164,6 +167,27 @@ namespace PISMO
             }
             catch { }
 
+            // Кнопка GIF в строке ввода (слева от «Отправить»).
+            try
+            {
+                btnGif = new Button
+                {
+                    Text = "GIF",
+                    Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+                    Size = new Size(44, 40),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(64, 68, 75),
+                    ForeColor = Color.FromArgb(220, 221, 222),
+                    Cursor = Cursors.Hand
+                };
+                btnGif.FlatAppearance.BorderSize = 0;
+                btnGif.Click += (s, e) => OpenGifPicker();
+                pnlInputBar.Controls.Add(btnGif);
+                btnGif.BringToFront();
+                pnlInputBar_Resize(this, EventArgs.Empty);
+            }
+            catch { }
+
             InitMessageActions();
             StartPresence();
 
@@ -204,6 +228,47 @@ namespace PISMO
         }
 
         private void LblCurrentUser_DoubleClick(object sender, EventArgs e) => UploadMyAvatar();
+
+        /// <summary>Открывает окно поиска гифок (Giphy) и отправляет выбранную.</summary>
+        private void OpenGifPicker()
+        {
+            if (_currentChatPartnerId < 0 && _currentGroupId < 0)
+            {
+                MessageBox.Show("Сначала выберите чат или группу.", "PISMO");
+                return;
+            }
+            var picker = new GifPickerForm();
+            try
+            {
+                var loc = PointToScreen(new Point(pnlInputBar.Left, pnlInputBar.Top));
+                picker.StartPosition = FormStartPosition.Manual;
+                picker.Location = new Point(Math.Max(0, loc.X + 40), Math.Max(0, loc.Y - 540));
+            }
+            catch { }
+            picker.GifSelected += url => _ = SendGifByUrlAsync(url);
+            picker.Show(this);
+        }
+
+        private async System.Threading.Tasks.Task SendGifByUrlAsync(string url)
+        {
+            try
+            {
+                var bytes = await GiphyClient.DownloadAsync(url);
+                if (bytes == null || bytes.Length == 0)
+                {
+                    MessageBox.Show("Не удалось загрузить гифку.", "PISMO");
+                    return;
+                }
+                if (IsDisposed) return;
+                // Отправляем как изображение (анимация определяется по содержимому GIF).
+                if (_currentGroupId >= 0) SendGroupMessage("", bytes);
+                else if (_currentChatPartnerId >= 0) SendMessage("", bytes);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка отправки гифки: " + ex.Message, "PISMO");
+            }
+        }
 
         /// <summary>Выбор и загрузка своей аватарки (с уменьшением до 256px).</summary>
         private void UploadMyAvatar()
@@ -2796,8 +2861,17 @@ namespace PISMO
                 // Перемещаем кнопку отправки к правому краю панели
                 var btnY = btnSend.Location.Y;
                 btnSend.Location = new Point(Math.Max(margin, pnlInputBar.ClientSize.Width - btnSend.Width - margin), btnY);
-                // Меняем ширину txtMessage так, чтобы не перекрываться с кнопкой
-                int newWidth = btnSend.Location.X - margin - leftOffset;
+
+                // Кнопка GIF — слева от «Отправить».
+                int rightEdge = btnSend.Location.X;
+                if (btnGif != null)
+                {
+                    btnGif.Location = new Point(btnSend.Location.X - btnGif.Width - 6, btnY);
+                    rightEdge = btnGif.Location.X;
+                }
+
+                // Меняем ширину txtMessage так, чтобы не перекрываться с кнопками
+                int newWidth = rightEdge - margin - leftOffset;
                 if (newWidth < 60) newWidth = 60;
                 txtMessage.Size = new Size(newWidth, txtMessage.Height);
             }

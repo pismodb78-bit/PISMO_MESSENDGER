@@ -40,7 +40,6 @@ namespace PISMO
 
         // ── Кнопки звонка в заголовке чата ────────────────────────────────
         private Button _btnCallAudio;
-        private Button _btnCallVideo;
 
         // ── Активный звонок ───────────────────────────────────────────────
         private CallForm _activeCall;
@@ -162,26 +161,12 @@ namespace PISMO
                 Cursor = Cursors.Hand
             };
             _btnCallAudio.FlatAppearance.BorderSize = 0;
+            // Одна кнопка звонка: входим в звонок (голос), а камеру/демонстрацию
+            // можно включить уже внутри звонка. Отдельной видео-кнопки больше нет.
             _btnCallAudio.Click += (s, e) => StartCall(withVideo: false);
-            new ToolTip().SetToolTip(_btnCallAudio, "Голосовой звонок");
-
-            _btnCallVideo = new Button
-            {
-                Text = "📹",
-                Font = new Font("Segoe UI", 13f),
-                Size = new Size(38, 38),
-                Dock = DockStyle.Right,
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.Transparent,
-                ForeColor = Color.FromArgb(88, 101, 242),
-                Cursor = Cursors.Hand
-            };
-            _btnCallVideo.FlatAppearance.BorderSize = 0;
-            _btnCallVideo.Click += (s, e) => StartCall(withVideo: true);
-            new ToolTip().SetToolTip(_btnCallVideo, "Видеозвонок");
+            new ToolTip().SetToolTip(_btnCallAudio, "Позвонить (камеру можно включить в звонке)");
 
             pnlChatHeader.Controls.Add(_btnCallAudio);
-            pnlChatHeader.Controls.Add(_btnCallVideo);
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -824,14 +809,6 @@ namespace PISMO
                     StartCall(withVideo: false);
                 };
                 menu.Items.Add(itemCall);
-
-                var itemVideoCall = new ToolStripMenuItem("📹 Видеозвонок");
-                itemVideoCall.Click += (s2, e2) =>
-                {
-                    OpenChat(partnerId, partnerName);
-                    StartCall(withVideo: true);
-                };
-                menu.Items.Add(itemVideoCall);
 
                 // Блок/разблок пользователя
                 try

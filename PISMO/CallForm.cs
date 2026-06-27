@@ -283,7 +283,7 @@ namespace PISMO
 
             _btnMute = MakeBtn("🎤", 0);
             _btnCamera = MakeBtn("📷", 1);
-            _btnCamera.Visible = _hasVideo;
+            _btnCamera.Visible = true; // камеру можно включить в любом звонке (одна кнопка звонка)
             _btnScreen = MakeBtn("🖥", 2);
             _btnAudio = MakeBtn("🔊", 3);
             _btnHangup = MakeBtn("📵", 4);
