@@ -401,9 +401,13 @@ namespace PISMO
                     catch { }
 
                     // Heartbeat присутствия в канале раз в ~5 секунд (в фоне).
+                    // «В эфире» = включена камера или демонстрация экрана.
                     if (_vchId > 0 && (++_vchTick % 5 == 0))
+                    {
+                        bool streaming = _cameraStarted || _screenSharing;
                         System.Threading.Tasks.Task.Run(() =>
-                            VoicePresence.Heartbeat(_vchId, UserSession.EffectiveId));
+                            VoicePresence.Heartbeat(_vchId, UserSession.EffectiveId, streaming));
+                    }
                     return;
                 }
 
@@ -604,6 +608,7 @@ namespace PISMO
                 _transport.HideTransportWindow();
                 _screenPreviewPending = false;
                 _screenSharing = true;
+                PushVoiceState();
                 _btnScreen.BackColor = Color.FromArgb(88, 101, 242);
                 _btnScreen.Text = "⏹";
                 _transport.ConfirmScreenShare();
@@ -807,6 +812,7 @@ namespace PISMO
         private void OnLocalScreenStopped()
         {
             _screenSharing = false;
+            PushVoiceState();
             _btnScreen.BackColor = Color.FromArgb(64, 68, 75);
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
@@ -1086,6 +1092,7 @@ namespace PISMO
                 _cameraStarted = true;
                 _cameraOff = false;
                 _pbLocal.Visible = true;
+                PushVoiceState();
                 _transport.ConfirmCameraShare();
             };
             _cameraPreviewForm.Cancelled += () =>
@@ -1203,6 +1210,7 @@ namespace PISMO
                 _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
                 _transport.StopCameraTrack();
                 _cameraStarted = false;
+                PushVoiceState();
                 var old = _pbLocal.Image; _pbLocal.Image = null; old?.Dispose();
             }
             else
@@ -1243,10 +1251,21 @@ namespace PISMO
             }
         }
 
+        /// <summary>Немедленно отправляет состояние «в эфире» (камера/демка) для
+        /// голосового канала, чтобы бейдж у других обновился без задержки.</summary>
+        private void PushVoiceState()
+        {
+            if (!_isChannel || _vchId <= 0) return;
+            bool streaming = _cameraStarted || _screenSharing;
+            int vch = _vchId, me = UserSession.EffectiveId;
+            System.Threading.Tasks.Task.Run(() => VoicePresence.Heartbeat(vch, me, streaming));
+        }
+
         private void StopScreenShare()
         {
             _screenSharing = false;
             _screenPreviewPending = false;
+            PushVoiceState();
 
             // Звук демонстрации публикуется/останавливается вместе с видео-треком
             // средствами LiveKit (createLocalScreenTracks({audio:true})) — отдельный

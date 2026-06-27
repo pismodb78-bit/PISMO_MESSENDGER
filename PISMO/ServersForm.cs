@@ -353,20 +353,21 @@ namespace PISMO
             });
         }
 
-        private void UpdateVoiceContainer(FlowLayoutPanel cont, List<(int uid, string name)> people)
+        private void UpdateVoiceContainer(FlowLayoutPanel cont, List<(int uid, string name, bool streaming)> people)
         {
             cont.SuspendLayout();
             cont.Controls.Clear();
             if (people != null)
             {
-                foreach (var (uid, name) in people)
-                    cont.Controls.Add(MakeVoiceMemberRow(uid, name));
+                foreach (var (uid, name, streaming) in people)
+                    cont.Controls.Add(MakeVoiceMemberRow(uid, name, streaming));
             }
             cont.ResumeLayout();
         }
 
-        /// <summary>Строка участника голосового канала: аватар + имя + «В ЭФИРЕ».</summary>
-        private Control MakeVoiceMemberRow(int uid, string name)
+        /// <summary>Строка участника голосового канала: аватар + имя, а бейдж
+        /// «В ЭФИРЕ» — только если включена камера или демонстрация экрана.</summary>
+        private Control MakeVoiceMemberRow(int uid, string name, bool streaming)
         {
             var row = new Panel { Width = 178, Height = 30, Margin = new Padding(0, 0, 0, 2), BackColor = Color.Transparent };
 
@@ -399,21 +400,25 @@ namespace PISMO
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
-            var badge = new Label
-            {
-                Text = "В ЭФИРЕ",
-                ForeColor = Color.White,
-                BackColor = Color.FromArgb(237, 66, 69),
-                Font = new Font("Segoe UI Semibold", 6.5f, FontStyle.Bold),
-                AutoSize = false,
-                Size = new Size(48, 16),
-                Location = new Point(130, 7),
-                TextAlign = ContentAlignment.MiddleCenter
-            };
-
             row.Controls.Add(av);
             row.Controls.Add(lbl);
-            row.Controls.Add(badge);
+
+            // Бейдж «В ЭФИРЕ» только при активной камере/демонстрации экрана.
+            if (streaming)
+            {
+                var badge = new Label
+                {
+                    Text = "В ЭФИРЕ",
+                    ForeColor = Color.White,
+                    BackColor = Color.FromArgb(237, 66, 69),
+                    Font = new Font("Segoe UI Semibold", 6.5f, FontStyle.Bold),
+                    AutoSize = false,
+                    Size = new Size(48, 16),
+                    Location = new Point(130, 7),
+                    TextAlign = ContentAlignment.MiddleCenter
+                };
+                row.Controls.Add(badge);
+            }
             // Аватар может подгрузиться позже — перерисуем кружок.
             AvatarStore.EnsureLoaded(uid);
             return row;

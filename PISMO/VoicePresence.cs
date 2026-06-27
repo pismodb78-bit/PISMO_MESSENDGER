@@ -25,19 +25,21 @@ namespace PISMO
             return -1;
         }
 
-        /// <summary>Отмечает/обновляет присутствие пользователя в канале (heartbeat).</summary>
-        public static void Heartbeat(int channelId, int userId)
+        /// <summary>Отмечает/обновляет присутствие пользователя в канале (heartbeat).
+        /// streaming=true, если у пользователя включена камера или демонстрация экрана.</summary>
+        public static void Heartbeat(int channelId, int userId, bool streaming = false)
         {
             if (!_tableOk || channelId <= 0 || userId <= 0) return;
             try
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "INSERT INTO voice_presence (channel_id,user_id,joined_at,last_seen) " +
-                    "VALUES (@c,@u,NOW(),NOW()) " +
-                    "ON DUPLICATE KEY UPDATE last_seen=NOW()", conn);
+                    "INSERT INTO voice_presence (channel_id,user_id,joined_at,last_seen,streaming) " +
+                    "VALUES (@c,@u,NOW(),NOW(),@st) " +
+                    "ON DUPLICATE KEY UPDATE last_seen=NOW(), streaming=@st", conn);
                 cmd.Parameters.AddWithValue("@c", channelId);
                 cmd.Parameters.AddWithValue("@u", userId);
+                cmd.Parameters.AddWithValue("@st", streaming ? 1 : 0);
                 cmd.ExecuteNonQuery();
             }
             catch (MySqlException mex)
@@ -65,15 +67,15 @@ namespace PISMO
 
         /// <summary>Список «живых» участников всех голосовых каналов сервера:
         /// channelId -> [(userId, name)]. Протухшие записи (нет heartbeat &gt; 20 c) игнорируются.</summary>
-        public static Dictionary<int, List<(int uid, string name)>> ReadForServer(int serverId)
+        public static Dictionary<int, List<(int uid, string name, bool streaming)>> ReadForServer(int serverId)
         {
-            var map = new Dictionary<int, List<(int, string)>>();
+            var map = new Dictionary<int, List<(int, string, bool)>>();
             if (!_tableOk || serverId <= 0) return map;
             try
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT vp.channel_id, vp.user_id, " +
+                    "SELECT vp.channel_id, vp.user_id, vp.streaming, " +
                     "TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login " +
                     "FROM voice_presence vp " +
                     "JOIN server_channels sc ON sc.id = vp.channel_id " +
@@ -86,10 +88,11 @@ namespace PISMO
                 {
                     int cid = Convert.ToInt32(r["channel_id"]);
                     int uid = Convert.ToInt32(r["user_id"]);
+                    bool streaming = r["streaming"] != DBNull.Value && Convert.ToInt32(r["streaming"]) != 0;
                     string nm = r["nm"]?.ToString()?.Trim();
                     if (string.IsNullOrWhiteSpace(nm)) nm = r["login"]?.ToString();
                     if (!map.TryGetValue(cid, out var list)) { list = new(); map[cid] = list; }
-                    list.Add((uid, nm ?? ""));
+                    list.Add((uid, nm ?? "", streaming));
                 }
             }
             catch (MySqlException mex)
