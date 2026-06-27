@@ -34,65 +34,86 @@ namespace PISMO
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
-            ClientSize = new Size(560, 680);
+            ClientSize = new Size(560, 700);
             Font = new Font("Segoe UI", 9.5f);
+
+            // Ширина контента с учётом вертикального скролла (чтобы не появлялся
+            // горизонтальный) и единые отступы — раньше блоки «сползали».
+            const int M = 28;                  // боковой отступ
+            int CW = ClientSize.Width - 20;    // ширина «полотна»
+            int IW = CW - M * 2;               // ширина полей ввода
 
             var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.FromArgb(47, 49, 54) };
             Controls.Add(scroll);
 
             // ── Баннер (фон) ────────────────────────────────────────────
-            _banner = new Panel { Location = new Point(0, 0), Size = new Size(560, 150), BackColor = Color.FromArgb(59, 165, 93), Cursor = Cursors.Hand };
+            _banner = new Panel { Location = new Point(0, 0), Size = new Size(CW, 160), BackColor = Color.FromArgb(59, 165, 93), Cursor = Cursors.Hand };
             _banner.Paint += BannerPaint;
             _banner.Click += (s, e) => ChangeBanner();
-            var bannerHint = new Label { Text = "📷 Сменить фон", AutoSize = true, ForeColor = Color.White, BackColor = Color.FromArgb(120, 0, 0, 0), Font = new Font("Segoe UI", 8f), Location = new Point(440, 8), Padding = new Padding(4, 2, 4, 2) };
-            bannerHint.Click += (s, e) => ChangeBanner();
+            var bannerHint = new Label
+            {
+                Text = "📷  Сменить фон",
+                AutoSize = true,
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(140, 0, 0, 0),
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                Padding = new Padding(8, 4, 8, 4),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Cursor = Cursors.Hand
+            };
             _banner.Controls.Add(bannerHint);
+            bannerHint.Location = new Point(CW - bannerHint.PreferredWidth - 12, 12);
+            bannerHint.Click += (s, e) => ChangeBanner();
             scroll.Controls.Add(_banner);
 
-            // ── Аватар (с обрезкой кружком) ─────────────────────────────
-            _avatar = new Panel { Location = new Point(24, 96), Size = new Size(104, 104), BackColor = Color.Transparent, Cursor = Cursors.Hand };
+            // ── Аватар (с обрезкой кружком), перекрывает низ баннера ─────
+            _avatar = new Panel { Location = new Point(M, 106), Size = new Size(112, 112), BackColor = Color.Transparent, Cursor = Cursors.Hand };
             _avatar.Paint += AvatarPaint;
             _avatar.Click += (s, e) => ChangeAvatar();
             scroll.Controls.Add(_avatar);
             _avatar.BringToFront();
 
-            int y = 214;
+            int y = 234;
             Label Hint(string t, int yy)
             {
-                var l = new Label { Text = t.ToUpper(), Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold), ForeColor = Color.FromArgb(160, 162, 168), AutoSize = true, Location = new Point(24, yy) };
+                var l = new Label { Text = t.ToUpper(), Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold), ForeColor = Color.FromArgb(160, 162, 168), AutoSize = true, Location = new Point(M, yy) };
                 scroll.Controls.Add(l); return l;
             }
-            TextBox Box(int yy, int h = 28, bool multiline = false)
+            TextBox Box(int yy, int h = 30, bool multiline = false)
             {
-                var tb = new TextBox { Location = new Point(24, yy), Size = new Size(512, h), BackColor = Color.FromArgb(32, 34, 37), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10.5f), Multiline = multiline };
+                var tb = new TextBox { Location = new Point(M, yy), Size = new Size(IW, h), BackColor = Color.FromArgb(32, 34, 37), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10.5f), Multiline = multiline };
                 scroll.Controls.Add(tb); return tb;
             }
 
-            Hint("Имя", y); _txtName = Box(y + 16); y += 56;
-            Hint("Фамилия", y); _txtSurname = Box(y + 16); y += 56;
+            Hint("Имя", y); _txtName = Box(y + 18); y += 60;
+            Hint("Фамилия", y); _txtSurname = Box(y + 18); y += 60;
 
-            Hint("Логин", y); _txtLogin = Box(y + 16);
-            _lblLoginStatus = new Label { AutoSize = true, Font = new Font("Segoe UI", 8f), ForeColor = Color.FromArgb(150, 152, 158), Location = new Point(360, y - 2) };
+            var lblLoginHint = Hint("Логин", y);
+            _lblLoginStatus = new Label { AutoSize = true, Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold), ForeColor = Color.FromArgb(150, 152, 158), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(CW - M - 90, y) };
             scroll.Controls.Add(_lblLoginStatus);
-            y += 56;
+            _txtLogin = Box(y + 18); y += 60;
 
-            Hint("О себе", y); _txtAbout = Box(y + 16, 70, true); y += 98;
+            Hint("О себе", y); _txtAbout = Box(y + 18, 72, true); y += 102;
 
-            Hint("Ссылки (по строке: Название|https://...)", y); _txtLinks = Box(y + 16, 70, true); y += 98;
+            Hint("Ссылки (по строке: Название|https://...)", y); _txtLinks = Box(y + 18, 72, true); y += 102;
 
-            // ── Смена пароля ────────────────────────────────────────────
-            Hint("Смена пароля (необязательно)", y); y += 22;
-            _txtOldPass = Box(y); _txtOldPass.UseSystemPasswordChar = true; _txtOldPass.PlaceholderText = "Текущий пароль"; y += 36;
-            _txtNewPass = Box(y); _txtNewPass.UseSystemPasswordChar = true; _txtNewPass.PlaceholderText = "Новый пароль"; y += 36;
-            _txtNewPass2 = Box(y); _txtNewPass2.UseSystemPasswordChar = true; _txtNewPass2.PlaceholderText = "Повторите новый пароль"; y += 44;
+            // ── Разделитель + смена пароля ──────────────────────────────
+            var sep = new Panel { Location = new Point(M, y), Size = new Size(IW, 1), BackColor = Color.FromArgb(64, 67, 73) };
+            scroll.Controls.Add(sep); y += 12;
+            Hint("Смена пароля (необязательно)", y); y += 24;
+            _txtOldPass = Box(y); _txtOldPass.UseSystemPasswordChar = true; _txtOldPass.PlaceholderText = "Текущий пароль"; y += 38;
+            _txtNewPass = Box(y); _txtNewPass.UseSystemPasswordChar = true; _txtNewPass.PlaceholderText = "Новый пароль"; y += 38;
+            _txtNewPass2 = Box(y); _txtNewPass2.UseSystemPasswordChar = true; _txtNewPass2.PlaceholderText = "Повторите новый пароль"; y += 48;
 
-            _lblStatus = new Label { AutoSize = true, Font = new Font("Segoe UI", 9f), ForeColor = Color.FromArgb(240, 71, 71), Location = new Point(24, y), MaximumSize = new Size(512, 0) };
-            scroll.Controls.Add(_lblStatus); y += 28;
+            _lblStatus = new Label { AutoSize = true, Font = new Font("Segoe UI", 9f), ForeColor = Color.FromArgb(240, 71, 71), Location = new Point(M, y), MaximumSize = new Size(IW, 0) };
+            scroll.Controls.Add(_lblStatus); y += 30;
 
-            var btnSave = new Button { Text = "Сохранить", BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold), Location = new Point(24, y), Size = new Size(512, 44), Cursor = Cursors.Hand };
+            var btnSave = new Button { Text = "Сохранить", BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold), Location = new Point(M, y), Size = new Size(IW, 46), Cursor = Cursors.Hand };
             btnSave.FlatAppearance.BorderSize = 0;
+            btnSave.MouseEnter += (s, e) => btnSave.BackColor = Color.FromArgb(71, 82, 196);
+            btnSave.MouseLeave += (s, e) => btnSave.BackColor = Color.FromArgb(88, 101, 242);
             btnSave.Click += (s, e) => DoSave();
-            scroll.Controls.Add(btnSave);
+            scroll.Controls.Add(btnSave); y += 60;
 
             // Проверка логина «на лету».
             _txtLogin.TextChanged += (s, e) => CheckLogin();
@@ -135,9 +156,9 @@ namespace PISMO
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            int size = _avatar.Width - 8;
-            int x = 4, y = 4;
-            // обводка-«подложка» цветом формы
+            int size = _avatar.Width - 12;
+            int x = 6, y = 6;
+            // Толстое кольцо цветом формы — отделяет аватар от баннера (как в Discord).
             using (var bg = new SolidBrush(Color.FromArgb(47, 49, 54)))
                 g.FillEllipse(bg, 0, 0, _avatar.Width - 1, _avatar.Height - 1);
 
