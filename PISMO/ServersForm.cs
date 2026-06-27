@@ -16,12 +16,18 @@ namespace PISMO
     public sealed class ServersForm : Form
     {
         private int _serverId = -1;
+        private string _serverName = "";
         private bool _isOwner = false;
         private int _channelId = -1;
         private string _channelType = "text";
         private string _channelName = "";
 
+        // Права текущего пользователя на выбранном сервере и заглушение.
+        private bool _canBan, _canKick, _canMute, _canManage, _serverMuted;
+
         private readonly int _me = UserSession.EffectiveId;
+        private string _myLogin = "";
+        private string _myRoleName = "";
 
         private FlowLayoutPanel _pnlServers;
         private FlowLayoutPanel _pnlChannels;
@@ -42,6 +48,15 @@ namespace PISMO
             BackColor = Color.FromArgb(54, 57, 63);
             Font = new Font("Segoe UI", 9.5f);
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT login FROM users WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", _me);
+                _myLogin = cmd.ExecuteScalar()?.ToString() ?? "";
+            }
+            catch { }
 
             BuildUi();
             Load += (s, e) => LoadServers();
@@ -182,12 +197,44 @@ namespace PISMO
 
         private void SelectServer(int sid, string name, bool owner)
         {
-            _serverId = sid; _isOwner = owner; _channelId = -1; _lastMsgCount = -1;
+            _serverId = sid; _serverName = name; _isOwner = owner; _channelId = -1; _lastMsgCount = -1;
             _lblTitle.Text = name;
             _pnlMessages.Controls.Clear();
             _pnlInput.Visible = false;
+            ComputePerms();
             LoadChannels();
             LoadMembers();
+        }
+
+        /// <summary>Считает права текущего пользователя на сервере и его mute.</summary>
+        private void ComputePerms()
+        {
+            _canBan = _canKick = _canMute = _canManage = _isOwner;
+            _serverMuted = false;
+            _myRoleName = "";
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT m.muted_notifs, r.name AS rname, r.can_ban, r.can_kick, r.can_mute, r.can_manage " +
+                    "FROM server_members m LEFT JOIN server_roles r ON r.id=m.role_id " +
+                    "WHERE m.server_id=@s AND m.user_id=@u", conn);
+                cmd.Parameters.AddWithValue("@s", _serverId);
+                cmd.Parameters.AddWithValue("@u", _me);
+                using var r = cmd.ExecuteReader();
+                if (r.Read())
+                {
+                    _serverMuted = r["muted_notifs"] != DBNull.Value && Convert.ToInt32(r["muted_notifs"]) == 1;
+                    _myRoleName = r["rname"] == DBNull.Value ? "" : r["rname"].ToString();
+                    if (!_isOwner)
+                    {
+                        bool B(string c) => r[c] != DBNull.Value && Convert.ToInt32(r[c]) == 1;
+                        _canBan |= B("can_ban"); _canKick |= B("can_kick");
+                        _canMute |= B("can_mute"); _canManage |= B("can_manage");
+                    }
+                }
+            }
+            catch { }
         }
 
         // ── Каналы ──────────────────────────────────────────────────────
@@ -195,11 +242,20 @@ namespace PISMO
         {
             _pnlChannels.Controls.Clear();
             _pnlChannels.Controls.Add(MakeHeader("Каналы"));
-            if (_isOwner)
+
+            // Заглушение сервера (для всех участников).
+            var mute = MakeSideButton(_serverMuted ? "🔕 Сервер заглушён" : "🔔 Уведомления вкл", Color.FromArgb(47, 49, 54));
+            mute.Click += (s, e) => ToggleServerMute();
+            _pnlChannels.Controls.Add(mute);
+
+            if (_canManage)
             {
                 var add = MakeSideButton("➕ Канал", Color.FromArgb(59, 165, 93));
                 add.Click += (s, e) => CreateChannel();
                 _pnlChannels.Controls.Add(add);
+                var roles = MakeSideButton("⚙ Роли", Color.FromArgb(88, 101, 242));
+                roles.Click += (s, e) => ManageRoles();
+                _pnlChannels.Controls.Add(roles);
                 var inv = MakeSideButton("ℹ ID сервера: " + _serverId, Color.FromArgb(47, 49, 54));
                 _pnlChannels.Controls.Add(inv);
             }
@@ -311,11 +367,14 @@ namespace PISMO
                     string text = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString());
                     string time = Convert.ToDateTime(r["created_at"]).ToString("HH:mm");
 
+                    bool mine = MentionsMe(text);
                     var lbl = new Label
                     {
                         AutoSize = true,
                         MaximumSize = new Size(_pnlMessages.ClientSize.Width - 40, 0),
                         ForeColor = Color.FromArgb(220, 221, 222),
+                        BackColor = mine ? Color.FromArgb(74, 63, 38) : Color.Transparent, // подсветка упоминания
+                        Padding = mine ? new Padding(6, 4, 6, 4) : new Padding(0),
                         Margin = new Padding(0, 2, 0, 6),
                         Font = new Font("Segoe UI", 10f),
                         Text = $"{nm} · {time}\n{text}"
@@ -343,9 +402,74 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@t", Crypto.Enc(text));
                 cmd.ExecuteNonQuery();
                 WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
+                NotifyMentions(text);
                 LoadMessages();
             }
             catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        /// <summary>Шлёт WS-уведомление «mention» каждому упомянутому участнику.</summary>
+        private void NotifyMentions(string text)
+        {
+            try
+            {
+                foreach (int uid in ResolveMentionedUserIds(text))
+                    if (uid != _me)
+                        WebSocketSignalingClient.Instance.SendMessage(
+                            "mention", uid, _channelId, $"{_serverId}|{_serverName}|{_channelName}");
+            }
+            catch { }
+        }
+
+        /// <summary>Разбирает @упоминания: @все/@all/@everyone, @роль, @логин.</summary>
+        private HashSet<int> ResolveMentionedUserIds(string text)
+        {
+            var ids = new HashSet<int>();
+            if (string.IsNullOrEmpty(text) || !text.Contains('@')) return ids;
+
+            var tokens = new HashSet<string>();
+            foreach (System.Text.RegularExpressions.Match m in
+                     System.Text.RegularExpressions.Regex.Matches(text, @"@([^\s@]+)"))
+                tokens.Add(m.Groups[1].Value.ToLowerInvariant().Trim('.', ',', '!', '?', ':'));
+            if (tokens.Count == 0) return ids;
+
+            bool all = tokens.Contains("все") || tokens.Contains("all") || tokens.Contains("everyone");
+
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                // Участники: uid, логин, роль.
+                using (var cmd = new MySqlCommand(
+                    "SELECT m.user_id, u.login, IFNULL(LOWER(r.name),'') AS rname " +
+                    "FROM server_members m JOIN users u ON u.id=m.user_id " +
+                    "LEFT JOIN server_roles r ON r.id=m.role_id WHERE m.server_id=@s", conn))
+                {
+                    cmd.Parameters.AddWithValue("@s", _serverId);
+                    using var r = cmd.ExecuteReader();
+                    while (r.Read())
+                    {
+                        int uid = Convert.ToInt32(r["user_id"]);
+                        string login = r["login"].ToString().ToLowerInvariant();
+                        string rname = r["rname"].ToString();
+                        if (all) { ids.Add(uid); continue; }
+                        if (tokens.Contains(login)) ids.Add(uid);
+                        else if (!string.IsNullOrEmpty(rname) && tokens.Contains(rname)) ids.Add(uid);
+                    }
+                }
+            }
+            catch { }
+            return ids;
+        }
+
+        /// <summary>Упоминают ли меня в этом тексте (для подсветки).</summary>
+        private bool MentionsMe(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            string t = text.ToLowerInvariant();
+            if (t.Contains("@все") || t.Contains("@all") || t.Contains("@everyone")) return true;
+            if (!string.IsNullOrEmpty(_myLogin) && t.Contains("@" + _myLogin.ToLowerInvariant())) return true;
+            if (!string.IsNullOrEmpty(_myRoleName) && t.Contains("@" + _myRoleName.ToLowerInvariant())) return true;
+            return false;
         }
 
         // ── Участники ───────────────────────────────────────────────────
@@ -355,10 +479,14 @@ namespace PISMO
             _pnlMembers.Controls.Add(MakeHeader("Участники"));
             try
             {
+                var roles = GetRoles(); // (id, name) для подменю «Выдать роль»
+
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT m.user_id, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login, s.owner_id " +
+                    "SELECT m.user_id, m.role_id, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login, s.owner_id, " +
+                    "r.name AS rname, r.color AS rcolor " +
                     "FROM server_members m JOIN users u ON u.id=m.user_id JOIN servers s ON s.id=m.server_id " +
+                    "LEFT JOIN server_roles r ON r.id=m.role_id " +
                     "WHERE m.server_id=@s ORDER BY (m.user_id=s.owner_id) DESC, u.login", conn);
                 cmd.Parameters.AddWithValue("@s", _serverId);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
@@ -368,19 +496,153 @@ namespace PISMO
                     bool owner = Convert.ToInt32(r["owner_id"]) == uid;
                     string nm = r["nm"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(nm)) nm = r["login"].ToString();
-                    var b = MakeSideButton((owner ? "👑 " : "• ") + nm, Color.FromArgb(54, 57, 63));
-                    if (_isOwner && uid != _me)
+                    string rname = r["rname"] == DBNull.Value ? "" : r["rname"].ToString();
+
+                    var b = MakeSideButton((owner ? "👑 " : "• ") + nm + (string.IsNullOrEmpty(rname) ? "" : $"  [{rname}]"),
+                        Color.FromArgb(54, 57, 63));
+                    if (!string.IsNullOrEmpty(rname) && r["rcolor"] != DBNull.Value)
+                        try { b.ForeColor = ColorTranslator.FromHtml(r["rcolor"].ToString()); } catch { }
+
+                    bool canManageThis = uid != _me && !owner && (_canKick || _canBan || _canManage);
+                    if (canManageThis)
                     {
                         var menu = new ContextMenuStrip();
-                        menu.Items.Add("Выгнать", null, (s, e) => KickMember(uid, false));
-                        menu.Items.Add("Забанить", null, (s, e) => KickMember(uid, true));
-                        b.ContextMenuStrip = menu;
-                        b.Text += "  ⋮";
+                        if (_canManage)
+                        {
+                            var roleItem = new ToolStripMenuItem("Выдать роль");
+                            foreach (var (rid, rn) in roles)
+                            {
+                                int ridCap = rid;
+                                roleItem.DropDownItems.Add(rn, null, (s, e) => AssignRole(uid, ridCap));
+                            }
+                            roleItem.DropDownItems.Add(new ToolStripSeparator());
+                            roleItem.DropDownItems.Add("— Снять роль —", null, (s, e) => AssignRole(uid, null));
+                            menu.Items.Add(roleItem);
+                        }
+                        if (_canKick) menu.Items.Add("Выгнать", null, (s, e) => KickMember(uid, false));
+                        if (_canBan) menu.Items.Add("Забанить", null, (s, e) => KickMember(uid, true));
+                        if (menu.Items.Count > 0) { b.ContextMenuStrip = menu; b.Text += "  ⋮"; }
                     }
                     _pnlMembers.Controls.Add(b);
                 }
             }
             catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        private List<(int id, string name)> GetRoles()
+        {
+            var list = new List<(int, string)>();
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT id,name FROM server_roles WHERE server_id=@s ORDER BY position,id", conn);
+                cmd.Parameters.AddWithValue("@s", _serverId);
+                using var r = cmd.ExecuteReader();
+                while (r.Read()) list.Add((Convert.ToInt32(r["id"]), r["name"].ToString()));
+            }
+            catch { }
+            return list;
+        }
+
+        private void AssignRole(int uid, int? roleId)
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("UPDATE server_members SET role_id=@r WHERE server_id=@s AND user_id=@u", conn);
+                cmd.Parameters.AddWithValue("@r", (object)roleId ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@s", _serverId);
+                cmd.Parameters.AddWithValue("@u", uid);
+                cmd.ExecuteNonQuery();
+                LoadMembers();
+            }
+            catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        private void ToggleServerMute()
+        {
+            try
+            {
+                _serverMuted = !_serverMuted;
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("UPDATE server_members SET muted_notifs=@m WHERE server_id=@s AND user_id=@u", conn);
+                cmd.Parameters.AddWithValue("@m", _serverMuted ? 1 : 0);
+                cmd.Parameters.AddWithValue("@s", _serverId);
+                cmd.Parameters.AddWithValue("@u", _me);
+                cmd.ExecuteNonQuery();
+                LoadChannels();
+            }
+            catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        /// <summary>Окно управления ролями: список + создание роли с правами и цветом.</summary>
+        private void ManageRoles()
+        {
+            using var f = new Form
+            {
+                Text = "Роли сервера",
+                ClientSize = new Size(420, 420),
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                BackColor = Color.FromArgb(47, 49, 54),
+                MaximizeBox = false, MinimizeBox = false
+            };
+            var list = new ListBox { Location = new Point(12, 12), Size = new Size(396, 150), BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            void Reload() { list.Items.Clear(); foreach (var (id, n) in GetRoles()) list.Items.Add($"{id}: {n}"); }
+            Reload();
+
+            var lblN = new Label { Text = "Название роли:", ForeColor = Color.White, Location = new Point(12, 176), AutoSize = true };
+            var txtN = new TextBox { Location = new Point(12, 196), Size = new Size(260, 24), BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            var lblC = new Label { Text = "Цвет (#RRGGBB):", ForeColor = Color.White, Location = new Point(284, 176), AutoSize = true };
+            var txtC = new TextBox { Location = new Point(284, 196), Size = new Size(124, 24), Text = "#3BA55D", BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+
+            var cbBan = new CheckBox { Text = "Банить", ForeColor = Color.White, Location = new Point(12, 230), AutoSize = true };
+            var cbKick = new CheckBox { Text = "Выгонять", ForeColor = Color.White, Location = new Point(120, 230), AutoSize = true };
+            var cbMute = new CheckBox { Text = "Мьютить", ForeColor = Color.White, Location = new Point(232, 230), AutoSize = true };
+            var cbManage = new CheckBox { Text = "Управление (каналы/роли)", ForeColor = Color.White, Location = new Point(12, 258), AutoSize = true };
+
+            var btnCreate = new Button { Text = "Создать роль", Location = new Point(12, 296), Size = new Size(140, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(59, 165, 93), ForeColor = Color.White };
+            btnCreate.Click += (s, e) =>
+            {
+                string n = txtN.Text.Trim();
+                if (string.IsNullOrEmpty(n)) return;
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "INSERT INTO server_roles (server_id,name,color,can_ban,can_kick,can_mute,can_manage,position) " +
+                        "VALUES (@s,@n,@c,@b,@k,@mu,@mg,10)", conn);
+                    cmd.Parameters.AddWithValue("@s", _serverId);
+                    cmd.Parameters.AddWithValue("@n", n);
+                    cmd.Parameters.AddWithValue("@c", string.IsNullOrWhiteSpace(txtC.Text) ? "#99AAB5" : txtC.Text.Trim());
+                    cmd.Parameters.AddWithValue("@b", cbBan.Checked ? 1 : 0);
+                    cmd.Parameters.AddWithValue("@k", cbKick.Checked ? 1 : 0);
+                    cmd.Parameters.AddWithValue("@mu", cbMute.Checked ? 1 : 0);
+                    cmd.Parameters.AddWithValue("@mg", cbManage.Checked ? 1 : 0);
+                    cmd.ExecuteNonQuery();
+                    txtN.Clear(); Reload();
+                }
+                catch (Exception ex) { ShowDbError(ex); }
+            };
+            var btnDel = new Button { Text = "Удалить выбранную", Location = new Point(164, 296), Size = new Size(160, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(240, 71, 71), ForeColor = Color.White };
+            btnDel.Click += (s, e) =>
+            {
+                if (list.SelectedItem == null) return;
+                string sel = list.SelectedItem.ToString();
+                int rid = int.Parse(sel.Substring(0, sel.IndexOf(':')));
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using (var c1 = new MySqlCommand("UPDATE server_members SET role_id=NULL WHERE role_id=@r", conn)) { c1.Parameters.AddWithValue("@r", rid); c1.ExecuteNonQuery(); }
+                    using (var c2 = new MySqlCommand("DELETE FROM server_roles WHERE id=@r", conn)) { c2.Parameters.AddWithValue("@r", rid); c2.ExecuteNonQuery(); }
+                    Reload();
+                }
+                catch (Exception ex) { ShowDbError(ex); }
+            };
+
+            f.Controls.AddRange(new Control[] { list, lblN, txtN, lblC, txtC, cbBan, cbKick, cbMute, cbManage, btnCreate, btnDel });
+            f.ShowDialog(this);
+            LoadMembers();
         }
 
         private void KickMember(int uid, bool ban)

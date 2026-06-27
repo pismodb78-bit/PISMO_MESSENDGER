@@ -243,10 +243,48 @@ namespace PISMO
                         {
                             PollTick(null, null);
                         }
+                        else if (type == "mention")
+                        {
+                            // payload: serverId|serverName|channelName
+                            HandleMentionNotification(payload);
+                        }
                     });
                 }
                 catch { }
             };
+        }
+
+        /// <summary>Трей-уведомление об упоминании на сервере (если сервер не
+        /// заглушён). payload: "serverId|serverName|channelName".</summary>
+        private void HandleMentionNotification(string payload)
+        {
+            try
+            {
+                var parts = (payload ?? "").Split('|');
+                if (parts.Length < 3) return;
+                if (!int.TryParse(parts[0], out int serverId)) return;
+
+                // Уважаем заглушение сервера.
+                bool muted = false;
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "SELECT muted_notifs FROM server_members WHERE server_id=@s AND user_id=@u", conn);
+                    cmd.Parameters.AddWithValue("@s", serverId);
+                    cmd.Parameters.AddWithValue("@u", UserSession.EffectiveId);
+                    var o = cmd.ExecuteScalar();
+                    muted = o != null && o != DBNull.Value && Convert.ToInt32(o) == 1;
+                }
+                catch { }
+                if (muted) return;
+
+                if (_trayIcon != null && _trayIcon.Icon != null)
+                    _trayIcon.ShowBalloonTip(4000, "PISMO — упоминание",
+                        $"Вас упомянули: {parts[1]} · #{parts[2]}", ToolTipIcon.Info);
+                try { FlashWindow(this.Handle, true); } catch { }
+            }
+            catch { }
         }
 
         /// <summary>Перерисовать аватар в карточке пользователя uid (после
