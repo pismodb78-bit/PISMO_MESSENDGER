@@ -42,6 +42,12 @@ namespace PISMO
         // Контейнеры участников «в эфире» под каждым голосовым каналом.
         private readonly Dictionary<int, FlowLayoutPanel> _voiceContainers = new();
 
+        // Автоподсказка @упоминаний при вводе.
+        private Form _mentionPopup;
+        private ListBox _mentionList;
+        private readonly List<(string token, string display, string desc)> _mentionItems = new();
+        private int _mentionAtPos = -1;   // позиция '@' в тексте, для которого открыта подсказка
+
         public ServersForm()
         {
             Text = "PISMO — Серверы";
@@ -81,6 +87,7 @@ namespace PISMO
                 try { WebSocketSignalingClient.Instance.OnMessageReceived -= OnWs; } catch { }
                 try { _refresh.Stop(); _refresh.Dispose(); } catch { }
                 try { AvatarStore.AvatarLoaded -= OnAvatarLoadedForVoice; } catch { }
+                try { _mentionPopup?.Dispose(); } catch { }
             };
         }
 
@@ -120,13 +127,19 @@ namespace PISMO
 
             _pnlInput = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = Color.FromArgb(64, 68, 75), Visible = false };
             _txtInput = new TextBox { Dock = DockStyle.Fill, Multiline = false, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, Font = new Font("Segoe UI", 11f) };
-            _txtInput.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SendChannelMessage(); } };
+            _txtInput.KeyDown += TxtInput_KeyDown;
+            _txtInput.TextChanged += (s, e) => UpdateMentionPopup();
+            _txtInput.LostFocus += (s, e) => { if (_mentionPopup != null && !_mentionPopup.Focused) HideMentionPopup(); };
             var btnSend = new Button { Dock = DockStyle.Right, Width = 90, Text = "Отправить", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White };
             btnSend.FlatAppearance.BorderSize = 0;
             btnSend.Click += (s, e) => SendChannelMessage();
+            var btnGif = new Button { Dock = DockStyle.Right, Width = 52, Text = "GIF", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
+            btnGif.FlatAppearance.BorderSize = 0;
+            btnGif.Click += (s, e) => OpenServerGifPicker();
             var inputHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10, 10, 10, 10) };
             inputHost.Controls.Add(_txtInput);
             _pnlInput.Controls.Add(inputHost);
+            _pnlInput.Controls.Add(btnGif);
             _pnlInput.Controls.Add(btnSend);
 
             center.Controls.Add(_pnlMessages);
@@ -515,13 +528,41 @@ namespace PISMO
                     string text = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString());
                     string time = Convert.ToDateTime(r["created_at"]).ToString("HH:mm");
 
+                    // Меня упомянули (@логин/@роль/@все) — зелёная полупрозрачная плашка.
                     bool mine = MentionsMe(text);
+
+                    // GIF-сообщение: "gif:<url>" — рендерим анимированную картинку.
+                    if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string url = text.Substring(4);
+                        var holder = new Panel
+                        {
+                            AutoSize = true,
+                            Margin = new Padding(0, 2, 0, 6),
+                            BackColor = Color.Transparent
+                        };
+                        var head = new Label
+                        {
+                            AutoSize = true,
+                            ForeColor = Color.FromArgb(150, 152, 158),
+                            Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                            Location = new Point(0, 0),
+                            Text = $"{nm} · {time}"
+                        };
+                        holder.Controls.Add(head);
+                        var ph = new Panel { Location = new Point(0, 20), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
+                        holder.Controls.Add(ph);
+                        _pnlMessages.Controls.Add(holder);
+                        _ = LoadServerGifAsync(ph, url);
+                        continue;
+                    }
+
                     var lbl = new Label
                     {
                         AutoSize = true,
                         MaximumSize = new Size(_pnlMessages.ClientSize.Width - 40, 0),
                         ForeColor = Color.FromArgb(220, 221, 222),
-                        BackColor = mine ? Color.FromArgb(74, 63, 38) : Color.Transparent, // подсветка упоминания
+                        BackColor = mine ? Color.FromArgb(40, 59, 165, 93) : Color.Transparent, // зелёная подсветка упоминания
                         Padding = mine ? new Padding(6, 4, 6, 4) : new Padding(0),
                         Margin = new Padding(0, 2, 0, 6),
                         Font = new Font("Segoe UI", 10f),
@@ -536,24 +577,241 @@ namespace PISMO
             catch (Exception ex) { ShowDbError(ex); }
         }
 
+        /// <summary>Качает GIF по url и вставляет анимированную картинку в плейсхолдер.</summary>
+        private async System.Threading.Tasks.Task LoadServerGifAsync(Panel placeholder, string url)
+        {
+            byte[] data;
+            try { data = await GiphyClient.DownloadAsync(url); }
+            catch { return; }
+            if (data == null || data.Length == 0 || placeholder.IsDisposed) return;
+            try
+            {
+                if (IsDisposed || !IsHandleCreated) return;
+                BeginInvoke(new Action(() =>
+                {
+                    if (placeholder.IsDisposed) return;
+                    var pb = AnimatedGif.Create(data, 260, 200);
+                    pb.Location = new Point(0, 0);
+                    placeholder.Size = pb.Size;
+                    placeholder.Controls.Add(pb);
+                }));
+            }
+            catch { }
+        }
+
         private void SendChannelMessage()
         {
             string text = _txtInput.Text.Trim();
             if (string.IsNullOrEmpty(text) || _channelId <= 0) return;
             _txtInput.Clear();
+            SendChannelRaw(text);
+        }
+
+        // ── Автоподсказка @упоминаний ───────────────────────────────────
+        private void TxtInput_KeyDown(object sender, KeyEventArgs e)
+        {
+            // Если открыта подсказка — стрелки/Enter/Tab/Esc управляют ею.
+            if (_mentionPopup != null && _mentionPopup.Visible && _mentionList.Items.Count > 0)
+            {
+                if (e.KeyCode == Keys.Down) { _mentionList.SelectedIndex = Math.Min(_mentionList.SelectedIndex + 1, _mentionList.Items.Count - 1); e.SuppressKeyPress = true; return; }
+                if (e.KeyCode == Keys.Up) { _mentionList.SelectedIndex = Math.Max(_mentionList.SelectedIndex - 1, 0); e.SuppressKeyPress = true; return; }
+                if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Tab) { AcceptMention(); e.SuppressKeyPress = true; return; }
+                if (e.KeyCode == Keys.Escape) { HideMentionPopup(); e.SuppressKeyPress = true; return; }
+            }
+            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SendChannelMessage(); }
+        }
+
+        /// <summary>Находит активный токен @… у курсора и показывает/обновляет подсказку.</summary>
+        private void UpdateMentionPopup()
+        {
+            string text = _txtInput.Text;
+            int caret = _txtInput.SelectionStart;
+            int at = -1;
+            for (int i = caret - 1; i >= 0; i--)
+            {
+                char c = text[i];
+                if (c == '@') { at = i; break; }
+                if (char.IsWhiteSpace(c)) break;  // токен прерван пробелом
+            }
+            if (at < 0) { HideMentionPopup(); return; }
+
+            string partial = text.Substring(at + 1, caret - at - 1).ToLowerInvariant();
+            _mentionAtPos = at;
+            BuildMentionItems(partial);
+            if (_mentionItems.Count == 0) { HideMentionPopup(); return; }
+            ShowMentionPopup();
+        }
+
+        private void BuildMentionItems(string partial)
+        {
+            _mentionItems.Clear();
+            void Add(string token, string display, string desc)
+            {
+                if (string.IsNullOrEmpty(partial)
+                    || token.ToLowerInvariant().Contains(partial)
+                    || display.ToLowerInvariant().Contains(partial))
+                    _mentionItems.Add((token, display, desc));
+            }
+
+            Add("everyone", "@everyone", "Оповестить всех участников канала");
+            Add("here", "@here", "Оповестить тех, кто сейчас в сети");
+
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                // Роли сервера.
+                using (var cmd = new MySqlCommand("SELECT name FROM server_roles WHERE server_id=@s ORDER BY position,id", conn))
+                {
+                    cmd.Parameters.AddWithValue("@s", _serverId);
+                    using var r = cmd.ExecuteReader();
+                    while (r.Read())
+                    {
+                        string rn = r["name"].ToString();
+                        if (!string.IsNullOrWhiteSpace(rn)) Add(rn, "@" + rn, "Оповестить роль");
+                    }
+                }
+                // Участники.
+                using (var cmd = new MySqlCommand(
+                    "SELECT u.login, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm " +
+                    "FROM server_members m JOIN users u ON u.id=m.user_id WHERE m.server_id=@s", conn))
+                {
+                    cmd.Parameters.AddWithValue("@s", _serverId);
+                    using var r = cmd.ExecuteReader();
+                    while (r.Read())
+                    {
+                        string login = r["login"].ToString();
+                        string nm = r["nm"].ToString().Trim();
+                        if (string.IsNullOrWhiteSpace(login)) continue;
+                        string disp = string.IsNullOrWhiteSpace(nm) ? "@" + login : $"@{login} ({nm})";
+                        Add(login, disp, "Участник");
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void BuildMentionPopupControl()
+        {
+            if (_mentionPopup != null) return;
+            _mentionList = new ListBox
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(32, 34, 37),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BorderStyle = BorderStyle.None,
+                Font = new Font("Segoe UI", 9.5f),
+                IntegralHeight = false,
+                DrawMode = DrawMode.OwnerDrawFixed,
+                ItemHeight = 34
+            };
+            _mentionList.DrawItem += (s, e) =>
+            {
+                if (e.Index < 0 || e.Index >= _mentionItems.Count) return;
+                var it = _mentionItems[e.Index];
+                bool sel = (e.State & DrawItemState.Selected) != 0;
+                using (var bg = new SolidBrush(sel ? Color.FromArgb(59, 80, 120) : Color.FromArgb(32, 34, 37)))
+                    e.Graphics.FillRectangle(bg, e.Bounds);
+                using var fMain = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
+                using var fDesc = new Font("Segoe UI", 8f);
+                e.Graphics.DrawString(it.display, fMain, Brushes.White, e.Bounds.Left + 8, e.Bounds.Top + 3);
+                e.Graphics.DrawString(it.desc, fDesc, new SolidBrush(Color.FromArgb(150, 152, 158)), e.Bounds.Left + 8, e.Bounds.Top + 18);
+            };
+            _mentionList.Click += (s, e) => AcceptMention();
+            _mentionList.MouseDoubleClick += (s, e) => AcceptMention();
+
+            _mentionPopup = new NoActivateForm
+            {
+                FormBorderStyle = FormBorderStyle.None,
+                StartPosition = FormStartPosition.Manual,
+                ShowInTaskbar = false,
+                BackColor = Color.FromArgb(32, 34, 37),
+                Size = new Size(340, 180)
+            };
+            _mentionPopup.Controls.Add(_mentionList);
+        }
+
+        private void ShowMentionPopup()
+        {
+            BuildMentionPopupControl();
+            _mentionList.BeginUpdate();
+            _mentionList.Items.Clear();
+            foreach (var _ in _mentionItems) _mentionList.Items.Add("");
+            _mentionList.EndUpdate();
+            if (_mentionList.Items.Count > 0) _mentionList.SelectedIndex = 0;
+
+            int rows = Math.Min(5, _mentionItems.Count);
+            _mentionPopup.Height = rows * _mentionList.ItemHeight + 4;
+
+            // Позиционируем над полем ввода.
+            try
+            {
+                var p = _txtInput.PointToScreen(new Point(0, 0));
+                _mentionPopup.Location = new Point(p.X, p.Y - _mentionPopup.Height - 2);
+            }
+            catch { }
+
+            if (!_mentionPopup.Visible)
+                _mentionPopup.Show(this); // не активируется (NoActivateForm) — фокус в поле ввода
+        }
+
+        /// <summary>Окно, которое не забирает фокус при показе (для подсказки @).</summary>
+        private sealed class NoActivateForm : Form
+        {
+            protected override bool ShowWithoutActivation => true;
+            protected override CreateParams CreateParams
+            {
+                get { var cp = base.CreateParams; cp.ExStyle |= 0x08000000 /* WS_EX_NOACTIVATE */; return cp; }
+            }
+        }
+
+        private void HideMentionPopup()
+        {
+            _mentionAtPos = -1;
+            if (_mentionPopup != null && _mentionPopup.Visible) _mentionPopup.Hide();
+        }
+
+        private void AcceptMention()
+        {
+            if (_mentionList == null || _mentionList.SelectedIndex < 0 || _mentionAtPos < 0) return;
+            var it = _mentionItems[_mentionList.SelectedIndex];
+            int caret = _txtInput.SelectionStart;
+            string text = _txtInput.Text;
+            if (_mentionAtPos > text.Length) { HideMentionPopup(); return; }
+
+            string before = text.Substring(0, _mentionAtPos);
+            string after = caret <= text.Length ? text.Substring(caret) : "";
+            string insert = "@" + it.token + " ";
+            _txtInput.Text = before + insert + after;
+            _txtInput.SelectionStart = (before + insert).Length;
+            HideMentionPopup();
+        }
+
+        /// <summary>Записывает сообщение канала (текст или "gif:&lt;url&gt;") и рассылает.</summary>
+        private void SendChannelRaw(string rawText)
+        {
+            if (string.IsNullOrEmpty(rawText) || _channelId <= 0) return;
             try
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand("INSERT INTO server_messages (channel_id, sender_id, text) VALUES (@c,@s,@t)", conn);
                 cmd.Parameters.AddWithValue("@c", _channelId);
                 cmd.Parameters.AddWithValue("@s", _me);
-                cmd.Parameters.AddWithValue("@t", Crypto.Enc(text));
+                cmd.Parameters.AddWithValue("@t", Crypto.Enc(rawText));
                 cmd.ExecuteNonQuery();
                 WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
-                NotifyMentions(text);
+                NotifyMentions(rawText);
                 LoadMessages();
             }
             catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        /// <summary>Открывает поиск GIF и отправляет выбранную как "gif:&lt;url&gt;".</summary>
+        private void OpenServerGifPicker()
+        {
+            if (_channelId <= 0 || _channelType != "text") return;
+            var picker = new GifPickerForm();
+            picker.GifSelected += url => { if (!string.IsNullOrWhiteSpace(url)) SendChannelRaw("gif:" + url); };
+            picker.Show(this);
         }
 
         /// <summary>Шлёт WS-уведомление «mention» каждому упомянутому участнику.</summary>
