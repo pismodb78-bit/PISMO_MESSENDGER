@@ -36,9 +36,9 @@ namespace PISMO
         /// ручной порог VoiceThreshold.</summary>
         public static bool VoiceAutoSensitivity { get; set; } = true;
 
-        /// <summary>Ручной порог активации голоса (0..100): ниже порога звук не
-        /// передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
-        public static int VoiceThreshold { get; set; } = 25;
+        /// <summary>Ручной порог активации голоса в дБ (−60..0): звук тише порога
+        /// не передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
+        public static int VoiceThreshold { get; set; } = -40;
 
         public static void Load()
         {
@@ -82,7 +82,7 @@ namespace PISMO
                             VoiceAutoSensitivity = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
                             break;
                         case "VoiceThreshold":
-                            if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, 0, 100);
+                            if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, -60, 0);
                             break;
                     }
                 }

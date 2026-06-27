@@ -34,6 +34,8 @@ namespace PISMO
         private Label _lblDbValue;
         private Label _lblMicStatus;
         private WaveInEvent _waveIn;
+        private WaveOutEvent _monitorOut;          // воспроизведение «слышу себя» при тесте
+        private BufferedWaveProvider _monitorBuf;
         private float _currentLevel = 0f;
         private double _currentDb = -100.0;
         private float _gainCached = 1f;
@@ -295,9 +297,9 @@ namespace PISMO
             };
             _trkVoiceThreshold = new TrackBar
             {
-                Minimum = 0,
-                Maximum = 100,
-                Value = 25,
+                Minimum = -60,   // дБ: тихо
+                Maximum = 0,     // дБ: громко
+                Value = -40,
                 TickStyle = TickStyle.None,
                 Location = new Point(14, 276),
                 Size = new Size(300, 30),
@@ -305,14 +307,17 @@ namespace PISMO
             };
             _lblVoiceThresholdValue = new Label
             {
-                Text = "25%",
+                Text = "−40 дБ",
                 Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 AutoSize = true,
                 Location = new Point(326, 280)
             };
             _trkVoiceThreshold.ValueChanged += (s, e) =>
-                _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value}%";
+            {
+                _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value} дБ";
+                _pnlLevelBar.Invalidate(); // переносим метку порога на градуснике
+            };
             _chkVoiceAuto.CheckedChanged += (s, e) =>
             {
                 // В авто-режиме ручной порог не нужен — гасим слайдер.
@@ -571,10 +576,10 @@ namespace PISMO
             _lblGainValue.Text = $"{_trkGain.Value}%";
             _gainCached = _trkGain.Value / 100f;
 
-            // Активация голоса (порог).
+            // Активация голоса (порог в дБ).
             _chkVoiceAuto.Checked = DeviceSettings.VoiceAutoSensitivity;
-            _trkVoiceThreshold.Value = Math.Clamp(DeviceSettings.VoiceThreshold, 0, 100);
-            _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value}%";
+            _trkVoiceThreshold.Value = Math.Clamp(DeviceSettings.VoiceThreshold, -60, 0);
+            _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value} дБ";
             _trkVoiceThreshold.Enabled = !_chkVoiceAuto.Checked;
             _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
 
@@ -693,18 +698,33 @@ namespace PISMO
             {
                 _gainCached = _trkGain.Value / 100f;
 
+                var fmt = new WaveFormat(16000, 1);
                 _waveIn = new WaveInEvent
                 {
                     DeviceNumber = _cmbMic.SelectedIndex,
-                    WaveFormat = new WaveFormat(16000, 1)
+                    WaveFormat = fmt
                 };
                 _waveIn.DataAvailable += WaveIn_DataAvailable;
+
+                // «Слышу себя»: проигрываем микрофон обратно с учётом порога —
+                // чтобы вживую подобрать чувствительность.
+                try
+                {
+                    _monitorBuf = new BufferedWaveProvider(fmt) { DiscardOnBufferOverflow = true, BufferDuration = TimeSpan.FromSeconds(2) };
+                    _monitorOut = new WaveOutEvent { DesiredLatency = 120 };
+                    _monitorOut.Init(_monitorBuf);
+                    _monitorOut.Play();
+                }
+                catch { _monitorOut = null; _monitorBuf = null; }
+
                 _waveIn.StartRecording();
 
                 _levelTimer.Start();
                 _btnMicTest.Text = "■ Стоп";
                 _lblMicStatus.Visible = true;
-                _lblMicStatus.Text = "Говорите — уровень обновляется в реальном времени";
+                _lblMicStatus.Text = _chkVoiceAuto.Checked
+                    ? "Говорите — вы слышите себя; порог в авто-режиме"
+                    : "Говорите — вы слышите себя; двигайте порог, чтобы отсечь тихое";
             }
             catch (Exception ex)
             {
@@ -734,6 +754,25 @@ namespace PISMO
 
             _currentDb = rms > 1 ? 20.0 * Math.Log10(rms / 32768.0) : -100.0;
             _currentDb = Math.Max(_currentDb, -60.0);
+
+            // Воспроизводим обратно (с усилением), применяя порог как в реальном
+            // звонке: тише порога — тишина, поэтому слышно, что именно отсекается.
+            if (_monitorBuf != null)
+            {
+                bool open = _chkVoiceAuto.Checked || _currentDb >= _trkVoiceThreshold.Value;
+                var outBuf = new byte[e.BytesRecorded];
+                if (open)
+                {
+                    for (int i = 0; i < e.BytesRecorded; i += 2)
+                    {
+                        short s = (short)((e.Buffer[i + 1] << 8) | e.Buffer[i]);
+                        int a = Math.Clamp((int)(s * gain), short.MinValue, short.MaxValue);
+                        outBuf[i] = (byte)(a & 0xFF);
+                        outBuf[i + 1] = (byte)((a >> 8) & 0xFF);
+                    }
+                }
+                try { _monitorBuf.AddSamples(outBuf, 0, outBuf.Length); } catch { }
+            }
         }
 
         /// <summary>Вызывается таймером в UI-потоке: перерисовывает градусник и обновляет текст дБ.</summary>
@@ -767,7 +806,9 @@ namespace PISMO
             const int gap = 2;
             float segWidth = (float)(w - gap * (segCount - 1)) / segCount;
 
-            int activeSegments = (int)Math.Round(_currentLevel * segCount);
+            // Заполнение по дБ-шкале (−60..0 дБ → 0..1), чтобы совпадать с меткой порога.
+            double lvlNorm = _currentLevel <= 0.0001f ? 0 : Math.Clamp((_currentDb + 60) / 60.0, 0, 1);
+            int activeSegments = (int)Math.Round(lvlNorm * segCount);
 
             for (int i = 0; i < segCount; i++)
             {
@@ -785,6 +826,18 @@ namespace PISMO
 
                 g.FillRectangle(br, x, 0, segWidth, h);
                 br.Dispose();
+            }
+
+            // Метка порога активации (только в ручном режиме): вертикальная линия.
+            if (_trkVoiceThreshold != null && !_chkVoiceAuto.Checked)
+            {
+                // Порог в дБ (−60..0) → доля шкалы 0..1 (как уровень: ~ -60дБ→0, 0дБ→1).
+                double norm = Math.Clamp((_trkVoiceThreshold.Value + 60) / 60.0, 0, 1);
+                int mx = (int)(norm * w);
+                using var pen = new Pen(Color.White, 2);
+                g.DrawLine(pen, mx, 0, mx, h);
+                using var tri = new SolidBrush(Color.White);
+                g.FillPolygon(tri, new[] { new Point(mx - 4, 0), new Point(mx + 4, 0), new Point(mx, 5) });
             }
         }
 
@@ -804,6 +857,13 @@ namespace PISMO
                     _waveIn.Dispose();
                     _waveIn = null;
                 }
+
+                if (_monitorOut != null)
+                {
+                    try { _monitorOut.Stop(); _monitorOut.Dispose(); } catch { }
+                    _monitorOut = null;
+                }
+                _monitorBuf = null;
             }
             catch { }
         }

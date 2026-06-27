@@ -943,8 +943,18 @@ namespace PISMO
                 e.Graphics.DrawString(it.display, fMain, Brushes.White, e.Bounds.Left + 8, e.Bounds.Top + 3);
                 e.Graphics.DrawString(it.desc, fDesc, new SolidBrush(Color.FromArgb(150, 152, 158)), e.Bounds.Left + 8, e.Bounds.Top + 18);
             };
-            _mentionList.Click += (s, e) => AcceptMention();
-            _mentionList.MouseDoubleClick += (s, e) => AcceptMention();
+            // ЛКМ по пункту — сразу выбираем элемент под курсором и подставляем.
+            // (Окно подсказки не активируется, поэтому надёжнее работать по MouseDown
+            // с хит-тестом, а не по событию Click.)
+            _mentionList.MouseDown += (s, e) =>
+            {
+                int idx = _mentionList.IndexFromPoint(e.Location);
+                if (idx >= 0 && idx < _mentionList.Items.Count)
+                {
+                    _mentionList.SelectedIndex = idx;
+                    AcceptMention();
+                }
+            };
 
             _mentionPopup = new NoActivateForm
             {
@@ -1011,6 +1021,7 @@ namespace PISMO
             _txtInput.Text = before + insert + after;
             _txtInput.SelectionStart = (before + insert).Length;
             HideMentionPopup();
+            _txtInput.Focus(); // возвращаем курсор в поле ввода после клика по подсказке
         }
 
         /// <summary>Записывает сообщение канала (текст или "gif:&lt;url&gt;") и рассылает.</summary>

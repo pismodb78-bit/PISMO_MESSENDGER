@@ -739,26 +739,31 @@ function setVoiceGate(auto, threshold){
         const stream = new MediaStream([lkt.mediaStreamTrack]);
         const srcNode = voiceGate.ctx.createMediaStreamSource(stream);
         voiceGate.analyser = voiceGate.ctx.createAnalyser();
-        voiceGate.analyser.fftSize = 512;
+        voiceGate.analyser.fftSize = 1024;
         srcNode.connect(voiceGate.analyser);
-        voiceGate.data = new Uint8Array(voiceGate.analyser.frequencyBinCount);
+        voiceGate.data = new Uint8Array(voiceGate.analyser.fftSize);
 
         let hangFrames = 0; // «придержка», чтобы не рубить хвосты слов
         voiceGate.timer = setInterval(() => {
             try {
                 if (!voiceGate.analyser) return;
-                voiceGate.analyser.getByteFrequencyData(voiceGate.data);
+                // RMS по временной форме сигнала → дБ (как в настройках).
+                voiceGate.analyser.getByteTimeDomainData(voiceGate.data);
                 let sum = 0;
-                for (let i = 0; i < voiceGate.data.length; i++) sum += voiceGate.data[i];
-                const level = sum / voiceGate.data.length;            // 0..255 примерно
-                const thr = voiceGate.threshold * 2.2;                // 0..100 → ~0..220
+                for (let i = 0; i < voiceGate.data.length; i++) {
+                    const v = (voiceGate.data[i] - 128) / 128;
+                    sum += v * v;
+                }
+                const rms = Math.sqrt(sum / voiceGate.data.length);
+                const db = rms > 0.0001 ? 20 * Math.log10(rms) : -100;
+                const thrDb = voiceGate.threshold; // уже в дБ (−60..0)
                 const t = localMicTrack();
                 if (!t || !t.mediaStreamTrack) return;
-                if (level >= thr) { hangFrames = 8; t.mediaStreamTrack.enabled = true; }
+                if (db >= thrDb) { hangFrames = 10; t.mediaStreamTrack.enabled = true; }
                 else if (hangFrames > 0) { hangFrames--; t.mediaStreamTrack.enabled = true; }
                 else { t.mediaStreamTrack.enabled = false; }
             } catch(e){}
-        }, 60);
+        }, 50);
     } catch(e){ console.error('voiceGate', String(e)); }
 }
 
