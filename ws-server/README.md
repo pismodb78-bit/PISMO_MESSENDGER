@@ -48,19 +48,39 @@ node server.js
 netsh advfirewall firewall add rule name="PISMO WS 8080" dir=in action=allow protocol=TCP localport=8080
 ```
 
-**Автозапуск как служба Windows** (чтобы работал всегда, без открытого окна).
-Проще всего через `pm2`:
+**Автозапуск как служба Windows.**
 
+> ⚠️ НЕ используйте pm2 на Windows с новым Node.js (v20+/v24): pm2 падает с
+> `EPERM \\.\pipe\rpc.sock` (не может поднять свой демон). Используйте NSSM —
+> он создаёт настоящую службу Windows и не зависит от версии Node.
+
+**Вариант A — NSSM (рекомендуется):**
+1. Скачать NSSM: https://nssm.cc/download (распаковать, взять `win64\nssm.exe`).
+2. В cmd от администратора:
+   ```bat
+   nssm install PismoWS
+   ```
+   В открывшемся окне:
+   - **Path**: `C:\Program Files\nodejs\node.exe`
+   - **Startup directory**: `C:\pismo-ws`
+   - **Arguments**: `server.js`
+   Нажать **Install service**.
+3. Запустить службу:
+   ```bat
+   nssm start PismoWS
+   ```
+   Управление: `nssm restart PismoWS`, `nssm stop PismoWS`, логи — вкладка I/O
+   в `nssm edit PismoWS` (можно указать файл лога).
+
+**Вариант B — Планировщик заданий (без скачиваний):**
 ```bat
-npm install -g pm2 pm2-windows-startup
-pm2-startup install
-cd C:\pismo-ws
-pm2 start server.js --name pismo-ws
-pm2 save
+schtasks /create /tn PismoWS /tr "\"C:\Program Files\nodejs\node.exe\" C:\pismo-ws\server.js" /sc onstart /ru SYSTEM /f
+schtasks /run /tn PismoWS
 ```
+Остановить: `schtasks /end /tn PismoWS`, удалить: `schtasks /delete /tn PismoWS /f`.
 
-Готово — теперь сервер сам поднимается при загрузке Windows.
-Команды управления: `pm2 status`, `pm2 logs pismo-ws`, `pm2 restart pismo-ws`.
+**Вариант C — просто проверить/погонять сейчас:** оставить открытым окно с
+`node server.js` (работает, пока окно открыто).
 
 > Если машина за роутером/NAT — пробросьте внешний порт 8080 на эту машину
 > (как уже сделано для MySQL 3307). Если у машины публичный IP напрямую —
