@@ -401,7 +401,7 @@ namespace PISMO
                 string table = _isGroupEdit ? "group_messages" : "messages";
                 using var cmd = new MySqlCommand(
                     $"UPDATE {table} SET text=@t, edited_at=NOW() WHERE id=@id", conn);
-                cmd.Parameters.AddWithValue("@t", newText);
+                cmd.Parameters.AddWithValue("@t", Crypto.Enc(newText));
                 cmd.Parameters.AddWithValue("@id", _editMsgId);
                 cmd.ExecuteNonQuery();
             }
@@ -572,7 +572,7 @@ namespace PISMO
 
                 if (dt.Rows.Count > 0)
                 {
-                    qText = dt.Rows[0]["text"].ToString();
+                    qText = Crypto.Dec(dt.Rows[0]["text"].ToString());
                     qSender = dt.Rows[0]["sname"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(qSender))
                         qSender = dt.Rows[0]["login"].ToString();

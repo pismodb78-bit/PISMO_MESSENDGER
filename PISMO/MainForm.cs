@@ -504,7 +504,7 @@ namespace PISMO
                 {
                     int uid = Convert.ToInt32(row["id"]);
                     string name = BuildName(row["Name"], row["Surname"], row["login"]);
-                    string lastMsg = row["last_msg"] == DBNull.Value ? "" : row["last_msg"].ToString();
+                    string lastMsg = row["last_msg"] == DBNull.Value ? "" : Crypto.Dec(row["last_msg"].ToString());
                     int unread = row["unread"] == DBNull.Value ? 0 : Convert.ToInt32(row["unread"]);
 
                     AddUserCard(uid, name, lastMsg, unread);
@@ -608,7 +608,7 @@ namespace PISMO
                 {
                     int gid = Convert.ToInt32(row["id"]);
                     string name = row["name"].ToString();
-                    string lastMsg = row["last_msg"] == DBNull.Value ? "" : row["last_msg"].ToString();
+                    string lastMsg = row["last_msg"] == DBNull.Value ? "" : Crypto.Dec(row["last_msg"].ToString());
                     int members = Convert.ToInt32(row["member_count"]);
                     string colorHex = row["avatar_color"] == DBNull.Value ? "#5865F2" : row["avatar_color"].ToString();
 
@@ -1145,7 +1145,7 @@ namespace PISMO
                 {
                     int senderId = Convert.ToInt32(row["sender_id"]);
                     bool isMine = senderId == myId;
-                    string text = row["text"].ToString();
+                    string text = Crypto.Dec(row["text"].ToString());
                     string sname = row["sender_name"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(sname)) sname = row["login"].ToString();
                     DateTime dt2 = Convert.ToDateTime(row["created_at"]);
@@ -1229,7 +1229,7 @@ namespace PISMO
                 using var cmd = new MySqlCommand(sql, conn);
                 cmd.Parameters.AddWithValue("@g", _currentGroupId);
                 cmd.Parameters.AddWithValue("@s", myId);
-                cmd.Parameters.AddWithValue("@t", text ?? "");
+                cmd.Parameters.AddWithValue("@t", Crypto.Enc(text ?? ""));
 
                 AddBlob(cmd, "@img", imageData);
                 AddBlob(cmd, "@aud", audioData);
@@ -1333,7 +1333,7 @@ namespace PISMO
                     if ((iBlocked || theyBlockedMe) && !isMine)
                         continue;
 
-                    string text = row["text"].ToString();
+                    string text = Crypto.Dec(row["text"].ToString());
                     string sname = row["sender_name"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(sname)) sname = row["login"].ToString();
                     DateTime dt2 = Convert.ToDateTime(row["created_at"]);
@@ -1982,7 +1982,7 @@ namespace PISMO
                 using var cmd = new MySqlCommand(sql, conn);
                 cmd.Parameters.AddWithValue("@s", myId);
                 cmd.Parameters.AddWithValue("@r", themId);
-                cmd.Parameters.AddWithValue("@t", text ?? "");
+                cmd.Parameters.AddWithValue("@t", Crypto.Enc(text ?? ""));
 
                 AddBlob(cmd, "@img", imageData);
                 AddBlob(cmd, "@aud", audioData);
@@ -2074,7 +2074,7 @@ namespace PISMO
                     {
                         if (isGroup) { ins.Parameters.AddWithValue("@g", target); ins.Parameters.AddWithValue("@s", myId); }
                         else { ins.Parameters.AddWithValue("@s", myId); ins.Parameters.AddWithValue("@r", target); }
-                        ins.Parameters.AddWithValue("@t", text ?? "");
+                        ins.Parameters.AddWithValue("@t", Crypto.Enc(text ?? ""));
                         AddBlob(ins, "@img", imageData);
                         AddBlob(ins, "@aud", audioData);
                         AddBlob(ins, "@vid", videoData);
