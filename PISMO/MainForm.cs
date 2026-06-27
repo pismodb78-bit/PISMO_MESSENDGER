@@ -536,6 +536,7 @@ namespace PISMO
         // ── Применение бейджей + уведомления (UI-поток) ───────────────
         private void ApplyUnreadAndNotify(Dictionary<int, int> current)
         {
+            // Уведомления при росте счётчика.
             foreach (var kv in current)
             {
                 int sid = kv.Key;
@@ -546,16 +547,28 @@ namespace PISMO
                     ShowNewMessageNotification(sid, cnt);
             }
 
+            // Если непрочитанные не изменились с прошлого тика — НЕ трогаем UI вообще
+            // (раньше каждые 2.5 c пересоздавались шрифты и перекладывались карточки —
+            // отсюда периодический микро-фриз).
+            bool changed = current.Count != _prevUnread.Count;
+            if (!changed)
+                foreach (var kv in current)
+                    if (!_prevUnread.TryGetValue(kv.Key, out int pv) || pv != kv.Value) { changed = true; break; }
+
             _prevUnread.Clear();
             foreach (var kv in current) _prevUnread[kv.Key] = kv.Value;
+
+            if (!changed) return;
 
             UpdateBadgesOnCards(current);
 
             int totalUnread = current.Values.Sum();
-            this.Text = totalUnread > 0
-                ? $"● PISMO ({totalUnread} новых)"
-                : "PISMO — Мессенджер";
-            _trayIcon.Text = this.Text.Length > 63 ? this.Text[..63] : this.Text;
+            string title = totalUnread > 0 ? $"● PISMO ({totalUnread} новых)" : "PISMO — Мессенджер";
+            if (this.Text != title)
+            {
+                this.Text = title;
+                _trayIcon.Text = title.Length > 63 ? title[..63] : title;
+            }
         }
 
         private void ShowNewMessageNotification(int senderId, int unreadCount)
@@ -621,13 +634,16 @@ namespace PISMO
                     pnl.Controls.Remove(badge);
                 }
 
+                var wantFont = cnt > 0 ? _cardFontBold : _cardFontNormal;
                 foreach (Control c in pnl.Controls)
-                    if (c is Label lbl && lbl.Font.Size >= 9)
-                        lbl.Font = cnt > 0
-                            ? new Font("Segoe UI Semibold", 10f, FontStyle.Bold)
-                            : new Font("Segoe UI", 10f);
+                    if (c is Label lbl && lbl.Font.Size >= 9 && !ReferenceEquals(lbl.Font, wantFont))
+                        lbl.Font = wantFont; // кэшированные шрифты — без аллокаций каждый тик
             }
         }
+
+        // Кэшированные шрифты карточек (раньше создавались заново на каждом тике).
+        private static readonly Font _cardFontBold = new Font("Segoe UI Semibold", 10f, FontStyle.Bold);
+        private static readonly Font _cardFontNormal = new Font("Segoe UI", 10f);
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool FlashWindow(IntPtr hwnd, bool bInvert);

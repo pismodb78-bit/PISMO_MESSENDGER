@@ -543,15 +543,31 @@ namespace PISMO
         // ── Сообщения канала ────────────────────────────────────────────
         private void MaybeReloadMessages()
         {
-            try
+            // COUNT(*) делаем в фоне, чтобы не подвешивать UI каждые 2.5 c
+            // (особенно заметно на высоком пинге к БД).
+            int ch = _channelId;
+            if (ch <= 0) return;
+            System.Threading.Tasks.Task.Run(() =>
             {
-                using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand("SELECT COUNT(*) FROM server_messages WHERE channel_id=@c", conn);
-                cmd.Parameters.AddWithValue("@c", _channelId);
-                int n = Convert.ToInt32(cmd.ExecuteScalar());
-                if (n != _lastMsgCount) LoadMessages();
-            }
-            catch { }
+                int n;
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand("SELECT COUNT(*) FROM server_messages WHERE channel_id=@c", conn);
+                    cmd.Parameters.AddWithValue("@c", ch);
+                    n = Convert.ToInt32(cmd.ExecuteScalar());
+                }
+                catch { return; }
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (_channelId == ch && n != _lastMsgCount) LoadMessages();
+                    }));
+                }
+                catch { }
+            });
         }
 
         private void LoadMessages()
