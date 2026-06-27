@@ -104,8 +104,6 @@ namespace PISMO
             }
             catch { /* используем значения по умолчанию */ }
 
-            // Загружаем также TURN настройки
-            TurnSettings.Load();
             // LiveKit (SFU) — основной транспорт звонков
             LiveKitSettings.Load();
         }
@@ -129,9 +127,6 @@ namespace PISMO
                     $"HotkeyScreen={HotkeyScreen}\n";
 
                 File.WriteAllText(FilePath, content);
-
-                // Сохраняем также TURN настройки
-                TurnSettings.Save();
             }
             catch (Exception ex)
             {

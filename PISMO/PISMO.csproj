@@ -10,9 +10,9 @@
     <RootNamespace>PISMO</RootNamespace>
     <ApplicationIcon>pismo.ico</ApplicationIcon>
     <StartupObject>PISMO.Program</StartupObject>
-    <Version>1.0.25</Version>
-    <AssemblyVersion>1.0.25.0</AssemblyVersion>
-    <FileVersion>1.0.25.0</FileVersion>
+    <Version>1.0.26</Version>
+    <AssemblyVersion>1.0.26.0</AssemblyVersion>
+    <FileVersion>1.0.26.0</FileVersion>
     <Company>PISMO</Company>
     <Product>PISMO Messenger</Product>
   </PropertyGroup>
@@ -33,7 +33,6 @@
     <PackageReference Include="MySql.Data" Version="9.7.0" />
 
     <PackageReference Include="NAudio" Version="2.3.0" />
-    <PackageReference Include="SIPSorcery" Version="10.0.9" />
   </ItemGroup>
 
   <!-- ip.txt копируется в output directory -->

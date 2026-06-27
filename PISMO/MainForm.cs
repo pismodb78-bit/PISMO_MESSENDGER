@@ -58,29 +58,11 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         public MainForm()
         {
-            // Убираем TurnServerRepository.EnsureTableExists() — не нужна
+            // TURN больше не используется — звонки идут через LiveKit (SFU).
+            // (Раньше здесь запускался генератор TURN-кредов, всплывавший окном.)
             DeviceSettings.Load();
-            TurnSettings.Load();
             InitializeComponent();
 
-            // Загрузка настроек TURN сразу при старте
-            TurnSettings.Load();
-
-            // Авто-генерация временных кредов (если включено и задан secret)
-            try
-            {
-                var creds = TurnCredentialsGenerator.GenerateAndSaveIfNeeded();
-                if (creds != null)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[TURN AUTO] Generated creds: {creds.Value.username}");
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine("[TURN AUTO] Error: " + ex.Message);
-            }
-
-            // далее существующая инициализация...
             MediaCache.Init();
             SetupPolling();
             this.Load += MainForm_Load;

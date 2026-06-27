@@ -35,7 +35,6 @@ namespace PISMO
         private bool _ended = false;
         private bool _callLogged = false;
 
-        // TURN кредо теперь управляются внутри CallTransport через TurnSettings.GetCredentials()
 
         // Аудио (микрофон + воспроизведение голоса/звука демки) полностью на
         // стороне LiveKit — NAudio для звонка больше не используется.
