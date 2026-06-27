@@ -1584,8 +1584,25 @@ namespace PISMO
 
                     long fileSize = row.Table.Columns.Contains("file_size") && row["file_size"] != DBNull.Value
                         ? Convert.ToInt64(row["file_size"]) : -1;
+
+                    // Статус прочтения для МОИХ сообщений: 0 — отправляется (1 серая),
+                    // 1 — доставлено на сервер (2 серые), 2 — прочитано (2 синие).
+                    int readState = -1;
+                    if (isMine)
+                    {
+                        bool isRead = row.Table.Columns.Contains("is_read")
+                            && row["is_read"] != DBNull.Value && Convert.ToInt32(row["is_read"]) != 0;
+                        if (isRead) readState = 2;
+                        else
+                        {
+                            long age = row.Table.Columns.Contains("age_sec") && row["age_sec"] != DBNull.Value
+                                ? Convert.ToInt64(row["age_sec"]) : 999;
+                            readState = age < 4 ? 0 : 1; // совсем свежее — «отправляется»
+                        }
+                    }
+
                     var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
-                        fileData, fileName, msgId, isGroup: false, replyToId, isDeleted, isEdited, fileSize);
+                        fileData, fileName, msgId, isGroup: false, replyToId, isDeleted, isEdited, fileSize, readState);
                     bubble.Top = yOffset;
                     PositionBubble(bubble, isMine);
                     bubble.Tag = isMine;
@@ -1635,7 +1652,8 @@ namespace PISMO
                                    byte[] fileData = null, string fileName = null,
                                    int msgId = -1, bool isGroup = false,
                                    int replyToId = 0, bool isDeleted = false,
-                                   bool isEdited = false, long fileSize = -1)
+                                   bool isEdited = false, long fileSize = -1,
+                                   int readState = -1)
         {
             const int MAX_W = 480;
             const int PAD = 12;
@@ -1918,6 +1936,24 @@ namespace PISMO
                 Location = new Point(PAD, innerY)
             };
             bubble.Controls.Add(lblTime);
+
+            // Галочки прочтения (только для моих личных сообщений):
+            // 0 — ✓ серая (отправляется), 1 — ✓✓ серые (доставлено), 2 — ✓✓ синие (прочитано).
+            if (readState >= 0)
+            {
+                var lblCheck = new Label
+                {
+                    Text = readState == 0 ? "✓" : "✓✓",
+                    Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                    ForeColor = readState == 2
+                        ? Color.FromArgb(88, 170, 255)            // прочитано — синие
+                        : Color.FromArgb(150, 160, 180),          // доставлено/отправка — серые
+                    AutoSize = true,
+                    Location = new Point(lblTime.Right + 4, innerY)
+                };
+                bubble.Controls.Add(lblCheck);
+            }
+
             innerY += lblTime.PreferredHeight + PAD;
 
             bubble.Size = new Size(

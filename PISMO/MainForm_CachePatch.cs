@@ -160,6 +160,8 @@ namespace PISMO
                        NULL AS video_data, NULL AS file_data,
                        m.file_name,
                        m.reply_to_id, m.is_deleted, m.edited_at, m.created_at,
+                       m.is_read,
+                       TIMESTAMPDIFF(SECOND, m.created_at, NOW()) AS age_sec,
                        TRIM(CONCAT(u.Name,' ',u.Surname)) AS sender_name, u.login,
                        (m.image_data IS NOT NULL) AS has_img,
                        (m.audio_data IS NOT NULL) AS has_audio,
