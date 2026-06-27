@@ -1809,6 +1809,28 @@ namespace PISMO
             RegisterCallHotkeys();
         }
 
+        // Применяем настройки чувствительности «на лету»: когда окно звонка
+        // снова активно (например, после изменения в настройках) — отправляем
+        // актуальный порог в транспорт, если он изменился.
+        private bool _lastVoiceAuto;
+        private int _lastVoiceThr = int.MinValue;
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            try
+            {
+                if (_lastVoiceThr == int.MinValue ||
+                    _lastVoiceAuto != DeviceSettings.VoiceAutoSensitivity ||
+                    _lastVoiceThr != DeviceSettings.VoiceThreshold)
+                {
+                    _lastVoiceAuto = DeviceSettings.VoiceAutoSensitivity;
+                    _lastVoiceThr = DeviceSettings.VoiceThreshold;
+                    _transport?.SetVoiceGate(_lastVoiceAuto, _lastVoiceThr);
+                }
+            }
+            catch { }
+        }
+
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WM_HOTKEY)

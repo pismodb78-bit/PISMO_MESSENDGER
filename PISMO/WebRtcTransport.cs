@@ -674,7 +674,16 @@ async function enumerateDevices(){
 }
 
 async function setMicEnabled(enabled){
-    try { if (room) await room.localParticipant.setMicrophoneEnabled(enabled, micCaptureOpts()); } catch(e){ console.error('setMic', String(e)); }
+    try {
+        if (room) await room.localParticipant.setMicrophoneEnabled(enabled, micCaptureOpts());
+        // ВАЖНО: при выкл/вкл микрофона LiveKit пересоздаёт трек. Voice gate
+        // держал анализатор на СТАРОМ (мёртвом) треке → читал тишину и навсегда
+        // глушил новый трек. Поэтому переинициализируем гейт на актуальном треке.
+        stopVoiceGate();
+        if (enabled && !voiceGate.auto) {
+            setTimeout(() => setVoiceGate(voiceGate.auto, voiceGate.threshold), 350);
+        }
+    } catch(e){ console.error('setMic', String(e)); }
 }
 
 function setScreenAudioVolume(v){
@@ -747,6 +756,14 @@ function setVoiceGate(auto, threshold){
         voiceGate.timer = setInterval(() => {
             try {
                 if (!voiceGate.analyser) return;
+                // Самовосстановление: если трек микрофона сменился (re-publish),
+                // анализатор остался на мёртвом — переинициализируем гейт.
+                const cur = localMicTrack();
+                if (cur && cur !== voiceGate.track) {
+                    if (cur.mediaStreamTrack) cur.mediaStreamTrack.enabled = true;
+                    setVoiceGate(voiceGate.auto, voiceGate.threshold);
+                    return;
+                }
                 // RMS по временной форме сигнала → дБ (как в настройках).
                 voiceGate.analyser.getByteTimeDomainData(voiceGate.data);
                 let sum = 0;
