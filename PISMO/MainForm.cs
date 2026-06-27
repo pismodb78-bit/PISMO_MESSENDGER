@@ -1905,25 +1905,15 @@ namespace PISMO
                 innerY += pnlFile.Height + 6;
             }
 
-            // Текст
+            // Текст (выделяемый — можно выделить часть и скопировать через Ctrl+C
+            // или правый клик, а не только всё сообщение целиком).
             if (!string.IsNullOrEmpty(text))
             {
-                var lblText = new Label
-                {
-                    Text = text,
-                    Font = new Font("Segoe UI", 10.5f),
-                    ForeColor = Color.FromArgb(220, 221, 222),
-                    AutoSize = false,
-                    MaximumSize = new Size(innerW, 0),
-                    AutoEllipsis = false
-                };
-                lblText.Size = new Size(
-                    Math.Min(TextRenderer.MeasureText(text, lblText.Font).Width + 4, innerW),
-                    TextRenderer.MeasureText(text, lblText.Font, new Size(innerW, 0),
-                        TextFormatFlags.WordBreak).Height + 4);
-                lblText.Location = new Point(PAD, innerY);
-                bubble.Controls.Add(lblText);
-                innerY += lblText.Height + 4;
+                var txtMsg = MakeSelectableText(text, bubble.BackColor,
+                    Color.FromArgb(235, 236, 240), new Font("Segoe UI", 10.5f), innerW);
+                txtMsg.Location = new Point(PAD, innerY);
+                bubble.Controls.Add(txtMsg);
+                innerY += txtMsg.Height + 4;
             }
 
             // Время (+ "изменено")
@@ -1968,6 +1958,31 @@ namespace PISMO
                 AttachBubbleContextMenu(bubble, msgId, isGroup, isMine, text, senderName);
 
             return bubble;
+        }
+
+        /// <summary>Текст сообщения, который можно выделять и копировать (read-only
+        /// TextBox без рамки, выглядит как подпись). Высота считается по содержимому.</summary>
+        internal static TextBox MakeSelectableText(string text, Color back, Color fore, Font font, int maxW)
+        {
+            var tb = new TextBox
+            {
+                Text = text,
+                ReadOnly = true,
+                Multiline = true,
+                WordWrap = true,
+                BorderStyle = BorderStyle.None,
+                BackColor = back,
+                ForeColor = fore,
+                Font = font,
+                TabStop = false,
+                Cursor = Cursors.IBeam,
+                ScrollBars = ScrollBars.None
+            };
+            int w = Math.Min(TextRenderer.MeasureText(text, font).Width + 6, maxW);
+            int h = TextRenderer.MeasureText(text, font, new Size(w, 0),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl).Height + 4;
+            tb.Size = new Size(w, h);
+            return tb;
         }
 
         private int CalcBubbleWidth(Panel bubble, int pad)

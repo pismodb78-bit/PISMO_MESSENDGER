@@ -198,11 +198,24 @@ namespace PISMO
             itemForward.Click += (s, e) => BeginForward(msgId, text, isGroup, senderName);
             menu.Items.Add(itemForward);
 
-            // ── Копировать текст ─────────────────────────────────────────
+            // ── Копировать текст (выделенное либо всё) ───────────────────
             if (!string.IsNullOrEmpty(text))
             {
-                var itemCopy = new ToolStripMenuItem("📋  Копировать текст");
-                itemCopy.Click += (s, e) => Clipboard.SetText(text);
+                // Находим выделяемый TextBox с текстом сообщения внутри пузыря.
+                TextBox FindTextBox()
+                {
+                    foreach (Control c in bubble.Controls)
+                        if (c is TextBox tb) return tb;
+                    return null;
+                }
+
+                var itemCopy = new ToolStripMenuItem("📋  Копировать");
+                itemCopy.Click += (s, e) =>
+                {
+                    var tb = FindTextBox();
+                    string sel = tb != null && tb.SelectionLength > 0 ? tb.SelectedText : text;
+                    try { Clipboard.SetText(sel); } catch { }
+                };
                 menu.Items.Add(itemCopy);
             }
 
@@ -234,7 +247,12 @@ namespace PISMO
 
             bubble.MouseClick += ShowMenu;
             foreach (Control c in bubble.Controls)
-                c.MouseClick += ShowMenu;
+            {
+                // У выделяемого TextBox правый клик иначе показал бы родное меню —
+                // подменяем нашим (в нём есть «Копировать» с учётом выделения).
+                if (c is TextBox tb) tb.ContextMenuStrip = menu;
+                else c.MouseClick += ShowMenu;
+            }
         }
 
         // ════════════════════════════════════════════════════════════════

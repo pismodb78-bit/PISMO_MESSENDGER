@@ -514,15 +514,18 @@ namespace PISMO
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT sm.sender_id, sm.text, sm.created_at, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login " +
+                    "SELECT sm.id, sm.sender_id, sm.text, sm.created_at, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login " +
                     "FROM server_messages sm JOIN users u ON u.id=sm.sender_id WHERE sm.channel_id=@c ORDER BY sm.id ASC", conn);
                 cmd.Parameters.AddWithValue("@c", _channelId);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
 
                 _pnlMessages.SuspendLayout();
                 _pnlMessages.Controls.Clear();
+                int msgWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 40);
                 foreach (DataRow r in dt.Rows)
                 {
+                    int id = Convert.ToInt32(r["id"]);
+                    int senderId = Convert.ToInt32(r["sender_id"]);
                     string nm = r["nm"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(nm)) nm = r["login"].ToString();
                     string text = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString());
@@ -531,48 +534,156 @@ namespace PISMO
                     // Меня упомянули (@логин/@роль/@все) — зелёная полупрозрачная плашка.
                     bool mine = MentionsMe(text);
 
-                    // GIF-сообщение: "gif:<url>" — рендерим анимированную картинку.
-                    if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        string url = text.Substring(4);
-                        var holder = new Panel
-                        {
-                            AutoSize = true,
-                            Margin = new Padding(0, 2, 0, 6),
-                            BackColor = Color.Transparent
-                        };
-                        var head = new Label
-                        {
-                            AutoSize = true,
-                            ForeColor = Color.FromArgb(150, 152, 158),
-                            Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                            Location = new Point(0, 0),
-                            Text = $"{nm} · {time}"
-                        };
-                        holder.Controls.Add(head);
-                        var ph = new Panel { Location = new Point(0, 20), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
-                        holder.Controls.Add(ph);
-                        _pnlMessages.Controls.Add(holder);
-                        _ = LoadServerGifAsync(ph, url);
-                        continue;
-                    }
-
-                    var lbl = new Label
+                    var holder = new Panel
                     {
                         AutoSize = true,
-                        MaximumSize = new Size(_pnlMessages.ClientSize.Width - 40, 0),
-                        ForeColor = Color.FromArgb(220, 221, 222),
-                        BackColor = mine ? Color.FromArgb(40, 59, 165, 93) : Color.Transparent, // зелёная подсветка упоминания
-                        Padding = mine ? new Padding(6, 4, 6, 4) : new Padding(0),
                         Margin = new Padding(0, 2, 0, 6),
-                        Font = new Font("Segoe UI", 10f),
-                        Text = $"{nm} · {time}\n{text}"
+                        BackColor = mine ? Color.FromArgb(40, 59, 165, 93) : Color.Transparent
                     };
-                    _pnlMessages.Controls.Add(lbl);
+                    var head = new Label
+                    {
+                        AutoSize = true,
+                        ForeColor = Color.FromArgb(150, 152, 158),
+                        Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                        Location = new Point(0, 0),
+                        Text = $"{nm} · {time}"
+                    };
+                    holder.Controls.Add(head);
+
+                    // GIF-сообщение: "gif:<url>" — анимированная картинка.
+                    if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var ph = new Panel { Location = new Point(0, 20), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
+                        holder.Controls.Add(ph);
+                        _ = LoadServerGifAsync(ph, text.Substring(4));
+                    }
+                    else
+                    {
+                        var body = MainForm.MakeSelectableText(text, holder.BackColor == Color.Transparent
+                            ? Color.FromArgb(54, 57, 63) : Color.FromArgb(50, 70, 60),
+                            Color.FromArgb(220, 221, 222), new Font("Segoe UI", 10f),
+                            msgWidth - 10);
+                        body.Location = new Point(0, 18);
+                        holder.Controls.Add(body);
+                    }
+
+                    AttachServerMsgMenu(holder, head, id, senderId, text);
+                    _pnlMessages.Controls.Add(holder);
                 }
                 _lastMsgCount = dt.Rows.Count;
                 _pnlMessages.ResumeLayout();
                 _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);
+            }
+            catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        /// <summary>Контекстное меню сообщения канала: ответить/переслать/копировать/
+        /// редактировать/удалить.</summary>
+        private void AttachServerMsgMenu(Panel holder, Control header, int id, int senderId, string text)
+        {
+            bool isMine = senderId == _me;
+            bool isGif = text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase);
+
+            var menu = new ContextMenuStrip { BackColor = Color.FromArgb(24, 25, 28), ForeColor = Color.FromArgb(220, 221, 222) };
+
+            menu.Items.Add("↩  Ответить", null, (s, e) =>
+            {
+                string quote = isGif ? "[GIF]" : (text.Length > 80 ? text.Substring(0, 80) + "…" : text);
+                _txtInput.Text = $"> {quote}\n";
+                _txtInput.SelectionStart = _txtInput.Text.Length;
+                _txtInput.Focus();
+            });
+
+            // Переслать в другой текстовый канал этого сервера.
+            var fwd = new ToolStripMenuItem("↪  Переслать в…");
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT id,name FROM server_channels WHERE server_id=@s AND type='text' ORDER BY position,id", conn);
+                cmd.Parameters.AddWithValue("@s", _serverId);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    int chId = Convert.ToInt32(r["id"]);
+                    string chName = r["name"].ToString();
+                    fwd.DropDownItems.Add("# " + chName, null, (s, e) => ForwardServerMessage(chId, text));
+                }
+            }
+            catch { }
+            if (fwd.DropDownItems.Count > 0) menu.Items.Add(fwd);
+
+            if (!isGif)
+                menu.Items.Add("📋  Копировать", null, (s, e) => { try { Clipboard.SetText(text); } catch { } });
+
+            if (isMine && !isGif)
+            {
+                menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add("✏  Редактировать", null, (s, e) => EditServerMessage(id, text));
+            }
+
+            if (isMine || _canManage)
+            {
+                var del = new ToolStripMenuItem("🗑  Удалить") { ForeColor = Color.FromArgb(240, 71, 71) };
+                del.Click += (s, e) => DeleteServerMessage(id);
+                menu.Items.Add(del);
+            }
+
+            void Show(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Right) menu.Show(Cursor.Position); }
+            holder.MouseClick += Show;
+            header.MouseClick += Show;
+            // У выделяемого текста — наше меню вместо родного.
+            foreach (Control c in holder.Controls)
+                if (c is TextBox tb) tb.ContextMenuStrip = menu;
+                else c.MouseClick += Show;
+        }
+
+        private void ForwardServerMessage(int channelId, string text)
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("INSERT INTO server_messages (channel_id, sender_id, text) VALUES (@c,@s,@t)", conn);
+                cmd.Parameters.AddWithValue("@c", channelId);
+                cmd.Parameters.AddWithValue("@s", _me);
+                cmd.Parameters.AddWithValue("@t", Crypto.Enc(text));
+                cmd.ExecuteNonQuery();
+                WebSocketSignalingClient.Instance.SendMessage("new_message", 0, channelId, "server");
+                if (channelId == _channelId) LoadMessages();
+            }
+            catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        private void EditServerMessage(int id, string oldText)
+        {
+            string nt = Prompt("Изменить сообщение", oldText);
+            if (nt == null) return;
+            nt = nt.Trim();
+            if (nt.Length == 0) return;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("UPDATE server_messages SET text=@t WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@t", Crypto.Enc(nt));
+                cmd.Parameters.AddWithValue("@id", id);
+                cmd.ExecuteNonQuery();
+                WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
+                LoadMessages();
+            }
+            catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        private void DeleteServerMessage(int id)
+        {
+            if (MessageBox.Show("Удалить сообщение?", "PISMO", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("DELETE FROM server_messages WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", id);
+                cmd.ExecuteNonQuery();
+                WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
+                LoadMessages();
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
