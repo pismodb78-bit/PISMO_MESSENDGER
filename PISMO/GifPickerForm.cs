@@ -97,7 +97,6 @@ namespace PISMO
                     WaitOnLoad = false,
                     Tag = it.FullUrl
                 };
-                try { pb.LoadAsync(it.PreviewUrl); } catch { }
                 pb.Click += (s, e) =>
                 {
                     var url = (string)((PictureBox)s).Tag;
@@ -105,7 +104,43 @@ namespace PISMO
                     Close();
                 };
                 _grid.Controls.Add(pb);
+                // Грузим превью вручную и показываем СТАТИЧНЫЙ первый кадр.
+                // pb.LoadAsync на анимированном GIF включал ImageAnimator в
+                // PictureBox → падение GDI+ ("A generic error occurred").
+                _ = LoadPreviewStatic(pb, it.PreviewUrl);
             }
+        }
+
+        /// <summary>Скачивает превью и кладёт в PictureBox ОДИН (первый) кадр —
+        /// без авто-анимации, чтобы не падал ImageAnimator/GDI+.</summary>
+        private static async System.Threading.Tasks.Task LoadPreviewStatic(PictureBox pb, string url)
+        {
+            byte[] data;
+            try { data = await GiphyClient.DownloadAsync(url); }
+            catch { return; }
+            if (data == null || data.Length == 0) return;
+
+            Bitmap firstFrame;
+            try
+            {
+                using var ms = new System.IO.MemoryStream(data);
+                using var src = Image.FromStream(ms);
+                firstFrame = new Bitmap(src.Width, src.Height,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using var g = Graphics.FromImage(firstFrame);
+                g.DrawImage(src, 0, 0, src.Width, src.Height);
+            }
+            catch { return; }
+
+            if (pb.IsDisposed) { firstFrame.Dispose(); return; }
+            try
+            {
+                if (pb.InvokeRequired)
+                    pb.BeginInvoke(new Action(() => { if (!pb.IsDisposed) pb.Image = firstFrame; else firstFrame.Dispose(); }));
+                else
+                    pb.Image = firstFrame;
+            }
+            catch { firstFrame.Dispose(); }
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)

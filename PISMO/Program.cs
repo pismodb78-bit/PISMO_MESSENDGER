@@ -14,6 +14,14 @@ namespace PISMO
             // на той же машине и всё равно не работал между разными ПК.
             // WebSocketSignalingServer.Instance.Start(8080);
 
+            // Чтобы редкие не критичные ошибки отрисовки (например GDI+ при
+            // анимации гифок) не роняли приложение жёстким диалогом.
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += (s, e) =>
+                System.Diagnostics.Debug.WriteLine("[UI EXCEPTION] " + e.Exception.Message);
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+                System.Diagnostics.Debug.WriteLine("[FATAL] " + (e.ExceptionObject as Exception)?.Message);
+
             ApplicationConfiguration.Initialize();
 
             // Автообновление при запуске (GitHub Releases). Тихо пропускаем при

@@ -1672,22 +1672,23 @@ namespace PISMO
 
                     var pb = new PictureBox
                     {
-                        Image = img,
                         SizeMode = PictureBoxSizeMode.StretchImage,
                         Size = new Size(dw, dh),
                         Location = new Point(PAD, innerY),
                         Cursor = Cursors.Hand
                     };
 
-                    // GIF: анимация через Timer вместо ImageAnimator
-                    // GIF: анимация через Timer вместо ImageAnimator
+                    // GIF: анимация через Timer.
+                    // КРИТИЧНО: PictureBox автоматически анимирует МНОГОКАДРОВЫЙ
+                    // Bitmap через ImageAnimator (а он падает в GDI+ "A generic error
+                    // occurred"). Поэтому НИКОГДА не присваиваем pb.Image сам GIF или
+                    // его Clone() — заранее рендерим каждый кадр в ОТДЕЛЬНЫЙ одно-
+                    // кадровый Bitmap, а таймер просто переключает их.
                     if (IsGif(imgBytes) && img is Bitmap gifBmp)
                     {
-                        // Считаем кадры и задержки вручную
                         var dimension = new System.Drawing.Imaging.FrameDimension(
                             gifBmp.FrameDimensionsList[0]);
-                        int frameCount = gifBmp.GetFrameCount(dimension);
-                        int frameIdx = 0;
+                        int frameCount = Math.Max(1, gifBmp.GetFrameCount(dimension));
 
                         // Задержки кадров из метаданных GIF (PropertyTagFrameDelay = 0x5100)
                         int[] delays;
@@ -1701,48 +1702,63 @@ namespace PISMO
                         }
                         catch { delays = new int[frameCount]; Array.Fill(delays, 100); }
 
-                        var gifTimer = new System.Windows.Forms.Timer { Interval = delays[0] };
-                        bool disposed = false;
-
-                        gifTimer.Tick += (s, e) =>
+                        // Заранее извлекаем все кадры как самостоятельные одно-кадровые битмапы.
+                        var frames = new Bitmap[frameCount];
+                        try
                         {
-                            if (disposed || pb.IsDisposed)
+                            for (int i = 0; i < frameCount; i++)
                             {
-                                gifTimer.Stop();
-                                return;
+                                gifBmp.SelectActiveFrame(dimension, i);
+                                var f = new Bitmap(gifBmp.Width, gifBmp.Height,
+                                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                                using (var g = Graphics.FromImage(f))
+                                    g.DrawImage(gifBmp, 0, 0, gifBmp.Width, gifBmp.Height);
+                                frames[i] = f;
                             }
-                            try
+                        }
+                        catch { /* что извлекли — то и покажем */ }
+
+                        // Исходный многокадровый GIF больше не нужен.
+                        img.Dispose();
+                        ms.Dispose();
+
+                        int frameIdx = 0;
+                        pb.Image = frames[0];
+
+                        if (frameCount > 1)
+                        {
+                            var gifTimer = new System.Windows.Forms.Timer { Interval = delays[0] };
+                            bool disposed = false;
+                            gifTimer.Tick += (s, e) =>
                             {
+                                if (disposed || pb.IsDisposed) { gifTimer.Stop(); return; }
                                 frameIdx = (frameIdx + 1) % frameCount;
-                                gifBmp.SelectActiveFrame(dimension, frameIdx);
+                                var nf = frames[frameIdx];
+                                if (nf == null) return;
+                                pb.Image = nf; // одно-кадровый битмап — ImageAnimator не вызывается
                                 gifTimer.Interval = delays[frameIdx];
+                            };
+                            gifTimer.Start();
 
-                                var copy = (Bitmap)gifBmp.Clone(); // копируем текущий кадр
-                                var old = pb.Image;
-                                pb.Image = copy;
-                                // КРИТИЧНО: не уничтожаем исходный gifBmp (на первом
-                                // тике pb.Image == исходник) — иначе SelectActiveFrame
-                                // дальше падает и анимация замирает после 1-го кадра.
-                                if (!ReferenceEquals(old, gifBmp)) old?.Dispose();
-                            }
-                            catch
+                            pb.Disposed += (s, e) =>
                             {
+                                disposed = true;
                                 gifTimer.Stop();
-                            }
-                        };
-                        gifTimer.Start();
-
-                        pb.Disposed += (s, e) =>
+                                gifTimer.Dispose();
+                                foreach (var f in frames) { try { f?.Dispose(); } catch { } }
+                            };
+                        }
+                        else
                         {
-                            disposed = true;
-                            gifTimer.Stop();
-                            gifTimer.Dispose();
-                            img.Dispose();
-                            ms.Dispose();
-                        };
+                            pb.Disposed += (s, e) =>
+                            {
+                                foreach (var f in frames) { try { f?.Dispose(); } catch { } }
+                            };
+                        }
                     }
                     else
                     {
+                        pb.Image = img;
                         pb.Disposed += (s, e) => { img.Dispose(); ms.Dispose(); };
                     }
 
