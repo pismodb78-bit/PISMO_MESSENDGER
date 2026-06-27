@@ -48,7 +48,10 @@ namespace PISMO
                 {
                     try
                     {
-                        var builder = new MySqlConnectionStringBuilder(ipLine);
+                        // Убираем не-СУБД ключи (ws=/websocket=), которые читает
+                        // WebSocketSignalingClient напрямую из файла — иначе
+                        // MySqlConnectionStringBuilder падает с "Option not supported (ws)".
+                        var builder = new MySqlConnectionStringBuilder(StripNonDbKeys(ipLine));
 
                         // Если в файле указана серверная часть — корректируем порт по локальной логике
                         var server = builder.Server;
@@ -104,6 +107,25 @@ namespace PISMO
                 System.Diagnostics.Debug.WriteLine($"[DBHelper ERROR] {ex.Message}");
                 _connectionString = "Server=localhost;Port=3306;Database=bdauth;Uid=root;Pwd=;CharSet=utf8mb4;";
             }
+        }
+
+        /// <summary>Удаляет из строки ip.txt ключи, которые не относятся к
+        /// подключению MySQL (ws=, websocket=). Остальные пары ключ=значение
+        /// сохраняет в исходном порядке.</summary>
+        private static string StripNonDbKeys(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return raw;
+            var keep = new System.Collections.Generic.List<string>();
+            foreach (var part in raw.Split(';'))
+            {
+                var seg = part.Trim();
+                if (seg.Length == 0) continue;
+                int eq = seg.IndexOf('=');
+                string key = (eq >= 0 ? seg.Substring(0, eq) : seg).Trim().ToLowerInvariant();
+                if (key == "ws" || key == "websocket") continue;
+                keep.Add(seg);
+            }
+            return string.Join(";", keep);
         }
 
         /// <summary>Определяет правильный порт для подключения.</summary>
