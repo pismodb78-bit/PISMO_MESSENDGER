@@ -1654,6 +1654,7 @@ namespace PISMO
             try
             {
                 WebSocketSignalingClient.Instance.OnMessageReceived -= OnWebSocketMessage;
+                try { AvatarStore.AvatarLoaded -= OnAvatarLoadedForTiles; } catch { }
                 if (!_ended) MarkCallEnded();
 
                 _signalTimer?.Stop(); _signalTimer?.Dispose();

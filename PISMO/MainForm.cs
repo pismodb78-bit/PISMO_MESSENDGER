@@ -149,6 +149,21 @@ namespace PISMO
 
             lblCurrentUser.Text = UserSession.UserName;
 
+            // Аватарки: перерисовываем карточки, когда аватар загрузился в фоне;
+            // двойной клик по своему имени — сменить аватар.
+            AvatarStore.AvatarLoaded += uid =>
+            {
+                try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => InvalidateAvatarFor(uid))); }
+                catch { }
+            };
+            try
+            {
+                lblCurrentUser.Cursor = Cursors.Hand;
+                lblCurrentUser.DoubleClick -= LblCurrentUser_DoubleClick;
+                lblCurrentUser.DoubleClick += LblCurrentUser_DoubleClick;
+            }
+            catch { }
+
             InitMessageActions();
             StartPresence();
 
@@ -174,6 +189,70 @@ namespace PISMO
                 }
                 catch { }
             };
+        }
+
+        /// <summary>Перерисовать аватар в карточке пользователя uid (после
+        /// фоновой загрузки аватара).</summary>
+        private void InvalidateAvatarFor(int uid)
+        {
+            foreach (var p in _userPanels)
+            {
+                if (p.Tag is int id && id == uid)
+                    foreach (Control c in p.Controls)
+                        if (c is Panel av) { try { av.Invalidate(); } catch { } }
+            }
+        }
+
+        private void LblCurrentUser_DoubleClick(object sender, EventArgs e) => UploadMyAvatar();
+
+        /// <summary>Выбор и загрузка своей аватарки (с уменьшением до 256px).</summary>
+        private void UploadMyAvatar()
+        {
+            try
+            {
+                using var dlg = new OpenFileDialog
+                {
+                    Title = "Выберите аватар",
+                    Filter = "Изображения|*.jpg;*.jpeg;*.png;*.bmp"
+                };
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                byte[] data;
+                using (var src = (Bitmap)Image.FromFile(dlg.FileName))
+                {
+                    // Квадрат по центру + уменьшение до 256 — компактно для БД.
+                    int side = Math.Min(src.Width, src.Height);
+                    int sx = (src.Width - side) / 2, sy = (src.Height - side) / 2;
+                    int target = Math.Min(256, side);
+                    using var dst = new Bitmap(target, target);
+                    using (var g = Graphics.FromImage(dst))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(src, new Rectangle(0, 0, target, target),
+                            new Rectangle(sx, sy, side, side), GraphicsUnit.Pixel);
+                    }
+                    using var ms = new MemoryStream();
+                    dst.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    data = ms.ToArray();
+                }
+
+                int myId = UserSession.EffectiveId;
+                if (AvatarStore.SaveMyAvatar(myId, data))
+                {
+                    InvalidateAvatarFor(myId);
+                    MessageBox.Show("Аватар обновлён.", "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    MessageBox.Show("Не удалось сохранить аватар. Выполнена ли миграция avatar_data?",
+                        "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка загрузки аватара: " + ex.Message, "PISMO",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         // ── Polling: таймер на 2.5 с ───────────────────────────────────
@@ -744,13 +823,16 @@ namespace PISMO
             avatar.Paint += (s, e) =>
             {
                 e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                e.Graphics.FillEllipse(new SolidBrush(GetAvatarColor(uid)),
-                    0, 0, avatar.Width - 1, avatar.Height - 1);
-                string letter = name.Length > 0 ? name[0].ToString().ToUpper() : "?";
-                using var f = new Font("Segoe UI Black", 14f, FontStyle.Bold);
-                var sz = e.Graphics.MeasureString(letter, f);
-                e.Graphics.DrawString(letter, f, Brushes.White,
-                    (avatar.Width - sz.Width) / 2, (avatar.Height - sz.Height) / 2);
+                if (!AvatarStore.DrawAvatar(e.Graphics, uid, 0, 0, avatar.Width - 1))
+                {
+                    e.Graphics.FillEllipse(new SolidBrush(GetAvatarColor(uid)),
+                        0, 0, avatar.Width - 1, avatar.Height - 1);
+                    string letter = name.Length > 0 ? name[0].ToString().ToUpper() : "?";
+                    using var f = new Font("Segoe UI Black", 14f, FontStyle.Bold);
+                    var sz = e.Graphics.MeasureString(letter, f);
+                    e.Graphics.DrawString(letter, f, Brushes.White,
+                        (avatar.Width - sz.Width) / 2, (avatar.Height - sz.Height) / 2);
+                }
                 DrawPresenceDot(e.Graphics, avatar.Width, avatar.Height, uid);
             };
 
@@ -826,14 +908,17 @@ namespace PISMO
             avatar.Paint += (s, e) =>
             {
                 e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                var col = isAdminCard ? Color.FromArgb(88, 101, 242) : GetAvatarColor(uid);
-                e.Graphics.FillEllipse(new SolidBrush(col),
-                    0, 0, avatar.Width - 1, avatar.Height - 1);
-                string letter = name.Length > 0 ? name[0].ToString().ToUpper() : "?";
-                using var f = new Font("Segoe UI Black", 12f, FontStyle.Bold);
-                var sz = e.Graphics.MeasureString(letter, f);
-                e.Graphics.DrawString(letter, f, Brushes.White,
-                    (avatar.Width - sz.Width) / 2, (avatar.Height - sz.Height) / 2);
+                if (!AvatarStore.DrawAvatar(e.Graphics, uid, 0, 0, avatar.Width - 1))
+                {
+                    var col = isAdminCard ? Color.FromArgb(88, 101, 242) : GetAvatarColor(uid);
+                    e.Graphics.FillEllipse(new SolidBrush(col),
+                        0, 0, avatar.Width - 1, avatar.Height - 1);
+                    string letter = name.Length > 0 ? name[0].ToString().ToUpper() : "?";
+                    using var f = new Font("Segoe UI Black", 12f, FontStyle.Bold);
+                    var sz = e.Graphics.MeasureString(letter, f);
+                    e.Graphics.DrawString(letter, f, Brushes.White,
+                        (avatar.Width - sz.Width) / 2, (avatar.Height - sz.Height) / 2);
+                }
                 DrawPresenceDot(e.Graphics, avatar.Width, avatar.Height, uid);
             };
 
@@ -1498,7 +1583,10 @@ namespace PISMO
                                 var copy = (Bitmap)gifBmp.Clone(); // копируем текущий кадр
                                 var old = pb.Image;
                                 pb.Image = copy;
-                                old?.Dispose();
+                                // КРИТИЧНО: не уничтожаем исходный gifBmp (на первом
+                                // тике pb.Image == исходник) — иначе SelectActiveFrame
+                                // дальше падает и анимация замирает после 1-го кадра.
+                                if (!ReferenceEquals(old, gifBmp)) old?.Dispose();
                             }
                             catch
                             {

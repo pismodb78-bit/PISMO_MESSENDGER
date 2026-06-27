@@ -79,6 +79,24 @@ namespace PISMO
 
             // Своя плитка камеры всегда присутствует (аватар, пока камера выключена).
             AddParticipantTile(SelfPid, "Вы");
+
+            AvatarStore.AvatarLoaded += OnAvatarLoadedForTiles;
+        }
+
+        private void OnAvatarLoadedForTiles(int uid)
+        {
+            try
+            {
+                if (IsDisposed || !IsHandleCreated) return;
+                BeginInvoke(new Action(() =>
+                {
+                    string pid = uid.ToString();
+                    foreach (var kv in _tiles)
+                        if (kv.Value.Pid == pid && !kv.Value.HasVideo)
+                            try { kv.Value.Panel.Invalidate(); } catch { }
+                }));
+            }
+            catch { }
         }
 
         // ── Участники ───────────────────────────────────────────────────
@@ -340,17 +358,21 @@ namespace PISMO
 
             if (!tile.HasVideo)
             {
-                // Аватар-заглушка: цветной круг с первой буквой имени.
                 int d = Math.Min(p.Width, p.Height) / 3;
                 if (d > 12)
                 {
                     int x = (p.Width - d) / 2, y = (p.Height - d) / 2 - 6;
-                    using var br = new SolidBrush(AvatarColorFor(tile.Pid));
-                    g.FillEllipse(br, x, y, d, d);
-                    string letter = !string.IsNullOrEmpty(tile.Name) ? tile.Name.Substring(0, 1).ToUpper() : "?";
-                    using var f = new Font("Segoe UI Black", d * 0.4f, FontStyle.Bold);
-                    using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                    g.DrawString(letter, f, Brushes.White, new RectangleF(x, y, d, d), sf);
+                    // Реальная аватарка, если есть; иначе цветной круг с буквой.
+                    bool drawn = int.TryParse(tile.Pid, out int uid) && AvatarStore.DrawAvatar(g, uid, x, y, d);
+                    if (!drawn)
+                    {
+                        using var br = new SolidBrush(AvatarColorFor(tile.Pid));
+                        g.FillEllipse(br, x, y, d, d);
+                        string letter = !string.IsNullOrEmpty(tile.Name) ? tile.Name.Substring(0, 1).ToUpper() : "?";
+                        using var f = new Font("Segoe UI Black", d * 0.4f, FontStyle.Bold);
+                        using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                        g.DrawString(letter, f, Brushes.White, new RectangleF(x, y, d, d), sf);
+                    }
                 }
             }
 
