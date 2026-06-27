@@ -102,35 +102,37 @@ namespace PISMO
                 return;
             }
 
-            string appDir = AppDomain.CurrentDomain.BaseDirectory; // оканчивается на '\'
-            string exePath = Path.Combine(appDir, "PISMO.exe");
-            string batPath = Path.Combine(Path.GetTempPath(), "pismo_update.bat");
+            string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+            string ps1Path = Path.Combine(Path.GetTempPath(), "pismo_update.ps1");
 
-            // .bat ждёт закрытия PISMO.exe, распаковывает .zip поверх папки и перезапускает.
-            string bat =
-                "@echo off\r\n" +
-                "chcp 65001 >nul\r\n" +
-                "timeout /t 1 /nobreak >nul\r\n" +
-                ":wait\r\n" +
-                "tasklist /fi \"imagename eq PISMO.exe\" | find /i \"PISMO.exe\" >nul\r\n" +
-                "if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n" +
-                $"powershell -NoProfile -Command \"Expand-Archive -Force -LiteralPath '{tempZip}' -DestinationPath '{appDir.TrimEnd('\\')}'\"\r\n" +
-                $"start \"\" \"{exePath}\"\r\n" +
-                $"del \"{tempZip}\"\r\n" +
-                "del \"%~f0\"\r\n";
+            // PowerShell-апдейтер: ждёт закрытия PISMO, распаковывает архив во
+            // временную папку, НАХОДИТ PISMO.exe внутри (устойчиво к вложенным
+            // папкам в архиве), копирует эту папку поверх приложения и перезапускает.
+            string ps =
+                "$ErrorActionPreference='SilentlyContinue'\r\n" +
+                "Start-Sleep -Seconds 1\r\n" +
+                "for($i=0;$i -lt 60;$i++){ if(-not (Get-Process -Name 'PISMO' -ErrorAction SilentlyContinue)){break}; Start-Sleep -Milliseconds 700 }\r\n" +
+                $"$zip='{tempZip.Replace("'", "''")}'\r\n" +
+                $"$app='{appDir.Replace("'", "''")}'\r\n" +
+                "$tmp=Join-Path $env:TEMP ('pismo_ext_'+[guid]::NewGuid().ToString('N'))\r\n" +
+                "Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force\r\n" +
+                "$exe=Get-ChildItem -Path $tmp -Recurse -Filter 'PISMO.exe' | Select-Object -First 1\r\n" +
+                "if($exe){ $src=$exe.Directory.FullName; Copy-Item -Path (Join-Path $src '*') -Destination $app -Recurse -Force }\r\n" +
+                "Start-Process -FilePath (Join-Path $app 'PISMO.exe')\r\n" +
+                "Remove-Item $zip -Force; Remove-Item $tmp -Recurse -Force\r\n";
 
-            File.WriteAllText(batPath, bat, System.Text.Encoding.UTF8);
+            File.WriteAllText(ps1Path, ps, new System.Text.UTF8Encoding(false));
 
             var psi = new ProcessStartInfo
             {
-                FileName = "cmd.exe",
-                Arguments = $"/c \"{batPath}\"",
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{ps1Path}\"",
                 WindowStyle = ProcessWindowStyle.Hidden,
                 CreateNoWindow = true,
                 UseShellExecute = false
             };
             Process.Start(psi);
-            Environment.Exit(0); // закрываем приложение, чтобы .bat смог заменить файлы
+            Environment.Exit(0); // закрываем приложение, чтобы апдейтер смог заменить файлы
         }
 
         /// <summary>Парсит тег релиза (v1.2.3 / 1.2.3) в Version.</summary>
