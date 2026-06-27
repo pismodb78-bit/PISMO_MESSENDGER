@@ -477,9 +477,9 @@ async function deviceIdByLabel(kind, label){
 }
 
 async function openCamera(deviceId){
-    // Камеру держим в 480p@24 — для плиток этого с запасом, а CPU/полоса
-    // заметно меньше, чем при 720p/1080p по умолчанию (оптимизация).
-    const camOpts = { resolution: { width: 640, height: 480, frameRate: 24 } };
+    // Камера в 16:10 (1280x800) — чтобы кадр не обрезался (раньше форс 4:3
+    // обрезал широкий источник), и при этом разумная нагрузка.
+    const camOpts = { resolution: { width: 1280, height: 800, frameRate: 24 } };
     if (deviceId) camOpts.deviceId = { exact: deviceId };
     if (cameraTrack){
         await cameraTrack.restartTrack(camOpts);
@@ -535,14 +535,11 @@ async function previewScreen(resHeight, fps){
         // resHeight: 1080/720/480/360; fps: 60/30/15...
         let h = parseInt(resHeight) || 1080;
         let f = parseInt(fps) || 30;
-        let w = Math.round(h * 16 / 9);
         screenQualityH = h; screenQualityF = f;
-        const opts = {
-            audio: true,
-            resolution: { width: w, height: h, frameRate: f },
-            video: { frameRate: f, height: h, width: w }
-        };
-        const tracks = await LK.createLocalScreenTracks(opts);
+        // НЕ форсим разрешение/соотношение захвата — иначе экран обрезается
+        // (у мониторов 16:10 и т.п.). Захватываем нативно, а качество и fps
+        // регулируем при публикации (maxBitrate/maxFramerate в confirmScreenShare).
+        const tracks = await LK.createLocalScreenTracks({ audio: true });
         screenVideoTrack = tracks.find(t => t.kind === 'video') || null;
         screenAudioTrack = tracks.find(t => t.kind === 'audio') || null;
         if (!screenVideoTrack){ post({type:'localScreenError', error:'no screen video track'}); return; }
