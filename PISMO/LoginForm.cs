@@ -46,41 +46,11 @@ namespace PISMO
             }
         }
 
-        // ────────────────────────────────────────────
-        //  Сохранение данных вручную (кнопка 💾)
-        // ────────────────────────────────────────────
-        private void btnSaveCreds_Click(object sender, EventArgs e)
+        /// <summary>Удаляет файл сохранённого входа (когда галочка снята).</summary>
+        private void ClearSavedCredentials()
         {
-            if (string.IsNullOrWhiteSpace(txtLogin.Text))
-            {
-                ShowError("Введите логин, чтобы сохранить.");
-                return;
-            }
-
-            SaveCredentials(txtLogin.Text.Trim(), txtPass.Text, chkRemember.Checked);
-            ShowInfo("Данные входа сохранены.");
-        }
-
-        // ────────────────────────────────────────────
-        //  Очистка сохранённых данных (кнопка 🗑)
-        // ────────────────────────────────────────────
-        private void btnClearCreds_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                if (File.Exists(CredsFile))
-                    File.Delete(CredsFile);
-
-                txtLogin.Clear();
-                txtPass.Clear();
-                chkRemember.Checked = false;
-                lblError.Visible    = false;
-                ShowInfo("Сохранённые данные удалены.");
-            }
-            catch (Exception ex)
-            {
-                ShowError("Не удалось удалить файл: " + ex.Message);
-            }
+            try { if (File.Exists(CredsFile)) File.Delete(CredsFile); }
+            catch { }
         }
 
         // ────────────────────────────────────────────
@@ -132,9 +102,12 @@ namespace PISMO
                 return;
             }
 
-            // Автосохранение если галочка стоит
+            // «Запомнить меня» полностью управляет сохранением данных входа:
+            // отмечена — сохраняем, снята — удаляем сохранённое.
             if (chkRemember.Checked)
                 SaveCredentials(login, pass, true);
+            else
+                ClearSavedCredentials();
 
             var main = new MainForm();
             main.Show();
@@ -196,13 +169,6 @@ namespace PISMO
         private void ShowError(string msg)
         {
             lblError.ForeColor = Color.FromArgb(240, 71, 71);
-            lblError.Text      = msg;
-            lblError.Visible   = true;
-        }
-
-        private void ShowInfo(string msg)
-        {
-            lblError.ForeColor = Color.FromArgb(67, 181, 129);
             lblError.Text      = msg;
             lblError.Visible   = true;
         }

@@ -10,6 +10,7 @@ namespace PISMO
         private Label lblSidebarTitle;
         private FlowLayoutPanel pnlUserList;
         private Panel pnlSidebarFooter;
+        private Panel pnlMyAvatar;
         private Label lblCurrentUser;
         private Button btnSettings;
         private Button btnRefresh;
@@ -51,6 +52,7 @@ namespace PISMO
             btnNewGroup = new Button();
             btnRefresh = new Button();
             pnlSidebarFooter = new Panel();
+            pnlMyAvatar = new Panel();
             lblCurrentUser = new Label();
             btnSettings = new Button();
             pnlMain = new Panel();
@@ -163,6 +165,7 @@ namespace PISMO
             // 
             pnlSidebarFooter.BackColor = Color.FromArgb(28, 29, 34);
             pnlSidebarFooter.Controls.Add(lblCurrentUser);
+            pnlSidebarFooter.Controls.Add(pnlMyAvatar);
             pnlSidebarFooter.Controls.Add(btnSettings);
             pnlSidebarFooter.Dock = DockStyle.Bottom;
             pnlSidebarFooter.Location = new Point(0, 648);
@@ -170,16 +173,25 @@ namespace PISMO
             pnlSidebarFooter.Padding = new Padding(8, 8, 4, 8);
             pnlSidebarFooter.Size = new Size(250, 52);
             pnlSidebarFooter.TabIndex = 2;
-            // 
+            //
+            // pnlMyAvatar — кружок аватарки текущего пользователя (клик/двойной клик — сменить)
+            //
+            pnlMyAvatar.BackColor = Color.Transparent;
+            pnlMyAvatar.Dock = DockStyle.Left;
+            pnlMyAvatar.Name = "pnlMyAvatar";
+            pnlMyAvatar.Size = new Size(40, 36);
+            pnlMyAvatar.Cursor = Cursors.Hand;
+            pnlMyAvatar.TabIndex = 0;
+            //
             // lblCurrentUser
-            // 
+            //
             lblCurrentUser.Dock = DockStyle.Fill;
             lblCurrentUser.Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);
             lblCurrentUser.ForeColor = Color.FromArgb(220, 221, 222);
             lblCurrentUser.Location = new Point(8, 8);
             lblCurrentUser.Name = "lblCurrentUser";
             lblCurrentUser.Size = new Size(204, 36);
-            lblCurrentUser.TabIndex = 0;
+            lblCurrentUser.TabIndex = 1;
             lblCurrentUser.TextAlign = ContentAlignment.MiddleLeft;
             // 
             // btnSettings

@@ -170,6 +170,17 @@ namespace PISMO
             }
             catch { }
 
+            // Кружок-аватар возле имени аккаунта (видно сразу где менять аватар).
+            try
+            {
+                pnlMyAvatar.Paint += PnlMyAvatar_Paint;
+                pnlMyAvatar.Click += (s, e) => UploadMyAvatar();
+                var ttAv = new ToolTip();
+                ttAv.SetToolTip(pnlMyAvatar, "Нажмите, чтобы сменить аватар");
+                AvatarStore.EnsureLoaded(UserSession.EffectiveId);
+            }
+            catch { }
+
             // Кнопка GIF в строке ввода (слева от «Отправить»).
             try
             {
@@ -296,6 +307,28 @@ namespace PISMO
                 if (p.Tag is int id && id == uid)
                     foreach (Control c in p.Controls)
                         if (c is Panel av) { try { av.Invalidate(); } catch { } }
+            }
+            // Свой кружок-аватар в футере.
+            if (uid == UserSession.EffectiveId)
+                try { pnlMyAvatar?.Invalidate(); } catch { }
+        }
+
+        /// <summary>Рисует круглый аватар текущего пользователя в футере сайдбара.</summary>
+        private void PnlMyAvatar_Paint(object sender, PaintEventArgs e)
+        {
+            int uid = UserSession.EffectiveId;
+            int size = Math.Min(pnlMyAvatar.Width, pnlMyAvatar.Height) - 2;
+            int x = (pnlMyAvatar.Width - size) / 2, y = (pnlMyAvatar.Height - size) / 2;
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            if (!AvatarStore.DrawAvatar(e.Graphics, uid, x, y, size))
+            {
+                e.Graphics.FillEllipse(new SolidBrush(GetAvatarColor(uid)), x, y, size, size);
+                string nm = UserSession.UserName ?? "";
+                string letter = nm.Length > 0 ? nm[0].ToString().ToUpper() : "?";
+                using var f = new Font("Segoe UI Black", 13f, FontStyle.Bold);
+                var sz = e.Graphics.MeasureString(letter, f);
+                e.Graphics.DrawString(letter, f, Brushes.White,
+                    x + (size - sz.Width) / 2, y + (size - sz.Height) / 2);
             }
         }
 

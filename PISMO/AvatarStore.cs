@@ -37,6 +37,7 @@ namespace PISMO
             Task.Run(() =>
             {
                 Image img = null;
+                bool transientError = false;
                 try
                 {
                     using var conn = DBHelper.OpenConnection();
@@ -53,11 +54,22 @@ namespace PISMO
                         }
                     }
                 }
-                catch (MySqlException) { _columnOk = false; }
-                catch { }
+                catch (MySqlException mex)
+                {
+                    // Колонку отключаем НАВСЕГДА только если её реально нет
+                    // (1054 = Unknown column). Любая другая ошибка (таймаут/обрыв
+                    // под VPN, too many connections и т.п.) — временная: НЕ латчим
+                    // _columnOk и НЕ кэшируем результат, чтобы попробовать ещё раз.
+                    if (mex.Number == 1054) _columnOk = false;
+                    else transientError = true;
+                }
+                catch { transientError = true; }
+
+                lock (_loading) { _loading.Remove(uid); }
+
+                if (transientError) return; // дадим следующему вызову попробовать снова
 
                 _cache[uid] = img; // null допустим — «загружено, аватара нет»
-                lock (_loading) { _loading.Remove(uid); }
                 try { AvatarLoaded?.Invoke(uid); } catch { }
             });
         }
