@@ -795,7 +795,10 @@ namespace PISMO
         /// </summary>
         public void AttachConversationContextMenu(Panel card, int partnerId, string partnerName)
         {
-            card.MouseClick += async (s, e) =>
+            // ПКМ-меню вешаем не только на саму карточку, но и на все её дочерние
+            // контролы (аватар, имя, превью) — иначе клик правой по тексту/аватару
+            // «проваливался» мимо меню и вместо него просто открывался чат.
+            void Handler(object s, MouseEventArgs e)
             {
                 if (e.Button != MouseButtons.Right) return;
                 var menu = new ContextMenuStrip();
@@ -861,7 +864,18 @@ namespace PISMO
                 }
 
                 menu.Show(Cursor.Position);
-            };
+            }
+
+            card.MouseClick += Handler;
+            void Wire(Control parent)
+            {
+                foreach (Control c in parent.Controls)
+                {
+                    c.MouseClick += Handler;
+                    if (c.HasChildren) Wire(c);
+                }
+            }
+            Wire(card);
         }
 
         /// <summary>

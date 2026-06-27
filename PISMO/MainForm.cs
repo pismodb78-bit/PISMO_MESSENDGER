@@ -42,6 +42,11 @@ namespace PISMO
         private bool _pollBusy = false;
         private readonly Dictionary<int, int> _prevUnread = new();
 
+        // Кеш метаданных переписки в памяти: при повторном открытии чата сообщения
+        // показываются мгновенно из кеша, а свежие подгружаются в фоне (не вешая UI).
+        private readonly Dictionary<int, DataTable> _msgMetaCache = new();   // partnerId -> meta
+        private readonly Dictionary<int, (bool iBlocked, bool theyBlocked)> _blockCache = new();
+
         // Голосовые сообщения
         private WaveInEvent _waveIn;
         private MemoryStream _audioStream;
@@ -1444,21 +1449,54 @@ namespace PISMO
         private void LoadMessages()
         {
             if (_currentChatPartnerId < 0) return;
+            int partner = _currentChatPartnerId;
+            int myId = UserSession.EffectiveId;
+
+            // 1) Мгновенно рисуем из кеша (если уже открывали этот чат) — чтобы
+            //    переключение между чатами было без задержек, даже под VPN.
+            if (_msgMetaCache.TryGetValue(partner, out var cachedDt))
+            {
+                var (cib, ctb) = _blockCache.TryGetValue(partner, out var bc) ? bc : (false, false);
+                RenderMessages(cachedDt, myId, partner, cib, ctb);
+            }
+
+            // 2) Свежие данные тянем в ФОНЕ (запросы к БД не на UI-потоке) и
+            //    перерисовываем, только если пользователь всё ещё в этом чате.
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                bool iB = false, tB = false;
+                DataTable dt = null;
+                try
+                {
+                    iB = IsUserBlocked(myId, partner);
+                    tB = IsUserBlocked(partner, myId);
+                    dt = LoadMessagesMetaOnly(myId, partner);
+                }
+                catch { }
+                if (dt == null) return;
+                if (IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (_currentChatPartnerId != partner) return; // уже переключились
+                        _msgMetaCache[partner] = dt;
+                        _blockCache[partner] = (iB, tB);
+                        RenderMessages(dt, myId, partner, iB, tB);
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        /// <summary>Отрисовка переписки из готового DataTable (без обращения к БД
+        /// за метаданными). Вызывается из кеша мгновенно и из фоновой подгрузки.</summary>
+        private void RenderMessages(DataTable dt, int myId, int partner, bool iBlocked, bool theyBlockedMe)
+        {
+            if (_currentChatPartnerId != partner) return;
 
             pnlMessages.SuspendLayout();
             pnlMessages.Controls.Clear();
-
-            int myId = UserSession.EffectiveId;
-
-            // Проверяем состояние блокировок между мной и текущим партнёром
-            bool iBlocked = false;
-            bool theyBlockedMe = false;
-            try
-            {
-                iBlocked = IsUserBlocked(myId, _currentChatPartnerId);
-                theyBlockedMe = IsUserBlocked(_currentChatPartnerId, myId);
-            }
-            catch { /* игнорируем ошибки проверки */ }
 
             // Если кто-то заблокирован — показываем уведомление и блокируем отправку
             if (iBlocked || theyBlockedMe)
@@ -1489,8 +1527,6 @@ namespace PISMO
 
             try
             {
-                var dt = LoadMessagesMetaOnly(myId, _currentChatPartnerId);
-
                 int yOffset = (iBlocked || theyBlockedMe) ? 10 + 32 + 8 : 10;
                 string lastDate = "";
 
