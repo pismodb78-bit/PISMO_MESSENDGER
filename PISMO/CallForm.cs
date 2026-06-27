@@ -752,6 +752,7 @@ namespace PISMO
             _startTime = DateTime.Now;
             _lblStatus.Text = "Соединение установлено";
             _durationTimer.Start();
+            try { Sounds.CallConnected(); } catch { }
 
             // Камеру запускаем только после подключения к комнате — превью
             // открывается, когда транспорт уже готов опубликовать трек.
@@ -826,6 +827,7 @@ namespace PISMO
         {
             _lblScreenBadge.Text = "🖥 Демонстрация экрана";
             _lblScreenBadge.Visible = true;
+            try { Sounds.ScreenOn(); } catch { }
         }
 
         private void OnLocalScreenStopped()
@@ -835,6 +837,7 @@ namespace PISMO
             _btnScreen.BackColor = Color.FromArgb(64, 68, 75);
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
+            try { Sounds.ScreenOff(); } catch { }
         }
 
         private void OnLocalScreenError(string error)
@@ -935,6 +938,7 @@ namespace PISMO
             _btnMute.BackColor = _muted
                 ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
             try { _transport?.SetMicrophoneEnabled(!_muted); } catch { }
+            try { if (_muted) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
         }
 
         // ── Панель управления входящим звуком: громкость голоса собеседников,
@@ -1241,12 +1245,14 @@ namespace PISMO
                 _transport.StopCameraTrack();
                 _cameraStarted = false;
                 PushVoiceState();
+                try { Sounds.CameraOff(); } catch { }
                 var old = _pbLocal.Image; _pbLocal.Image = null; old?.Dispose();
             }
             else
             {
                 _btnCamera.Text = "📷";
                 _btnCamera.BackColor = Color.FromArgb(64, 68, 75);
+                try { Sounds.CameraOn(); } catch { }
                 StartVideo(); // откроет превью с подтверждением
             }
         }
@@ -1650,6 +1656,7 @@ namespace PISMO
         {
             if (_ended) return;
             _ended = true;
+            try { Sounds.Hangup(); } catch { }
             MarkCallEnded();
             Close();
         }

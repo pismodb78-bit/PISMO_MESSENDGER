@@ -574,6 +574,7 @@ namespace PISMO
         private void ShowNewMessageNotification(int senderId, int unreadCount)
         {
             string senderName = GetNameFromCards(senderId);
+            try { Sounds.Message(); } catch { }
             _trayIcon.ShowBalloonTip(
                 4000,
                 "PISMO — новое сообщение",

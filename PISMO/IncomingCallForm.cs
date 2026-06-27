@@ -118,6 +118,9 @@ namespace PISMO
             };
             _ringTimer.Start();
 
+            // Рингтон входящего звонка.
+            try { Sounds.StartRingtone(); } catch { }
+
             // Обработчик отмены вызова со стороны звонящего
             WebSocketSignalingClient.Instance.OnMessageReceived += OnWebSocketMessage;
             
@@ -142,6 +145,7 @@ namespace PISMO
 
             FormClosed += (s, e) =>
             {
+                try { Sounds.StopRingtone(); } catch { }
                 _ringTimer.Stop();
                 _checkTimer.Stop();
                 _checkTimer.Dispose();
