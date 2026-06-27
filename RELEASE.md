@@ -8,13 +8,18 @@
 
 1. **Подними версию** в `PISMO/PISMO.csproj` (теги `<Version>`, `<AssemblyVersion>`,
    `<FileVersion>`), например `1.0.1` → `1.0.2`.
-2. **Собери релиз:**
+2. **Собери релиз** (framework-dependent; БЕЗ `-r win-x64` — иначе при
+   включённом PackageSourceMapping будут ошибки NU1100 с runtime.* пакетами):
    ```bat
-   dotnet publish PISMO/PISMO.csproj -c Release -r win-x64 --self-contained false
+   dotnet publish PISMO/PISMO.csproj -c Release
    ```
-   Папка с результатом: `PISMO\bin\Release\net8.0-windows\win-x64\publish`
+   Папка с результатом: `PISMO\bin\Release\net8.0-windows\publish`
+   (Либо просто собери в Release через Visual Studio и возьми папку
+   `PISMO\bin\Release\net8.0-windows\`.)
 3. **Запакуй в .zip** СОДЕРЖИМОЕ папки publish (файлы должны лежать в КОРНЕ
    архива, не во вложенной папке). Назови, например, `PISMO.zip`.
+   - Требуется, чтобы у пользователей был установлен **.NET 8 Desktop Runtime**
+     (он уже есть, раз приложение запускалось).
    - В архиве обязательно должны быть `PISMO.exe`, `ip.txt`, `pismo.ico` и все dll.
 4. На GitHub: **Releases → Draft a new release**:
    - **Tag**: `v1.0.2` (совпадает с версией; можно с `v` или без).
