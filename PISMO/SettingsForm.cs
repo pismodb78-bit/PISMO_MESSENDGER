@@ -27,6 +27,9 @@ namespace PISMO
         private Button _btnMicTest;
         private TrackBar _trkGain;
         private Label _lblGainValue;
+        private CheckBox _chkVoiceAuto;
+        private TrackBar _trkVoiceThreshold;
+        private Label _lblVoiceThresholdValue;
         private Panel _pnlLevelBar;
         private Label _lblDbValue;
         private Label _lblMicStatus;
@@ -153,7 +156,7 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, 322),
-                Size = new Size(456, 220)
+                Size = new Size(456, 300)
             };
 
             var lblMicTitle = new Label
@@ -271,18 +274,65 @@ namespace PISMO
                 Visible = false
             };
 
+            // ── Активация голоса (порог регистрации) ────────────────────
+            _chkVoiceAuto = new CheckBox
+            {
+                Text = "Автоматически определять чувствительность ввода",
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BackColor = Color.FromArgb(47, 49, 54),
+                AutoSize = true,
+                Location = new Point(14, 236),
+                Cursor = Cursors.Hand
+            };
+            var lblVoiceHint = new Label
+            {
+                Text = "Ниже порога звук с микрофона не передаётся (как в Discord).",
+                Font = new Font("Segoe UI", 8f),
+                ForeColor = Color.FromArgb(150, 152, 158),
+                AutoSize = true,
+                Location = new Point(14, 258)
+            };
+            _trkVoiceThreshold = new TrackBar
+            {
+                Minimum = 0,
+                Maximum = 100,
+                Value = 25,
+                TickStyle = TickStyle.None,
+                Location = new Point(14, 276),
+                Size = new Size(300, 30),
+                BackColor = Color.FromArgb(47, 49, 54)
+            };
+            _lblVoiceThresholdValue = new Label
+            {
+                Text = "25%",
+                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                AutoSize = true,
+                Location = new Point(326, 280)
+            };
+            _trkVoiceThreshold.ValueChanged += (s, e) =>
+                _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value}%";
+            _chkVoiceAuto.CheckedChanged += (s, e) =>
+            {
+                // В авто-режиме ручной порог не нужен — гасим слайдер.
+                _trkVoiceThreshold.Enabled = !_chkVoiceAuto.Checked;
+                _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
+            };
+
             pnlMic.Controls.AddRange(new Control[]
             {
                 lblMicTitle, lblMicHint, _cmbMic, _btnMicTest,
                 lblGainHint, _trkGain, _lblGainValue,
-                lblLevelHint, _lblDbValue, _pnlLevelBar, _lblMicStatus
+                lblLevelHint, _lblDbValue, _pnlLevelBar, _lblMicStatus,
+                _chkVoiceAuto, lblVoiceHint, _trkVoiceThreshold, _lblVoiceThresholdValue
             });
 
             // ── Демонстрация экрана ─────────────────────────────────
             var pnlScreen = new Panel
             {
                 BackColor = Color.FromArgb(47, 49, 54),
-                Location = new Point(20, 560),
+                Location = new Point(20, 640),
                 Size = new Size(456, 100)
             };
 
@@ -520,6 +570,13 @@ namespace PISMO
             _trkGain.Value = Math.Clamp(gainPercent, _trkGain.Minimum, _trkGain.Maximum);
             _lblGainValue.Text = $"{_trkGain.Value}%";
             _gainCached = _trkGain.Value / 100f;
+
+            // Активация голоса (порог).
+            _chkVoiceAuto.Checked = DeviceSettings.VoiceAutoSensitivity;
+            _trkVoiceThreshold.Value = Math.Clamp(DeviceSettings.VoiceThreshold, 0, 100);
+            _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value}%";
+            _trkVoiceThreshold.Enabled = !_chkVoiceAuto.Checked;
+            _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
 
             // ScreenShare
             string sh = DeviceSettings.ScreenShareResolutionHeight.ToString();
@@ -766,6 +823,9 @@ namespace PISMO
             }
 
             DeviceSettings.MicrophoneGain = _trkGain.Value / 100f;
+
+            DeviceSettings.VoiceAutoSensitivity = _chkVoiceAuto.Checked;
+            DeviceSettings.VoiceThreshold = _trkVoiceThreshold.Value;
 
             if (_cmbScreenRes.SelectedIndex >= 0)
             {

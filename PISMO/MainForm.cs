@@ -1458,7 +1458,13 @@ namespace PISMO
 
             // 1) Мгновенно рисуем из кеша (если уже открывали этот чат) — чтобы
             //    переключение между чатами было без задержек, даже под VPN.
-            if (_msgMetaCache.TryGetValue(partner, out var cachedDt))
+            //    Память → диск (постоянный кеш переписки) → пусто.
+            if (!_msgMetaCache.TryGetValue(partner, out var cachedDt))
+            {
+                cachedDt = MessageCache.Load(MessageCache.DirectKey(myId, partner));
+                if (cachedDt != null) _msgMetaCache[partner] = cachedDt;
+            }
+            if (cachedDt != null)
             {
                 var (cib, ctb) = _blockCache.TryGetValue(partner, out var bc) ? bc : (false, false);
                 RenderMessages(cachedDt, myId, partner, cib, ctb);
@@ -1478,6 +1484,8 @@ namespace PISMO
                 }
                 catch { }
                 if (dt == null) return;
+                // Сохраняем в постоянный кеш переписки (текст зашифрован, как в БД).
+                try { MessageCache.Save(MessageCache.DirectKey(myId, partner), dt); } catch { }
                 if (IsDisposed || !IsHandleCreated) return;
                 try
                 {
@@ -2902,7 +2910,7 @@ namespace PISMO
 
             menu.Items.Add(new ToolStripSeparator());
 
-            menu.Items.Add("🗑 Очистить кеш медиа", null, (s, ev) => ClearMediaCache());
+            menu.Items.Add("🗑 Очистить кеш (переписка + медиа)", null, (s, ev) => ClearAllCaches());
 
             menu.Items.Add(new ToolStripSeparator());
 

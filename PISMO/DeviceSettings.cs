@@ -31,6 +31,15 @@ namespace PISMO
         /// <summary>FPS для демонстрации экрана (1..60). Обычно 60,45,30,15.</summary>
         public static int ScreenShareFps { get; set; } = 30;
 
+        /// <summary>Автоопределение чувствительности микрофона (как в Discord).
+        /// true = звук передаётся всегда (без порога), false = используется
+        /// ручной порог VoiceThreshold.</summary>
+        public static bool VoiceAutoSensitivity { get; set; } = true;
+
+        /// <summary>Ручной порог активации голоса (0..100): ниже порога звук не
+        /// передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
+        public static int VoiceThreshold { get; set; } = 25;
+
         public static void Load()
         {
             try
@@ -69,6 +78,12 @@ namespace PISMO
                         case "ScreenShareFps":
                             if (int.TryParse(val, out int sf)) ScreenShareFps = sf;
                             break;
+                        case "VoiceAutoSensitivity":
+                            VoiceAutoSensitivity = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "VoiceThreshold":
+                            if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, 0, 100);
+                            break;
                     }
                 }
             }
@@ -91,7 +106,9 @@ namespace PISMO
                     $"MicrophoneName={MicrophoneName}\n" +
                     $"MicrophoneGain={MicrophoneGain.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n" +
                     $"ScreenShareResolutionHeight={ScreenShareResolutionHeight}\n" +
-                    $"ScreenShareFps={ScreenShareFps}\n";
+                    $"ScreenShareFps={ScreenShareFps}\n" +
+                    $"VoiceAutoSensitivity={(VoiceAutoSensitivity ? 1 : 0)}\n" +
+                    $"VoiceThreshold={VoiceThreshold}\n";
 
                 File.WriteAllText(FilePath, content);
 

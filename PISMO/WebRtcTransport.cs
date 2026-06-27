@@ -166,7 +166,14 @@ namespace PISMO
             await Task.Delay(200);
 
             // Запускаем подключение к комнате.
-            SendToJs(JsonSerializer.Serialize(new { cmd = "connect", url = _pendingUrl, token = _pendingToken }));
+            SendToJs(JsonSerializer.Serialize(new
+            {
+                cmd = "connect",
+                url = _pendingUrl,
+                token = _pendingToken,
+                voiceAuto = DeviceSettings.VoiceAutoSensitivity,
+                voiceThreshold = DeviceSettings.VoiceThreshold
+            }));
         }
 
         private string BuildHtml()
@@ -236,7 +243,9 @@ function waitForLK(){
     });
 }
 
-async function connectRoom(url, token){
+async function connectRoom(url, token, voiceAuto, voiceThreshold){
+    if (typeof voiceAuto !== 'undefined') voiceGate.auto = !!voiceAuto;
+    if (typeof voiceThreshold === 'number') voiceGate.threshold = voiceThreshold;
     const ok = await waitForLK();
     if (!ok){ post({type:'fatal', error:'livekit-client не загрузился (нет интернета/CDN недоступен)'}); post({type:'disconnected'}); return; }
     try {
@@ -277,6 +286,9 @@ async function connectRoom(url, token){
 
         // Микрофон публикуем сразу — аудиозвонок начинается мгновенно.
         try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); } catch(e){ console.error('mic enable', String(e)); }
+
+        // Применяем порог активации голоса (если задан ручной режим).
+        try { setTimeout(() => setVoiceGate(voiceGate.auto, voiceGate.threshold), 400); } catch(e){}
 
         // Периодически читаем RTT (пинг) из WebRTC-статистики и шлём в C#.
         try { if (window.__pingTimer) clearInterval(window.__pingTimer); } catch(e){}
@@ -690,7 +702,68 @@ async function setAudioDevice(kind, deviceLabel){
     } catch(e){ console.error('switchActiveDevice ' + kind, String(e)); }
 }
 
+// ── Порог активации голоса (voice gate, как в Discord) ──────────────
+// auto=true  → передаём звук всегда (порог не применяется).
+// auto=false → анализируем уровень микрофона и глушим трек ниже порога.
+let voiceGate = { auto: true, threshold: 25, ctx: null, analyser: null, data: null, timer: null, track: null };
+
+function localMicTrack(){
+    try {
+        const pub = room && room.localParticipant
+            ? room.localParticipant.getTrackPublication(LK.Track.Source.Microphone) : null;
+        return pub && pub.track ? pub.track : null;
+    } catch(e){ return null; }
+}
+
+function stopVoiceGate(){
+    try { if (voiceGate.timer) clearInterval(voiceGate.timer); } catch(e){}
+    voiceGate.timer = null;
+    try { if (voiceGate.ctx) voiceGate.ctx.close(); } catch(e){}
+    voiceGate.ctx = null; voiceGate.analyser = null; voiceGate.data = null; voiceGate.track = null;
+    // Снимаем возможный mute — звук должен идти.
+    const t = localMicTrack();
+    if (t && t.mediaStreamTrack) t.mediaStreamTrack.enabled = true;
+}
+
+function setVoiceGate(auto, threshold){
+    voiceGate.auto = !!auto;
+    voiceGate.threshold = (typeof threshold === 'number') ? threshold : 25;
+    stopVoiceGate();
+    if (voiceGate.auto) return; // авто-режим: без ручного порога, всегда передаём
+
+    const lkt = localMicTrack();
+    if (!lkt || !lkt.mediaStreamTrack) return;
+    try {
+        voiceGate.track = lkt;
+        voiceGate.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const stream = new MediaStream([lkt.mediaStreamTrack]);
+        const srcNode = voiceGate.ctx.createMediaStreamSource(stream);
+        voiceGate.analyser = voiceGate.ctx.createAnalyser();
+        voiceGate.analyser.fftSize = 512;
+        srcNode.connect(voiceGate.analyser);
+        voiceGate.data = new Uint8Array(voiceGate.analyser.frequencyBinCount);
+
+        let hangFrames = 0; // «придержка», чтобы не рубить хвосты слов
+        voiceGate.timer = setInterval(() => {
+            try {
+                if (!voiceGate.analyser) return;
+                voiceGate.analyser.getByteFrequencyData(voiceGate.data);
+                let sum = 0;
+                for (let i = 0; i < voiceGate.data.length; i++) sum += voiceGate.data[i];
+                const level = sum / voiceGate.data.length;            // 0..255 примерно
+                const thr = voiceGate.threshold * 2.2;                // 0..100 → ~0..220
+                const t = localMicTrack();
+                if (!t || !t.mediaStreamTrack) return;
+                if (level >= thr) { hangFrames = 8; t.mediaStreamTrack.enabled = true; }
+                else if (hangFrames > 0) { hangFrames--; t.mediaStreamTrack.enabled = true; }
+                else { t.mediaStreamTrack.enabled = false; }
+            } catch(e){}
+        }, 60);
+    } catch(e){ console.error('voiceGate', String(e)); }
+}
+
 async function disconnectRoom(){
+    try { stopVoiceGate(); } catch(e){}
     try { if (room) await room.disconnect(); } catch(e){}
 }
 
@@ -698,7 +771,7 @@ window.chrome.webview.addEventListener('message', (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch(err){ return; }
     switch (msg.cmd){
-        case 'connect': connectRoom(msg.url, msg.token); break;
+        case 'connect': connectRoom(msg.url, msg.token, msg.voiceAuto, msg.voiceThreshold); break;
         case 'previewCamera': previewCamera(msg.deviceLabel); break;
         case 'confirmCameraShare': confirmCameraShare(); break;
         case 'cancelCameraPreview': cancelCameraPreview(); break;
@@ -717,6 +790,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'setParticipantMuted': setParticipantMuted(msg.pid, msg.muted); break;
         case 'setInputDevice': setAudioDevice('audioinput', msg.deviceLabel); break;
         case 'setOutputDevice': setAudioDevice('audiooutput', msg.deviceLabel); break;
+        case 'setVoiceGate': setVoiceGate(msg.auto, msg.threshold); break;
         case 'disconnect': disconnectRoom(); break;
     }
 });
@@ -984,6 +1058,10 @@ window.chrome.webview.addEventListener('message', (e) => {
         /// <summary>Сменить устройство вывода (динамики) по имени (label).</summary>
         public void SetOutputDevice(string deviceLabel)
             => SendToJs(JsonSerializer.Serialize(new { cmd = "setOutputDevice", deviceLabel }));
+
+        /// <summary>Порог активации голоса: auto=true — без порога; иначе threshold (0..100).</summary>
+        public void SetVoiceGate(bool auto, int threshold)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setVoiceGate", auto, threshold }));
 
         private void SendToJs(string json)
         {

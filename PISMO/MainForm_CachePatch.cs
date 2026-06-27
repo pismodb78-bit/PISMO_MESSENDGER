@@ -318,5 +318,26 @@ namespace PISMO
             MessageBox.Show("Кеш очищен.", "PISMO",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
+
+        /// <summary>Очищает кеш переписок (текст) И медиа, плюс кеш в памяти.</summary>
+        private void ClearAllCaches()
+        {
+            long sizeMb = (MediaCache.GetCacheSize() + MessageCache.GetCacheSize()) / 1024 / 1024;
+            var result = MessageBox.Show(
+                $"Очистить весь кеш (переписка + медиафайлы)? ({sizeMb} МБ)\n" +
+                "После очистки чаты будут загружаться немного медленнее до повторного кеширования.",
+                "PISMO — Очистка кеша",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (result != System.Windows.Forms.DialogResult.Yes) return;
+
+            try { MediaCache.Clear(); } catch { }
+            try { MessageCache.Clear(); } catch { }
+            try { _msgMetaCache.Clear(); _blockCache.Clear(); } catch { }
+
+            MessageBox.Show("Кеш очищен.", "PISMO",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
     }
 }
