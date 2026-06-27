@@ -25,6 +25,8 @@ namespace PISMO
         // call_sessions/ringing). _channelRoom задаёт имя комнаты.
         private readonly bool _isChannel;
         private readonly string _channelRoom;
+        private int _vchId = -1;     // id голосового канала (для voice_presence)
+        private int _vchTick = 0;    // троттлинг heartbeat в секундном таймере
         private WebRtcTransport _transport = null;
         private System.Windows.Forms.Timer _signalTimer = null;  // ← явная инициализация
         private System.Windows.Forms.Timer _durationTimer = null;  // ← явная инициализация
@@ -133,6 +135,11 @@ namespace PISMO
         {
             _isChannel = true;
             _channelRoom = channelRoom;
+            _vchId = VoicePresence.ChannelIdFromRoom(channelRoom);
+            // Сразу отмечаемся «в эфире», чтобы другие увидели нас без задержки.
+            if (_vchId > 0)
+                System.Threading.Tasks.Task.Run(() =>
+                    VoicePresence.Heartbeat(_vchId, UserSession.EffectiveId));
             _sessionId = -1;
             _isCaller = false;
             _peerName = channelTitle;
@@ -392,6 +399,11 @@ namespace PISMO
                             _lblParticipants.Text = $"В канале ({parts.Count}):\n" + string.Join("\n", parts);
                     }
                     catch { }
+
+                    // Heartbeat присутствия в канале раз в ~5 секунд (в фоне).
+                    if (_vchId > 0 && (++_vchTick % 5 == 0))
+                        System.Threading.Tasks.Task.Run(() =>
+                            VoicePresence.Heartbeat(_vchId, UserSession.EffectiveId));
                     return;
                 }
 
@@ -1698,6 +1710,13 @@ namespace PISMO
                 WebSocketSignalingClient.Instance.OnMessageReceived -= OnWebSocketMessage;
                 try { AvatarStore.AvatarLoaded -= OnAvatarLoadedForTiles; } catch { }
                 if (!_ended) MarkCallEnded();
+
+                // Убираем себя из «в эфире» голосового канала.
+                if (_isChannel && _vchId > 0)
+                {
+                    int vch = _vchId, me = UserSession.EffectiveId;
+                    System.Threading.Tasks.Task.Run(() => VoicePresence.Leave(vch, me));
+                }
 
                 _signalTimer?.Stop(); _signalTimer?.Dispose();
                 _durationTimer?.Stop(); _durationTimer?.Dispose();

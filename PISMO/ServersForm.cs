@@ -39,6 +39,9 @@ namespace PISMO
         private System.Windows.Forms.Timer _refresh;
         private int _lastMsgCount = -1;
 
+        // Контейнеры участников «в эфире» под каждым голосовым каналом.
+        private readonly Dictionary<int, FlowLayoutPanel> _voiceContainers = new();
+
         public ServersForm()
         {
             Text = "PISMO — Серверы";
@@ -62,15 +65,39 @@ namespace PISMO
             Load += (s, e) => LoadServers();
 
             _refresh = new System.Windows.Forms.Timer { Interval = 2500 };
-            _refresh.Tick += (s, e) => { if (_channelId > 0 && _channelType == "text") MaybeReloadMessages(); };
+            _refresh.Tick += (s, e) =>
+            {
+                if (_channelId > 0 && _channelType == "text") MaybeReloadMessages();
+                RefreshVoicePresence(); // обновляем «кто в эфире» под каналами
+            };
             _refresh.Start();
+
+            // Подгружаем аватарки участников «в эфире» при готовности.
+            AvatarStore.AvatarLoaded += OnAvatarLoadedForVoice;
 
             WebSocketSignalingClient.Instance.OnMessageReceived += OnWs;
             FormClosed += (s, e) =>
             {
                 try { WebSocketSignalingClient.Instance.OnMessageReceived -= OnWs; } catch { }
                 try { _refresh.Stop(); _refresh.Dispose(); } catch { }
+                try { AvatarStore.AvatarLoaded -= OnAvatarLoadedForVoice; } catch { }
             };
+        }
+
+        private void OnAvatarLoadedForVoice(int uid)
+        {
+            try
+            {
+                if (IsDisposed || !IsHandleCreated) return;
+                BeginInvoke(new Action(() =>
+                {
+                    foreach (var cont in _voiceContainers.Values)
+                        foreach (Control row in cont.Controls)
+                            foreach (Control c in row.Controls)
+                                if (c is Panel) { try { c.Invalidate(); } catch { } }
+                }));
+            }
+            catch { }
         }
 
         private void OnWs(string type, int senderId, int sessionId, string payload)
@@ -265,6 +292,7 @@ namespace PISMO
                 using var cmd = new MySqlCommand("SELECT id,name,type FROM server_channels WHERE server_id=@s ORDER BY position,id", conn);
                 cmd.Parameters.AddWithValue("@s", _serverId);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
+                _voiceContainers.Clear();
                 foreach (DataRow r in dt.Rows)
                 {
                     int cid = Convert.ToInt32(r["id"]);
@@ -273,9 +301,122 @@ namespace PISMO
                     var b = MakeSideButton((ctype == "voice" ? "🔊 " : "# ") + cname, Color.FromArgb(54, 57, 63));
                     b.Click += (s, e) => SelectChannel(cid, ctype, cname);
                     _pnlChannels.Controls.Add(b);
+
+                    // Под голосовым каналом — список тех, кто сейчас «в эфире».
+                    if (ctype == "voice")
+                    {
+                        var cont = new FlowLayoutPanel
+                        {
+                            FlowDirection = FlowDirection.TopDown,
+                            WrapContents = false,
+                            AutoSize = true,
+                            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                            Width = 180,
+                            Margin = new Padding(10, 0, 0, 4),
+                            BackColor = Color.Transparent
+                        };
+                        _voiceContainers[cid] = cont;
+                        _pnlChannels.Controls.Add(cont);
+                    }
                 }
             }
             catch (Exception ex) { ShowDbError(ex); }
+
+            RefreshVoicePresence();
+        }
+
+        /// <summary>Обновляет списки участников «в эфире» под голосовыми каналами.
+        /// Чтение БД — в фоне, отрисовка — на UI-потоке.</summary>
+        private void RefreshVoicePresence()
+        {
+            if (_serverId <= 0 || _voiceContainers.Count == 0) return;
+            int serverId = _serverId;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var map = VoicePresence.ReadForServer(serverId);
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (_serverId != serverId) return;
+                        foreach (var kv in _voiceContainers)
+                        {
+                            var cont = kv.Value;
+                            if (cont.IsDisposed) continue;
+                            map.TryGetValue(kv.Key, out var people);
+                            UpdateVoiceContainer(cont, people);
+                        }
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        private void UpdateVoiceContainer(FlowLayoutPanel cont, List<(int uid, string name)> people)
+        {
+            cont.SuspendLayout();
+            cont.Controls.Clear();
+            if (people != null)
+            {
+                foreach (var (uid, name) in people)
+                    cont.Controls.Add(MakeVoiceMemberRow(uid, name));
+            }
+            cont.ResumeLayout();
+        }
+
+        /// <summary>Строка участника голосового канала: аватар + имя + «В ЭФИРЕ».</summary>
+        private Control MakeVoiceMemberRow(int uid, string name)
+        {
+            var row = new Panel { Width = 178, Height = 30, Margin = new Padding(0, 0, 0, 2), BackColor = Color.Transparent };
+
+            var av = new Panel { Size = new Size(22, 22), Location = new Point(0, 4), BackColor = Color.Transparent };
+            av.Paint += (s, e) =>
+            {
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                if (!AvatarStore.DrawAvatar(e.Graphics, uid, 0, 0, av.Width - 1))
+                {
+                    int h = 0; foreach (char ch in (name ?? "")) h = (h * 31 + ch) & 0x7fffffff;
+                    Color[] pal = { Color.FromArgb(88,101,242), Color.FromArgb(235,69,158),
+                        Color.FromArgb(59,165,93), Color.FromArgb(250,166,26), Color.FromArgb(0,176,244) };
+                    using var br = new SolidBrush(pal[h % pal.Length]);
+                    e.Graphics.FillEllipse(br, 0, 0, av.Width - 1, av.Height - 1);
+                    string letter = !string.IsNullOrEmpty(name) ? name.Substring(0, 1).ToUpper() : "?";
+                    using var f = new Font("Segoe UI Black", 8f, FontStyle.Bold);
+                    using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                    e.Graphics.DrawString(letter, f, Brushes.White, new RectangleF(0, 0, av.Width, av.Height), sf);
+                }
+            };
+
+            var lbl = new Label
+            {
+                Text = name,
+                AutoEllipsis = true,
+                ForeColor = Color.FromArgb(210, 211, 213),
+                Font = new Font("Segoe UI", 8.5f),
+                Location = new Point(28, 0),
+                Size = new Size(108, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            var badge = new Label
+            {
+                Text = "В ЭФИРЕ",
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(237, 66, 69),
+                Font = new Font("Segoe UI Semibold", 6.5f, FontStyle.Bold),
+                AutoSize = false,
+                Size = new Size(48, 16),
+                Location = new Point(130, 7),
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+
+            row.Controls.Add(av);
+            row.Controls.Add(lbl);
+            row.Controls.Add(badge);
+            // Аватар может подгрузиться позже — перерисуем кружок.
+            AvatarStore.EnsureLoaded(uid);
+            return row;
         }
 
         private void CreateChannel()
