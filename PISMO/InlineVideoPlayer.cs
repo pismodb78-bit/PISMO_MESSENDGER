@@ -20,6 +20,7 @@ namespace PISMO
         private const string Host = "pismo-inline.local";
         private readonly string _safeName;
         private bool _started;
+        private Form _fsForm;   // окно полного экрана (репарент WebView2 туда)
 
         public InlineVideoPlayer(byte[] data, string fileName, int boxW, int boxH)
         {
@@ -61,15 +62,64 @@ namespace PISMO
                     Host, _tempDir, CoreWebView2HostResourceAccessKind.Allow);
                 _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                // Кнопка «на весь экран» в плеере: HTML5 fullscreen только присылает
+                // это событие — сами разворачиваем WebView2 в отдельное окно.
+                _web.CoreWebView2.ContainsFullScreenElementChanged += OnFullScreenChanged;
                 _web.CoreWebView2.Navigate($"https://{Host}/index.html");
             }
             catch { /* если WebView2 не поднялся — пузырь просто покажет тёмный бокс */ }
+        }
+
+        private void OnFullScreenChanged(object sender, object e)
+        {
+            try
+            {
+                bool fs = _web.CoreWebView2 != null && _web.CoreWebView2.ContainsFullScreenElement;
+                if (fs && _fsForm == null)
+                {
+                    _fsForm = new Form
+                    {
+                        FormBorderStyle = FormBorderStyle.None,
+                        WindowState = FormWindowState.Maximized,
+                        BackColor = Color.Black,
+                        ShowInTaskbar = false,
+                        TopMost = true,
+                        KeyPreview = true
+                    };
+                    _fsForm.KeyDown += (a, b) => { if (b.KeyCode == Keys.Escape) ExitFullScreen(); };
+                    Controls.Remove(_web);
+                    _web.Dock = DockStyle.Fill;
+                    _fsForm.Controls.Add(_web);
+                    _fsForm.Show();
+                    _fsForm.Activate();
+                }
+                else if (!fs)
+                {
+                    ExitFullScreen();
+                }
+            }
+            catch { }
+        }
+
+        private void ExitFullScreen()
+        {
+            if (_fsForm == null) return;
+            var f = _fsForm; _fsForm = null;
+            try
+            {
+                f.Controls.Remove(_web);
+                _web.Dock = DockStyle.Fill;
+                Controls.Add(_web);
+            }
+            catch { }
+            try { f.Close(); f.Dispose(); } catch { }
         }
 
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
+                try { ExitFullScreen(); } catch { }
                 try { _web?.Dispose(); } catch { }
                 try { if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, true); } catch { }
             }

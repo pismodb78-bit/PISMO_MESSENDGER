@@ -1387,7 +1387,7 @@ namespace PISMO
             if (_currentGroupId != group) return;
 
             pnlMessages.SuspendLayout();
-            pnlMessages.Controls.Clear();
+            DisposeAndClear(pnlMessages);
 
             try
             {
@@ -1519,7 +1519,7 @@ namespace PISMO
             _lastMsgCount = 0;
             _lastGroupMsgCount = 0;
             lblChatTitle.Text = "# Выберите диалог";
-            pnlMessages.Controls.Clear();
+            DisposeAndClear(pnlMessages);
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1583,7 +1583,7 @@ namespace PISMO
             if (_currentChatPartnerId != partner) return;
 
             pnlMessages.SuspendLayout();
-            pnlMessages.Controls.Clear();
+            DisposeAndClear(pnlMessages);
 
             // Если кто-то заблокирован — показываем уведомление и блокируем отправку
             if (iBlocked || theyBlockedMe)
@@ -2979,6 +2979,19 @@ namespace PISMO
             };
 
             return card;
+        }
+
+        /// <summary>Очищает панель сообщений С УНИЧТОЖЕНием дочерних контролов.
+        /// Critically: Controls.Clear() НЕ вызывает Dispose, из-за чего встроенные
+        /// видео-плееры (WebView2) продолжали играть звук в фоне после смены чата.</summary>
+        internal static void DisposeAndClear(Control parent)
+        {
+            if (parent == null) return;
+            for (int i = parent.Controls.Count - 1; i >= 0; i--)
+            {
+                try { parent.Controls[i].Dispose(); } catch { }
+            }
+            try { parent.Controls.Clear(); } catch { }
         }
 
         internal static void ShowImageFullscreen(byte[] imgBytes)

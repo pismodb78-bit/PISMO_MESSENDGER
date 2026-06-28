@@ -289,7 +289,7 @@ namespace PISMO
         {
             _serverId = sid; _serverName = name; _isOwner = owner; _channelId = -1; _lastMsgCount = -1;
             _lblTitle.Text = name;
-            _pnlMessages.Controls.Clear();
+            MainForm.DisposeAndClear(_pnlMessages);
             _pnlInput.Visible = false;
             ComputePerms();
             LoadChannels();
@@ -512,7 +512,7 @@ namespace PISMO
         {
             _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1;
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
-            _pnlMessages.Controls.Clear();
+            MainForm.DisposeAndClear(_pnlMessages);
             CancelServerReply();
 
             if (type == "voice")
@@ -697,7 +697,7 @@ namespace PISMO
             try
             {
                 _pnlMessages.SuspendLayout();
-                _pnlMessages.Controls.Clear();
+                MainForm.DisposeAndClear(_pnlMessages);
                 _msgControls.Clear();
                 int msgWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 40);
                 foreach (DataRow r in dt.Rows)
