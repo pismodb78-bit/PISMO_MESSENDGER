@@ -477,7 +477,10 @@ namespace PISMO
         // ── Polling: таймер на 2.5 с ───────────────────────────────────
         private void SetupPolling()
         {
-            _pollTimer = new System.Windows.Forms.Timer { Interval = 2500 };
+            // Реальное время обеспечивает WebSocket (new_message → мгновенный PollTick).
+            // Таймер — лишь подстраховка на случай обрыва WS, поэтому редкий: частый
+            // опрос БД (особенно через VPN) давал периодический микролаг каждые ~2.5с.
+            _pollTimer = new System.Windows.Forms.Timer { Interval = 10000 };
             _pollTimer.Tick += PollTick;
             _pollTimer.Start();
         }

@@ -109,7 +109,7 @@ namespace PISMO
             BuildUi();
             Load += (s, e) => LoadServers();
 
-            _refresh = new System.Windows.Forms.Timer { Interval = 2500 };
+            _refresh = new System.Windows.Forms.Timer { Interval = 4000 };
             _refresh.Tick += (s, e) =>
             {
                 if (_channelId > 0 && _channelType == "text") MaybeReloadMessages();
