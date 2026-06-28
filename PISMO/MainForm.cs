@@ -47,6 +47,32 @@ namespace PISMO
         private readonly Dictionary<int, DataTable> _msgMetaCache = new();   // partnerId -> meta
         private readonly Dictionary<int, (bool iBlocked, bool theyBlocked)> _blockCache = new();
         private readonly Dictionary<int, DataTable> _groupMetaCache = new(); // groupId -> meta
+        // Что сейчас отрисовано в панели: чтобы не перерисовывать чат заново, если
+        // данные не изменились (открытие рисует из кэша, потом из БД — второй раз
+        // полное пересоздание пузырей лишнее и тормозит).
+        private string _renderedChatKey;
+        private string _renderedChatSig;
+
+        /// <summary>Дешёвая «подпись» переписки (без создания контролов) для сравнения.</summary>
+        internal static string SigOf(DataTable dt)
+        {
+            if (dt == null) return "0";
+            bool hasEdit = dt.Columns.Contains("edited_at");
+            bool hasDel = dt.Columns.Contains("is_deleted");
+            bool hasText = dt.Columns.Contains("text");
+            bool hasRead = dt.Columns.Contains("is_read");
+            var sb = new System.Text.StringBuilder();
+            sb.Append(dt.Rows.Count);
+            foreach (DataRow r in dt.Rows)
+            {
+                sb.Append('|').Append(r["id"]);
+                if (hasEdit && r["edited_at"] != DBNull.Value) sb.Append('e').Append(r["edited_at"]);
+                if (hasDel && r["is_deleted"] != DBNull.Value && Convert.ToBoolean(r["is_deleted"])) sb.Append('d');
+                if (hasRead && r["is_read"] != DBNull.Value && Convert.ToBoolean(r["is_read"])) sb.Append('r');
+                if (hasText && r["text"] != DBNull.Value) sb.Append('t').Append(r["text"].ToString().Length);
+            }
+            return sb.ToString();
+        }
 
         // Голосовые сообщения
         private WaveInEvent _waveIn;
@@ -1386,6 +1412,11 @@ namespace PISMO
         {
             if (_currentGroupId != group) return;
 
+            // Пропускаем повторную отрисовку, если та же группа и данные не изменились.
+            string key = "g" + group, sig = SigOf(dt);
+            if (_renderedChatKey == key && _renderedChatSig == sig) return;
+            _renderedChatKey = key; _renderedChatSig = sig;
+
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
 
@@ -1581,6 +1612,11 @@ namespace PISMO
         private void RenderMessages(DataTable dt, int myId, int partner, bool iBlocked, bool theyBlockedMe)
         {
             if (_currentChatPartnerId != partner) return;
+
+            // Пропускаем повторную отрисовку, если тот же чат и данные не изменились.
+            string key = "d" + partner, sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0);
+            if (_renderedChatKey == key && _renderedChatSig == sig) return;
+            _renderedChatKey = key; _renderedChatSig = sig;
 
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);

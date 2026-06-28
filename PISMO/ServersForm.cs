@@ -52,7 +52,26 @@ namespace PISMO
         private static bool _replyColOk = true; // есть ли колонка reply_to_id (миграция)
         private readonly Dictionary<int, Control> _msgControls = new(); // id сообщения -> контрол для перехода
         private readonly Dictionary<int, DataTable> _chanMetaCache = new(); // channelId -> meta (мгновенное открытие)
-        private static bool _mediaColOk = true;  // есть ли медиа-колонки в server_messages (миграция)
+        // Наличие медиа-колонок определяем по факту (information_schema), а не
+        // залипающим флагом: иначе одна ранняя ошибка 1054 навсегда блокировала медиа.
+        // Кешируем только положительный результат; пока false — перепроверяем
+        // (чтобы подхватить миграцию без перезапуска приложения).
+        private static bool _mediaColPresent;
+        private static bool MediaColumnsExist()
+        {
+            if (_mediaColPresent) return true;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS " +
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='server_messages' " +
+                    "AND COLUMN_NAME IN ('image_data','audio_data','video_data','file_data','file_name')", conn);
+                _mediaColPresent = Convert.ToInt64(cmd.ExecuteScalar()) >= 5;
+            }
+            catch { _mediaColPresent = false; }
+            return _mediaColPresent;
+        }
         // Медиа сообщений канала в памяти (id -> байты). В дисковый кеш не пишется.
         private readonly Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> _serverMedia = new();
         // Запись голосового в канал.
@@ -646,7 +665,8 @@ namespace PISMO
                       "(SELECT ru.login FROM server_messages rsm JOIN users ru ON ru.id=rsm.sender_id WHERE rsm.id=sm.reply_to_id) AS r_login, " +
                       "(SELECT rsm.text FROM server_messages rsm WHERE rsm.id=sm.reply_to_id) AS r_text"
                     : "";
-                string mediaCols = _mediaColOk
+                bool media = MediaColumnsExist();
+                string mediaCols = media
                     ? ", sm.image_data, sm.audio_data, sm.video_data, sm.file_data, sm.file_name"
                     : "";
 
@@ -658,7 +678,7 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@c", channel);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
 
-                if (_mediaColOk && mediaOut != null)
+                if (media && mediaOut != null)
                 {
                     byte[] Gv(DataRow r, string c) => dt.Columns.Contains(c) && r[c] != DBNull.Value ? (byte[])r[c] : null;
                     foreach (DataRow r in dt.Rows)
@@ -677,11 +697,9 @@ namespace PISMO
             }
             catch (MySqlException mex) when (mex.Number == 1054)
             {
-                // Какой-то колонки нет: сначала отключаем медиа, затем reply.
-                if (_mediaColOk) _mediaColOk = false;
-                else if (_replyColOk) _replyColOk = false;
-                else throw;
-                return FetchChannelMessages(channel, mediaOut);
+                // Нет колонки reply_to_id (медиа определяем отдельно через information_schema).
+                if (_replyColOk) { _replyColOk = false; return FetchChannelMessages(channel, mediaOut); }
+                throw;
             }
             catch (Exception ex)
             {
@@ -691,9 +709,21 @@ namespace PISMO
         }
 
         /// <summary>Отрисовка сообщений канала из готового DataTable.</summary>
+        private string _renderedKey;
+        private string _renderedSig;
+
         private void RenderMessages(DataTable dt, int channel)
         {
             if (_channelId != channel) return;
+
+            // Пропускаем повторную отрисовку, если тот же канал и данные/медиа не изменились.
+            int mediaForChan = 0;
+            foreach (DataRow rr in dt.Rows)
+                if (_serverMedia.ContainsKey(Convert.ToInt32(rr["id"]))) mediaForChan++;
+            string key = "c" + channel, sig = MainForm.SigOf(dt) + "|m" + mediaForChan;
+            if (_renderedKey == key && _renderedSig == sig) return;
+            _renderedKey = key; _renderedSig = sig;
+
             try
             {
                 _pnlMessages.SuspendLayout();
@@ -1236,7 +1266,7 @@ namespace PISMO
         private void SendChannelMedia(byte[] image, byte[] audio, byte[] video, byte[] file, string fileName)
         {
             if (_channelId <= 0 || _channelType != "text") return;
-            if (!_mediaColOk)
+            if (!MediaColumnsExist())
             {
                 MessageBox.Show("Медиа в каналах недоступно: на сервере не выполнена миграция\n(scripts/server_media_migration.sql).", "PISMO");
                 return;
@@ -1265,12 +1295,9 @@ namespace PISMO
             }
             catch (MySqlException mex) when (mex.Number == 1054)
             {
-                if (_mediaColOk)
-                {
-                    _mediaColOk = false;
-                    MessageBox.Show("Медиа в каналах недоступно: на сервере не выполнена миграция\n(scripts/server_media_migration.sql).", "PISMO");
-                }
-                else if (_replyColOk) { _replyColOk = false; SendChannelMedia(image, audio, video, file, fileName); }
+                // Нет reply_to_id — пробуем без него; иначе сообщаем про миграцию медиа.
+                if (_replyColOk) { _replyColOk = false; SendChannelMedia(image, audio, video, file, fileName); }
+                else { _mediaColPresent = false; MessageBox.Show("Медиа в каналах недоступно: на сервере не выполнена миграция\n(scripts/server_media_migration.sql).", "PISMO"); }
             }
             catch (Exception ex) { ShowDbError(ex); }
         }

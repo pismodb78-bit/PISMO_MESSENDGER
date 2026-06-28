@@ -8,73 +8,94 @@ using Microsoft.Web.WebView2.Core;
 namespace PISMO
 {
     /// <summary>
-    /// Встроенный в пузырь сообщения видео-проигрыватель (как в Telegram):
-    /// видео показывается прямо в чате, автозапуск без звука + зацикливание,
-    /// нативные элементы перемотки/громкости. Видео отдаётся через virtual host
-    /// из временной папки. Используется в личных, групповых и серверных чатах.
+    /// Встроенное в пузырь видео. Чтобы не плодить тяжёлые WebView2 (каждый — это
+    /// отдельный браузер) и не тормозить чат, по умолчанию показывается лёгкая
+    /// «обложка» с кнопкой ▶, а реальный плеер (WebView2: перемотка, громкость,
+    /// полный экран) запускается ТОЛЬКО по клику — один на просматриваемое видео.
     /// </summary>
     public sealed class InlineVideoPlayer : Panel
     {
-        private readonly WebView2 _web;
-        private readonly string _tempDir;
+        private readonly byte[] _data;
+        private readonly string _fileName;
+        private WebView2 _web;
+        private string _tempDir;
         private const string Host = "pismo-inline.local";
-        private readonly string _safeName;
-        private bool _started;
-        private Form _fsForm;   // окно полного экрана (репарент WebView2 туда)
+        private string _safeName;
+        private Form _fsForm;
+        private bool _playing;
 
         public InlineVideoPlayer(byte[] data, string fileName, int boxW, int boxH)
         {
+            _data = data;
+            _fileName = fileName ?? "video.mp4";
             Size = new Size(boxW, boxH);
             BackColor = Color.FromArgb(20, 21, 24);
+            Cursor = Cursors.Hand;
 
-            _tempDir = Path.Combine(Path.GetTempPath(), "pismo_inline_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(_tempDir);
-            _safeName = "v" + Path.GetExtension(fileName ?? ".mp4");
-            File.WriteAllBytes(Path.Combine(_tempDir, _safeName), data);
-
-            string html =
-                "<!doctype html><html><head><meta charset='utf-8'><style>" +
-                "html,body{margin:0;height:100%;background:#141518;overflow:hidden;}" +
-                "video{width:100%;height:100%;object-fit:contain;background:#141518;outline:none;}" +
-                "</style></head><body>" +
-                $"<video src='https://{Host}/{_safeName}' autoplay muted loop playsinline controls " +
-                "controlslist='nodownload' preload='auto'></video>" +
-                "</body></html>";
-            File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
-
-            _web = new WebView2 { Dock = DockStyle.Fill };
-            Controls.Add(_web);
-
-            // Инициализируем CoreWebView2 лениво — только когда плитка реально показана,
-            // чтобы не плодить тяжёлые WebView2 для видео вне видимой области.
-            HandleCreated += (s, e) => TryStart();
-            VisibleChanged += (s, e) => { if (Visible) TryStart(); };
+            // Обложка: тёмный бокс + крупная ▶ + имя файла снизу.
+            Paint += (s, e) =>
+            {
+                if (_playing) return;
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                int cx = Width / 2, cy = Height / 2;
+                int r = Math.Min(Width, Height) / 6;
+                using (var circle = new SolidBrush(Color.FromArgb(160, 0, 0, 0)))
+                    g.FillEllipse(circle, cx - r, cy - r, r * 2, r * 2);
+                var tri = new[] {
+                    new Point(cx - r/3, cy - r/2),
+                    new Point(cx - r/3, cy + r/2),
+                    new Point(cx + r/2, cy)
+                };
+                g.FillPolygon(Brushes.White, tri);
+                using var f = new Font("Segoe UI", 8f);
+                var name = Path.GetFileName(_fileName);
+                var sz = g.MeasureString(name, f);
+                using var bg = new SolidBrush(Color.FromArgb(140, 0, 0, 0));
+                g.FillRectangle(bg, 0, Height - 20, Width, 20);
+                g.DrawString(name, f, Brushes.White, 6, Height - 18);
+            };
+            Click += (s, e) => StartPlayer();
         }
 
-        private async void TryStart()
+        private async void StartPlayer()
         {
-            if (_started || !IsHandleCreated) return;
-            _started = true;
+            if (_playing) return;
+            _playing = true;
             try
             {
+                _tempDir = Path.Combine(Path.GetTempPath(), "pismo_inline_" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(_tempDir);
+                _safeName = "v" + Path.GetExtension(_fileName);
+                File.WriteAllBytes(Path.Combine(_tempDir, _safeName), _data);
+                string html =
+                    "<!doctype html><html><head><meta charset='utf-8'><style>" +
+                    "html,body{margin:0;height:100%;background:#141518;overflow:hidden;}" +
+                    "video{width:100%;height:100%;object-fit:contain;background:#141518;outline:none;}" +
+                    "</style></head><body>" +
+                    $"<video src='https://{Host}/{_safeName}' autoplay playsinline controls " +
+                    "controlslist='nodownload' preload='auto'></video>" +
+                    "</body></html>";
+                File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
+
+                _web = new WebView2 { Dock = DockStyle.Fill };
+                Controls.Add(_web);
                 await _web.EnsureCoreWebView2Async(null);
                 _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
                     Host, _tempDir, CoreWebView2HostResourceAccessKind.Allow);
                 _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
-                // Кнопка «на весь экран» в плеере: HTML5 fullscreen только присылает
-                // это событие — сами разворачиваем WebView2 в отдельное окно.
                 _web.CoreWebView2.ContainsFullScreenElementChanged += OnFullScreenChanged;
                 _web.CoreWebView2.Navigate($"https://{Host}/index.html");
             }
-            catch { /* если WebView2 не поднялся — пузырь просто покажет тёмный бокс */ }
+            catch { _playing = false; }
         }
 
         private void OnFullScreenChanged(object sender, object e)
         {
             try
             {
-                bool fs = _web.CoreWebView2 != null && _web.CoreWebView2.ContainsFullScreenElement;
+                bool fs = _web?.CoreWebView2 != null && _web.CoreWebView2.ContainsFullScreenElement;
                 if (fs && _fsForm == null)
                 {
                     _fsForm = new Form
@@ -93,10 +114,7 @@ namespace PISMO
                     _fsForm.Show();
                     _fsForm.Activate();
                 }
-                else if (!fs)
-                {
-                    ExitFullScreen();
-                }
+                else if (!fs) ExitFullScreen();
             }
             catch { }
         }
@@ -105,13 +123,7 @@ namespace PISMO
         {
             if (_fsForm == null) return;
             var f = _fsForm; _fsForm = null;
-            try
-            {
-                f.Controls.Remove(_web);
-                _web.Dock = DockStyle.Fill;
-                Controls.Add(_web);
-            }
-            catch { }
+            try { f.Controls.Remove(_web); _web.Dock = DockStyle.Fill; Controls.Add(_web); } catch { }
             try { f.Close(); f.Dispose(); } catch { }
         }
 
@@ -121,7 +133,7 @@ namespace PISMO
             {
                 try { ExitFullScreen(); } catch { }
                 try { _web?.Dispose(); } catch { }
-                try { if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, true); } catch { }
+                try { if (_tempDir != null && Directory.Exists(_tempDir)) Directory.Delete(_tempDir, true); } catch { }
             }
             base.Dispose(disposing);
         }
