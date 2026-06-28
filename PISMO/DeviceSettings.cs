@@ -36,6 +36,9 @@ namespace PISMO
         /// ручной порог VoiceThreshold.</summary>
         public static bool VoiceAutoSensitivity { get; set; } = true;
 
+        /// <summary>Шумоподавление RNNoise (давит клавиатуру/мышь/шум). По умолчанию вкл.</summary>
+        public static bool NoiseSuppression { get; set; } = true;
+
         /// <summary>Ручной порог активации голоса в дБ (−60..0): звук тише порога
         /// не передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
         public static int VoiceThreshold { get; set; } = -40;
@@ -87,6 +90,9 @@ namespace PISMO
                         case "VoiceAutoSensitivity":
                             VoiceAutoSensitivity = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
                             break;
+                        case "NoiseSuppression":
+                            NoiseSuppression = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
+                            break;
                         case "VoiceThreshold":
                             if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, -60, 0);
                             break;
@@ -121,6 +127,7 @@ namespace PISMO
                     $"ScreenShareResolutionHeight={ScreenShareResolutionHeight}\n" +
                     $"ScreenShareFps={ScreenShareFps}\n" +
                     $"VoiceAutoSensitivity={(VoiceAutoSensitivity ? 1 : 0)}\n" +
+                    $"NoiseSuppression={(NoiseSuppression ? 1 : 0)}\n" +
                     $"VoiceThreshold={VoiceThreshold}\n" +
                     $"HotkeyMic={HotkeyMic}\n" +
                     $"HotkeyCamera={HotkeyCamera}\n" +

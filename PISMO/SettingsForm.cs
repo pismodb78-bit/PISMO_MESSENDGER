@@ -28,6 +28,7 @@ namespace PISMO
         private TrackBar _trkGain;
         private Label _lblGainValue;
         private CheckBox _chkVoiceAuto;
+        private CheckBox _chkNoiseSuppress;
         private TrackBar _trkVoiceThreshold;
         private Label _lblVoiceThresholdValue;
         private Panel _pnlLevelBar;
@@ -158,7 +159,7 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, 322),
-                Size = new Size(456, 300)
+                Size = new Size(456, 348)
             };
 
             var lblMicTitle = new Label
@@ -325,8 +326,20 @@ namespace PISMO
                 _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
             };
 
+            _chkNoiseSuppress = new CheckBox
+            {
+                Text = "Шумоподавление (RNNoise: давит клавиатуру/мышь/шум)",
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BackColor = Color.FromArgb(47, 49, 54),
+                AutoSize = true,
+                Location = new Point(14, 314),
+                Cursor = Cursors.Hand
+            };
+
             pnlMic.Controls.AddRange(new Control[]
             {
+                _chkNoiseSuppress,
                 lblMicTitle, lblMicHint, _cmbMic, _btnMicTest,
                 lblGainHint, _trkGain, _lblGainValue,
                 lblLevelHint, _lblDbValue, _pnlLevelBar, _lblMicStatus,
@@ -337,7 +350,7 @@ namespace PISMO
             var pnlScreen = new Panel
             {
                 BackColor = Color.FromArgb(47, 49, 54),
-                Location = new Point(20, 640),
+                Location = new Point(20, 690),
                 Size = new Size(456, 100)
             };
 
@@ -651,6 +664,9 @@ namespace PISMO
             _lblGainValue.Text = $"{_trkGain.Value}%";
             _gainCached = _trkGain.Value / 100f;
 
+            // Шумоподавление.
+            _chkNoiseSuppress.Checked = DeviceSettings.NoiseSuppression;
+
             // Активация голоса (порог в дБ).
             _chkVoiceAuto.Checked = DeviceSettings.VoiceAutoSensitivity;
             _trkVoiceThreshold.Value = Math.Clamp(DeviceSettings.VoiceThreshold, -60, 0);
@@ -961,6 +977,7 @@ namespace PISMO
 
             DeviceSettings.VoiceAutoSensitivity = _chkVoiceAuto.Checked;
             DeviceSettings.VoiceThreshold = _trkVoiceThreshold.Value;
+            DeviceSettings.NoiseSuppression = _chkNoiseSuppress.Checked;
 
             if (_cmbScreenRes.SelectedIndex >= 0)
             {

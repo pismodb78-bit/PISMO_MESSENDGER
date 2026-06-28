@@ -172,7 +172,8 @@ namespace PISMO
                 url = _pendingUrl,
                 token = _pendingToken,
                 voiceAuto = DeviceSettings.VoiceAutoSensitivity,
-                voiceThreshold = DeviceSettings.VoiceThreshold
+                voiceThreshold = DeviceSettings.VoiceThreshold,
+                noiseSuppress = DeviceSettings.NoiseSuppression
             }));
         }
 
@@ -228,8 +229,68 @@ function micCaptureOpts(){
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
-        deviceId: undefined
+        deviceId: selectedMicId ? { exact: selectedMicId } : undefined
     };
+}
+
+// ── Микрофон с RNNoise (подавление клавиатуры/мыши/шума) ────────────
+let micProc = { on:false, ctx:null, raw:null, node:null, dest:null, lkTrack:null };
+let useRnnoise = true;       // включается из настроек
+let selectedMicId = undefined;
+let _rnnoiseMod = null;
+
+async function loadRnnoiseModule(){
+    if (_rnnoiseMod) return _rnnoiseMod;
+    const base = 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist';
+    const mod = await import('https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm');
+    const wasm = await mod.loadRnnoise({ url: base + '/rnnoise.wasm', simdUrl: base + '/rnnoise_simd.wasm' });
+    _rnnoiseMod = { mod, wasm, workletUrl: base + '/rnnoiseWorklet.js' };
+    return _rnnoiseMod;
+}
+
+async function cleanupMicProc(){
+    try { if (micProc.lkTrack) await room.localParticipant.unpublishTrack(micProc.lkTrack, true); } catch(e){}
+    try { micProc.node && micProc.node.disconnect(); } catch(e){}
+    try { micProc.ctx && micProc.ctx.close(); } catch(e){}
+    try { micProc.raw && micProc.raw.getTracks().forEach(t => t.stop()); } catch(e){}
+    micProc = { on:false, ctx:null, raw:null, node:null, dest:null, lkTrack:null };
+}
+
+// Публикация микрофона: при включённом RNNoise — через AudioWorklet, иначе
+// стандартный путь LiveKit. Любая ошибка RNNoise → безопасный фолбэк.
+async function publishMic(){
+    await cleanupMicProc();
+    if (useRnnoise){
+        try {
+            const raw = await navigator.mediaDevices.getUserMedia({ audio: micCaptureOpts() });
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const r = await loadRnnoiseModule();
+            await ctx.audioWorklet.addModule(r.workletUrl);
+            const src = ctx.createMediaStreamSource(raw);
+            const node = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
+            const dest = ctx.createMediaStreamDestination();
+            src.connect(node).connect(dest);
+            const procTrack = dest.stream.getAudioTracks()[0];
+            const lkTrack = new LK.LocalAudioTrack(procTrack, undefined, false);
+            await room.localParticipant.publishTrack(lkTrack, { source: LK.Track.Source.Microphone });
+            micProc = { on:true, ctx, raw, node, dest, lkTrack };
+            post({type:'jsLog', text:'RNNoise активен'});
+            return;
+        } catch(e){
+            console.error('rnnoise', String(e));
+            post({type:'jsLog', text:'RNNoise недоступен, обычный микрофон: ' + String(e)});
+            await cleanupMicProc();
+        }
+    }
+    // Фолбэк / RNNoise выключен — обычный микрофон LiveKit.
+    try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); } catch(e){ console.error('mic enable', String(e)); }
+}
+
+function setNoiseSuppression(on){
+    on = !!on;
+    if (on === useRnnoise) return;
+    useRnnoise = on;
+    if (room && room.localParticipant) { stopVoiceGate(); publishMic().then(() => setTimeout(() => setVoiceGate(voiceGate.auto, voiceGate.threshold), 400)); }
 }
 
 function waitForLK(){
@@ -243,9 +304,10 @@ function waitForLK(){
     });
 }
 
-async function connectRoom(url, token, voiceAuto, voiceThreshold){
+async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress){
     if (typeof voiceAuto !== 'undefined') voiceGate.auto = !!voiceAuto;
     if (typeof voiceThreshold === 'number') voiceGate.threshold = voiceThreshold;
+    if (typeof noiseSuppress !== 'undefined') useRnnoise = !!noiseSuppress;
     const ok = await waitForLK();
     if (!ok){ post({type:'fatal', error:'livekit-client не загрузился (нет интернета/CDN недоступен)'}); post({type:'disconnected'}); return; }
     try {
@@ -284,8 +346,9 @@ async function connectRoom(url, token, voiceAuto, voiceThreshold){
             room.remoteParticipants.forEach((p) => post({type:'participantJoined', pid:p.identity, name:pidName(p)}));
         } catch(e){ console.error('enum participants', String(e)); }
 
-        // Микрофон публикуем сразу — аудиозвонок начинается мгновенно.
-        try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); } catch(e){ console.error('mic enable', String(e)); }
+        // Микрофон публикуем сразу — аудиозвонок начинается мгновенно
+        // (через RNNoise, если включён, иначе обычный путь).
+        try { await publishMic(); } catch(e){ console.error('mic enable', String(e)); }
 
         // Применяем порог активации голоса (если задан ручной режим).
         try { setTimeout(() => setVoiceGate(voiceGate.auto, voiceGate.threshold), 400); } catch(e){}
@@ -675,10 +738,16 @@ async function enumerateDevices(){
 
 async function setMicEnabled(enabled){
     try {
-        if (room) await room.localParticipant.setMicrophoneEnabled(enabled, micCaptureOpts());
-        // ВАЖНО: при выкл/вкл микрофона LiveKit пересоздаёт трек. Voice gate
-        // держал анализатор на СТАРОМ (мёртвом) треке → читал тишину и навсегда
-        // глушил новый трек. Поэтому переинициализируем гейт на актуальном треке.
+        if (!room) return;
+        if (micProc.on && micProc.lkTrack){
+            // RNNoise-трек: просто mute/unmute, без пере-публикации.
+            try { if (enabled) await micProc.lkTrack.unmute(); else await micProc.lkTrack.mute(); } catch(e){}
+            if (micProc.lkTrack.mediaStreamTrack) micProc.lkTrack.mediaStreamTrack.enabled = enabled;
+        } else {
+            await room.localParticipant.setMicrophoneEnabled(enabled, micCaptureOpts());
+        }
+        // ВАЖНО: при выкл/вкл микрофона трек может пересоздаться. Voice gate мог
+        // остаться на мёртвом треке → переинициализируем на актуальном.
         stopVoiceGate();
         if (enabled && !voiceGate.auto) {
             setTimeout(() => setVoiceGate(voiceGate.auto, voiceGate.threshold), 350);
@@ -793,7 +862,7 @@ window.chrome.webview.addEventListener('message', (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch(err){ return; }
     switch (msg.cmd){
-        case 'connect': connectRoom(msg.url, msg.token, msg.voiceAuto, msg.voiceThreshold); break;
+        case 'connect': connectRoom(msg.url, msg.token, msg.voiceAuto, msg.voiceThreshold, msg.noiseSuppress); break;
         case 'previewCamera': previewCamera(msg.deviceLabel); break;
         case 'confirmCameraShare': confirmCameraShare(); break;
         case 'cancelCameraPreview': cancelCameraPreview(); break;
@@ -813,6 +882,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'setInputDevice': setAudioDevice('audioinput', msg.deviceLabel); break;
         case 'setOutputDevice': setAudioDevice('audiooutput', msg.deviceLabel); break;
         case 'setVoiceGate': setVoiceGate(msg.auto, msg.threshold); break;
+        case 'setNoiseSuppression': setNoiseSuppression(msg.on); break;
         case 'disconnect': disconnectRoom(); break;
     }
 });
@@ -1084,6 +1154,10 @@ window.chrome.webview.addEventListener('message', (e) => {
         /// <summary>Порог активации голоса: auto=true — без порога; иначе threshold (0..100).</summary>
         public void SetVoiceGate(bool auto, int threshold)
             => SendToJs(JsonSerializer.Serialize(new { cmd = "setVoiceGate", auto, threshold }));
+
+        /// <summary>Включить/выключить шумоподавление RNNoise.</summary>
+        public void SetNoiseSuppression(bool on)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setNoiseSuppression", on }));
 
         private void SendToJs(string json)
         {

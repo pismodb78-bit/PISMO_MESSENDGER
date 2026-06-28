@@ -1814,6 +1814,7 @@ namespace PISMO
         // актуальный порог в транспорт, если он изменился.
         private bool _lastVoiceAuto;
         private int _lastVoiceThr = int.MinValue;
+        private int _lastNoise = -1; // -1 не задано, 0/1
         protected override void OnActivated(EventArgs e)
         {
             base.OnActivated(e);
@@ -1826,6 +1827,12 @@ namespace PISMO
                     _lastVoiceAuto = DeviceSettings.VoiceAutoSensitivity;
                     _lastVoiceThr = DeviceSettings.VoiceThreshold;
                     _transport?.SetVoiceGate(_lastVoiceAuto, _lastVoiceThr);
+                }
+                int ns = DeviceSettings.NoiseSuppression ? 1 : 0;
+                if (_lastNoise != ns)
+                {
+                    _lastNoise = ns;
+                    _transport?.SetNoiseSuppression(ns == 1);
                 }
             }
             catch { }

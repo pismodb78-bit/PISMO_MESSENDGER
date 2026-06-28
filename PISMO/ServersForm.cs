@@ -920,7 +920,7 @@ namespace PISMO
         private void BuildMentionPopupControl()
         {
             if (_mentionPopup != null) return;
-            _mentionList = new ListBox
+            _mentionList = new NoFocusListBox
             {
                 Dock = DockStyle.Fill,
                 BackColor = Color.FromArgb(32, 34, 37),
@@ -999,6 +999,14 @@ namespace PISMO
             {
                 get { var cp = base.CreateParams; cp.ExStyle |= 0x08000000 /* WS_EX_NOACTIVATE */; return cp; }
             }
+        }
+
+        /// <summary>ListBox, который НЕ забирает фокус при клике — иначе клик по
+        /// подсказке уводил фокус из поля ввода, срабатывал LostFocus и
+        /// подсказка скрывалась раньше, чем успевала подставиться.</summary>
+        private sealed class NoFocusListBox : ListBox
+        {
+            public NoFocusListBox() { SetStyle(ControlStyles.Selectable, false); }
         }
 
         private void HideMentionPopup()
@@ -1094,7 +1102,8 @@ namespace PISMO
                 tokens.Add(m.Groups[1].Value.ToLowerInvariant().Trim('.', ',', '!', '?', ':'));
             if (tokens.Count == 0) return ids;
 
-            bool all = tokens.Contains("все") || tokens.Contains("all") || tokens.Contains("everyone");
+            bool all = tokens.Contains("все") || tokens.Contains("all")
+                       || tokens.Contains("everyone") || tokens.Contains("here") || tokens.Contains("здесь");
 
             try
             {

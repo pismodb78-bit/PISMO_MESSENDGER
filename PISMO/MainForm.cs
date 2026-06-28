@@ -277,6 +277,7 @@ namespace PISMO
                 catch { }
                 if (muted) return;
 
+                try { Sounds.Message(); } catch { }
                 if (_trayIcon != null && _trayIcon.Icon != null)
                     _trayIcon.ShowBalloonTip(4000, "PISMO — упоминание",
                         $"Вас упомянули: {parts[1]} · #{parts[2]}", ToolTipIcon.Info);
