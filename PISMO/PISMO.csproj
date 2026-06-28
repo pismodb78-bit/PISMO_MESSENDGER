@@ -10,9 +10,9 @@
     <RootNamespace>PISMO</RootNamespace>
     <ApplicationIcon>pismo.ico</ApplicationIcon>
     <StartupObject>PISMO.Program</StartupObject>
-    <Version>1.0.45</Version>
-    <AssemblyVersion>1.0.45.0</AssemblyVersion>
-    <FileVersion>1.0.45.0</FileVersion>
+    <Version>1.0.46</Version>
+    <AssemblyVersion>1.0.46.0</AssemblyVersion>
+    <FileVersion>1.0.46.0</FileVersion>
     <Company>PISMO</Company>
     <Product>PISMO Messenger</Product>
   </PropertyGroup>
@@ -39,6 +39,16 @@
   <ItemGroup>
     <None Update="ip.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Локальный RNNoise (офлайн): папка noise рядом с exe, отдаётся через
+       virtual host pismo-noise.local. Решает блокировку CDN и несовместимость
+       версий esm/wasm/worklet. -->
+  <ItemGroup>
+    <None Include="noise\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>noise\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </None>
   </ItemGroup>
 

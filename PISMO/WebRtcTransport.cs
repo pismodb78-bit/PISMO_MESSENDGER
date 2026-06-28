@@ -275,7 +275,7 @@ async function loadRnnoise(){
         try {
             const mod = await to(import(p.esm), 8000);
             if (!mod || !mod.loadRnnoise || !mod.RnnoiseWorkletNode) throw new Error('нет экспортов rnnoise');
-            const wasm = await to(mod.loadRnnoise({ url: p.base + '/rnnoise/rnnoise.wasm', simdUrl: p.base + '/rnnoise/rnnoise_simd.wasm' }), 8000);
+            const wasm = await to(mod.loadRnnoise({ url: p.base + '/rnnoise.wasm', simdUrl: p.base + '/rnnoise_simd.wasm' }), 8000);
             const workletUrl = p.base + '/rnnoise/workletProcessor.js';
             _rnnoise = { mod, wasm, workletUrl };
             return _rnnoise;

@@ -137,7 +137,7 @@ async function loadRnnoise(){
     try{
       const mod=await withTimeout(import(p.esm),8000);
       if(!mod||!mod.loadRnnoise||!mod.RnnoiseWorkletNode) throw new Error('нет экспортов');
-      const wasm=await withTimeout(mod.loadRnnoise({url:p.base+'/rnnoise/rnnoise.wasm',simdUrl:p.base+'/rnnoise/rnnoise_simd.wasm'}),8000);
+      const wasm=await withTimeout(mod.loadRnnoise({url:p.base+'/rnnoise.wasm',simdUrl:p.base+'/rnnoise_simd.wasm'}),8000);
       const wurl=p.base+'/rnnoise/workletProcessor.js';
       _rn={mod,wasm,wurl}; return _rn;
     }catch(e){ err=e; }
