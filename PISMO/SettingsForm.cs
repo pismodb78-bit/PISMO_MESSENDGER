@@ -800,57 +800,17 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════
         private void BtnMicTest_Click(object sender, EventArgs e)
         {
-            if (_waveIn != null)
-            {
-                StopMicTest();
-                _btnMicTest.Text = "▶ Тест";
-                _lblMicStatus.Visible = false;
-                return;
-            }
-
-            if (_cmbMic.SelectedIndex < 0 || !_cmbMic.Enabled)
-            {
-                _lblMicStatus.Visible = true;
-                _lblMicStatus.Text = "Микрофон не выбран";
-                return;
-            }
-
+            // Тест идёт через тот же конвейер, что и звонок (WebView2 + Krisp),
+            // чтобы было слышно ровно то, что услышат собеседники.
             try
             {
-                _gainCached = _trkGain.Value / 100f;
-
-                var fmt = new WaveFormat(16000, 1);
-                _waveIn = new WaveInEvent
-                {
-                    DeviceNumber = _cmbMic.SelectedIndex,
-                    WaveFormat = fmt
-                };
-                _waveIn.DataAvailable += WaveIn_DataAvailable;
-
-                // «Слышу себя»: проигрываем микрофон обратно с учётом порога —
-                // чтобы вживую подобрать чувствительность.
-                try
-                {
-                    _monitorBuf = new BufferedWaveProvider(fmt) { DiscardOnBufferOverflow = true, BufferDuration = TimeSpan.FromSeconds(2) };
-                    _monitorOut = new WaveOutEvent { DesiredLatency = 120 };
-                    _monitorOut.Init(_monitorBuf);
-                    _monitorOut.Play();
-                }
-                catch { _monitorOut = null; _monitorBuf = null; }
-
-                _waveIn.StartRecording();
-
-                _levelTimer.Start();
-                _btnMicTest.Text = "■ Стоп";
-                _lblMicStatus.Visible = true;
-                // ВАЖНО: тест проигрывает СЫРОЙ микрофон. Шумодав Krisp работает
-                // только в реальном звонке, в тесте его не слышно.
-                _lblMicStatus.Text = "Тест: слышите себя (без шумодава). Krisp действует только в звонке.";
+                using var mt = new MicTestForm(_chkNoiseSuppress.Checked);
+                mt.ShowDialog(this);
             }
             catch (Exception ex)
             {
                 _lblMicStatus.Visible = true;
-                _lblMicStatus.Text = "Ошибка: " + ex.Message;
+                _lblMicStatus.Text = "Ошибка теста: " + ex.Message;
             }
         }
 

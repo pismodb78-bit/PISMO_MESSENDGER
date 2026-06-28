@@ -155,6 +155,16 @@ namespace PISMO
             _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                 VirtualHostName, _tempHtmlDir, CoreWebView2HostResourceAccessKind.Allow);
 
+            // Локальная папка noise рядом с exe (офлайн-Krisp), если присутствует.
+            try
+            {
+                string noiseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "noise");
+                if (Directory.Exists(noiseDir))
+                    _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                        "pismo-noise.local", noiseDir, CoreWebView2HostResourceAccessKind.Allow);
+            }
+            catch { }
+
             var navDone = new TaskCompletionSource<bool>();
             void OnNavDone(object s, CoreWebView2NavigationCompletedEventArgs e)
             {
@@ -251,6 +261,8 @@ function localMicPub(){
 
 async function loadKrisp(){
     if (_krispMod) return _krispMod;
+    // Сначала локально (папка noise рядом с exe), потом CDN.
+    try { _krispMod = await import('https://pismo-noise.local/krisp.mjs'); return _krispMod; } catch(e){}
     _krispMod = await import('https://cdn.jsdelivr.net/npm/@livekit/krisp-noise-filter/+esm');
     return _krispMod;
 }
