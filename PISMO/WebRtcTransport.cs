@@ -271,10 +271,21 @@ async function cleanupMicProc(){
 // нормальном диапазоне. Любая ошибка → безопасный фолбэк на обычный микрофон.
 async function publishMic(){
     await cleanupMicProc();
+
+    // Если обработка не нужна (RNNoise выключен и усиление = 1) — публикуем
+    // микрофон стандартным надёжным путём LiveKit. Web Audio граф используем
+    // только когда реально нужен (RNNoise или усиление != 1), т.к. он мог
+    // отдавать тишину из-за приостановленного AudioContext.
+    if (!useRnnoise && Math.abs(micGain - 1.0) < 0.01){
+        try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); return; }
+        catch(e){ console.error('mic enable', String(e)); }
+    }
+
     try {
         const raw = await navigator.mediaDevices.getUserMedia({ audio: micCaptureOpts() });
         // RNNoise работает строго на 48 кГц — иначе на выходе тишина.
         const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+        try { if (ctx.state === 'suspended') await ctx.resume(); } catch(e){}
         const src = ctx.createMediaStreamSource(raw);
         const gain = ctx.createGain();
         gain.gain.value = micGain;
