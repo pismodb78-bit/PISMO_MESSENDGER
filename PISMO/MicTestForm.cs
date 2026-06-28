@@ -19,11 +19,13 @@ namespace PISMO
     {
         private readonly WebView2 _web;
         private readonly bool _noise;
+        private readonly string _micLabel;
         private string _tempDir;
 
-        public MicTestForm(bool noiseSuppression)
+        public MicTestForm(bool noiseSuppression, string micLabel = null)
         {
             _noise = noiseSuppression;
+            _micLabel = micLabel ?? "";
             Text = "PISMO — Проверка микрофона";
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             BackColor = Color.FromArgb(30, 31, 34);
@@ -89,6 +91,7 @@ namespace PISMO
         private string BuildHtml()
         {
             string noiseJs = _noise ? "true" : "false";
+            string micJs = System.Text.Json.JsonSerializer.Serialize(_micLabel ?? "");
             return @"<!doctype html><html><head><meta charset='utf-8'><style>
 html,body{margin:0;height:100%;background:#1e1f22;color:#dcddde;font-family:Segoe UI,sans-serif;}
 .wrap{display:flex;flex-direction:column;gap:14px;padding:18px;}
@@ -106,31 +109,62 @@ h3{margin:0;font-size:15px;}
 <audio id='mon' autoplay></audio>
 <script>
 const NOISE=" + noiseJs + @";
+const MICLABEL=" + micJs + @";
 const st=(t)=>{document.getElementById('st').textContent=t;};
-async function loadKrisp(){
-  // Сначала локально (папка noise рядом с exe), потом CDN.
-  try { return await import('https://pismo-noise.local/krisp.mjs'); } catch(e){}
-  return await import('https://cdn.jsdelivr.net/npm/@livekit/krisp-noise-filter/+esm');
+async function pickDeviceId(){
+  if(!MICLABEL) return undefined;
+  try{
+    const ds = await navigator.mediaDevices.enumerateDevices();
+    const norm = (x)=> (x||'').toLowerCase();
+    const m = ds.find(d=> d.kind==='audioinput' && d.label && (norm(d.label).includes(norm(MICLABEL)) || norm(MICLABEL).includes(norm(d.label))));
+    return m ? m.deviceId : undefined;
+  }catch(e){ return undefined; }
 }
 function withTimeout(p, ms){ return Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('таймаут '+ms+'мс')), ms))]); }
+let _rn=null;
+async function loadRnnoise(){
+  if(_rn) return _rn;
+  const esms=['https://pismo-noise.local/wns.mjs','https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5','https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm'];
+  const bases=['https://pismo-noise.local','https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist','https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist'];
+  let mod,err;
+  for(const s of esms){ try{ mod=await withTimeout(import(s),8000); if(mod&&mod.loadRnnoise) break; }catch(e){ err=e; mod=null; } }
+  if(!mod) throw err||new Error('esm');
+  let wasm,wurl,ok;
+  for(const b of bases){ try{ wasm=await withTimeout(mod.loadRnnoise({url:b+'/rnnoise/rnnoise.wasm',simdUrl:b+'/rnnoise/rnnoise_simd.wasm'}),8000); wurl=b+'/rnnoise/workletProcessor.js'; ok=true; break; }catch(e){ err=e; } }
+  if(!ok) throw err||new Error('wasm');
+  _rn={mod,wasm,wurl}; return _rn;
+}
 
 async function start(){
   st('Запрашиваю микрофон…');
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
   catch(e){ st('Нет доступа к микрофону: '+e); return; }
-  const ctx = new (window.AudioContext||window.webkitAudioContext)();
+  // Если в настройках выбран конкретный микрофон — переключаемся на него.
+  try {
+    const id = await pickDeviceId();
+    if (id){
+      stream.getTracks().forEach(t=>t.stop());
+      stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true, deviceId:{exact:id}}});
+    }
+  } catch(e){}
+  const ctx = new (window.AudioContext||window.webkitAudioContext)({ sampleRate: 48000 });
   try { if (ctx.state==='suspended') await ctx.resume(); } catch(e){}
-  let track = stream.getAudioTracks()[0];
+  let outStream = stream;
   if (NOISE){
-    st('Загружаю шумодав Krisp…');
+    st('Загружаю шумодав RNNoise…');
     try {
-      const m = await withTimeout(loadKrisp(), 12000);
-      if (m.isKrispNoiseFilterSupported && !m.isKrispNoiseFilterSupported()){ st('Krisp не поддерживается этим движком — слышите себя без шумодава'); }
-      else { const proc = m.KrispNoiseFilter(); await withTimeout(proc.init({ track, audioContext: ctx }), 12000); if (proc.processedTrack) track = proc.processedTrack; st('✓ Шумодав Krisp активен — слышите себя'); }
-    } catch(e){ st('Krisp недоступен ('+e+') — слышите себя без шумодава'); }
+      const r = await loadRnnoise();
+      await ctx.audioWorklet.addModule(r.wurl);
+      const srcN = ctx.createMediaStreamSource(stream);
+      const node = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
+      const dest = ctx.createMediaStreamDestination();
+      srcN.connect(node).connect(dest);
+      outStream = dest.stream;
+      st('✓ Шумодав RNNoise активен — слышите себя');
+    } catch(e){ st('Шумодав недоступен ('+e+') — слышите себя без него'); outStream = stream; }
   } else { st('Слышите себя (шумодав выключен)'); }
-  const out = new MediaStream([track]);
+  const out = outStream;
   const a = document.getElementById('mon'); a.srcObject = out; try { await a.play(); } catch(e){}
   const an = ctx.createAnalyser(); an.fftSize=512;
   ctx.createMediaStreamSource(out).connect(an);

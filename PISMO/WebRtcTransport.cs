@@ -245,48 +245,91 @@ function micCaptureOpts(){
     };
 }
 
-// ── Микрофон: СТАНДАРТНЫЙ путь LiveKit + Krisp-шумодав (processor) ───
-// Никаких самописных Web Audio графов/гейтов: они ломали mute и голос.
-// Микрофон — обычный setMicrophoneEnabled (mute работает штатно). Шумодав —
-// официальный @livekit/krisp-noise-filter, навешивается процессором на трек.
-let useNoise = false;        // включать ли Krisp (из настроек)
+// ── Микрофон: СТАНДАРТНЫЙ путь LiveKit + RNNoise-шумодав (processor) ──
+// Микрофон — обычный setMicrophoneEnabled (mute работает штатно). Шум давит
+// RNNoise (open-source, wasm самодостаточен → реально фильтрует), оформленный
+// как LiveKit TrackProcessor (setProcessor), поэтому mute/голос не ломаются.
+let useNoise = false;        // включать ли шумодав (из настроек)
 let selectedMicId = undefined;
-let _krispMod = null;
-let _krispProc = null;
+let _rnnoise = null;         // {mod, wasm, workletUrl}
 
 function localMicPub(){
     try { return room && room.localParticipant ? room.localParticipant.getTrackPublication(LK.Track.Source.Microphone) : null; }
     catch(e){ return null; }
 }
 
-async function loadKrisp(){
-    if (_krispMod) return _krispMod;
-    // Сначала локально (папка noise рядом с exe), потом CDN.
-    try { _krispMod = await import('https://pismo-noise.local/krisp.mjs'); return _krispMod; } catch(e){}
-    _krispMod = await import('https://cdn.jsdelivr.net/npm/@livekit/krisp-noise-filter/+esm');
-    return _krispMod;
+// Загрузка @sapphi-red/web-noise-suppressor (RNNoise) с фолбэком по CDN.
+async function loadRnnoise(){
+    if (_rnnoise) return _rnnoise;
+    const to = (p, ms) => Promise.race([p, new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')), ms))]);
+    const bases = [
+        'https://pismo-noise.local',
+        'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist',
+        'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist'
+    ];
+    const esms = [
+        'https://pismo-noise.local/wns.mjs',
+        'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5',
+        'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm'
+    ];
+    let mod, lastErr;
+    for (const s of esms){ try { mod = await to(import(s), 8000); if (mod && mod.loadRnnoise) break; } catch(e){ lastErr = e; mod = null; } }
+    if (!mod) throw lastErr || new Error('rnnoise esm не загрузился');
+    let wasm, workletUrl, ok;
+    for (const b of bases){
+        try {
+            wasm = await to(mod.loadRnnoise({ url: b + '/rnnoise/rnnoise.wasm', simdUrl: b + '/rnnoise/rnnoise_simd.wasm' }), 8000);
+            workletUrl = b + '/rnnoise/workletProcessor.js';
+            ok = true; break;
+        } catch(e){ lastErr = e; }
+    }
+    if (!ok) throw lastErr || new Error('rnnoise wasm не загрузился');
+    _rnnoise = { mod, wasm, workletUrl };
+    return _rnnoise;
 }
 
-// Навесить/снять Krisp на текущий микрофонный трек.
+// LiveKit-совместимый процессор на основе RNNoise.
+function createRnnoiseProcessor(){
+    let ctx, src, node, dest;
+    return {
+        name: 'rnnoise',
+        processedTrack: undefined,
+        async init(opts){
+            const r = await loadRnnoise();
+            ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+            try { if (ctx.state === 'suspended') await ctx.resume(); } catch(e){}
+            await ctx.audioWorklet.addModule(r.workletUrl);
+            src = ctx.createMediaStreamSource(new MediaStream([opts.track]));
+            node = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
+            dest = ctx.createMediaStreamDestination();
+            src.connect(node).connect(dest);
+            this.processedTrack = dest.stream.getAudioTracks()[0];
+        },
+        async restart(opts){ await this.destroy(); await this.init(opts); },
+        async destroy(){
+            try { node && node.disconnect(); } catch(e){}
+            try { src && src.disconnect(); } catch(e){}
+            try { ctx && ctx.close(); } catch(e){}
+            this.processedTrack = undefined;
+        }
+    };
+}
+
+// Навесить/снять шумодав на текущий микрофонный трек.
 async function applyNoiseFilter(){
     const pub = localMicPub();
     if (!pub || !pub.track) return;
     try {
         if (useNoise){
-            const m = await loadKrisp();
-            if (m.isKrispNoiseFilterSupported && !m.isKrispNoiseFilterSupported()){
-                post({type:'jsLog', text:'Krisp не поддерживается в этом движке'});
-                return;
-            }
-            if (!_krispProc) _krispProc = m.KrispNoiseFilter();
-            await pub.track.setProcessor(_krispProc);
-            post({type:'jsLog', text:'Krisp шумодав активен'});
+            const proc = createRnnoiseProcessor();
+            await pub.track.setProcessor(proc);
+            post({type:'jsLog', text:'RNNoise шумодав активен'});
         } else {
             try { await pub.track.stopProcessor(); } catch(e){}
-            post({type:'jsLog', text:'Krisp выключен'});
+            post({type:'jsLog', text:'Шумодав выключен'});
         }
     } catch(e){
-        post({type:'jsLog', text:'Krisp недоступен: ' + String(e)});
+        post({type:'jsLog', text:'Шумодав недоступен: ' + String(e)});
     }
 }
 

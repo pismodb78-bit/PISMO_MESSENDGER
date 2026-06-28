@@ -784,7 +784,7 @@ namespace PISMO
             try
             {
                 if (_micTest != null && !_micTest.IsDisposed) { try { _micTest.Close(); } catch { } }
-                _micTest = new MicTestForm(_chkNoiseSuppress.Checked);
+                _micTest = new MicTestForm(_chkNoiseSuppress.Checked, _cmbMic.SelectedItem?.ToString());
                 _micTest.FormClosed += (s2, e2) => _micTest = null;
                 _micTest.Show(this);
             }
