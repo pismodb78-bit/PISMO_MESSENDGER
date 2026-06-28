@@ -101,21 +101,31 @@ namespace PISMO
             catch { }
         }
 
+        // Время входа в звонок — чтобы не пикать на каждого, кто уже был в канале
+        // (первичное перечисление участников при заходе).
+        private DateTime _tilesReadyAt = DateTime.UtcNow;
+
         // ── Участники ───────────────────────────────────────────────────
         private void AddParticipant(string pid, string name)
         {
             if (string.IsNullOrEmpty(pid) || pid == SelfPid) return;
+            bool isNew = !_participants.ContainsKey(pid);
             _participants[pid] = name;
             AddParticipantTile(pid, name);
+            // Звук «зашёл» — только для реально новых участников (не при входе в канал).
+            if (isNew && (DateTime.UtcNow - _tilesReadyAt).TotalMilliseconds > 1500)
+                try { Sounds.UserJoined(); } catch { }
         }
 
         private void RemoveParticipant(string pid)
         {
             if (string.IsNullOrEmpty(pid)) return;
-            _participants.Remove(pid);
+            bool existed = _participants.Remove(pid);
             RemoveTile(TileKey(pid, "camera"));
             RemoveTile(TileKey(pid, "screen"));
             LayoutTiles();
+            if (existed && (DateTime.UtcNow - _tilesReadyAt).TotalMilliseconds > 1500)
+                try { Sounds.UserLeft(); } catch { }
         }
 
         /// <summary>Гарантирует наличие плитки участника (камера-плитка = основная).</summary>

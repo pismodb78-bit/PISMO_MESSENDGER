@@ -750,6 +750,7 @@ namespace PISMO
             if (_connected) return;
             _connected = true;
             _startTime = DateTime.Now;
+            _tilesReadyAt = DateTime.UtcNow; // с этого момента вход/выход озвучиваем
             _lblStatus.Text = "Соединение установлено";
             _durationTimer.Start();
             try { Sounds.CallConnected(); } catch { }

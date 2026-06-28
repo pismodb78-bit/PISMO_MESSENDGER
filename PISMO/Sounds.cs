@@ -24,6 +24,8 @@ namespace PISMO
         public static void Message()  => PlayBytes(ToneWav(880, 70));
         public static void Hangup()   => PlayBytes(TwoTone(500, 300, 120));
         public static void CallConnected() => PlayBytes(TwoTone(523, 784, 110));
+        public static void UserJoined() => PlayBytes(TwoTone(523, 698, 90));  // восходящий — зашёл
+        public static void UserLeft()   => PlayBytes(TwoTone(587, 392, 100)); // нисходящий — вышел
 
         // ── Рингтон входящего звонка (зацикленный) ──────────────────────
         public static void StartRingtone()

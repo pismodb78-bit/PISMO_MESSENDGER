@@ -242,10 +242,14 @@ let _rnnoiseMod = null;
 
 async function loadRnnoiseModule(){
     if (_rnnoiseMod) return _rnnoiseMod;
-    const base = 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist';
-    const mod = await import('https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm');
-    const wasm = await mod.loadRnnoise({ url: base + '/rnnoise.wasm', simdUrl: base + '/rnnoise_simd.wasm' });
-    _rnnoiseMod = { mod, wasm, workletUrl: base + '/rnnoiseWorklet.js' };
+    const pkg = 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5';
+    const mod = await import(pkg + '/+esm');
+    // Файлы лежат в подпапке dist/rnnoise/ (см. README пакета).
+    const wasm = await mod.loadRnnoise({
+        url: pkg + '/dist/rnnoise/rnnoise.wasm',
+        simdUrl: pkg + '/dist/rnnoise/rnnoise_simd.wasm'
+    });
+    _rnnoiseMod = { mod, wasm, workletUrl: pkg + '/dist/rnnoise/workletProcessor.js' };
     return _rnnoiseMod;
 }
 

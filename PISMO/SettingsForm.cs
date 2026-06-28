@@ -290,7 +290,7 @@ namespace PISMO
             };
             var lblVoiceHint = new Label
             {
-                Text = "Ниже порога звук с микрофона не передаётся (как в Discord).",
+                Text = "Ниже порога звук с микрофона не передаётся.",
                 Font = new Font("Segoe UI", 8f),
                 ForeColor = Color.FromArgb(150, 152, 158),
                 AutoSize = true,
@@ -550,8 +550,31 @@ namespace PISMO
             this.ClientSize = new Size(500, Math.Min(620, contentHeight));
             Controls.Add(scrollPanel);
 
+            // Колесо мыши над ползунками/списками НЕ меняет их значение, а
+            // прокручивает страницу настроек.
+            DisableWheelOnInputs(scrollPanel, scrollPanel);
+
             _levelTimer = new System.Windows.Forms.Timer { Interval = 40 };
             _levelTimer.Tick += (s, e) => UpdateLevelBar();
+        }
+
+        /// <summary>Делает так, что колесо мыши над TrackBar/ComboBox не меняет
+        /// значение, а прокручивает страницу настроек.</summary>
+        private static void DisableWheelOnInputs(Control root, Panel scroll)
+        {
+            foreach (Control c in root.Controls)
+            {
+                if (c is TrackBar || c is ComboBox || c is NumericUpDown)
+                {
+                    c.MouseWheel += (s, e) =>
+                    {
+                        if (e is HandledMouseEventArgs he) he.Handled = true; // не менять значение
+                        int y = -scroll.AutoScrollPosition.Y - e.Delta;       // прокрутить страницу
+                        scroll.AutoScrollPosition = new Point(0, y);
+                    };
+                }
+                if (c.HasChildren) DisableWheelOnInputs(c, scroll);
+            }
         }
 
         /// <summary>Человекочитаемое представление комбинации клавиш ((int)Keys).</summary>
