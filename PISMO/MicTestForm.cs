@@ -112,7 +112,10 @@ async function loadKrisp(){
   try { return await import('https://pismo-noise.local/krisp.mjs'); } catch(e){}
   return await import('https://cdn.jsdelivr.net/npm/@livekit/krisp-noise-filter/+esm');
 }
+function withTimeout(p, ms){ return Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('таймаут '+ms+'мс')), ms))]); }
+
 async function start(){
+  st('Запрашиваю микрофон…');
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
   catch(e){ st('Нет доступа к микрофону: '+e); return; }
@@ -120,10 +123,11 @@ async function start(){
   try { if (ctx.state==='suspended') await ctx.resume(); } catch(e){}
   let track = stream.getAudioTracks()[0];
   if (NOISE){
+    st('Загружаю шумодав Krisp…');
     try {
-      const m = await loadKrisp();
-      if (m.isKrispNoiseFilterSupported && !m.isKrispNoiseFilterSupported()){ st('Krisp не поддерживается, без шумодава'); }
-      else { const proc = m.KrispNoiseFilter(); await proc.init({ track, audioContext: ctx }); if (proc.processedTrack) track = proc.processedTrack; st('Шумодав Krisp активен — слышите себя'); }
+      const m = await withTimeout(loadKrisp(), 12000);
+      if (m.isKrispNoiseFilterSupported && !m.isKrispNoiseFilterSupported()){ st('Krisp не поддерживается этим движком — слышите себя без шумодава'); }
+      else { const proc = m.KrispNoiseFilter(); await withTimeout(proc.init({ track, audioContext: ctx }), 12000); if (proc.processedTrack) track = proc.processedTrack; st('✓ Шумодав Krisp активен — слышите себя'); }
     } catch(e){ st('Krisp недоступен ('+e+') — слышите себя без шумодава'); }
   } else { st('Слышите себя (шумодав выключен)'); }
   const out = new MediaStream([track]);

@@ -779,12 +779,14 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════
         private void BtnMicTest_Click(object sender, EventArgs e)
         {
-            // Тест идёт через тот же конвейер, что и звонок (WebView2 + Krisp),
-            // чтобы было слышно ровно то, что услышат собеседники.
+            // Тест идёт через тот же конвейер, что и звонок (WebView2 + Krisp).
+            // Немодальное окно — настройки остаются кликабельными.
             try
             {
-                using var mt = new MicTestForm(_chkNoiseSuppress.Checked);
-                mt.ShowDialog(this);
+                if (_micTest != null && !_micTest.IsDisposed) { try { _micTest.Close(); } catch { } }
+                _micTest = new MicTestForm(_chkNoiseSuppress.Checked);
+                _micTest.FormClosed += (s2, e2) => _micTest = null;
+                _micTest.Show(this);
             }
             catch (Exception ex)
             {
@@ -792,6 +794,8 @@ namespace PISMO
                 _lblMicStatus.Text = "Ошибка теста: " + ex.Message;
             }
         }
+
+        private MicTestForm _micTest;
 
         private void WaveIn_DataAvailable(object sender, WaveInEventArgs e)
         {
@@ -968,6 +972,7 @@ namespace PISMO
         {
             StopCameraPreview();
             StopMicTest();
+            try { if (_micTest != null && !_micTest.IsDisposed) _micTest.Close(); } catch { }
             _levelTimer?.Stop();
             _levelTimer?.Dispose();
             base.OnFormClosing(e);
