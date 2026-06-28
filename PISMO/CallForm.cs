@@ -1879,6 +1879,7 @@ namespace PISMO
 
                 _signalTimer?.Stop(); _signalTimer?.Dispose();
                 _durationTimer?.Stop(); _durationTimer?.Dispose();
+                _speakHoldTimer?.Stop(); _speakHoldTimer?.Dispose();
 
                 StopScreenShare();
                 if (_cameraStarted)

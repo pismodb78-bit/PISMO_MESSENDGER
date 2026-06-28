@@ -35,6 +35,12 @@ namespace PISMO
         private readonly Dictionary<string, string> _participants = new(); // pid -> name
         private string SelfPid => UserSession.EffectiveId.ToString();
 
+        // Удержание подсветки говорящего: рамка гаснет не сразу, а через HOLD после
+        // последнего звука — чтобы при чтении текста (с микропаузами) горела ровно.
+        private readonly Dictionary<string, DateTime> _speakUntil = new();
+        private System.Windows.Forms.Timer _speakHoldTimer;
+        private const int SpeakHoldMs = 800;
+
         private string _fullscreenKey;  // ключ плитки на весь экран, либо null
         private readonly Dictionary<string, float> _userVol = new();   // pid -> громкость
         private readonly Dictionary<string, bool> _userMuted = new();  // pid -> заглушен
@@ -386,18 +392,40 @@ namespace PISMO
 
         private void OnActiveSpeakers(string pidsJson)
         {
-            HashSet<string> speaking = new();
             try
             {
                 var arr = JsonSerializer.Deserialize<string[]>(pidsJson);
-                if (arr != null) foreach (var p in arr) speaking.Add(p);
+                if (arr != null)
+                {
+                    // Каждое попадание в список говорящих продлевает подсветку на HOLD.
+                    var until = DateTime.UtcNow.AddMilliseconds(SpeakHoldMs);
+                    foreach (var p in arr) _speakUntil[p] = until;
+                }
             }
             catch { }
 
+            EnsureSpeakHoldTimer();
+            RefreshSpeakingState();
+        }
+
+        private void EnsureSpeakHoldTimer()
+        {
+            if (_speakHoldTimer != null) return;
+            _speakHoldTimer = new System.Windows.Forms.Timer { Interval = 100 };
+            _speakHoldTimer.Tick += (s, e) => RefreshSpeakingState();
+            _speakHoldTimer.Start();
+        }
+
+        // Пересчитывает подсветку плиток с учётом удержания (hold).
+        private void RefreshSpeakingState()
+        {
+            var now = DateTime.UtcNow;
             foreach (var kv in _tiles)
             {
                 var tile = kv.Value;
-                bool sp = tile.Source == "camera" && speaking.Contains(tile.Pid);
+                bool sp = tile.Source == "camera"
+                    && _speakUntil.TryGetValue(tile.Pid, out var until)
+                    && now < until;
                 if (sp != tile.Speaking)
                 {
                     tile.Speaking = sp;
