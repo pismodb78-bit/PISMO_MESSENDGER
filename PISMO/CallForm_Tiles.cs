@@ -330,6 +330,50 @@ namespace PISMO
             old?.Dispose();
         }
 
+        /// <summary>Участник сменил имя в звонке — обновляем подписи его плиток.</summary>
+        private void OnParticipantRenamed(string pid, string name)
+        {
+            if (string.IsNullOrEmpty(pid) || string.IsNullOrWhiteSpace(name)) return;
+            _participants[pid] = name;
+            foreach (var kv in _tiles)
+                if (kv.Value.Pid == pid)
+                {
+                    kv.Value.Name = name;
+                    if (kv.Value.Lbl != null)
+                        kv.Value.Lbl.Text = (kv.Value.Source == "screen" ? "🖥 " : "") + name;
+                }
+        }
+
+        /// <summary>Применить изменения своего профиля (имя/аватар) прямо в звонке:
+        /// рассылаем новое имя участникам и перерисовываем свою плитку.</summary>
+        public void ApplyMyProfileChanged()
+        {
+            try { _transport?.SetDisplayName(UserSession.UserName); } catch { }
+            try
+            {
+                AvatarStore.Invalidate(UserSession.EffectiveId);
+                AvatarStore.EnsureLoaded(UserSession.EffectiveId);
+                foreach (var kv in _tiles)
+                    if (kv.Value.Pid == SelfPid) kv.Value.Panel.Invalidate();
+            }
+            catch { }
+        }
+
+        /// <summary>Чужой пользователь обновил профиль (WS) — сбросить кэш аватара
+        /// и перерисовать его плитки.</summary>
+        public void OnRemoteProfileUpdated(int uid)
+        {
+            try
+            {
+                AvatarStore.Invalidate(uid);
+                AvatarStore.EnsureLoaded(uid);
+                string pid = uid.ToString();
+                foreach (var kv in _tiles)
+                    if (kv.Value.Pid == pid && !kv.Value.HasVideo) kv.Value.Panel.Invalidate();
+            }
+            catch { }
+        }
+
         private void OnActiveSpeakers(string pidsJson)
         {
             HashSet<string> speaking = new();

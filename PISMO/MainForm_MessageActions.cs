@@ -823,6 +823,14 @@ namespace PISMO
                 menu.BackColor = Color.FromArgb(24, 25, 28);
                 menu.ForeColor = Color.FromArgb(220, 221, 222);
 
+                var itemProfile = new ToolStripMenuItem("👤 Профиль");
+                itemProfile.Click += (s2, e2) =>
+                {
+                    using var pf = new ProfileForm(partnerId, readOnly: true);
+                    pf.ShowDialog(this);
+                };
+                menu.Items.Add(itemProfile);
+
                 var itemCall = new ToolStripMenuItem("📞 Позвонить");
                 itemCall.Click += (s2, e2) =>
                 {

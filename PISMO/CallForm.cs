@@ -615,6 +615,7 @@ namespace PISMO
             _transport.RemoteTileFrame += (pid, source, frame) => OnTileFrameOffThread(pid, source, frame);
             _transport.ActiveSpeakers += json => UiInvoke(() => OnActiveSpeakers(json));
             _transport.PingUpdated += ms => UiInvoke(() => UpdatePing(ms));
+            _transport.ParticipantRenamed += (pid, name) => UiInvoke(() => OnParticipantRenamed(pid, name));
 
             // --- Демонстрация экрана (своя) ---
             _transport.LocalScreenStarted += () => UiInvoke(OnLocalScreenStarted);

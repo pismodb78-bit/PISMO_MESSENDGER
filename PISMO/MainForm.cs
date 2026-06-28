@@ -246,6 +246,19 @@ namespace PISMO
                             // payload: serverId|serverName|channelName
                             HandleMentionNotification(payload);
                         }
+                        else if (type == "profile_updated")
+                        {
+                            // sessionId = uid пользователя, обновившего профиль.
+                            int uid2 = sessionId;
+                            if (uid2 > 0)
+                            {
+                                AvatarStore.Invalidate(uid2);
+                                AvatarStore.EnsureLoaded(uid2);
+                                InvalidateAvatarFor(uid2);
+                                try { LoadConversations(); } catch { }
+                                try { if (_activeCall != null && !_activeCall.IsDisposed) _activeCall.OnRemoteProfileUpdated(uid2); } catch { }
+                            }
+                        }
                     });
                 }
                 catch { }
@@ -333,7 +346,13 @@ namespace PISMO
                 AvatarStore.Invalidate(UserSession.EffectiveId);
                 AvatarStore.EnsureLoaded(UserSession.EffectiveId);
                 InvalidateAvatarFor(UserSession.EffectiveId);
+                try { pnlMyAvatar?.Invalidate(); } catch { }
                 try { LoadConversations(); } catch { }
+
+                // Применяем изменения в активном звонке (имя+аватар) и сообщаем
+                // другим клиентам, чтобы у них обновился аватар в чатах/звонке.
+                try { if (_activeCall != null && !_activeCall.IsDisposed) _activeCall.ApplyMyProfileChanged(); } catch { }
+                try { WebSocketSignalingClient.Instance.SendMessage("profile_updated", 0, UserSession.EffectiveId, ""); } catch { }
             }
         }
 

@@ -22,12 +22,14 @@ namespace PISMO
         private readonly Label _lblLoginStatus;
         private readonly TextBox _txtOldPass, _txtNewPass, _txtNewPass2;
         private readonly Label _lblStatus;
+        private readonly bool _readOnly;
 
         public bool Saved { get; private set; }
 
-        public ProfileForm(int uid)
+        public ProfileForm(int uid, bool readOnly = false)
         {
             _uid = uid;
+            _readOnly = readOnly;
             Text = "PISMO — Профиль";
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             BackColor = Color.FromArgb(47, 49, 54);
@@ -47,29 +49,32 @@ namespace PISMO
             Controls.Add(scroll);
 
             // ── Баннер (фон) ────────────────────────────────────────────
-            _banner = new Panel { Location = new Point(0, 0), Size = new Size(CW, 160), BackColor = Color.FromArgb(59, 165, 93), Cursor = Cursors.Hand };
+            _banner = new Panel { Location = new Point(0, 0), Size = new Size(CW, 160), BackColor = Color.FromArgb(59, 165, 93), Cursor = _readOnly ? Cursors.Default : Cursors.Hand };
             _banner.Paint += BannerPaint;
-            _banner.Click += (s, e) => ChangeBanner();
-            var bannerHint = new Label
+            if (!_readOnly)
             {
-                Text = "📷  Сменить фон",
-                AutoSize = true,
-                ForeColor = Color.White,
-                BackColor = Color.FromArgb(140, 0, 0, 0),
-                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                Padding = new Padding(8, 4, 8, 4),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Cursor = Cursors.Hand
-            };
-            _banner.Controls.Add(bannerHint);
-            bannerHint.Location = new Point(CW - bannerHint.PreferredWidth - 12, 12);
-            bannerHint.Click += (s, e) => ChangeBanner();
+                _banner.Click += (s, e) => ChangeBanner();
+                var bannerHint = new Label
+                {
+                    Text = "📷  Сменить фон",
+                    AutoSize = true,
+                    ForeColor = Color.White,
+                    BackColor = Color.FromArgb(140, 0, 0, 0),
+                    Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                    Padding = new Padding(8, 4, 8, 4),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    Cursor = Cursors.Hand
+                };
+                _banner.Controls.Add(bannerHint);
+                bannerHint.Location = new Point(CW - bannerHint.PreferredWidth - 12, 12);
+                bannerHint.Click += (s, e) => ChangeBanner();
+            }
             scroll.Controls.Add(_banner);
 
             // ── Аватар (с обрезкой кружком), перекрывает низ баннера ─────
-            _avatar = new Panel { Location = new Point(M, 106), Size = new Size(112, 112), BackColor = Color.Transparent, Cursor = Cursors.Hand };
+            _avatar = new Panel { Location = new Point(M, 106), Size = new Size(112, 112), BackColor = Color.Transparent, Cursor = _readOnly ? Cursors.Default : Cursors.Hand };
             _avatar.Paint += AvatarPaint;
-            _avatar.Click += (s, e) => ChangeAvatar();
+            if (!_readOnly) _avatar.Click += (s, e) => ChangeAvatar();
             scroll.Controls.Add(_avatar);
             _avatar.BringToFront();
 
@@ -81,7 +86,7 @@ namespace PISMO
             }
             TextBox Box(int yy, int h = 30, bool multiline = false)
             {
-                var tb = new TextBox { Location = new Point(M, yy), Size = new Size(IW, h), BackColor = Color.FromArgb(32, 34, 37), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10.5f), Multiline = multiline };
+                var tb = new TextBox { Location = new Point(M, yy), Size = new Size(IW, h), BackColor = Color.FromArgb(32, 34, 37), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10.5f), Multiline = multiline, ReadOnly = _readOnly };
                 scroll.Controls.Add(tb); return tb;
             }
 
@@ -96,6 +101,15 @@ namespace PISMO
             Hint("О себе", y); _txtAbout = Box(y + 18, 72, true); y += 102;
 
             Hint("Ссылки (по строке: Название|https://...)", y); _txtLinks = Box(y + 18, 72, true); y += 102;
+
+            // В режиме просмотра чужого профиля — без смены пароля и кнопки сохранить.
+            if (_readOnly)
+            {
+                _txtOldPass = _txtNewPass = _txtNewPass2 = null;
+                _lblStatus = new Label { Visible = false };
+                LoadData();
+                return;
+            }
 
             // ── Разделитель + смена пароля ──────────────────────────────
             var sep = new Panel { Location = new Point(M, y), Size = new Size(IW, 1), BackColor = Color.FromArgb(64, 67, 73) };

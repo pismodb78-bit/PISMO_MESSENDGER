@@ -43,6 +43,7 @@ namespace PISMO
         public event Action<string, string, byte[]> RemoteTileFrame;  // (pid, source, jpeg)
         public event Action<string> ActiveSpeakers;               // JSON-массив pid говорящих
         public event Action<int> PingUpdated;                      // RTT в миллисекундах
+        public event Action<string, string> ParticipantRenamed;    // (pid, новое имя)
 
         // --- Видео-трек демонстрации экрана ---
         public event Action<byte[]> RemoteScreenFrameReceived; // декодированный JPEG-кадр из видео-трека
@@ -337,6 +338,11 @@ async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress)
         room.on(LK.RoomEvent.ActiveSpeakersChanged, (speakers) => {
             try { post({type:'activeSpeakers', pids: JSON.stringify((speakers||[]).map(s => s.identity))}); } catch(e){}
         });
+        try {
+            room.on(LK.RoomEvent.ParticipantNameChanged, (name, p) => {
+                try { post({type:'participantRenamed', pid: p.identity, name: name || pidName(p)}); } catch(e){}
+            });
+        } catch(e){}
 
         await room.connect(url, token);
         post({type:'connected'});
@@ -883,6 +889,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'setOutputDevice': setAudioDevice('audiooutput', msg.deviceLabel); break;
         case 'setVoiceGate': setVoiceGate(msg.auto, msg.threshold); break;
         case 'setNoiseSuppression': setNoiseSuppression(msg.on); break;
+        case 'setDisplayName': try { if (room) room.localParticipant.setName(msg.name); } catch(e){} break;
         case 'disconnect': disconnectRoom(); break;
     }
 });
@@ -931,6 +938,9 @@ window.chrome.webview.addEventListener('message', (e) => {
                         break;
                     case "ping":
                         try { PingUpdated?.Invoke(msg.GetProperty("ms").GetInt32()); } catch { }
+                        break;
+                    case "participantRenamed":
+                        ParticipantRenamed?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "name"));
                         break;
                     case "fatal":
                         System.Diagnostics.Debug.WriteLine($"[LiveKit FATAL] {SafeStr(msg, "error")}");
@@ -1158,6 +1168,10 @@ window.chrome.webview.addEventListener('message', (e) => {
         /// <summary>Включить/выключить шумоподавление RNNoise.</summary>
         public void SetNoiseSuppression(bool on)
             => SendToJs(JsonSerializer.Serialize(new { cmd = "setNoiseSuppression", on }));
+
+        /// <summary>Сменить отображаемое имя в звонке (рассылается участникам).</summary>
+        public void SetDisplayName(string name)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setDisplayName", name }));
 
         private void SendToJs(string json)
         {
