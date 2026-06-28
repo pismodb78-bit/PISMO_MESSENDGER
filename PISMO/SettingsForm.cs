@@ -159,7 +159,7 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, 322),
-                Size = new Size(456, 348)
+                Size = new Size(456, 196)
             };
 
             var lblMicTitle = new Label
@@ -239,33 +239,12 @@ namespace PISMO
                 Location = new Point(326, 124)
             };
 
-            var lblLevelHint = new Label
-            {
-                Text = "УРОВЕНЬ СИГНАЛА",
-                Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
-                ForeColor = Color.FromArgb(185, 187, 190),
-                AutoSize = true,
-                Location = new Point(14, 160)
-            };
-
-            _lblDbValue = new Label
-            {
-                Text = "−∞ дБ",
-                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
-                ForeColor = Color.FromArgb(185, 187, 190),
-                AutoSize = true,
-                Location = new Point(370, 158),
-                TextAlign = ContentAlignment.MiddleRight
-            };
-
-            _pnlLevelBar = new Panel
-            {
-                BackColor = Color.FromArgb(20, 21, 24),
-                BorderStyle = BorderStyle.FixedSingle,
-                Location = new Point(14, 180),
-                Size = new Size(428, 26)
-            };
-            _pnlLevelBar.Paint += PnlLevelBar_Paint;
+            // Старый градусник уровня (от NAudio-теста) убран — проверка теперь
+            // в отдельном окне «Тест» с реальным шумодавом. Контролы оставляем
+            // невидимыми, чтобы не трогать остальную раскладку/код.
+            var lblLevelHint = new Label { Visible = false };
+            _lblDbValue = new Label { Visible = false };
+            _pnlLevelBar = new Panel { Visible = false, Size = new Size(0, 0) };
 
             _lblMicStatus = new Label
             {
@@ -340,7 +319,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
                 AutoSize = true,
-                Location = new Point(14, 314),
+                Location = new Point(14, 162),
                 Cursor = Cursors.Hand
             };
 
@@ -357,7 +336,7 @@ namespace PISMO
             var pnlScreen = new Panel
             {
                 BackColor = Color.FromArgb(47, 49, 54),
-                Location = new Point(20, 690),
+                Location = new Point(20, 538),
                 Size = new Size(456, 100)
             };
 
