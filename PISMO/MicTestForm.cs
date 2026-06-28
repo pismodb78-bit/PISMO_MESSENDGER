@@ -124,15 +124,25 @@ function withTimeout(p, ms){ return Promise.race([p, new Promise((_,rej)=>setTim
 let _rn=null;
 async function loadRnnoise(){
   if(_rn) return _rn;
-  const esms=['https://pismo-noise.local/wns.mjs','https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5','https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm'];
-  const bases=['https://pismo-noise.local','https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist','https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist'];
-  let mod,err;
-  for(const s of esms){ try{ mod=await withTimeout(import(s),8000); if(mod&&mod.loadRnnoise) break; }catch(e){ err=e; mod=null; } }
-  if(!mod) throw err||new Error('esm');
-  let wasm,wurl,ok;
-  for(const b of bases){ try{ wasm=await withTimeout(mod.loadRnnoise({url:b+'/rnnoise/rnnoise.wasm',simdUrl:b+'/rnnoise/rnnoise_simd.wasm'}),8000); wurl=b+'/rnnoise/workletProcessor.js'; ok=true; break; }catch(e){ err=e; } }
-  if(!ok) throw err||new Error('wasm');
-  _rn={mod,wasm,wurl}; return _rn;
+  // ВАЖНО: esm-модуль, wasm и worklet ДОЛЖНЫ грузиться из ОДНОГО источника/версии,
+  // иначе RnnoiseWorkletNode и workletProcessor.js несовместимы -> узел молчит.
+  const providers=[
+    {esm:'https://pismo-noise.local/wns.mjs', base:'https://pismo-noise.local'},
+    {esm:'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5', base:'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5/dist'},
+    {esm:'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm', base:'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist'},
+    {esm:'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist/index.mjs', base:'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist'}
+  ];
+  let err;
+  for(const p of providers){
+    try{
+      const mod=await withTimeout(import(p.esm),8000);
+      if(!mod||!mod.loadRnnoise||!mod.RnnoiseWorkletNode) throw new Error('нет экспортов');
+      const wasm=await withTimeout(mod.loadRnnoise({url:p.base+'/rnnoise/rnnoise.wasm',simdUrl:p.base+'/rnnoise/rnnoise_simd.wasm'}),8000);
+      const wurl=p.base+'/rnnoise/workletProcessor.js';
+      _rn={mod,wasm,wurl}; return _rn;
+    }catch(e){ err=e; }
+  }
+  throw err||new Error('rnnoise');
 }
 
 async function start(){
@@ -162,6 +172,24 @@ async function start(){
       srcN.connect(node).connect(dest);
       outStream = dest.stream;
       st('✓ Шумодав RNNoise активен — слышите себя');
+      // Защита от ""активен, но молчит"": если обработанный поток молчит,
+      // а на вход звук идёт — откатываемся на сырой микрофон.
+      try{
+        const aIn=ctx.createAnalyser(); aIn.fftSize=512; ctx.createMediaStreamSource(stream).connect(aIn);
+        const aOut=ctx.createAnalyser(); aOut.fftSize=512; ctx.createMediaStreamSource(dest.stream).connect(aOut);
+        const bi=new Uint8Array(aIn.fftSize), bo=new Uint8Array(aOut.fftSize);
+        let inSum=0,outSum=0,n=0; const tm=setInterval(()=>{
+          aIn.getByteTimeDomainData(bi); aOut.getByteTimeDomainData(bo);
+          let si=0,so=0; for(let i=0;i<bi.length;i++){const x=(bi[i]-128)/128;si+=x*x;} for(let i=0;i<bo.length;i++){const x=(bo[i]-128)/128;so+=x*x;}
+          inSum+=Math.sqrt(si/bi.length); outSum+=Math.sqrt(so/bo.length); n++;
+          if(n>=30){ clearInterval(tm);
+            if(inSum>0.01 && outSum<inSum*0.05){
+              const a=document.getElementById('mon'); a.srcObject=stream;
+              st('⚠ Шумодав молчал — переключился на чистый микрофон');
+            }
+          }
+        },50);
+      }catch(e){}
     } catch(e){ st('Шумодав недоступен ('+e+') — слышите себя без него'); outStream = stream; }
   } else { st('Слышите себя (шумодав выключен)'); }
   const out = outStream;

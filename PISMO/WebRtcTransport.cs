@@ -262,30 +262,26 @@ function localMicPub(){
 async function loadRnnoise(){
     if (_rnnoise) return _rnnoise;
     const to = (p, ms) => Promise.race([p, new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')), ms))]);
-    const bases = [
-        'https://pismo-noise.local',
-        'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist',
-        'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist'
+    // ВАЖНО: esm-модуль, wasm и worklet ДОЛЖНЫ грузиться из ОДНОГО источника/версии,
+    // иначе RnnoiseWorkletNode и workletProcessor.js несовместимы -> узел молчит.
+    const providers = [
+        { esm:'https://pismo-noise.local/wns.mjs', base:'https://pismo-noise.local' },
+        { esm:'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5', base:'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5/dist' },
+        { esm:'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm', base:'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist' },
+        { esm:'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist/index.mjs', base:'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist' }
     ];
-    const esms = [
-        'https://pismo-noise.local/wns.mjs',
-        'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5',
-        'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm'
-    ];
-    let mod, lastErr;
-    for (const s of esms){ try { mod = await to(import(s), 8000); if (mod && mod.loadRnnoise) break; } catch(e){ lastErr = e; mod = null; } }
-    if (!mod) throw lastErr || new Error('rnnoise esm не загрузился');
-    let wasm, workletUrl, ok;
-    for (const b of bases){
+    let lastErr;
+    for (const p of providers){
         try {
-            wasm = await to(mod.loadRnnoise({ url: b + '/rnnoise/rnnoise.wasm', simdUrl: b + '/rnnoise/rnnoise_simd.wasm' }), 8000);
-            workletUrl = b + '/rnnoise/workletProcessor.js';
-            ok = true; break;
+            const mod = await to(import(p.esm), 8000);
+            if (!mod || !mod.loadRnnoise || !mod.RnnoiseWorkletNode) throw new Error('нет экспортов rnnoise');
+            const wasm = await to(mod.loadRnnoise({ url: p.base + '/rnnoise/rnnoise.wasm', simdUrl: p.base + '/rnnoise/rnnoise_simd.wasm' }), 8000);
+            const workletUrl = p.base + '/rnnoise/workletProcessor.js';
+            _rnnoise = { mod, wasm, workletUrl };
+            return _rnnoise;
         } catch(e){ lastErr = e; }
     }
-    if (!ok) throw lastErr || new Error('rnnoise wasm не загрузился');
-    _rnnoise = { mod, wasm, workletUrl };
-    return _rnnoise;
+    throw lastErr || new Error('rnnoise не загрузился');
 }
 
 // LiveKit-совместимый процессор на основе RNNoise.
@@ -324,6 +320,29 @@ async function applyNoiseFilter(){
             const proc = createRnnoiseProcessor();
             await pub.track.setProcessor(proc);
             post({type:'jsLog', text:'RNNoise шумодав активен'});
+            // Сторож: если обработанный трек молчит при наличии входного сигнала —
+            // снимаем процессор, чтобы не потерять голос в звонке.
+            try {
+                const mt = pub.track.mediaStreamTrack;
+                if (mt && proc.processedTrack){
+                    const wctx = new (window.AudioContext||window.webkitAudioContext)();
+                    try { if (wctx.state==='suspended') await wctx.resume(); } catch(e){}
+                    const aOut = wctx.createAnalyser(); aOut.fftSize=512;
+                    wctx.createMediaStreamSource(new MediaStream([proc.processedTrack])).connect(aOut);
+                    const bo = new Uint8Array(aOut.fftSize);
+                    let sum=0,n=0; const tm=setInterval(async()=>{
+                        aOut.getByteTimeDomainData(bo);
+                        let s=0; for(let i=0;i<bo.length;i++){const x=(bo[i]-128)/128;s+=x*x;}
+                        sum+=Math.sqrt(s/bo.length); n++;
+                        if(n>=40){ clearInterval(tm); try{ wctx.close(); }catch(e){}
+                            if(sum<0.0008 && useNoise){
+                                try{ await pub.track.stopProcessor(); }catch(e){}
+                                post({type:'jsLog', text:'RNNoise молчал — откат на чистый микрофон'});
+                            }
+                        }
+                    },50);
+                }
+            } catch(e){}
         } else {
             try { await pub.track.stopProcessor(); } catch(e){}
             post({type:'jsLog', text:'Шумодав выключен'});

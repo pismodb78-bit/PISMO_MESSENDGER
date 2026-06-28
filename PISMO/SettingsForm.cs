@@ -314,7 +314,7 @@ namespace PISMO
 
             _chkNoiseSuppress = new CheckBox
             {
-                Text = "Шумоподавление (Krisp: давит клавиатуру/мышь/шум)",
+                Text = "Шумоподавление (RNNoise: давит клавиатуру/мышь/шум)",
                 Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
