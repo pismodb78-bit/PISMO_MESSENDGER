@@ -174,7 +174,8 @@ namespace PISMO
                 token = _pendingToken,
                 voiceAuto = DeviceSettings.VoiceAutoSensitivity,
                 voiceThreshold = DeviceSettings.VoiceThreshold,
-                noiseSuppress = DeviceSettings.NoiseSuppression
+                noiseSuppress = DeviceSettings.NoiseSuppression,
+                micGain = DeviceSettings.MicrophoneGain
             }));
         }
 
@@ -235,8 +236,9 @@ function micCaptureOpts(){
 }
 
 // ── Микрофон с RNNoise (подавление клавиатуры/мыши/шума) ────────────
-let micProc = { on:false, ctx:null, raw:null, node:null, dest:null, lkTrack:null };
+let micProc = { on:false, ctx:null, raw:null, node:null, gain:null, dest:null, lkTrack:null };
 let useRnnoise = true;       // включается из настроек
+let micGain = 1.0;           // усиление микрофона (множитель), из настроек
 let selectedMicId = undefined;
 let _rnnoiseMod = null;
 
@@ -256,39 +258,57 @@ async function loadRnnoiseModule(){
 async function cleanupMicProc(){
     try { if (micProc.lkTrack) await room.localParticipant.unpublishTrack(micProc.lkTrack, true); } catch(e){}
     try { micProc.node && micProc.node.disconnect(); } catch(e){}
+    try { micProc.gain && micProc.gain.disconnect(); } catch(e){}
     try { micProc.ctx && micProc.ctx.close(); } catch(e){}
     try { micProc.raw && micProc.raw.getTracks().forEach(t => t.stop()); } catch(e){}
-    micProc = { on:false, ctx:null, raw:null, node:null, dest:null, lkTrack:null };
+    micProc = { on:false, ctx:null, raw:null, node:null, gain:null, dest:null, lkTrack:null };
 }
 
-// Публикация микрофона: при включённом RNNoise — через AudioWorklet, иначе
-// стандартный путь LiveKit. Любая ошибка RNNoise → безопасный фолбэк.
+// Публикация микрофона ВСЕГДА через Web Audio граф:
+//   src -> [RNNoise] -> Gain(усиление) -> destination -> публикуем
+// Это применяет ползунок «усиление» прямо в звонке (раньше он действовал
+// только в тесте), поэтому голос громче и порог чувствительности работает в
+// нормальном диапазоне. Любая ошибка → безопасный фолбэк на обычный микрофон.
 async function publishMic(){
     await cleanupMicProc();
-    if (useRnnoise){
-        try {
-            const raw = await navigator.mediaDevices.getUserMedia({ audio: micCaptureOpts() });
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            const r = await loadRnnoiseModule();
-            await ctx.audioWorklet.addModule(r.workletUrl);
-            const src = ctx.createMediaStreamSource(raw);
-            const node = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
-            const dest = ctx.createMediaStreamDestination();
-            src.connect(node).connect(dest);
-            const procTrack = dest.stream.getAudioTracks()[0];
-            const lkTrack = new LK.LocalAudioTrack(procTrack, undefined, false);
-            await room.localParticipant.publishTrack(lkTrack, { source: LK.Track.Source.Microphone });
-            micProc = { on:true, ctx, raw, node, dest, lkTrack };
-            post({type:'jsLog', text:'RNNoise активен'});
-            return;
-        } catch(e){
-            console.error('rnnoise', String(e));
-            post({type:'jsLog', text:'RNNoise недоступен, обычный микрофон: ' + String(e)});
-            await cleanupMicProc();
+    try {
+        const raw = await navigator.mediaDevices.getUserMedia({ audio: micCaptureOpts() });
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const src = ctx.createMediaStreamSource(raw);
+        const gain = ctx.createGain();
+        gain.gain.value = micGain;
+        const dest = ctx.createMediaStreamDestination();
+
+        let head = src;
+        let rnNode = null;
+        if (useRnnoise){
+            try {
+                const r = await loadRnnoiseModule();
+                await ctx.audioWorklet.addModule(r.workletUrl);
+                rnNode = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
+                head.connect(rnNode); head = rnNode;
+                post({type:'jsLog', text:'RNNoise активен'});
+            } catch(e){
+                post({type:'jsLog', text:'RNNoise недоступен: ' + String(e)});
+            }
         }
+        head.connect(gain).connect(dest);
+
+        const procTrack = dest.stream.getAudioTracks()[0];
+        const lkTrack = new LK.LocalAudioTrack(procTrack, undefined, false);
+        await room.localParticipant.publishTrack(lkTrack, { source: LK.Track.Source.Microphone });
+        micProc = { on:true, ctx, raw, node: rnNode, gain, dest, lkTrack };
+        return;
+    } catch(e){
+        console.error('publishMic', String(e));
+        await cleanupMicProc();
+        try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); } catch(e2){ console.error('mic enable', String(e2)); }
     }
-    // Фолбэк / RNNoise выключен — обычный микрофон LiveKit.
-    try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); } catch(e){ console.error('mic enable', String(e)); }
+}
+
+function setMicGain(v){
+    micGain = (typeof v === 'number' && v >= 0) ? v : 1.0;
+    if (micProc.gain) { try { micProc.gain.gain.value = micGain; } catch(e){} }
 }
 
 function setNoiseSuppression(on){
@@ -309,10 +329,11 @@ function waitForLK(){
     });
 }
 
-async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress){
+async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress, gainVal){
     if (typeof voiceAuto !== 'undefined') voiceGate.auto = !!voiceAuto;
     if (typeof voiceThreshold === 'number') voiceGate.threshold = voiceThreshold;
     if (typeof noiseSuppress !== 'undefined') useRnnoise = !!noiseSuppress;
+    if (typeof gainVal === 'number') micGain = gainVal;
     const ok = await waitForLK();
     if (!ok){ post({type:'fatal', error:'livekit-client не загрузился (нет интернета/CDN недоступен)'}); post({type:'disconnected'}); return; }
     try {
@@ -872,7 +893,7 @@ window.chrome.webview.addEventListener('message', (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch(err){ return; }
     switch (msg.cmd){
-        case 'connect': connectRoom(msg.url, msg.token, msg.voiceAuto, msg.voiceThreshold, msg.noiseSuppress); break;
+        case 'connect': connectRoom(msg.url, msg.token, msg.voiceAuto, msg.voiceThreshold, msg.noiseSuppress, msg.micGain); break;
         case 'previewCamera': previewCamera(msg.deviceLabel); break;
         case 'confirmCameraShare': confirmCameraShare(); break;
         case 'cancelCameraPreview': cancelCameraPreview(); break;
@@ -893,6 +914,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'setOutputDevice': setAudioDevice('audiooutput', msg.deviceLabel); break;
         case 'setVoiceGate': setVoiceGate(msg.auto, msg.threshold); break;
         case 'setNoiseSuppression': setNoiseSuppression(msg.on); break;
+        case 'setMicGain': setMicGain(msg.gain); break;
         case 'setDisplayName': try { if (room) room.localParticipant.setName(msg.name); } catch(e){} break;
         case 'disconnect': disconnectRoom(); break;
     }
@@ -1172,6 +1194,10 @@ window.chrome.webview.addEventListener('message', (e) => {
         /// <summary>Включить/выключить шумоподавление RNNoise.</summary>
         public void SetNoiseSuppression(bool on)
             => SendToJs(JsonSerializer.Serialize(new { cmd = "setNoiseSuppression", on }));
+
+        /// <summary>Усиление микрофона (множитель, 0..3).</summary>
+        public void SetMicGain(float gain)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setMicGain", gain }));
 
         /// <summary>Сменить отображаемое имя в звонке (рассылается участникам).</summary>
         public void SetDisplayName(string name)

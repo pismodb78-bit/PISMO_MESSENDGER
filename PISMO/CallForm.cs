@@ -1836,9 +1836,15 @@ namespace PISMO
                     _lastNoise = ns;
                     _transport?.SetNoiseSuppression(ns == 1);
                 }
+                if (Math.Abs(_lastGain - DeviceSettings.MicrophoneGain) > 0.001f)
+                {
+                    _lastGain = DeviceSettings.MicrophoneGain;
+                    _transport?.SetMicGain(_lastGain);
+                }
             }
             catch { }
         }
+        private float _lastGain = -1f;
 
         protected override void WndProc(ref Message m)
         {
