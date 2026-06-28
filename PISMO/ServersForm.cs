@@ -49,6 +49,7 @@ namespace PISMO
         private int _replyToId = -1;
         private static bool _replyColOk = true; // есть ли колонка reply_to_id (миграция)
         private readonly Dictionary<int, Control> _msgControls = new(); // id сообщения -> контрол для перехода
+        private readonly Dictionary<int, DataTable> _chanMetaCache = new(); // channelId -> meta (мгновенное открытие)
 
         // Автоподсказка @упоминаний при вводе.
         private Form _mentionPopup;
@@ -573,6 +574,40 @@ namespace PISMO
         private void LoadMessages()
         {
             if (_channelId <= 0 || _channelType != "text") return;
+            int channel = _channelId;
+
+            // 1) Мгновенно рисуем из кеша (память → диск), чтобы канал открывался без задержек.
+            if (!_chanMetaCache.TryGetValue(channel, out var cachedDt))
+            {
+                cachedDt = MessageCache.Load(MessageCache.ChannelKey(channel));
+                if (cachedDt != null) _chanMetaCache[channel] = cachedDt;
+            }
+            if (cachedDt != null) RenderMessages(cachedDt, channel);
+
+            // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в канале.
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                DataTable dt = FetchChannelMessages(channel);
+                if (dt == null) return;
+                try { MessageCache.Save(MessageCache.ChannelKey(channel), dt); } catch { }
+                if (IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (_channelId != channel) return; // уже переключились
+                        _chanMetaCache[channel] = dt;
+                        RenderMessages(dt, channel);
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        /// <summary>Запрос сообщений канала из БД (в фоне). Сам обрабатывает
+        /// отсутствие колонки reply_to_id (старая БД без миграции).</summary>
+        private DataTable FetchChannelMessages(int channel)
+        {
             try
             {
                 string replyCols = _replyColOk
@@ -587,9 +622,28 @@ namespace PISMO
                     "SELECT sm.id, sm.sender_id, sm.text, sm.created_at, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login" +
                     replyCols +
                     " FROM server_messages sm JOIN users u ON u.id=sm.sender_id WHERE sm.channel_id=@c ORDER BY sm.id ASC", conn);
-                cmd.Parameters.AddWithValue("@c", _channelId);
+                cmd.Parameters.AddWithValue("@c", channel);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
+                return dt;
+            }
+            catch (MySqlException mex) when (mex.Number == 1054)
+            {
+                _replyColOk = false; // колонки reply_to_id ещё нет — грузим без неё
+                return FetchChannelMessages(channel);
+            }
+            catch (Exception ex)
+            {
+                try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => ShowDbError(ex))); } catch { }
+                return null;
+            }
+        }
 
+        /// <summary>Отрисовка сообщений канала из готового DataTable.</summary>
+        private void RenderMessages(DataTable dt, int channel)
+        {
+            if (_channelId != channel) return;
+            try
+            {
                 _pnlMessages.SuspendLayout();
                 _pnlMessages.Controls.Clear();
                 _msgControls.Clear();
@@ -674,11 +728,6 @@ namespace PISMO
                 _lastMsgCount = dt.Rows.Count;
                 _pnlMessages.ResumeLayout();
                 _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);
-            }
-            catch (MySqlException mex) when (mex.Number == 1054)
-            {
-                _replyColOk = false; // колонки reply_to_id ещё нет — грузим без неё
-                LoadMessages();
             }
             catch (Exception ex) { ShowDbError(ex); }
         }

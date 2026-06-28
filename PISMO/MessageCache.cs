@@ -25,6 +25,7 @@ namespace PISMO
 
         public static string DirectKey(int me, int them) => $"d_{me}_{them}";
         public static string GroupKey(int gid) => $"g_{gid}";
+        public static string ChannelKey(int channelId) => $"s_{channelId}";
 
         /// <summary>Сохраняет таблицу метаданных переписки в кеш (в фоне вызывающего).</summary>
         public static void Save(string key, DataTable dt)

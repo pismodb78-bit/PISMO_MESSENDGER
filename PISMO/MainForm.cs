@@ -46,6 +46,7 @@ namespace PISMO
         // показываются мгновенно из кеша, а свежие подгружаются в фоне (не вешая UI).
         private readonly Dictionary<int, DataTable> _msgMetaCache = new();   // partnerId -> meta
         private readonly Dictionary<int, (bool iBlocked, bool theyBlocked)> _blockCache = new();
+        private readonly Dictionary<int, DataTable> _groupMetaCache = new(); // groupId -> meta
 
         // Голосовые сообщения
         private WaveInEvent _waveIn;
@@ -1346,16 +1347,50 @@ namespace PISMO
         private void LoadGroupMessages()
         {
             if (_currentGroupId < 0) return;
+            int group = _currentGroupId;
+            int myId = UserSession.EffectiveId;
+
+            // 1) Мгновенно рисуем из кеша (память → диск), чтобы открытие группы
+            //    было без задержек, как в личных чатах.
+            if (!_groupMetaCache.TryGetValue(group, out var cachedDt))
+            {
+                cachedDt = MessageCache.Load(MessageCache.GroupKey(group));
+                if (cachedDt != null) _groupMetaCache[group] = cachedDt;
+            }
+            if (cachedDt != null) RenderGroupMessages(cachedDt, myId, group);
+
+            // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в группе.
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                DataTable dt = null;
+                try { dt = LoadGroupMessagesMetaOnly(group); } catch { }
+                if (dt == null) return;
+                try { MessageCache.Save(MessageCache.GroupKey(group), dt); } catch { }
+                if (IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (_currentGroupId != group) return; // уже переключились
+                        _groupMetaCache[group] = dt;
+                        RenderGroupMessages(dt, myId, group);
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        /// <summary>Отрисовка групповой переписки из готового DataTable (из кеша
+        /// мгновенно и из фоновой подгрузки).</summary>
+        private void RenderGroupMessages(DataTable dt, int myId, int group)
+        {
+            if (_currentGroupId != group) return;
 
             pnlMessages.SuspendLayout();
             pnlMessages.Controls.Clear();
 
-            int myId = UserSession.EffectiveId;
-
             try
             {
-                var dt = LoadGroupMessagesMetaOnly(_currentGroupId);
-
                 int yOffset = 10;
                 string lastDate = "";
 

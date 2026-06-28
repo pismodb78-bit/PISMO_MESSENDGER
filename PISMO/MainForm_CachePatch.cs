@@ -336,7 +336,7 @@ namespace PISMO
 
             try { MediaCache.Clear(); } catch { }
             try { MessageCache.Clear(); } catch { }
-            try { _msgMetaCache.Clear(); _blockCache.Clear(); } catch { }
+            try { _msgMetaCache.Clear(); _blockCache.Clear(); _groupMetaCache.Clear(); } catch { }
 
             MessageBox.Show("Кеш очищен.", "PISMO",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
