@@ -1177,8 +1177,13 @@ namespace PISMO
                 var ctxMenu = new ContextMenuStrip();
                 ctxMenu.Items.Add($"💬 Написать как Admin → {name}", null,
                     (s, ev) => OpenDirect());
+                ctxMenu.Items.Add("👤 Профиль", null, (s, ev) =>
+                {
+                    using var pf = new ProfileForm(uid, readOnly: true);
+                    pf.ShowDialog(this);
+                });
                 ctxMenu.Items.Add(new ToolStripSeparator());
-                ctxMenu.Items.Add($"👤 Войти за {name}", null,
+                ctxMenu.Items.Add($"🚪 Войти за {name}", null,
                     (s, ev) => DoImpersonate(uid, name));
 
                 // Дополнительно: пункты блокировки/очистки переписки в админской таблице

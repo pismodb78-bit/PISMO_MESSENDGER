@@ -843,9 +843,9 @@ namespace PISMO
                 _levelTimer.Start();
                 _btnMicTest.Text = "■ Стоп";
                 _lblMicStatus.Visible = true;
-                _lblMicStatus.Text = _chkVoiceAuto.Checked
-                    ? "Говорите — вы слышите себя; порог в авто-режиме"
-                    : "Говорите — вы слышите себя; двигайте порог, чтобы отсечь тихое";
+                // ВАЖНО: тест проигрывает СЫРОЙ микрофон. Шумодав Krisp работает
+                // только в реальном звонке, в тесте его не слышно.
+                _lblMicStatus.Text = "Тест: слышите себя (без шумодава). Krisp действует только в звонке.";
             }
             catch (Exception ex)
             {
