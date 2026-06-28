@@ -455,9 +455,10 @@ async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress,
         room.on(LK.RoomEvent.Reconnected, () => post({type:'connected'}));
         room.on(LK.RoomEvent.ParticipantConnected, (p) => post({type:'participantJoined', pid:p.identity, name:pidName(p)}));
         room.on(LK.RoomEvent.ParticipantDisconnected, (p) => { cleanupParticipant(p.identity); post({type:'participantLeft', pid:p.identity}); post({type:'remoteLeft'}); });
-        room.on(LK.RoomEvent.ActiveSpeakersChanged, (speakers) => {
-            try { post({type:'activeSpeakers', pids: JSON.stringify((speakers||[]).map(s => s.identity))}); } catch(e){}
-        });
+        // Детектор говорящих — СВОЙ, локальный (см. startSpeakingMonitor):
+        // считаем уровень звука каждого участника на клиенте, с задержкой на
+        // появление и исчезновение. Серверный ActiveSpeakersChanged не используем
+        // (он сбоит из-за нашей обработки микрофона: шумодав/гейт/выкл. AGC).
         try {
             room.on(LK.RoomEvent.ParticipantNameChanged, (name, p) => {
                 try { post({type:'participantRenamed', pid: p.identity, name: name || pidName(p)}); } catch(e){}
@@ -479,6 +480,9 @@ async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress,
         try { if (window.__pingTimer) clearInterval(window.__pingTimer); } catch(e){}
         window.__pingTimer = setInterval(readPing, 2000);
         readPing();
+
+        // Локальный детектор говорящих (свои уровни звука, с attack/release).
+        startSpeakingMonitor();
     } catch(err) {
         console.error('connect error', String(err));
         post({type:'fatal', error:String(err)});
@@ -558,6 +562,81 @@ function onTrackSubscribed(track, publication, participant){
             try { track.setVolume(effectiveVolume(pid)); } catch(e){}
         }
     }
+}
+
+// ── Локальный детектор говорящих ────────────────────────────────────
+// Считаем уровень звука каждого участника (локальный микрофон + удалённые)
+// прямо на клиенте через AnalyserNode. Подсветка появляется с задержкой
+// (attack) и исчезает с задержкой (release) — не моргает на микропаузах.
+let _spkCtx = null;            // AudioContext для анализа уровней
+let _spkStore = {};            // key -> {track, an, buf}
+let _spkState = {};            // pid -> {above0, lastAbove, on}
+let _spkTimer = null;
+const SPK_THRESHOLD = 0.012;   // порог RMS «есть голос»
+const SPK_ATTACK_MS = 150;     // сколько держать звук, прежде чем зажечь
+const SPK_RELEASE_MS = 600;    // сколько гореть после пропадания звука
+
+function _spkRms(an, buf){
+    an.getByteTimeDomainData(buf);
+    let s = 0; for (let i = 0; i < buf.length; i++){ const x = (buf[i]-128)/128; s += x*x; }
+    return Math.sqrt(s/buf.length);
+}
+
+function _spkAnalyser(track, key){
+    const mst = (track && track.mediaStreamTrack) ? track.mediaStreamTrack : track;
+    const e = _spkStore[key];
+    if (e && e.mst === mst) return e;
+    try {
+        if (!_spkCtx) _spkCtx = new (window.AudioContext || window.webkitAudioContext)();
+        try { if (_spkCtx.state === 'suspended') _spkCtx.resume(); } catch(x){}
+        const src = _spkCtx.createMediaStreamSource(new MediaStream([mst]));
+        const an = _spkCtx.createAnalyser(); an.fftSize = 512;
+        src.connect(an);
+        _spkStore[key] = { mst, an, src, buf: new Uint8Array(an.fftSize) };
+        return _spkStore[key];
+    } catch(x){ return null; }
+}
+
+function startSpeakingMonitor(){
+    if (_spkTimer) return;
+    _spkTimer = setInterval(() => {
+        try {
+            const now = performance.now();
+            const levels = {};
+            // Локальный микрофон.
+            try {
+                const pub = localMicPub();
+                const selfId = (room && room.localParticipant) ? room.localParticipant.identity : null;
+                if (selfId && pub && pub.track && !pub.isMuted){
+                    const e = _spkAnalyser(pub.track, 'self');
+                    if (e) levels[selfId] = _spkRms(e.an, e.buf);
+                }
+            } catch(x){}
+            // Удалённые участники.
+            for (const pid in remoteAudioByPid){
+                const arr = remoteAudioByPid[pid] || [];
+                let m = 0;
+                for (let i = 0; i < arr.length; i++){
+                    const e = _spkAnalyser(arr[i], pid + '#' + i);
+                    if (e) m = Math.max(m, _spkRms(e.an, e.buf));
+                }
+                levels[pid] = m;
+            }
+            // Привязка attack/release к каждому pid.
+            const speaking = [];
+            for (const pid in levels){
+                const lvl = levels[pid];
+                let s = _spkState[pid] || { above0: 0, lastAbove: 0, on: false };
+                if (lvl > SPK_THRESHOLD){ if (!s.above0) s.above0 = now; s.lastAbove = now; }
+                else { s.above0 = 0; }
+                if (!s.on && s.above0 && (now - s.above0) >= SPK_ATTACK_MS) s.on = true;      // задержка появления
+                if (s.on && (now - s.lastAbove) >= SPK_RELEASE_MS) s.on = false;              // задержка исчезновения
+                _spkState[pid] = s;
+                if (s.on) speaking.push(pid);
+            }
+            post({type:'activeSpeakers', pids: JSON.stringify(speaking)});
+        } catch(x){}
+    }, 60);
 }
 
 // Итоговая громкость участника с учётом его персональных настроек и

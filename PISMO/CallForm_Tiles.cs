@@ -39,7 +39,9 @@ namespace PISMO
         // последнего звука — чтобы при чтении текста (с микропаузами) горела ровно.
         private readonly Dictionary<string, DateTime> _speakUntil = new();
         private System.Windows.Forms.Timer _speakHoldTimer;
-        private const int SpeakHoldMs = 800;
+        // Сглаживание (attack/release) делает JS-детектор; здесь короткий хвост,
+        // чтобы рамка не моргала между тиками детектора (он шлёт каждые ~60мс).
+        private const int SpeakHoldMs = 200;
 
         private string _fullscreenKey;  // ключ плитки на весь экран, либо null
         private readonly Dictionary<string, float> _userVol = new();   // pid -> громкость
@@ -172,6 +174,16 @@ namespace PISMO
                 Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
                 Text = (source == "screen" ? "🖥 " : "") + tile.Name
             };
+
+            // Применяем сохранённую пользовательскую громкость/мьют для собеседника.
+            if (source == "camera" && pid != SelfPid && UserAudioPrefs.Has(pid))
+            {
+                float sv = UserAudioPrefs.GetVolume(pid);
+                bool sm = UserAudioPrefs.GetMuted(pid);
+                _userVol[pid] = sv; _userMuted[pid] = sm;
+                try { _transport?.SetParticipantVolume(pid, sv); } catch { }
+                if (sm) try { _transport?.SetParticipantMuted(pid, true); } catch { }
+            }
 
             string capPid = pid, capSource = source, capKey = key;
             tile.Panel.Paint += (s, e) => PaintTile(e.Graphics, tile);
@@ -508,9 +520,9 @@ namespace PISMO
             };
             var lbl = new Label { Text = "🔊 Громкость: " + name, ForeColor = Color.White, AutoSize = true, Location = new Point(12, 10), Font = new Font("Segoe UI", 9f) };
             var tb = new TrackBar { Minimum = 0, Maximum = 200, Value = (int)(vol * 100), TickStyle = TickStyle.None, Location = new Point(8, 32), Size = new Size(224, 40) };
-            tb.ValueChanged += (s, e) => { _userVol[pid] = tb.Value / 100f; try { _transport?.SetParticipantVolume(pid, _userVol[pid]); } catch { } };
+            tb.ValueChanged += (s, e) => { _userVol[pid] = tb.Value / 100f; try { _transport?.SetParticipantVolume(pid, _userVol[pid]); } catch { } UserAudioPrefs.SetVolume(pid, _userVol[pid]); };
             var chk = new CheckBox { Text = "🔇 Заглушить", ForeColor = Color.White, AutoSize = true, Location = new Point(12, 80), Checked = muted, Font = new Font("Segoe UI", 9.5f) };
-            chk.CheckedChanged += (s, e) => { _userMuted[pid] = chk.Checked; try { _transport?.SetParticipantMuted(pid, chk.Checked); } catch { } };
+            chk.CheckedChanged += (s, e) => { _userMuted[pid] = chk.Checked; try { _transport?.SetParticipantMuted(pid, chk.Checked); } catch { } UserAudioPrefs.SetMuted(pid, chk.Checked); };
             _userAudioPopup.Controls.AddRange(new Control[] { lbl, tb, chk });
             _userAudioPopup.Deactivate += (s, e) => { try { _userAudioPopup?.Close(); } catch { } };
             _userAudioPopup.FormClosed += (s, e) => _userAudioPopup = null;
