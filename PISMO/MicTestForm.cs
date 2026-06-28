@@ -43,8 +43,17 @@ namespace PISMO
             {
                 var envOptions = new CoreWebView2EnvironmentOptions(
                     "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required");
-                var env = await CoreWebView2Environment.CreateAsync(null, null, envOptions);
+                // Отдельная папка данных, чтобы не конфликтовать с WebView2 звонка
+                // (две среды с одной папкой и разными опциями → пустое окно).
+                string udf = Path.Combine(Path.GetTempPath(), "pismo_wv_mictest");
+                var env = await CoreWebView2Environment.CreateAsync(null, udf, envOptions);
                 await _web.EnsureCoreWebView2Async(env);
+
+                _web.CoreWebView2.NavigationCompleted += (s, e) =>
+                {
+                    if (!e.IsSuccess)
+                        try { _web.CoreWebView2.NavigateToString("<body style='background:#1e1f22;color:#ed4245;font-family:sans-serif;padding:16px'>Не удалось загрузить тест (" + e.WebErrorStatus + ")</body>"); } catch { }
+                };
 
                 _web.CoreWebView2.PermissionRequested += (s, e) =>
                 {
