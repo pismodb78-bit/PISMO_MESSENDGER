@@ -40,6 +40,7 @@
 
 using System;
 using System.Data;
+using System.IO;
 using System.Windows.Forms;
 using MySql.Data.MySqlClient;
 
@@ -215,21 +216,30 @@ namespace PISMO
         /// <summary>
         /// Шаг 2: Для одного сообщения по id — загружаем только нужные BLOB (которых нет в кеше).
         /// </summary>
+        // Видео-файлы до этого размера подгружаются автоматически, чтобы показать
+        // встроенный проигрыватель прямо в пузыре (как в Telegram). Большие — по клику.
+        private const long InlineVideoMaxBytes = 30L * 1024 * 1024;
+
         public static (byte[] img, byte[] audio, byte[] video, byte[] fileData)
             LoadMediaForMessage(int msgId, string fileName,
                                 bool hasImg, bool hasAudio, bool hasVideo, bool hasFile,
-                                bool isGroup)
+                                bool isGroup, long fileSize = -1)
         {
+            // Видео-файл небольшого размера — грузим сразу для встроенного плеера.
+            string ext = string.IsNullOrEmpty(fileName) ? "" : Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant();
+            bool autoVideoFile = hasFile && MediaPlayerForm.IsVideo(ext)
+                                 && fileSize > 0 && fileSize <= InlineVideoMaxBytes;
+
             // Проверяем кеш для каждого типа
             bool needImg   = hasImg   && !MediaCache.Has(msgId, "img",   fileName);
             bool needAudio = hasAudio && !MediaCache.Has(msgId, "audio", null);
             bool needVideo = hasVideo && !MediaCache.Has(msgId, "video", null);
-            bool needFile  = false; // Не загружаем файлы автоматически при открытии чата
+            bool needFile  = autoVideoFile && !MediaCache.Has(msgId, "file", fileName);
 
             byte[] img      = hasImg   ? MediaCache.Get(msgId, "img",   fileName) : null;
             byte[] audio    = hasAudio ? MediaCache.Get(msgId, "audio", null)     : null;
             byte[] video    = hasVideo ? MediaCache.Get(msgId, "video", null)     : null;
-            byte[] fileData = null; // Будет загружено только по клику на карточку файла
+            byte[] fileData = autoVideoFile ? MediaCache.Get(msgId, "file", fileName) : null;
 
             // Если всё уже в кеше — не идём в БД вообще
             if (!needImg && !needAudio && !needVideo && !needFile)

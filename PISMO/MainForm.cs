@@ -1426,11 +1426,12 @@ namespace PISMO
                     bool hasVideo = row["has_video"] != DBNull.Value && Convert.ToBoolean(row["has_video"]);
                     bool hasFile = row["has_file"] != DBNull.Value && Convert.ToBoolean(row["has_file"]);
 
-                    var (img, audio, video, fileData) = LoadMediaForMessage(
-                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile, isGroup: true);
-
                     long fileSize = row.Table.Columns.Contains("file_size") && row["file_size"] != DBNull.Value
                         ? Convert.ToInt64(row["file_size"]) : -1;
+
+                    var (img, audio, video, fileData) = LoadMediaForMessage(
+                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile, isGroup: true, fileSize);
+
                     var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
                         fileData, fileName, msgId, isGroup: true, replyToId, isDeleted, isEdited, fileSize);
                     bubble.Top = yOffset;
@@ -1653,11 +1654,11 @@ namespace PISMO
                     bool hasVideo = row["has_video"] != DBNull.Value && Convert.ToBoolean(row["has_video"]);
                     bool hasFile = row["has_file"] != DBNull.Value && Convert.ToBoolean(row["has_file"]);
 
-                    var (img, audio, video, fileData) = LoadMediaForMessage(
-                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile, isGroup: false);
-
                     long fileSize = row.Table.Columns.Contains("file_size") && row["file_size"] != DBNull.Value
                         ? Convert.ToInt64(row["file_size"]) : -1;
+
+                    var (img, audio, video, fileData) = LoadMediaForMessage(
+                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile, isGroup: false, fileSize);
 
                     // Статус прочтения для МОИХ сообщений: 0 — отправляется (1 серая),
                     // 1 — доставлено на сервер (2 серые), 2 — прочитано (2 синие).
@@ -1970,8 +1971,30 @@ namespace PISMO
                 innerY += btnPlay.Height + 6;
             }
 
+            // Видео-файл со встроенным проигрывателем (как в Telegram): если байты
+            // уже загружены — показываем видео прямо в пузыре; иначе обычная карточка.
+            bool inlineVideoShown = false;
+            if (!string.IsNullOrWhiteSpace(fileName)
+                && MediaPlayerForm.IsVideo(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
+                && fileData is { Length: > 0 })
+            {
+                try
+                {
+                    int boxW = Math.Min(innerW, 280);
+                    int boxH = (int)(boxW * 1.2); // вертикальный бокс с леттербоксом
+                    var vp = new InlineVideoPlayer(fileData, fileName, boxW, boxH)
+                    {
+                        Location = new Point(PAD, innerY)
+                    };
+                    bubble.Controls.Add(vp);
+                    innerY += boxH + 6;
+                    inlineVideoShown = true;
+                }
+                catch { inlineVideoShown = false; }
+            }
+
             // Документ / архив (теперь проверяем только fileName, так как fileData загружается по требованию)
-            if (!string.IsNullOrWhiteSpace(fileName))
+            if (!inlineVideoShown && !string.IsNullOrWhiteSpace(fileName))
             {
                 var pnlFile = BuildFileCard(fileData, fileName, isMine, innerW, msgId, isGroup, fileSize);
                 pnlFile.Location = new Point(PAD, innerY);
