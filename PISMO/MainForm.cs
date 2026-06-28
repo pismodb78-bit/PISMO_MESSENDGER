@@ -2482,6 +2482,7 @@ namespace PISMO
                 Title = "Выбрать файл для отправки",
                 Filter =
                     "Изображения и GIF|*.jpg;*.jpeg;*.png;*.bmp;*.gif|" +
+                    "Видео и музыка|*.mp4;*.webm;*.m4v;*.mov;*.mp3;*.wav;*.ogg;*.m4a;*.aac;*.flac;*.opus|" +
                     "Документы|*.docx;*.doc;*.xlsx;*.xls;*.pptx;*.ppt;*.pdf;*.txt;*.rtf|" +
                     "Архивы|*.zip;*.rar;*.7z;*.tar;*.gz|" +
                     "Все файлы|*.*",
@@ -2668,11 +2669,14 @@ namespace PISMO
         private static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup, long knownSize = -1)
         {
             string ext = Path.GetExtension(fileName).ToLowerInvariant().TrimStart('.');
+            bool isMedia = MediaPlayerForm.IsMedia(ext);
+            bool isVideoMedia = MediaPlayerForm.IsVideo(ext);
             long displaySize = fileData != null ? fileData.Length : knownSize;
             // Размер показываем сразу (если известен), даже до загрузки самого файла.
+            string actionHint = isMedia ? "нажмите для воспроизведения" : "нажмите для загрузки";
             string szStr = fileData != null
                 ? FormatFileSize(fileData.Length)
-                : (displaySize > 0 ? $"{FormatFileSize(displaySize)} · нажмите для загрузки" : "💾 Нажмите для загрузки");
+                : (displaySize > 0 ? $"{FormatFileSize(displaySize)} · {actionHint}" : (isMedia ? "▶ Нажмите, чтобы открыть" : "💾 Нажмите для загрузки"));
 
             // Прогресс загрузки: -1 = не идёт, 0..1 = доля. Рисуется поверх иконки.
             double dlProgress = -1;
@@ -2753,17 +2757,29 @@ namespace PISMO
                 }
             }
 
+            // Видео/музыку открываем во встроенном проигрывателе (перемотка/громкость),
+            // остальные файлы — сохраняем и открываем системно.
+            void OpenIt()
+            {
+                if (isMedia && fileData != null)
+                {
+                    try { new MediaPlayerForm(fileData, fileName, isVideoMedia).Show(); }
+                    catch { SaveAndOpen(); }
+                }
+                else SaveAndOpen();
+            }
+
             void DoOpen(object s, EventArgs ev)
             {
                 if (downloading) return;
 
-                if (fileData != null) { SaveAndOpen(); return; }
+                if (fileData != null) { OpenIt(); return; }
 
                 // Кеш — мгновенно.
                 if (MediaCache.Has(msgId, "file", fileName))
                 {
                     fileData = MediaCache.Get(msgId, "file", fileName);
-                    if (fileData != null) { lblSz.Text = FormatFileSize(fileData.Length); SaveAndOpen(); return; }
+                    if (fileData != null) { lblSz.Text = FormatFileSize(fileData.Length); OpenIt(); return; }
                 }
 
                 // Чанковая загрузка с сервера с круговым индикатором прогресса.
@@ -2840,7 +2856,7 @@ namespace PISMO
                                 fileData = result;
                                 MediaCache.Put(msgId, "file", fileData, fileName);
                                 lblSz.Text = FormatFileSize(fileData.Length);
-                                SaveAndOpen();
+                                OpenIt();
                             }
                             else
                             {
