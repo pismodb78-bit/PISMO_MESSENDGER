@@ -1551,6 +1551,7 @@ namespace PISMO
             _lastGroupMsgCount = 0;
             lblChatTitle.Text = "# Выберите диалог";
             DisposeAndClear(pnlMessages);
+            _renderedChatKey = null; _renderedChatSig = null;
         }
 
         // ════════════════════════════════════════════════════════════════

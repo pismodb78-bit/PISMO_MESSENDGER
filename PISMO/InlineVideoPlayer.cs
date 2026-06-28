@@ -24,6 +24,8 @@ namespace PISMO
         private Form _fsForm;
         private bool _playing;
 
+        private Label _lblPlay, _lblName;
+
         public InlineVideoPlayer(byte[] data, string fileName, int boxW, int boxH)
         {
             _data = data;
@@ -32,30 +34,36 @@ namespace PISMO
             BackColor = Color.FromArgb(20, 21, 24);
             Cursor = Cursors.Hand;
 
-            // Обложка: тёмный бокс + крупная ▶ + имя файла снизу.
-            Paint += (s, e) =>
+            // Обложка из реальных контролов (надёжно рисуется сразу, без таймингов
+            // owner-draw): крупная ▶ по центру + имя файла снизу.
+            _lblPlay = new Label
             {
-                if (_playing) return;
-                var g = e.Graphics;
-                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                int cx = Width / 2, cy = Height / 2;
-                int r = Math.Min(Width, Height) / 6;
-                using (var circle = new SolidBrush(Color.FromArgb(160, 0, 0, 0)))
-                    g.FillEllipse(circle, cx - r, cy - r, r * 2, r * 2);
-                var tri = new[] {
-                    new Point(cx - r/3, cy - r/2),
-                    new Point(cx - r/3, cy + r/2),
-                    new Point(cx + r/2, cy)
-                };
-                g.FillPolygon(Brushes.White, tri);
-                using var f = new Font("Segoe UI", 8f);
-                var name = Path.GetFileName(_fileName);
-                var sz = g.MeasureString(name, f);
-                using var bg = new SolidBrush(Color.FromArgb(140, 0, 0, 0));
-                g.FillRectangle(bg, 0, Height - 20, Width, 20);
-                g.DrawString(name, f, Brushes.White, 6, Height - 18);
+                Dock = DockStyle.Fill,
+                Text = "▶",
+                Font = new Font("Segoe UI", Math.Max(18f, Math.Min(boxW, boxH) / 6f), FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(20, 21, 24),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Cursor = Cursors.Hand
             };
+            _lblName = new Label
+            {
+                Dock = DockStyle.Bottom,
+                Height = 18,
+                Text = Path.GetFileName(_fileName),
+                Font = new Font("Segoe UI", 8f),
+                ForeColor = Color.FromArgb(210, 210, 210),
+                BackColor = Color.FromArgb(30, 31, 34),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(6, 0, 0, 0),
+                AutoEllipsis = true,
+                Cursor = Cursors.Hand
+            };
+            _lblPlay.Click += (s, e) => StartPlayer();
+            _lblName.Click += (s, e) => StartPlayer();
             Click += (s, e) => StartPlayer();
+            Controls.Add(_lblPlay);
+            Controls.Add(_lblName);
         }
 
         private async void StartPlayer()
@@ -64,6 +72,7 @@ namespace PISMO
             _playing = true;
             try
             {
+                try { _lblPlay?.Dispose(); _lblName?.Dispose(); } catch { }
                 _tempDir = Path.Combine(Path.GetTempPath(), "pismo_inline_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(_tempDir);
                 _safeName = "v" + Path.GetExtension(_fileName);

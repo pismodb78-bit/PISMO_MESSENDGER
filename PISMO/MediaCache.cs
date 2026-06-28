@@ -150,13 +150,16 @@ namespace PISMO
         {
             try
             {
+                // s-префикс — медиа серверных каналов (отдельное пространство id,
+                // чтобы не путалось с личными/групповыми сообщениями).
                 string dir = Path.Combine(Root, kind);
+                try { Directory.CreateDirectory(dir); } catch { }
                 string ext = kind switch
                 {
-                    "img"   => IsGifName(fileName) ? "gif" : "jpg",
-                    "audio" => "wav",
-                    "video" => "psmvid",
-                    "file"  => string.IsNullOrWhiteSpace(fileName)
+                    "img" or "simg"   => IsGifName(fileName) ? "gif" : "jpg",
+                    "audio" or "saudio" => "wav",
+                    "video" or "svideo" => "psmvid",
+                    "file" or "sfile"  => string.IsNullOrWhiteSpace(fileName)
                                ? "bin"
                                : Path.GetExtension(fileName).TrimStart('.').ToLower(),
                     _       => "bin"

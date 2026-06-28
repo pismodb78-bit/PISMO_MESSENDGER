@@ -309,10 +309,52 @@ namespace PISMO
             _serverId = sid; _serverName = name; _isOwner = owner; _channelId = -1; _lastMsgCount = -1;
             _lblTitle.Text = name;
             MainForm.DisposeAndClear(_pnlMessages);
+            _renderedKey = null; _renderedSig = null;
             _pnlInput.Visible = false;
             ComputePerms();
             LoadChannels();
             LoadMembers();
+            PrefetchServerChannels();
+        }
+
+        /// <summary>Фоновая прогрузка всех текстовых каналов сервера в кеш (текст +
+        /// медиа на диск), чтобы открытие любого канала и его видео было мгновенным.</summary>
+        private void PrefetchServerChannels()
+        {
+            int sid = _serverId;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var chans = new List<int>();
+                    using (var conn = DBHelper.OpenConnection())
+                    using (var cmd = new MySqlCommand("SELECT id FROM server_channels WHERE server_id=@s AND type='text'", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@s", sid);
+                        using var rd = cmd.ExecuteReader();
+                        while (rd.Read()) chans.Add(rd.GetInt32(0));
+                    }
+                    foreach (var ch in chans)
+                    {
+                        if (_serverId != sid || IsDisposed) break; // сменили сервер
+                        var media = new Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)>();
+                        var dt = FetchChannelMessages(ch, media); // кеширует медиа на диск
+                        if (dt == null) continue;
+                        try { MessageCache.Save(MessageCache.ChannelKey(ch), dt); } catch { }
+                        if (IsDisposed || !IsHandleCreated) continue;
+                        try
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                _chanMetaCache[ch] = dt;
+                                foreach (var kv in media) _serverMedia[kv.Key] = kv.Value;
+                            }));
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            });
         }
 
         /// <summary>Считает права текущего пользователя на сервере и его mute.</summary>
@@ -532,6 +574,7 @@ namespace PISMO
             _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1;
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
             MainForm.DisposeAndClear(_pnlMessages);
+            _renderedKey = null; _renderedSig = null; // панель очищена — не пропускать отрисовку
             CancelServerReply();
 
             if (type == "voice")
@@ -666,8 +709,10 @@ namespace PISMO
                       "(SELECT rsm.text FROM server_messages rsm WHERE rsm.id=sm.reply_to_id) AS r_text"
                     : "";
                 bool media = MediaColumnsExist();
+                // Тянем только лёгкие метаданные (наличие медиа), а сами байты —
+                // из локального кеша; из БД догружаем ТОЛЬКО то, чего нет в кеше.
                 string mediaCols = media
-                    ? ", sm.image_data, sm.audio_data, sm.video_data, sm.file_data, sm.file_name"
+                    ? ", sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video, (sm.file_data IS NOT NULL) AS has_file"
                     : "";
 
                 using var conn = DBHelper.OpenConnection();
@@ -679,20 +724,7 @@ namespace PISMO
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
 
                 if (media && mediaOut != null)
-                {
-                    byte[] Gv(DataRow r, string c) => dt.Columns.Contains(c) && r[c] != DBNull.Value ? (byte[])r[c] : null;
-                    foreach (DataRow r in dt.Rows)
-                    {
-                        int id = Convert.ToInt32(r["id"]);
-                        string fn = dt.Columns.Contains("file_name") && r["file_name"] != DBNull.Value ? r["file_name"].ToString() : null;
-                        var m = (Gv(r, "image_data"), Gv(r, "audio_data"), Gv(r, "video_data"), Gv(r, "file_data"), fn);
-                        if (m.Item1 != null || m.Item2 != null || m.Item3 != null || m.Item4 != null)
-                            mediaOut[id] = m;
-                    }
-                    // Убираем тяжёлые BLOB перед возвратом/кешированием (file_name оставляем).
-                    foreach (var c in new[] { "image_data", "audio_data", "video_data", "file_data" })
-                        if (dt.Columns.Contains(c)) dt.Columns.Remove(c);
-                }
+                    LoadChannelMedia(conn, dt, mediaOut);
                 return dt;
             }
             catch (MySqlException mex) when (mex.Number == 1054)
@@ -705,6 +737,66 @@ namespace PISMO
             {
                 try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => ShowDbError(ex))); } catch { }
                 return null;
+            }
+        }
+
+        /// <summary>Заполняет mediaOut байтами медиа канала: сначала из локального
+        /// кеша, недостающее догружает из БД одним запросом и кеширует на диск.</summary>
+        private void LoadChannelMedia(MySqlConnection conn, DataTable dt,
+            Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut)
+        {
+            bool Flag(DataRow r, string c) => dt.Columns.Contains(c) && r[c] != DBNull.Value && Convert.ToBoolean(r[c]);
+            var need = new List<(int id, bool ni, bool na, bool nv, bool nf, string fn)>();
+
+            foreach (DataRow r in dt.Rows)
+            {
+                int id = Convert.ToInt32(r["id"]);
+                bool hi = Flag(r, "has_img"), ha = Flag(r, "has_audio"), hv = Flag(r, "has_video"), hf = Flag(r, "has_file");
+                if (!hi && !ha && !hv && !hf) continue;
+                string fn = dt.Columns.Contains("file_name") && r["file_name"] != DBNull.Value ? r["file_name"].ToString() : null;
+
+                byte[] img = hi ? MediaCache.Get(id, "simg", null) : null;
+                byte[] aud = ha ? MediaCache.Get(id, "saudio", null) : null;
+                byte[] vid = hv ? MediaCache.Get(id, "svideo", null) : null;
+                byte[] fil = hf ? MediaCache.Get(id, "sfile", fn) : null;
+
+                if (img != null || aud != null || vid != null || fil != null)
+                    mediaOut[id] = (img, aud, vid, fil, fn);
+
+                bool ni = hi && img == null, na = ha && aud == null, nv = hv && vid == null, nf = hf && fil == null;
+                if (ni || na || nv || nf) need.Add((id, ni, na, nv, nf, fn));
+            }
+            if (need.Count == 0) return;
+
+            var sb = new System.Text.StringBuilder();
+            foreach (var n in need) { if (sb.Length > 0) sb.Append(','); sb.Append(n.id); }
+            using var c2 = new MySqlCommand(
+                $"SELECT id, image_data, audio_data, video_data, file_data, file_name FROM server_messages WHERE id IN ({sb})", conn);
+            var fetched = new Dictionary<int, (byte[] i, byte[] a, byte[] v, byte[] f, string fn)>();
+            using (var rd = c2.ExecuteReader())
+            {
+                byte[] B(System.Data.IDataReader rr, int i) => rr.IsDBNull(i) ? null : (byte[])rr.GetValue(i);
+                while (rd.Read())
+                {
+                    int id = rd.GetInt32(0);
+                    string fn = rd.IsDBNull(5) ? null : rd.GetString(5);
+                    fetched[id] = (B(rd, 1), B(rd, 2), B(rd, 3), B(rd, 4), fn);
+                }
+            }
+            foreach (var n in need)
+            {
+                if (!fetched.TryGetValue(n.id, out var fb)) continue;
+                mediaOut.TryGetValue(n.id, out var cur);
+                byte[] img = n.ni ? fb.i : cur.img;
+                byte[] aud = n.na ? fb.a : cur.audio;
+                byte[] vid = n.nv ? fb.v : cur.video;
+                byte[] fil = n.nf ? fb.f : cur.file;
+                string fn = n.fn ?? fb.fn;
+                mediaOut[n.id] = (img, aud, vid, fil, fn);
+                if (n.ni && fb.i != null) MediaCache.Put(n.id, "simg", fb.i);
+                if (n.na && fb.a != null) MediaCache.Put(n.id, "saudio", fb.a);
+                if (n.nv && fb.v != null) MediaCache.Put(n.id, "svideo", fb.v);
+                if (n.nf && fb.f != null) MediaCache.Put(n.id, "sfile", fb.f, fn);
             }
         }
 
