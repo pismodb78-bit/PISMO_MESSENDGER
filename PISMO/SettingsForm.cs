@@ -228,6 +228,8 @@ namespace PISMO
             {
                 _lblGainValue.Text = $"{_trkGain.Value}%";
                 _gainCached = _trkGain.Value / 100f;
+                // Живо применяем громкость к открытому тесту микрофона.
+                if (_micTest != null && !_micTest.IsDisposed) _micTest.ApplyGain(_gainCached);
             };
 
             _lblGainValue = new Label
@@ -321,6 +323,18 @@ namespace PISMO
                 AutoSize = true,
                 Location = new Point(14, 162),
                 Cursor = Cursors.Hand
+            };
+
+            // Живо применяем смену устройства/шумодава к открытому тесту микрофона.
+            _cmbMic.SelectedIndexChanged += (s, e) =>
+            {
+                if (_micTest != null && !_micTest.IsDisposed)
+                    _micTest.ApplyConfig(_chkNoiseSuppress.Checked, _cmbMic.SelectedItem?.ToString());
+            };
+            _chkNoiseSuppress.CheckedChanged += (s, e) =>
+            {
+                if (_micTest != null && !_micTest.IsDisposed)
+                    _micTest.ApplyConfig(_chkNoiseSuppress.Checked, _cmbMic.SelectedItem?.ToString());
             };
 
             pnlMic.Controls.AddRange(new Control[]

@@ -257,6 +257,7 @@ let selectedMicId = undefined;
 let _rnnoise = null;         // {mod, wasm, workletUrl}
 let micGainValue = 1;        // множитель усиления из ползунка настроек
 let _liveGain = null;        // живой GainNode текущего процессора
+let gateThreshold = 0.02;    // порог шумового гейта (RMS, 0..1)
 
 function localMicPub(){
     try { return room && room.localParticipant ? room.localParticipant.getTrackPublication(LK.Track.Source.Microphone) : null; }
@@ -291,7 +292,7 @@ async function loadRnnoise(){
 
 // LiveKit-совместимый процессор на основе RNNoise.
 function createRnnoiseProcessor(){
-    let ctx, src, node, dest, gain;
+    let ctx, src, node, node2, dest, gain, gateTimer;
     return {
         name: 'rnnoise',
         processedTrack: undefined,
@@ -301,19 +302,25 @@ function createRnnoiseProcessor(){
             try { if (ctx.state === 'suspended') await ctx.resume(); } catch(e){}
             await ctx.audioWorklet.addModule(r.workletUrl);
             src = ctx.createMediaStreamSource(new MediaStream([opts.track]));
+            // ДВА прохода RNNoise — заметно сильнее давит клавиатуру/мышь/фон.
             node = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
+            node2 = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
             // Усиление после шумодава: компенсирует выключенный браузерный AGC и
             // тихий выход RNNoise. Базовый множитель *1.6, дальше — ползунок настроек.
             gain = ctx.createGain();
             gain.gain.value = 1.6 * (micGainValue || 1);
             _liveGain = gain;
             dest = ctx.createMediaStreamDestination();
-            src.connect(node).connect(gain).connect(dest);
+            src.connect(node).connect(node2).connect(gain);
+            // Шумовой гейт: в паузах речи приглушает остаточные щелчки клавы/мыши.
+            gateTimer = buildNoiseGate(ctx, gain, dest);
             this.processedTrack = dest.stream.getAudioTracks()[0];
         },
         async restart(opts){ await this.destroy(); await this.init(opts); },
         async destroy(){
+            try { if (gateTimer) clearInterval(gateTimer); } catch(e){}
             try { node && node.disconnect(); } catch(e){}
+            try { node2 && node2.disconnect(); } catch(e){}
             try { gain && gain.disconnect(); } catch(e){}
             try { src && src.disconnect(); } catch(e){}
             try { ctx && ctx.close(); } catch(e){}
@@ -321,6 +328,31 @@ function createRnnoiseProcessor(){
             this.processedTrack = undefined;
         }
     };
+}
+
+// Шумовой гейт: source -> gate -> destination. Анализирует RMS source и плавно
+// приглушает звук, когда речи нет (target = floor), открывая при речи (=1).
+// Порог берётся из gateThreshold (ползунок настроек, 0..1).
+function buildNoiseGate(ctx, source, destination){
+    const gate = ctx.createGain(); gate.gain.value = 1;
+    const an = ctx.createAnalyser(); an.fftSize = 512;
+    source.connect(an);
+    source.connect(gate);
+    gate.connect(destination);
+    const buf = new Uint8Array(an.fftSize);
+    let openUntil = 0;
+    const timer = setInterval(() => {
+        an.getByteTimeDomainData(buf);
+        let s = 0; for (let i = 0; i < buf.length; i++){ const x = (buf[i]-128)/128; s += x*x; }
+        const rms = Math.sqrt(s/buf.length);
+        const now = ctx.currentTime;
+        const thr = (typeof gateThreshold === 'number' ? gateThreshold : 0.02);
+        if (rms > thr) openUntil = now + 0.25; // держим открытым 250мс после речи (hold)
+        const open = now < openUntil;
+        const target = open ? 1 : 0.03;        // floor: почти тишина в паузах
+        gate.gain.setTargetAtTime(target, now, open ? 0.006 : 0.05);
+    }, 20);
+    return timer;
 }
 
 // Навесить/снять шумодав на текущий микрофонный трек.
