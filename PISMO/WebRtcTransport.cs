@@ -273,7 +273,8 @@ async function publishMic(){
     await cleanupMicProc();
     try {
         const raw = await navigator.mediaDevices.getUserMedia({ audio: micCaptureOpts() });
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        // RNNoise работает строго на 48 кГц — иначе на выходе тишина.
+        const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
         const src = ctx.createMediaStreamSource(raw);
         const gain = ctx.createGain();
         gain.gain.value = micGain;
@@ -287,15 +288,16 @@ async function publishMic(){
                 await ctx.audioWorklet.addModule(r.workletUrl);
                 rnNode = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
                 head.connect(rnNode); head = rnNode;
-                post({type:'jsLog', text:'RNNoise активен'});
+                post({type:'jsLog', text:'RNNoise активен (48k)'});
             } catch(e){
+                rnNode = null; head = src;  // не вышло — идём без RNNoise
                 post({type:'jsLog', text:'RNNoise недоступен: ' + String(e)});
             }
         }
         head.connect(gain).connect(dest);
 
         const procTrack = dest.stream.getAudioTracks()[0];
-        const lkTrack = new LK.LocalAudioTrack(procTrack, undefined, false);
+        const lkTrack = new LK.LocalAudioTrack(procTrack);
         await room.localParticipant.publishTrack(lkTrack, { source: LK.Track.Source.Microphone });
         micProc = { on:true, ctx, raw, node: rnNode, gain, dest, lkTrack };
         return;

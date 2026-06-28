@@ -36,8 +36,10 @@ namespace PISMO
         /// ручной порог VoiceThreshold.</summary>
         public static bool VoiceAutoSensitivity { get; set; } = true;
 
-        /// <summary>Шумоподавление RNNoise (давит клавиатуру/мышь/шум). По умолчанию вкл.</summary>
-        public static bool NoiseSuppression { get; set; } = true;
+        /// <summary>Шумоподавление RNNoise (давит клавиатуру/мышь/шум). По умолчанию
+        /// ВЫКЛ — оно тянется с CDN и на части систем глушит голос; включается
+        /// вручную в настройках. Браузерное шумоподавление работает всегда.</summary>
+        public static bool NoiseSuppression { get; set; } = false;
 
         /// <summary>Ручной порог активации голоса в дБ (−60..0): звук тише порога
         /// не передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
