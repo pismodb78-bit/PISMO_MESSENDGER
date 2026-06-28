@@ -326,9 +326,16 @@ namespace PISMO
                 _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
             };
 
+            // Самописный порог активации убран (ломал mute). Шум давит Krisp —
+            // прячем эти контролы, чтобы не путать.
+            _chkVoiceAuto.Visible = false;
+            lblVoiceHint.Visible = false;
+            _trkVoiceThreshold.Visible = false;
+            _lblVoiceThresholdValue.Visible = false;
+
             _chkNoiseSuppress = new CheckBox
             {
-                Text = "Шумоподавление (RNNoise: давит клавиатуру/мышь/шум)",
+                Text = "Шумоподавление (Krisp: давит клавиатуру/мышь/шум)",
                 Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
@@ -869,21 +876,18 @@ namespace PISMO
             _currentDb = rms > 1 ? 20.0 * Math.Log10(rms / 32768.0) : -100.0;
             _currentDb = Math.Max(_currentDb, -60.0);
 
-            // Воспроизводим обратно (с усилением), применяя порог как в реальном
-            // звонке: тише порога — тишина, поэтому слышно, что именно отсекается.
+            // Воспроизводим микрофон обратно (с усилением) — «слышу себя».
+            // Без обращения к UI-контролам из фонового потока (это вызывало
+            // InvalidOperationException про кросс-поток).
             if (_monitorBuf != null)
             {
-                bool open = _chkVoiceAuto.Checked || _currentDb >= _trkVoiceThreshold.Value;
                 var outBuf = new byte[e.BytesRecorded];
-                if (open)
+                for (int i = 0; i < e.BytesRecorded; i += 2)
                 {
-                    for (int i = 0; i < e.BytesRecorded; i += 2)
-                    {
-                        short s = (short)((e.Buffer[i + 1] << 8) | e.Buffer[i]);
-                        int a = Math.Clamp((int)(s * gain), short.MinValue, short.MaxValue);
-                        outBuf[i] = (byte)(a & 0xFF);
-                        outBuf[i + 1] = (byte)((a >> 8) & 0xFF);
-                    }
+                    short s = (short)((e.Buffer[i + 1] << 8) | e.Buffer[i]);
+                    int a = Math.Clamp((int)(s * gain), short.MinValue, short.MaxValue);
+                    outBuf[i] = (byte)(a & 0xFF);
+                    outBuf[i + 1] = (byte)((a >> 8) & 0xFF);
                 }
                 try { _monitorBuf.AddSamples(outBuf, 0, outBuf.Length); } catch { }
             }
@@ -943,7 +947,7 @@ namespace PISMO
             }
 
             // Метка порога активации (только в ручном режиме): вертикальная линия.
-            if (_trkVoiceThreshold != null && !_chkVoiceAuto.Checked)
+            if (_trkVoiceThreshold != null && _trkVoiceThreshold.Visible && !_chkVoiceAuto.Checked)
             {
                 // Порог в дБ (−60..0) → доля шкалы 0..1 (как уровень: ~ -60дБ→0, 0дБ→1).
                 double norm = Math.Clamp((_trkVoiceThreshold.Value + 60) / 60.0, 0, 1);

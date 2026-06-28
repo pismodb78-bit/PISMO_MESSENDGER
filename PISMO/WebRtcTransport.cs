@@ -235,100 +235,62 @@ function micCaptureOpts(){
     };
 }
 
-// ── Микрофон с RNNoise (подавление клавиатуры/мыши/шума) ────────────
-let micProc = { on:false, ctx:null, raw:null, node:null, gain:null, dest:null, lkTrack:null };
-let useRnnoise = true;       // включается из настроек
-let micGain = 1.0;           // усиление микрофона (множитель), из настроек
+// ── Микрофон: СТАНДАРТНЫЙ путь LiveKit + Krisp-шумодав (processor) ───
+// Никаких самописных Web Audio графов/гейтов: они ломали mute и голос.
+// Микрофон — обычный setMicrophoneEnabled (mute работает штатно). Шумодав —
+// официальный @livekit/krisp-noise-filter, навешивается процессором на трек.
+let useNoise = false;        // включать ли Krisp (из настроек)
 let selectedMicId = undefined;
-let _rnnoiseMod = null;
+let _krispMod = null;
+let _krispProc = null;
 
-async function loadRnnoiseModule(){
-    if (_rnnoiseMod) return _rnnoiseMod;
-    const pkg = 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5';
-    const mod = await import(pkg + '/+esm');
-    // Файлы лежат в подпапке dist/rnnoise/ (см. README пакета).
-    const wasm = await mod.loadRnnoise({
-        url: pkg + '/dist/rnnoise/rnnoise.wasm',
-        simdUrl: pkg + '/dist/rnnoise/rnnoise_simd.wasm'
-    });
-    _rnnoiseMod = { mod, wasm, workletUrl: pkg + '/dist/rnnoise/workletProcessor.js' };
-    return _rnnoiseMod;
+function localMicPub(){
+    try { return room && room.localParticipant ? room.localParticipant.getTrackPublication(LK.Track.Source.Microphone) : null; }
+    catch(e){ return null; }
 }
 
-async function cleanupMicProc(){
-    try { if (micProc.lkTrack) await room.localParticipant.unpublishTrack(micProc.lkTrack, true); } catch(e){}
-    try { micProc.node && micProc.node.disconnect(); } catch(e){}
-    try { micProc.gain && micProc.gain.disconnect(); } catch(e){}
-    try { micProc.ctx && micProc.ctx.close(); } catch(e){}
-    try { micProc.raw && micProc.raw.getTracks().forEach(t => t.stop()); } catch(e){}
-    micProc = { on:false, ctx:null, raw:null, node:null, gain:null, dest:null, lkTrack:null };
+async function loadKrisp(){
+    if (_krispMod) return _krispMod;
+    _krispMod = await import('https://cdn.jsdelivr.net/npm/@livekit/krisp-noise-filter/+esm');
+    return _krispMod;
 }
 
-// Публикация микрофона ВСЕГДА через Web Audio граф:
-//   src -> [RNNoise] -> Gain(усиление) -> destination -> публикуем
-// Это применяет ползунок «усиление» прямо в звонке (раньше он действовал
-// только в тесте), поэтому голос громче и порог чувствительности работает в
-// нормальном диапазоне. Любая ошибка → безопасный фолбэк на обычный микрофон.
-async function publishMic(){
-    await cleanupMicProc();
-
-    // Если обработка не нужна (RNNoise выключен и усиление = 1) — публикуем
-    // микрофон стандартным надёжным путём LiveKit. Web Audio граф используем
-    // только когда реально нужен (RNNoise или усиление != 1), т.к. он мог
-    // отдавать тишину из-за приостановленного AudioContext.
-    if (!useRnnoise && Math.abs(micGain - 1.0) < 0.01){
-        try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); return; }
-        catch(e){ console.error('mic enable', String(e)); }
-    }
-
+// Навесить/снять Krisp на текущий микрофонный трек.
+async function applyNoiseFilter(){
+    const pub = localMicPub();
+    if (!pub || !pub.track) return;
     try {
-        const raw = await navigator.mediaDevices.getUserMedia({ audio: micCaptureOpts() });
-        // RNNoise работает строго на 48 кГц — иначе на выходе тишина.
-        const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-        try { if (ctx.state === 'suspended') await ctx.resume(); } catch(e){}
-        const src = ctx.createMediaStreamSource(raw);
-        const gain = ctx.createGain();
-        gain.gain.value = micGain;
-        const dest = ctx.createMediaStreamDestination();
-
-        let head = src;
-        let rnNode = null;
-        if (useRnnoise){
-            try {
-                const r = await loadRnnoiseModule();
-                await ctx.audioWorklet.addModule(r.workletUrl);
-                rnNode = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
-                head.connect(rnNode); head = rnNode;
-                post({type:'jsLog', text:'RNNoise активен (48k)'});
-            } catch(e){
-                rnNode = null; head = src;  // не вышло — идём без RNNoise
-                post({type:'jsLog', text:'RNNoise недоступен: ' + String(e)});
+        if (useNoise){
+            const m = await loadKrisp();
+            if (m.isKrispNoiseFilterSupported && !m.isKrispNoiseFilterSupported()){
+                post({type:'jsLog', text:'Krisp не поддерживается в этом движке'});
+                return;
             }
+            if (!_krispProc) _krispProc = m.KrispNoiseFilter();
+            await pub.track.setProcessor(_krispProc);
+            post({type:'jsLog', text:'Krisp шумодав активен'});
+        } else {
+            try { await pub.track.stopProcessor(); } catch(e){}
+            post({type:'jsLog', text:'Krisp выключен'});
         }
-        head.connect(gain).connect(dest);
-
-        const procTrack = dest.stream.getAudioTracks()[0];
-        const lkTrack = new LK.LocalAudioTrack(procTrack);
-        await room.localParticipant.publishTrack(lkTrack, { source: LK.Track.Source.Microphone });
-        micProc = { on:true, ctx, raw, node: rnNode, gain, dest, lkTrack };
-        return;
     } catch(e){
-        console.error('publishMic', String(e));
-        await cleanupMicProc();
-        try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); } catch(e2){ console.error('mic enable', String(e2)); }
+        post({type:'jsLog', text:'Krisp недоступен: ' + String(e)});
     }
 }
 
-function setMicGain(v){
-    micGain = (typeof v === 'number' && v >= 0) ? v : 1.0;
-    if (micProc.gain) { try { micProc.gain.gain.value = micGain; } catch(e){} }
+// Публикация микрофона — простой надёжный путь.
+async function publishMic(){
+    try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); }
+    catch(e){ console.error('mic enable', String(e)); return; }
+    // Навешиваем шумодав после публикации (через небольшую паузу — трек должен появиться).
+    setTimeout(() => { applyNoiseFilter(); }, 300);
 }
+
+function setMicGain(v){ /* усиление через граф убрано — autoGainControl справляется */ }
 
 function setNoiseSuppression(on){
-    on = !!on;
-    if (on === useRnnoise) return;
-    useRnnoise = on;
-    if (room && room.localParticipant) { stopVoiceGate(); publishMic().then(() => setTimeout(() => setVoiceGate(voiceGate.auto, voiceGate.threshold), 400)); }
+    useNoise = !!on;
+    applyNoiseFilter();
 }
 
 function waitForLK(){
@@ -343,10 +305,7 @@ function waitForLK(){
 }
 
 async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress, gainVal){
-    if (typeof voiceAuto !== 'undefined') voiceGate.auto = !!voiceAuto;
-    if (typeof voiceThreshold === 'number') voiceGate.threshold = voiceThreshold;
-    if (typeof noiseSuppress !== 'undefined') useRnnoise = !!noiseSuppress;
-    if (typeof gainVal === 'number') micGain = gainVal;
+    if (typeof noiseSuppress !== 'undefined') useNoise = !!noiseSuppress;
     const ok = await waitForLK();
     if (!ok){ post({type:'fatal', error:'livekit-client не загрузился (нет интернета/CDN недоступен)'}); post({type:'disconnected'}); return; }
     try {
@@ -390,12 +349,8 @@ async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress,
             room.remoteParticipants.forEach((p) => post({type:'participantJoined', pid:p.identity, name:pidName(p)}));
         } catch(e){ console.error('enum participants', String(e)); }
 
-        // Микрофон публикуем сразу — аудиозвонок начинается мгновенно
-        // (через RNNoise, если включён, иначе обычный путь).
+        // Микрофон публикуем сразу — аудиозвонок начинается мгновенно.
         try { await publishMic(); } catch(e){ console.error('mic enable', String(e)); }
-
-        // Применяем порог активации голоса (если задан ручной режим).
-        try { setTimeout(() => setVoiceGate(voiceGate.auto, voiceGate.threshold), 400); } catch(e){}
 
         // Периодически читаем RTT (пинг) из WebRTC-статистики и шлём в C#.
         try { if (window.__pingTimer) clearInterval(window.__pingTimer); } catch(e){}
@@ -783,19 +738,10 @@ async function enumerateDevices(){
 async function setMicEnabled(enabled){
     try {
         if (!room) return;
-        if (micProc.on && micProc.lkTrack){
-            // RNNoise-трек: просто mute/unmute, без пере-публикации.
-            try { if (enabled) await micProc.lkTrack.unmute(); else await micProc.lkTrack.mute(); } catch(e){}
-            if (micProc.lkTrack.mediaStreamTrack) micProc.lkTrack.mediaStreamTrack.enabled = enabled;
-        } else {
-            await room.localParticipant.setMicrophoneEnabled(enabled, micCaptureOpts());
-        }
-        // ВАЖНО: при выкл/вкл микрофона трек может пересоздаться. Voice gate мог
-        // остаться на мёртвом треке → переинициализируем на актуальном.
-        stopVoiceGate();
-        if (enabled && !voiceGate.auto) {
-            setTimeout(() => setVoiceGate(voiceGate.auto, voiceGate.threshold), 350);
-        }
+        // Стандартный mute/unmute LiveKit — надёжно отключает передачу звука.
+        await room.localParticipant.setMicrophoneEnabled(enabled, micCaptureOpts());
+        // После повторного включения трек новый — навешиваем шумодав заново.
+        if (enabled) setTimeout(() => applyNoiseFilter(), 300);
     } catch(e){ console.error('setMic', String(e)); }
 }
 
@@ -824,81 +770,12 @@ async function setAudioDevice(kind, deviceLabel){
     } catch(e){ console.error('switchActiveDevice ' + kind, String(e)); }
 }
 
-// ── Порог активации голоса (voice gate, как в Discord) ──────────────
-// auto=true  → передаём звук всегда (порог не применяется).
-// auto=false → анализируем уровень микрофона и глушим трек ниже порога.
-let voiceGate = { auto: true, threshold: 25, ctx: null, analyser: null, data: null, timer: null, track: null };
-
-function localMicTrack(){
-    try {
-        const pub = room && room.localParticipant
-            ? room.localParticipant.getTrackPublication(LK.Track.Source.Microphone) : null;
-        return pub && pub.track ? pub.track : null;
-    } catch(e){ return null; }
-}
-
-function stopVoiceGate(){
-    try { if (voiceGate.timer) clearInterval(voiceGate.timer); } catch(e){}
-    voiceGate.timer = null;
-    try { if (voiceGate.ctx) voiceGate.ctx.close(); } catch(e){}
-    voiceGate.ctx = null; voiceGate.analyser = null; voiceGate.data = null; voiceGate.track = null;
-    // Снимаем возможный mute — звук должен идти.
-    const t = localMicTrack();
-    if (t && t.mediaStreamTrack) t.mediaStreamTrack.enabled = true;
-}
-
-function setVoiceGate(auto, threshold){
-    voiceGate.auto = !!auto;
-    voiceGate.threshold = (typeof threshold === 'number') ? threshold : 25;
-    stopVoiceGate();
-    if (voiceGate.auto) return; // авто-режим: без ручного порога, всегда передаём
-
-    const lkt = localMicTrack();
-    if (!lkt || !lkt.mediaStreamTrack) return;
-    try {
-        voiceGate.track = lkt;
-        voiceGate.ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const stream = new MediaStream([lkt.mediaStreamTrack]);
-        const srcNode = voiceGate.ctx.createMediaStreamSource(stream);
-        voiceGate.analyser = voiceGate.ctx.createAnalyser();
-        voiceGate.analyser.fftSize = 1024;
-        srcNode.connect(voiceGate.analyser);
-        voiceGate.data = new Uint8Array(voiceGate.analyser.fftSize);
-
-        let hangFrames = 0; // «придержка», чтобы не рубить хвосты слов
-        voiceGate.timer = setInterval(() => {
-            try {
-                if (!voiceGate.analyser) return;
-                // Самовосстановление: если трек микрофона сменился (re-publish),
-                // анализатор остался на мёртвом — переинициализируем гейт.
-                const cur = localMicTrack();
-                if (cur && cur !== voiceGate.track) {
-                    if (cur.mediaStreamTrack) cur.mediaStreamTrack.enabled = true;
-                    setVoiceGate(voiceGate.auto, voiceGate.threshold);
-                    return;
-                }
-                // RMS по временной форме сигнала → дБ (как в настройках).
-                voiceGate.analyser.getByteTimeDomainData(voiceGate.data);
-                let sum = 0;
-                for (let i = 0; i < voiceGate.data.length; i++) {
-                    const v = (voiceGate.data[i] - 128) / 128;
-                    sum += v * v;
-                }
-                const rms = Math.sqrt(sum / voiceGate.data.length);
-                const db = rms > 0.0001 ? 20 * Math.log10(rms) : -100;
-                const thrDb = voiceGate.threshold; // уже в дБ (−60..0)
-                const t = localMicTrack();
-                if (!t || !t.mediaStreamTrack) return;
-                if (db >= thrDb) { hangFrames = 10; t.mediaStreamTrack.enabled = true; }
-                else if (hangFrames > 0) { hangFrames--; t.mediaStreamTrack.enabled = true; }
-                else { t.mediaStreamTrack.enabled = false; }
-            } catch(e){}
-        }, 50);
-    } catch(e){ console.error('voiceGate', String(e)); }
-}
+// Порог активации голоса (самописный gate) УДАЛЁН: он переключал
+// mediaStreamTrack.enabled и мешал штатному mute, ломая выключение микрофона.
+// Шум давит Krisp, постоянный фон — браузерный noiseSuppression.
+function setVoiceGate(auto, threshold){ /* no-op, оставлено для совместимости команд */ }
 
 async function disconnectRoom(){
-    try { stopVoiceGate(); } catch(e){}
     try { if (room) await room.disconnect(); } catch(e){}
 }
 
