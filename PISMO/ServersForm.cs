@@ -43,6 +43,7 @@ namespace PISMO
 
         // Контейнеры участников «в эфире» под каждым голосовым каналом.
         private readonly Dictionary<int, FlowLayoutPanel> _voiceContainers = new();
+        private readonly Dictionary<int, string> _voiceSig = new(); // подпись «кто в эфире» — чтобы не перестраивать каждые 2.5с
 
         // Ответ (reply) на сообщение канала.
         private Panel _replyBar;
@@ -417,6 +418,7 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@s", _serverId);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
                 _voiceContainers.Clear();
+                _voiceSig.Clear();
                 foreach (DataRow r in dt.Rows)
                 {
                     int cid = Convert.ToInt32(r["id"]);
@@ -469,12 +471,25 @@ namespace PISMO
                             var cont = kv.Value;
                             if (cont.IsDisposed) continue;
                             map.TryGetValue(kv.Key, out var people);
+                            // Перестраиваем строки ТОЛЬКО если состав изменился —
+                            // иначе каждые 2.5с дёргался UI (периодический лаг).
+                            string sig = VoiceSig(people);
+                            if (_voiceSig.TryGetValue(kv.Key, out var old) && old == sig) continue;
+                            _voiceSig[kv.Key] = sig;
                             UpdateVoiceContainer(cont, people);
                         }
                     }));
                 }
                 catch { }
             });
+        }
+
+        private static string VoiceSig(List<(int uid, string name, bool streaming)> people)
+        {
+            if (people == null || people.Count == 0) return "";
+            var sb = new System.Text.StringBuilder();
+            foreach (var p in people) sb.Append(p.uid).Append(p.streaming ? 's' : '_').Append('|');
+            return sb.ToString();
         }
 
         private void UpdateVoiceContainer(FlowLayoutPanel cont, List<(int uid, string name, bool streaming)> people)
