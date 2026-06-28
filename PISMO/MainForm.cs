@@ -2204,6 +2204,41 @@ namespace PISMO
             return result;
         }
 
+        // Статический проигрыватель голосовых (для переиспользования в ServersForm).
+        private static WaveOutEvent _voiceOutStatic;
+        internal static void PlayVoiceClip(byte[] audioBytes, Button btn)
+        {
+            if (_voiceOutStatic != null)
+            {
+                try { _voiceOutStatic.Stop(); _voiceOutStatic.Dispose(); } catch { }
+                _voiceOutStatic = null;
+                btn.Text = "▶  Голосовое";
+                return;
+            }
+            try
+            {
+                var ms = new MemoryStream(audioBytes);
+                var reader = new WaveFileReader(ms);
+                _voiceOutStatic = new WaveOutEvent();
+                _voiceOutStatic.Init(reader);
+                _voiceOutStatic.Play();
+                btn.Text = "⏹  Остановить";
+                _voiceOutStatic.PlaybackStopped += (s, ev) =>
+                {
+                    try { btn.BeginInvoke(new Action(() => {
+                        btn.Text = "▶  Голосовое";
+                        try { _voiceOutStatic?.Dispose(); } catch { }
+                        _voiceOutStatic = null;
+                        try { reader.Dispose(); ms.Dispose(); } catch { }
+                    })); } catch { }
+                };
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка воспроизведения: " + ex.Message);
+            }
+        }
+
         private void PlayAudio(byte[] audioBytes, Button btn)
         {
             if (_waveOut != null)
@@ -2729,7 +2764,7 @@ namespace PISMO
         /// <summary>Карточка документа/архива внутри пузырька — клик загружает с сервера
         /// (с круговым индикатором прогресса), сохраняет и открывает файл.
         /// knownSize — размер файла в байтах (показывается ДО загрузки).</summary>
-        private static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup, long knownSize = -1)
+        internal static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup, long knownSize = -1)
         {
             string ext = Path.GetExtension(fileName).ToLowerInvariant().TrimStart('.');
             bool isMedia = MediaPlayerForm.IsMedia(ext);
@@ -2946,7 +2981,7 @@ namespace PISMO
             return card;
         }
 
-        private void ShowImageFullscreen(byte[] imgBytes)
+        internal static void ShowImageFullscreen(byte[] imgBytes)
         {
             var v = new Form
             {

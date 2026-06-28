@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Drawing;
+using System.IO;
 using System.Windows.Forms;
 using MySql.Data.MySqlClient;
+using NAudio.Wave;
 
 namespace PISMO
 {
@@ -50,6 +52,14 @@ namespace PISMO
         private static bool _replyColOk = true; // есть ли колонка reply_to_id (миграция)
         private readonly Dictionary<int, Control> _msgControls = new(); // id сообщения -> контрол для перехода
         private readonly Dictionary<int, DataTable> _chanMetaCache = new(); // channelId -> meta (мгновенное открытие)
+        private static bool _mediaColOk = true;  // есть ли медиа-колонки в server_messages (миграция)
+        // Медиа сообщений канала в памяти (id -> байты). В дисковый кеш не пишется.
+        private readonly Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> _serverMedia = new();
+        // Запись голосового в канал.
+        private WaveInEvent _chWaveIn;
+        private MemoryStream _chAudioStream;
+        private WaveFileWriter _chWaveWriter;
+        private Button _btnChVoice;
 
         // Автоподсказка @упоминаний при вводе.
         private Form _mentionPopup;
@@ -145,9 +155,24 @@ namespace PISMO
             var btnGif = new Button { Dock = DockStyle.Right, Width = 52, Text = "GIF", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnGif.FlatAppearance.BorderSize = 0;
             btnGif.Click += (s, e) => OpenServerGifPicker();
+
+            // Те же инструменты, что и в обычном чате: прикрепить файл, картинку,
+            // записать голосовое (зажать), записать видео-кружок.
+            Button ToolBtn(string txt) => new Button { Dock = DockStyle.Right, Width = 40, Text = txt, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI", 12f), Cursor = Cursors.Hand };
+            var btnAttach = ToolBtn("📎"); btnAttach.FlatAppearance.BorderSize = 0; btnAttach.Click += (s, e) => AttachChannelFile(false);
+            var btnImage = ToolBtn("🖼"); btnImage.FlatAppearance.BorderSize = 0; btnImage.Click += (s, e) => AttachChannelFile(true);
+            _btnChVoice = ToolBtn("🎤"); _btnChVoice.FlatAppearance.BorderSize = 0;
+            _btnChVoice.MouseDown += ChVoice_MouseDown; _btnChVoice.MouseUp += ChVoice_MouseUp;
+            var btnCircle = ToolBtn("⭕"); btnCircle.FlatAppearance.BorderSize = 0; btnCircle.Click += (s, e) => RecordChannelCircle();
+
             var inputHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10, 10, 10, 10) };
             inputHost.Controls.Add(_txtInput);
             _pnlInput.Controls.Add(inputHost);
+            // Порядок (Dock=Right) справа налево: Отправить, GIF, кружок, голос, картинка, файл.
+            _pnlInput.Controls.Add(btnAttach);
+            _pnlInput.Controls.Add(btnImage);
+            _pnlInput.Controls.Add(_btnChVoice);
+            _pnlInput.Controls.Add(btnCircle);
             _pnlInput.Controls.Add(btnGif);
             _pnlInput.Controls.Add(btnSend);
 
@@ -587,8 +612,10 @@ namespace PISMO
             // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в канале.
             System.Threading.Tasks.Task.Run(() =>
             {
-                DataTable dt = FetchChannelMessages(channel);
+                var media = new Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)>();
+                DataTable dt = FetchChannelMessages(channel, media);
                 if (dt == null) return;
+                // В кеш на диск пишем только метаданные (без тяжёлых BLOB).
                 try { MessageCache.Save(MessageCache.ChannelKey(channel), dt); } catch { }
                 if (IsDisposed || !IsHandleCreated) return;
                 try
@@ -596,6 +623,7 @@ namespace PISMO
                     BeginInvoke(new Action(() =>
                     {
                         if (_channelId != channel) return; // уже переключились
+                        foreach (var kv in media) _serverMedia[kv.Key] = kv.Value;
                         _chanMetaCache[channel] = dt;
                         RenderMessages(dt, channel);
                     }));
@@ -604,9 +632,11 @@ namespace PISMO
             });
         }
 
-        /// <summary>Запрос сообщений канала из БД (в фоне). Сам обрабатывает
-        /// отсутствие колонки reply_to_id (старая БД без миграции).</summary>
-        private DataTable FetchChannelMessages(int channel)
+        /// <summary>Запрос сообщений канала из БД (в фоне). Тянет медиа в mediaOut,
+        /// а из возвращаемой таблицы BLOB-колонки убирает (чтобы кеш оставался лёгким).
+        /// Сам обрабатывает отсутствие колонок reply_to_id / медиа (старая БД).</summary>
+        private DataTable FetchChannelMessages(int channel,
+            Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut)
         {
             try
             {
@@ -616,20 +646,42 @@ namespace PISMO
                       "(SELECT ru.login FROM server_messages rsm JOIN users ru ON ru.id=rsm.sender_id WHERE rsm.id=sm.reply_to_id) AS r_login, " +
                       "(SELECT rsm.text FROM server_messages rsm WHERE rsm.id=sm.reply_to_id) AS r_text"
                     : "";
+                string mediaCols = _mediaColOk
+                    ? ", sm.image_data, sm.audio_data, sm.video_data, sm.file_data, sm.file_name"
+                    : "";
 
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
                     "SELECT sm.id, sm.sender_id, sm.text, sm.created_at, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login" +
-                    replyCols +
+                    replyCols + mediaCols +
                     " FROM server_messages sm JOIN users u ON u.id=sm.sender_id WHERE sm.channel_id=@c ORDER BY sm.id ASC", conn);
                 cmd.Parameters.AddWithValue("@c", channel);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
+
+                if (_mediaColOk && mediaOut != null)
+                {
+                    byte[] Gv(DataRow r, string c) => dt.Columns.Contains(c) && r[c] != DBNull.Value ? (byte[])r[c] : null;
+                    foreach (DataRow r in dt.Rows)
+                    {
+                        int id = Convert.ToInt32(r["id"]);
+                        string fn = dt.Columns.Contains("file_name") && r["file_name"] != DBNull.Value ? r["file_name"].ToString() : null;
+                        var m = (Gv(r, "image_data"), Gv(r, "audio_data"), Gv(r, "video_data"), Gv(r, "file_data"), fn);
+                        if (m.Item1 != null || m.Item2 != null || m.Item3 != null || m.Item4 != null)
+                            mediaOut[id] = m;
+                    }
+                    // Убираем тяжёлые BLOB перед возвратом/кешированием (file_name оставляем).
+                    foreach (var c in new[] { "image_data", "audio_data", "video_data", "file_data" })
+                        if (dt.Columns.Contains(c)) dt.Columns.Remove(c);
+                }
                 return dt;
             }
             catch (MySqlException mex) when (mex.Number == 1054)
             {
-                _replyColOk = false; // колонки reply_to_id ещё нет — грузим без неё
-                return FetchChannelMessages(channel);
+                // Какой-то колонки нет: сначала отключаем медиа, затем reply.
+                if (_mediaColOk) _mediaColOk = false;
+                else if (_replyColOk) _replyColOk = false;
+                else throw;
+                return FetchChannelMessages(channel, mediaOut);
             }
             catch (Exception ex)
             {
@@ -704,6 +756,62 @@ namespace PISMO
                     holder.Controls.Add(head);
                     y += 18;
 
+                    // Медиа канала (картинка / голосовое / кружок / видео / файл) — как в обычном чате.
+                    bool isMe = senderId == _me;
+                    if (_serverMedia.TryGetValue(id, out var sm))
+                    {
+                        if (sm.img is { Length: > 0 })
+                        {
+                            try
+                            {
+                                var ms = new MemoryStream(sm.img.ToArray());
+                                var img = Image.FromStream(ms);
+                                int mw = 260, mh = 220;
+                                double rr = Math.Min(1, Math.Min((double)mw / img.Width, (double)mh / img.Height));
+                                int dw = Math.Max(1, (int)(img.Width * rr)), dh = Math.Max(1, (int)(img.Height * rr));
+                                var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(0, y), Cursor = Cursors.Hand, Image = img };
+                                var cap = sm.img;
+                                pb.Click += (s, e) => MainForm.ShowImageFullscreen(cap);
+                                pb.Disposed += (s, e) => { try { img.Dispose(); ms.Dispose(); } catch { } };
+                                holder.Controls.Add(pb); y += dh + 6;
+                            }
+                            catch { }
+                        }
+                        if (sm.audio is { Length: > 0 })
+                        {
+                            var bp = new Button { Text = "▶  Голосовое", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Size = new Size(170, 34), Location = new Point(0, y), Cursor = Cursors.Hand };
+                            bp.FlatAppearance.BorderSize = 0;
+                            var ca = sm.audio;
+                            bp.Click += (s, e) => MainForm.PlayVoiceClip(ca, bp);
+                            holder.Controls.Add(bp); y += 40;
+                        }
+                        if (sm.video is { Length: > 0 })
+                        {
+                            try { var pl = new VideoCirclePlayer(sm.video, 180) { Location = new Point(0, y) }; holder.Controls.Add(pl); y += 186; }
+                            catch { }
+                        }
+                        if (sm.file is { Length: > 0 } && !string.IsNullOrWhiteSpace(sm.fname))
+                        {
+                            string fext = Path.GetExtension(sm.fname).TrimStart('.').ToLowerInvariant();
+                            if (MediaPlayerForm.IsVideo(fext))
+                            {
+                                try
+                                {
+                                    int bw = Math.Min(msgWidth - 10, 280), bh = (int)(bw * 1.2);
+                                    var vp = new InlineVideoPlayer(sm.file, sm.fname, bw, bh) { Location = new Point(0, y) };
+                                    holder.Controls.Add(vp); y += bh + 6;
+                                }
+                                catch { }
+                            }
+                            else
+                            {
+                                var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false);
+                                card.Location = new Point(0, y);
+                                holder.Controls.Add(card); y += card.Height + 6;
+                            }
+                        }
+                    }
+
                     // GIF-сообщение: "gif:<url>" — анимированная картинка.
                     if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
                     {
@@ -711,7 +819,7 @@ namespace PISMO
                         holder.Controls.Add(ph);
                         _ = LoadServerGifAsync(ph, text.Substring(4));
                     }
-                    else
+                    else if (!string.IsNullOrEmpty(text))
                     {
                         var body = MainForm.MakeSelectableText(text, holder.BackColor == Color.Transparent
                             ? Color.FromArgb(54, 57, 63) : Color.FromArgb(50, 70, 60),
@@ -1115,6 +1223,124 @@ namespace PISMO
                 SendChannelRaw(rawText);
             }
             catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        // ── Медиа в канале: вложения, голосовые, кружки ──────────────────
+        private static void AddBlobParam(MySqlCommand cmd, string name, byte[] data)
+        {
+            var p = cmd.Parameters.Add(name, MySqlDbType.LongBlob);
+            p.Value = (data != null && data.Length > 0) ? (object)data : DBNull.Value;
+        }
+
+        /// <summary>Отправляет медиа-сообщение в канал (картинка/голос/видео/файл).</summary>
+        private void SendChannelMedia(byte[] image, byte[] audio, byte[] video, byte[] file, string fileName)
+        {
+            if (_channelId <= 0 || _channelType != "text") return;
+            if (!_mediaColOk)
+            {
+                MessageBox.Show("Медиа в каналах недоступно: на сервере не выполнена миграция\n(scripts/server_media_migration.sql).", "PISMO");
+                return;
+            }
+            int replyId = _replyToId;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                string cols = "channel_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name";
+                string vals = "@c,@s,@t,@img,@aud,@vid,@fd,@fn";
+                if (_replyColOk && replyId > 0) { cols += ", reply_to_id"; vals += ",@r"; }
+                using var cmd = new MySqlCommand($"INSERT INTO server_messages ({cols}) VALUES ({vals})", conn);
+                cmd.Parameters.AddWithValue("@c", _channelId);
+                cmd.Parameters.AddWithValue("@s", _me);
+                cmd.Parameters.AddWithValue("@t", Crypto.Enc(""));
+                AddBlobParam(cmd, "@img", image);
+                AddBlobParam(cmd, "@aud", audio);
+                AddBlobParam(cmd, "@vid", video);
+                AddBlobParam(cmd, "@fd", file);
+                cmd.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
+                if (_replyColOk && replyId > 0) cmd.Parameters.AddWithValue("@r", replyId);
+                cmd.ExecuteNonQuery();
+                CancelServerReply();
+                WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
+                LoadMessages();
+            }
+            catch (MySqlException mex) when (mex.Number == 1054)
+            {
+                if (_mediaColOk)
+                {
+                    _mediaColOk = false;
+                    MessageBox.Show("Медиа в каналах недоступно: на сервере не выполнена миграция\n(scripts/server_media_migration.sql).", "PISMO");
+                }
+                else if (_replyColOk) { _replyColOk = false; SendChannelMedia(image, audio, video, file, fileName); }
+            }
+            catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        /// <summary>Прикрепить файл (или картинку) в канал.</summary>
+        private void AttachChannelFile(bool imageOnly)
+        {
+            if (_channelId <= 0 || _channelType != "text") return;
+            using var ofd = new OpenFileDialog
+            {
+                Title = imageOnly ? "Выберите изображение" : "Выберите файл",
+                Filter = imageOnly ? "Изображения|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp" : "Все файлы|*.*"
+            };
+            if (ofd.ShowDialog(this) != DialogResult.OK) return;
+            try
+            {
+                var bytes = File.ReadAllBytes(ofd.FileName);
+                if (bytes.LongLength > 30L * 1024 * 1024)
+                {
+                    MessageBox.Show("Файл слишком большой (>30 МБ).", "PISMO");
+                    return;
+                }
+                string ext = Path.GetExtension(ofd.FileName).TrimStart('.').ToLowerInvariant();
+                bool isImg = ext is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp";
+                if (imageOnly || isImg) SendChannelMedia(bytes, null, null, null, null);
+                else SendChannelMedia(null, null, null, bytes, Path.GetFileName(ofd.FileName));
+            }
+            catch (Exception ex) { MessageBox.Show("Не удалось прикрепить файл: " + ex.Message, "PISMO"); }
+        }
+
+        private void ChVoice_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (_channelId <= 0 || _channelType != "text") return;
+            try
+            {
+                _chAudioStream = new MemoryStream();
+                _chWaveIn = new WaveInEvent { WaveFormat = new WaveFormat(16000, 1) };
+                if (DeviceSettings.MicrophoneIndex >= 0 && DeviceSettings.MicrophoneIndex < WaveInEvent.DeviceCount)
+                    _chWaveIn.DeviceNumber = DeviceSettings.MicrophoneIndex;
+                _chWaveWriter = new WaveFileWriter(_chAudioStream, _chWaveIn.WaveFormat);
+                _chWaveIn.DataAvailable += (s, ev) => { try { _chWaveWriter?.Write(ev.Buffer, 0, ev.BytesRecorded); } catch { } };
+                _chWaveIn.StartRecording();
+                if (_btnChVoice != null) { _btnChVoice.ForeColor = Color.FromArgb(240, 71, 71); _btnChVoice.Text = "🔴"; }
+            }
+            catch (Exception ex) { MessageBox.Show("Нет доступа к микрофону: " + ex.Message, "PISMO"); }
+        }
+
+        private void ChVoice_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (_chWaveIn == null) return;
+            try
+            {
+                _chWaveIn.StopRecording();
+                _chWaveIn.Dispose(); _chWaveIn = null;
+                _chWaveWriter.Flush();
+                byte[] audio = _chAudioStream.ToArray();
+                _chWaveWriter.Dispose(); _chWaveWriter = null;
+                _chAudioStream.Dispose(); _chAudioStream = null;
+                if (_btnChVoice != null) { _btnChVoice.ForeColor = Color.FromArgb(220, 221, 222); _btnChVoice.Text = "🎤"; }
+                if (audio.Length > 4000) SendChannelMedia(null, audio, null, null, null);
+            }
+            catch { }
+        }
+
+        private void RecordChannelCircle()
+        {
+            if (_channelId <= 0 || _channelType != "text") return;
+            using var dlg = new VideoCircleRecordForm();
+            if (dlg.ShowDialog(this) == DialogResult.OK && dlg.ResultVideoData != null)
+                SendChannelMedia(null, null, dlg.ResultVideoData, null, null);
         }
 
         /// <summary>Открывает поиск GIF и отправляет выбранную как "gif:&lt;url&gt;".</summary>
