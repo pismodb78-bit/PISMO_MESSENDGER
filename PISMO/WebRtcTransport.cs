@@ -237,10 +237,13 @@ function post(msg){ window.chrome.webview.postMessage(msg); }
 // Передаём и стандартные флаги, и Chromium-специфичные goog-констрейнты,
 // чтобы шумодав точно включился в движке WebView2.
 function micCaptureOpts(){
+    // Если включён наш RNNoise — захватываем СЫРОЙ сигнал (без браузерного
+    // noiseSuppression/AGC), иначе браузер уже почистит звук и RNNoise не на чем
+    // будет показать разницу. Эхоподавление оставляем (оно про колонки, не про шум).
     return {
         echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        noiseSuppression: !useNoise,
+        autoGainControl: !useNoise,
         deviceId: selectedMicId ? { exact: selectedMicId } : undefined
     };
 }

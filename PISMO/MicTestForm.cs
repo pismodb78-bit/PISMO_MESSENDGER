@@ -147,15 +147,20 @@ async function loadRnnoise(){
 
 async function start(){
   st('Запрашиваю микрофон…');
+  // Когда наш RNNoise включён — берём СЫРОЙ сигнал (без браузерного шумодава/AGC),
+  // чтобы фильтрация была слышна. Без него — обычная браузерная очистка.
+  const baseAudio = NOISE
+    ? {echoCancellation:true, noiseSuppression:false, autoGainControl:false}
+    : {echoCancellation:true, noiseSuppression:true, autoGainControl:true};
   let stream;
-  try { stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
+  try { stream = await navigator.mediaDevices.getUserMedia({audio:baseAudio}); }
   catch(e){ st('Нет доступа к микрофону: '+e); return; }
   // Если в настройках выбран конкретный микрофон — переключаемся на него.
   try {
     const id = await pickDeviceId();
     if (id){
       stream.getTracks().forEach(t=>t.stop());
-      stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true, deviceId:{exact:id}}});
+      stream = await navigator.mediaDevices.getUserMedia({audio:Object.assign({}, baseAudio, {deviceId:{exact:id}})});
     }
   } catch(e){}
   const ctx = new (window.AudioContext||window.webkitAudioContext)({ sampleRate: 48000 });
