@@ -255,6 +255,8 @@ function micCaptureOpts(){
 let useNoise = false;        // включать ли шумодав (из настроек)
 let selectedMicId = undefined;
 let _rnnoise = null;         // {mod, wasm, workletUrl}
+let micGainValue = 1;        // множитель усиления из ползунка настроек
+let _liveGain = null;        // живой GainNode текущего процессора
 
 function localMicPub(){
     try { return room && room.localParticipant ? room.localParticipant.getTrackPublication(LK.Track.Source.Microphone) : null; }
@@ -289,7 +291,7 @@ async function loadRnnoise(){
 
 // LiveKit-совместимый процессор на основе RNNoise.
 function createRnnoiseProcessor(){
-    let ctx, src, node, dest;
+    let ctx, src, node, dest, gain;
     return {
         name: 'rnnoise',
         processedTrack: undefined,
@@ -300,15 +302,22 @@ function createRnnoiseProcessor(){
             await ctx.audioWorklet.addModule(r.workletUrl);
             src = ctx.createMediaStreamSource(new MediaStream([opts.track]));
             node = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
+            // Усиление после шумодава: компенсирует выключенный браузерный AGC и
+            // тихий выход RNNoise. Базовый множитель *1.6, дальше — ползунок настроек.
+            gain = ctx.createGain();
+            gain.gain.value = 1.6 * (micGainValue || 1);
+            _liveGain = gain;
             dest = ctx.createMediaStreamDestination();
-            src.connect(node).connect(dest);
+            src.connect(node).connect(gain).connect(dest);
             this.processedTrack = dest.stream.getAudioTracks()[0];
         },
         async restart(opts){ await this.destroy(); await this.init(opts); },
         async destroy(){
             try { node && node.disconnect(); } catch(e){}
+            try { gain && gain.disconnect(); } catch(e){}
             try { src && src.disconnect(); } catch(e){}
             try { ctx && ctx.close(); } catch(e){}
+            if (_liveGain === gain) _liveGain = null;
             this.processedTrack = undefined;
         }
     };
@@ -363,7 +372,11 @@ async function publishMic(){
     setTimeout(() => { applyNoiseFilter(); }, 300);
 }
 
-function setMicGain(v){ /* усиление через граф убрано — autoGainControl справляется */ }
+function setMicGain(v){
+    micGainValue = (v && v > 0) ? v : 1;
+    // Живое применение к текущему графу шумодава (если активен).
+    try { if (_liveGain) _liveGain.gain.value = 1.6 * micGainValue; } catch(e){}
+}
 
 function setNoiseSuppression(on){
     useNoise = !!on;
@@ -383,6 +396,7 @@ function waitForLK(){
 
 async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress, gainVal){
     if (typeof noiseSuppress !== 'undefined') useNoise = !!noiseSuppress;
+    if (typeof gainVal !== 'undefined' && gainVal > 0) micGainValue = gainVal;
     const ok = await waitForLK();
     if (!ok){ post({type:'fatal', error:'livekit-client не загрузился (нет интернета/CDN недоступен)'}); post({type:'disconnected'}); return; }
     try {

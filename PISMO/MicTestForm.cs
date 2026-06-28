@@ -92,6 +92,8 @@ namespace PISMO
         {
             string noiseJs = _noise ? "true" : "false";
             string micJs = System.Text.Json.JsonSerializer.Serialize(_micLabel ?? "");
+            string gainJs = (DeviceSettings.MicrophoneGain > 0 ? DeviceSettings.MicrophoneGain : 1f)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture);
             return @"<!doctype html><html><head><meta charset='utf-8'><style>
 html,body{margin:0;height:100%;background:#1e1f22;color:#dcddde;font-family:Segoe UI,sans-serif;}
 .wrap{display:flex;flex-direction:column;gap:14px;padding:18px;}
@@ -110,6 +112,7 @@ h3{margin:0;font-size:15px;}
 <script>
 const NOISE=" + noiseJs + @";
 const MICLABEL=" + micJs + @";
+const MICGAIN=" + gainJs + @";
 const st=(t)=>{document.getElementById('st').textContent=t;};
 async function pickDeviceId(){
   if(!MICLABEL) return undefined;
@@ -173,8 +176,10 @@ async function start(){
       await ctx.audioWorklet.addModule(r.wurl);
       const srcN = ctx.createMediaStreamSource(stream);
       const node = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
+      // Усиление после шумодава (компенсирует выкл. AGC и тихий выход RNNoise).
+      const g = ctx.createGain(); g.gain.value = 1.6 * (MICGAIN || 1);
       const dest = ctx.createMediaStreamDestination();
-      srcN.connect(node).connect(dest);
+      srcN.connect(node).connect(g).connect(dest);
       outStream = dest.stream;
       st('✓ Шумодав RNNoise активен — слышите себя');
       // Защита от ""активен, но молчит"": если обработанный поток молчит,
