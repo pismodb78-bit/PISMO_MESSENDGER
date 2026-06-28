@@ -92,12 +92,16 @@ namespace PISMO
             string tempZip = Path.Combine(Path.GetTempPath(), "pismo_update_" + Guid.NewGuid().ToString("N") + ".zip");
             try
             {
-                var bytes = await http.GetByteArrayAsync(zipUrl);
+                // Отдельный клиент с большим таймаутом: проверочный http имеет 6 сек,
+                // чего НЕ хватает на скачивание полного архива (рантайм WebView2 и т.д.).
+                using var dl = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                dl.DefaultRequestHeaders.UserAgent.ParseAdd("PISMO-Updater");
+                var bytes = await dl.GetByteArrayAsync(zipUrl);
                 File.WriteAllBytes(tempZip, bytes);
             }
-            catch
+            catch (Exception ex)
             {
-                MessageBox.Show("Не удалось скачать обновление. Попробуйте позже.", "PISMO",
+                MessageBox.Show("Не удалось скачать обновление. Попробуйте позже.\n\n" + ex.Message, "PISMO",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
