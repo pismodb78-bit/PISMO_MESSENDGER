@@ -18,6 +18,65 @@ namespace PISMO
         {
             InitializeComponent(GetBtnLogin());
             LoadSavedCredentials();
+            // Авто-вход по сохранённому JWT, если он ещё действителен.
+            Shown += (s, e) => TryTokenAutoLogin();
+        }
+
+        /// <summary>Если есть сохранённый действующий JWT — входим без пароля.</summary>
+        private void TryTokenAutoLogin()
+        {
+            try
+            {
+                if (!File.Exists(CredsFile)) return;
+                var lines = File.ReadAllLines(CredsFile, Encoding.UTF8);
+                if (lines.Length < 4 || lines[2] != "1") return; // нет токена / «запомнить» снято
+                string token = lines[3];
+                var claims = JwtAuth.Validate(token);
+                if (claims == null || claims.Uid <= 0) return; // истёк/повреждён
+
+                // Подтягиваем актуальные данные пользователя по uid из токена.
+                using (var conn = DBHelper.OpenConnection())
+                using (var cmd = new MySqlCommand("SELECT id, Name, Surname, role, login FROM users WHERE id=@id", conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", claims.Uid);
+                    var dt = new DataTable();
+                    new MySqlDataAdapter(cmd).Fill(dt);
+                    if (dt.Rows.Count == 0) return;
+                    var row = dt.Rows[0];
+                    UserSession.UserId = Convert.ToInt32(row["id"]);
+                    UserSession.UserName = $"{row["Name"]} {row["Surname"]}".Trim();
+                    UserSession.Role = row["role"].ToString().ToLower();
+                    if (string.IsNullOrWhiteSpace(UserSession.UserName))
+                        UserSession.UserName = row["login"].ToString();
+                    UserSession.AuthToken = token;
+                }
+                OpenMainForm();
+            }
+            catch { /* при любой ошибке — обычный вход */ }
+        }
+
+        /// <summary>Открывает главное окно и прячет окно входа.</summary>
+        private void OpenMainForm()
+        {
+            var main = new MainForm();
+            main.Show();
+            this.Hide();
+
+            main.FormClosed += (s, _) =>
+            {
+                if (UserSession.UserId == 0)
+                {
+                    txtLogin.Clear();
+                    txtPass.Clear();
+                    lblError.Visible = false;
+                    LoadSavedCredentials();
+                    this.Show();
+                }
+                else
+                {
+                    this.Close();
+                }
+            };
         }
 
         // ────────────────────────────────────────────
@@ -102,33 +161,18 @@ namespace PISMO
                 return;
             }
 
+            // Выдаём JWT сессии (uid/login/срок) — используется WS-сервером и
+            // для авто-входа «Запомнить меня».
+            UserSession.AuthToken = JwtAuth.Create(UserSession.UserId, login);
+
             // «Запомнить меня» полностью управляет сохранением данных входа:
-            // отмечена — сохраняем, снята — удаляем сохранённое.
+            // отмечена — сохраняем (логин + токен), снята — удаляем сохранённое.
             if (chkRemember.Checked)
                 SaveCredentials(login, pass, true);
             else
                 ClearSavedCredentials();
 
-            var main = new MainForm();
-            main.Show();
-            this.Hide();
-
-            main.FormClosed += (s, _) =>
-            {
-                if (UserSession.UserId == 0)
-                {
-                    txtLogin.Clear();
-                    txtPass.Clear();
-                    lblError.Visible = false;
-                    // Подгрузить снова, если были сохранены
-                    LoadSavedCredentials();
-                    this.Show();
-                }
-                else
-                {
-                    this.Close();
-                }
-            };
+            OpenMainForm();
         }
 
         // ────────────────────────────────────────────
@@ -146,7 +190,8 @@ namespace PISMO
                 {
                     login,
                     EncodePassword(pass),
-                    remember ? "1" : "0"
+                    remember ? "1" : "0",
+                    UserSession.AuthToken ?? ""   // 4-я строка: JWT для авто-входа
                 }, Encoding.UTF8);
             }
             catch (Exception ex)

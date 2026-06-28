@@ -43,8 +43,9 @@ namespace PISMO
                 await _ws.ConnectAsync(new Uri(wsUrl), _cts.Token);
                 System.Diagnostics.Debug.WriteLine($"[WS CLIENT] ✓ Подключено к {wsUrl}");
 
-                // Отправляем пакет регистрации
-                var regMsg = JsonSerializer.Serialize(new { type = "register", userId = _myUserId });
+                // Отправляем пакет регистрации с JWT — сервер проверяет подпись
+                // и совпадение userId с токеном (защита от подделки чужого id).
+                var regMsg = JsonSerializer.Serialize(new { type = "register", userId = _myUserId, token = UserSession.AuthToken ?? "" });
                 var regBytes = Encoding.UTF8.GetBytes(regMsg);
                 await _ws.SendAsync(new ArraySegment<byte>(regBytes), WebSocketMessageType.Text, true, _cts.Token);
 

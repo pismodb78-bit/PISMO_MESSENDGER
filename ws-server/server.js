@@ -17,9 +17,33 @@
 // ============================================================
 
 const WebSocket = require('ws');
+const crypto = require('crypto');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const wss = new WebSocket.Server({ port: PORT });
+
+// ── JWT (HS256) ─────────────────────────────────────────────────────
+// Секрет ДОЛЖЕН совпадать с PISMO/JwtAuth.cs (Secret). Можно переопределить
+// переменной окружения JWT_SECRET. REQUIRE_JWT=1 — отклонять клиентов без
+// валидного токена (по умолчанию мягкий режим для совместимости со старыми).
+const JWT_SECRET = process.env.JWT_SECRET || 'PISMO::jwt::secret::v1::change-me-please';
+const REQUIRE_JWT = process.env.REQUIRE_JWT === '1';
+
+function verifyJwt(token) {
+    try {
+        if (!token || typeof token !== 'string') return null;
+        const parts = token.split('.');
+        if (parts.length !== 3) return null;
+        const signingInput = parts[0] + '.' + parts[1];
+        const expected = crypto.createHmac('sha256', JWT_SECRET).update(signingInput).digest('base64url');
+        // Сравнение в постоянном времени.
+        const a = Buffer.from(expected), b = Buffer.from(parts[2]);
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+        const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+        if (!payload.exp || Math.floor(Date.now() / 1000) >= payload.exp) return null; // истёк
+        return payload; // {uid, login, iat, exp}
+    } catch { return null; }
+}
 
 // userId -> Set<ws> (у пользователя может быть несколько окон/устройств)
 const clients = new Map();
@@ -48,11 +72,27 @@ wss.on('connection', (ws, req) => {
         try { msg = JSON.parse(raw); } catch { return; }
 
         if (msg.type === 'register') {
-            ws.userId = Number(msg.userId);
+            const uid = Number(msg.userId);
+            const claims = verifyJwt(msg.token);
+            if (!claims || Number(claims.uid) !== uid) {
+                // Токен невалиден/не совпадает с userId.
+                if (REQUIRE_JWT || msg.token) {
+                    console.log(`[PISMO WS] register ОТКЛОНЁН userId=${uid} (плохой JWT)`);
+                    try { ws.send(JSON.stringify({ type: 'auth_error', payload: 'invalid token' })); } catch {}
+                    try { ws.close(); } catch {}
+                    return;
+                }
+                // Мягкий режим: старый клиент без токена — пускаем, но помечаем.
+                console.log(`[PISMO WS] register БЕЗ JWT userId=${uid} (мягкий режим)`);
+            }
+            ws.userId = uid;
             addClient(ws.userId, ws);
             console.log(`[PISMO WS] register userId=${ws.userId} (онлайн: ${clients.size})`);
             return;
         }
+
+        // До регистрации ничего не релеим.
+        if (ws.userId == null) return;
 
         const target = Number(msg.targetUserId || 0);
         if (target && target !== 0) {

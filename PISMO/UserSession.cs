@@ -7,6 +7,9 @@ namespace PISMO
         public static string UserName     { get; set; } = "";
         public static string Role         { get; set; } = "";   // "admin" | "teacher"
 
+        /// <summary>JWT текущей сессии (выдаётся при входе, используется WS-сервером).</summary>
+        public static string AuthToken    { get; set; } = "";
+
         // Для режима «войти за пользователя» (только admin)
         public static int    ImpersonatedId   { get; set; } = 0;
         public static string ImpersonatedName { get; set; } = "";
@@ -22,6 +25,7 @@ namespace PISMO
             UserId = 0;
             UserName = "";
             Role = "";
+            AuthToken = "";
             StopImpersonating();
         }
 
