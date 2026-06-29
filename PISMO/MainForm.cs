@@ -537,42 +537,32 @@ namespace PISMO
 
         private void PollTick(object sender, EventArgs e)
         {
-            // Доставка идёт по WebSocket (broadcast new_message/read). Периодический
-            // тик при живом WS пропускаем — без постоянного опроса БД. Опрос только
-            // как ФОЛБЭК при обрыве WS. Ручной вызов (sender == null) — всегда.
-            if (sender != null && WebSocketSignalingClient.Instance.IsConnected) return;
             if (_pollBusy) return;
             _pollBusy = true;
 
-            // Оптимизация: все запросы к БД (особенно болезненные при работе через
-            // VPN с высоким пингом) выполняем в фоне, чтобы не подвешивать UI-поток.
-            // На UI возвращаемся только для перерисовки сообщений/бейджей.
+            // id видимых карточек собираем на UI-потоке (потоконебезопасно иначе).
+            var ids = new List<int>();
+            try { foreach (var p in _userPanels) if (p.Tag is int uid) ids.Add(uid); } catch { }
+
+            // Все запросы — в фоне (не вешаем UI). Открытый чат перезагружаем ВСЕГДА
+            // (skip-render не даст мигания, но обновит галочки «прочитано», которые
+            // не меняют число сообщений). Плюс непрочитанные и статусы присутствия.
             System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
-                    bool reloadDirect = false, reloadGroup = false;
-                    if (_currentGroupId >= 0)
-                    {
-                        int gcnt = GetGroupMsgCount();
-                        if (gcnt != _lastGroupMsgCount) { _lastGroupMsgCount = gcnt; reloadGroup = true; }
-                    }
-                    else if (_currentChatPartnerId >= 0)
-                    {
-                        int cnt = GetMsgCount();
-                        if (cnt != _lastMsgCount) { _lastMsgCount = cnt; reloadDirect = true; }
-                    }
-
                     var unread = ReadUnreadCounts();
+                    var presence = ReadPresence(ids);
 
                     if (IsDisposed || !IsHandleCreated) return;
                     BeginInvoke(new Action(() =>
                     {
                         try
                         {
-                            if (reloadGroup) LoadGroupMessages();
-                            else if (reloadDirect) LoadMessages();
+                            if (_currentGroupId >= 0) LoadGroupMessages();
+                            else if (_currentChatPartnerId >= 0) LoadMessages();
                             if (unread != null) ApplyUnreadAndNotify(unread);
+                            ApplyPresence(presence);
                         }
                         catch { }
                     }));
@@ -580,6 +570,20 @@ namespace PISMO
                 catch { }
                 finally { _pollBusy = false; }
             });
+        }
+
+        // Применяет статусы присутствия и перерисовывает карточки ТОЛЬКО при изменении.
+        private void ApplyPresence(Dictionary<int, int> fresh)
+        {
+            if (fresh == null) return;
+            bool changed = fresh.Count != _presence.Count;
+            if (!changed)
+                foreach (var kv in fresh)
+                    if (!_presence.TryGetValue(kv.Key, out int v) || v != kv.Value) { changed = true; break; }
+            if (!changed) return;
+            _presence.Clear();
+            foreach (var kv in fresh) _presence[kv.Key] = kv.Value;
+            InvalidateCardAvatars();
         }
 
         private int GetGroupMsgCount()
