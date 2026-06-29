@@ -92,7 +92,42 @@ namespace PISMO
 
             MediaCache.Init();
             SetupPolling();
+            BuildSidebarSearch();
             this.Load += MainForm_Load;
+        }
+
+        private TextBox _convSearch;
+
+        /// <summary>Поле поиска чатов над списком диалогов в боковой панели.</summary>
+        private void BuildSidebarSearch()
+        {
+            var host = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = Color.FromArgb(32, 34, 37), Padding = new Padding(8, 5, 8, 5) };
+            _convSearch = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Color.FromArgb(40, 42, 46),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9.5f),
+                PlaceholderText = "Поиск чатов…"
+            };
+            _convSearch.TextChanged += (s, e) => FilterConversations(_convSearch.Text);
+            host.Controls.Add(_convSearch);
+            pnlSidebar.Controls.Add(host);
+            host.BringToFront();
+            pnlSidebarHeader.BringToFront(); // шапка остаётся у верхнего края, поиск под ней
+        }
+
+        /// <summary>Фильтрует список диалогов/групп по подстроке (имя — в AccessibleName карточки).</summary>
+        private void FilterConversations(string q)
+        {
+            q = (q ?? "").Trim().ToLowerInvariant();
+            pnlUserList.SuspendLayout();
+            foreach (var p in _userPanels)
+                p.Visible = q.Length == 0 || (p.AccessibleName ?? "").ToLowerInvariant().Contains(q);
+            foreach (var p in _groupPanels)
+                p.Visible = q.Length == 0 || (p.AccessibleName ?? "").ToLowerInvariant().Contains(q);
+            pnlUserList.ResumeLayout();
         }
 
         private void TrayMenuOpen_Click(object sender, EventArgs e)
@@ -477,12 +512,12 @@ namespace PISMO
         // ── Polling: таймер на 2.5 с ───────────────────────────────────
         private void SetupPolling()
         {
-            // Реальное время обеспечивает WebSocket (new_message → мгновенный PollTick).
-            // Таймер — лишь подстраховка на случай обрыва WS, поэтому редкий: частый
-            // опрос БД (особенно через VPN) давал периодический микролаг каждые ~2.5с.
+            // Периодический опрос БД убран совсем (давал стабильный микролаг через
+            // VPN). Реальное время обеспечивает WebSocket (new_message → PollTick),
+            // а ручное обновление — кнопка ↻ в шапке (btnRefresh).
             _pollTimer = new System.Windows.Forms.Timer { Interval = 10000 };
             _pollTimer.Tick += PollTick;
-            _pollTimer.Start();
+            // _pollTimer.Start(); — НЕ запускаем: опрос только по WS и по кнопке.
         }
 
         private void PollTick(object sender, EventArgs e)
@@ -748,6 +783,7 @@ namespace PISMO
 
                     AddUserCard(uid, name, lastMsg, unread);
                 }
+                if (_convSearch != null) FilterConversations(_convSearch.Text);
             }
             catch (Exception ex)
             {
@@ -946,6 +982,7 @@ namespace PISMO
                 c.ContextMenuStrip = ctxMenu;
             }
 
+            pnl.AccessibleName = name;
             pnlUserList.Controls.Add(pnl);
             _groupPanels.Add(pnl);
         }
@@ -1131,6 +1168,7 @@ namespace PISMO
             // чтобы пункты блок/разблок/очистка переписки заработали.
             AttachConversationContextMenu(pnl, uid, name);
 
+            pnl.AccessibleName = name;
             pnlUserList.Controls.Add(pnl);
             _userPanels.Add(pnl);
         }
@@ -1259,6 +1297,7 @@ namespace PISMO
                 new Pen(Color.FromArgb(40, 255, 255, 255)),
                 54, pnl.Height - 1, pnl.Width - 8, pnl.Height - 1);
 
+            pnl.AccessibleName = name;
             pnlUserList.Controls.Add(pnl);
             _userPanels.Add(pnl);
         }
@@ -3138,6 +3177,8 @@ namespace PISMO
                 LoadGroupMessages();
             else if (_currentChatPartnerId >= 0)
                 LoadMessages();
+
+            PollTick(null, null); // разовый опрос непрочитанных/новых (как делал таймер)
         }
 
         private void btnSettings_Click(object sender, EventArgs e)

@@ -44,6 +44,8 @@ namespace PISMO
         // Контейнеры участников «в эфире» под каждым голосовым каналом.
         private readonly Dictionary<int, FlowLayoutPanel> _voiceContainers = new();
         private readonly Dictionary<int, string> _voiceSig = new(); // подпись «кто в эфире» — чтобы не перестраивать каждые 2.5с
+        private TextBox _serverSearch;
+        private TextBox _channelSearch;
 
         // Ответ (reply) на сообщение канала.
         private Panel _replyBar;
@@ -109,13 +111,15 @@ namespace PISMO
             BuildUi();
             Load += (s, e) => LoadServers();
 
+            // Периодический опрос убран (давал микролаг). Сообщения — real-time по WS
+            // (OnWs), «кто в эфире» и прочее — по кнопке ↻ «Обновить» (RefreshNow).
             _refresh = new System.Windows.Forms.Timer { Interval = 4000 };
             _refresh.Tick += (s, e) =>
             {
                 if (_channelId > 0 && _channelType == "text") MaybeReloadMessages();
-                RefreshVoicePresence(); // обновляем «кто в эфире» под каналами
+                RefreshVoicePresence();
             };
-            _refresh.Start();
+            // _refresh.Start(); — НЕ запускаем.
 
             // Подгружаем аватарки участников «в эфире» при готовности.
             AvatarStore.AvatarLoaded += OnAvatarLoadedForVoice;
@@ -156,8 +160,8 @@ namespace PISMO
 
         private void BuildUi()
         {
-            _pnlServers = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 180, BackColor = Color.FromArgb(32, 34, 37), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
-            _pnlChannels = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 200, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
+            _pnlServers = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(32, 34, 37), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
+            _pnlChannels = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
             _pnlMembers = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 180, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
 
             var center = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(54, 57, 63) };
@@ -216,10 +220,28 @@ namespace PISMO
             center.Controls.Add(bottom);
             center.Controls.Add(_lblTitle);
 
+            // Поиск серверов (над списком серверов).
+            _serverSearch = new TextBox { Dock = DockStyle.Top, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, Font = new Font("Segoe UI", 9f), PlaceholderText = "Поиск серверов…", Margin = new Padding(0) };
+            _serverSearch.TextChanged += (s, e) => FilterServers(_serverSearch.Text);
+            var serverHost = new Panel { Dock = DockStyle.Left, Width = 180, BackColor = Color.FromArgb(32, 34, 37) };
+            serverHost.Controls.Add(_pnlServers);
+            serverHost.Controls.Add(_serverSearch);
+
+            // Поиск каналов + кнопка «Обновить» (над списком каналов).
+            _channelSearch = new TextBox { Dock = DockStyle.Top, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, Font = new Font("Segoe UI", 9f), PlaceholderText = "Поиск каналов…" };
+            _channelSearch.TextChanged += (s, e) => FilterChannels(_channelSearch.Text);
+            var btnRefreshSrv = new Button { Dock = DockStyle.Top, Height = 28, Text = "↻ Обновить", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
+            btnRefreshSrv.FlatAppearance.BorderSize = 0;
+            btnRefreshSrv.Click += (s, e) => RefreshNow();
+            var channelHost = new Panel { Dock = DockStyle.Left, Width = 200, BackColor = Color.FromArgb(47, 49, 54) };
+            channelHost.Controls.Add(_pnlChannels);
+            channelHost.Controls.Add(_channelSearch);
+            channelHost.Controls.Add(btnRefreshSrv);
+
             Controls.Add(center);
             Controls.Add(_pnlMembers);
-            Controls.Add(_pnlChannels);
-            Controls.Add(_pnlServers);
+            Controls.Add(channelHost);
+            Controls.Add(serverHost);
         }
 
         // ── Серверы ─────────────────────────────────────────────────────
@@ -248,9 +270,11 @@ namespace PISMO
                     bool owner = Convert.ToInt32(r["owner_id"]) == _me;
                     var b = MakeSideButton((owner ? "👑 " : "🗗 ") + name, Color.FromArgb(64, 68, 75));
                     b.Tag = sid;
+                    b.AccessibleName = name;
                     b.Click += (s, e) => SelectServer(sid, name, owner);
                     _pnlServers.Controls.Add(b);
                 }
+                FilterServers(_serverSearch?.Text);
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
@@ -425,6 +449,7 @@ namespace PISMO
                     string cname = r["name"].ToString();
                     string ctype = r["type"].ToString();
                     var b = MakeSideButton((ctype == "voice" ? "🔊 " : "# ") + cname, Color.FromArgb(54, 57, 63));
+                    b.AccessibleName = cname;
                     b.Click += (s, e) => SelectChannel(cid, ctype, cname);
                     _pnlChannels.Controls.Add(b);
 
@@ -441,14 +466,43 @@ namespace PISMO
                             Margin = new Padding(10, 0, 0, 4),
                             BackColor = Color.Transparent
                         };
+                        cont.AccessibleName = cname;
                         _voiceContainers[cid] = cont;
                         _pnlChannels.Controls.Add(cont);
                     }
                 }
+                FilterChannels(_channelSearch?.Text);
             }
             catch (Exception ex) { ShowDbError(ex); }
 
             RefreshVoicePresence();
+        }
+
+        /// <summary>Разовое обновление сервера (вместо периодического опроса).</summary>
+        private void RefreshNow()
+        {
+            LoadServers();
+            if (_serverId <= 0) return;
+            LoadChannels();
+            LoadMembers();
+            if (_channelId > 0 && _channelType == "text") LoadMessages();
+            RefreshVoicePresence();
+        }
+
+        private void FilterServers(string q)
+        {
+            q = (q ?? "").Trim().ToLowerInvariant();
+            foreach (Control c in _pnlServers.Controls)
+                if (c.Tag is int) // только карточки серверов (Tag=sid), заголовок/кнопки не трогаем
+                    c.Visible = q.Length == 0 || (c.AccessibleName ?? "").ToLowerInvariant().Contains(q);
+        }
+
+        private void FilterChannels(string q)
+        {
+            q = (q ?? "").Trim().ToLowerInvariant();
+            foreach (Control c in _pnlChannels.Controls)
+                if (!string.IsNullOrEmpty(c.AccessibleName)) // карточки каналов/контейнеры «в эфире»
+                    c.Visible = q.Length == 0 || c.AccessibleName.ToLowerInvariant().Contains(q);
         }
 
         /// <summary>Обновляет списки участников «в эфире» под голосовыми каналами.
