@@ -530,17 +530,17 @@ namespace PISMO
             // ТОЛЬКО когда WS не подключён (иначе тик почти бесплатный — проверка флага
             // и выход). Так нет постоянного лага при живом WS, но сообщения доходят и
             // при обрыве WS. Плюс ручная кнопка ↻.
-            _pollTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+            _pollTimer = new System.Windows.Forms.Timer { Interval = 3000 };
             _pollTimer.Tick += PollTick;
             _pollTimer.Start();
         }
 
         private void PollTick(object sender, EventArgs e)
         {
-            // Авто-тик таймера (sender != null) при живом WS — пропускаем: всё доставляет
-            // WebSocket мгновенно (server.js релеит new_message/read). Опрос работает только
-            // как ФОЛБЭК при обрыве WS. Ручной вызов (sender == null: кнопка/WS-событие) — всегда.
-            if (sender != null && WebSocketSignalingClient.Instance.IsConnected) return;
+            // Опрос работает ВСЕГДА (он дешёвый: 2 пуленных соединения, без пачки
+            // блокировок). Это надёжная доставка сообщений и галочек, даже если
+            // WS подключён, но релеи по факту не доходят. WS, когда работает,
+            // просто обновляет ещё быстрее. Лага нет — запросы в фоне + skip-render.
             if (_pollBusy) return;
             _pollBusy = true;
 
