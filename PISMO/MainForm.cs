@@ -114,8 +114,14 @@ namespace PISMO
             _convSearch.TextChanged += (s, e) => FilterConversations(_convSearch.Text);
             host.Controls.Add(_convSearch);
             pnlSidebar.Controls.Add(host);
-            host.BringToFront();
-            pnlSidebarHeader.BringToFront(); // шапка остаётся у верхнего края, поиск под ней
+
+            // Док обрабатывается от ВЫСШЕГО индекса к низшему. Чтобы список (Fill) занял
+            // остаток (а не всю высоту с наложением шапки/поиска), задаём порядок явно:
+            //   шапка (3, к верхнему краю) -> поиск (2, под шапкой) -> футер (1, низ) -> список (0, Fill последним).
+            pnlSidebar.Controls.SetChildIndex(pnlUserList, 0);
+            try { pnlSidebar.Controls.SetChildIndex(pnlSidebarFooter, 1); } catch { }
+            pnlSidebar.Controls.SetChildIndex(host, 2);
+            pnlSidebar.Controls.SetChildIndex(pnlSidebarHeader, 3);
         }
 
         /// <summary>Фильтрует список диалогов/групп по подстроке (имя — в AccessibleName карточки).</summary>
