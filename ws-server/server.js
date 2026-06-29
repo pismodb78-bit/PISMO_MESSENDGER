@@ -75,15 +75,18 @@ wss.on('connection', (ws, req) => {
             const uid = Number(msg.userId);
             const claims = verifyJwt(msg.token);
             if (!claims || Number(claims.uid) !== uid) {
-                // Токен невалиден/не совпадает с userId.
-                if (REQUIRE_JWT || msg.token) {
-                    console.log(`[PISMO WS] register ОТКЛОНЁН userId=${uid} (плохой JWT)`);
+                // Токен невалиден/не совпал с userId.
+                // СТРОГО отклоняем только при REQUIRE_JWT=1. В мягком режиме (по
+                // умолчанию) пускаем по userId — иначе при несовпадении секрета
+                // JWT_SECRET (сервер) и Secret (клиент) НИКТО не регистрируется и
+                // сообщения/галочки не доходят.
+                if (REQUIRE_JWT) {
+                    console.log(`[PISMO WS] register ОТКЛОНЁН userId=${uid} (плохой JWT, строгий режим)`);
                     try { ws.send(JSON.stringify({ type: 'auth_error', payload: 'invalid token' })); } catch {}
                     try { ws.close(); } catch {}
                     return;
                 }
-                // Мягкий режим: старый клиент без токена — пускаем, но помечаем.
-                console.log(`[PISMO WS] register БЕЗ JWT userId=${uid} (мягкий режим)`);
+                console.log(`[PISMO WS] register userId=${uid} (мягкий режим: токен не проверен)`);
             }
             ws.userId = uid;
             addClient(ws.userId, ws);
