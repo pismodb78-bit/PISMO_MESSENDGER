@@ -111,15 +111,17 @@ namespace PISMO
             BuildUi();
             Load += (s, e) => LoadServers();
 
-            // Периодический опрос убран (давал микролаг). Сообщения — real-time по WS
-            // (OnWs), «кто в эфире» и прочее — по кнопке ↻ «Обновить» (RefreshNow).
-            _refresh = new System.Windows.Forms.Timer { Interval = 4000 };
+            // Сообщения — real-time по WS (OnWs); опрос сообщений только как ФОЛБЭК,
+            // когда WS не подключён. «Кто в эфире» обновляем всегда, но через дифф
+            // (перестроение лишь при изменении состава) — это дёшево.
+            _refresh = new System.Windows.Forms.Timer { Interval = 5000 };
             _refresh.Tick += (s, e) =>
             {
-                if (_channelId > 0 && _channelType == "text") MaybeReloadMessages();
+                if (!WebSocketSignalingClient.Instance.IsConnected
+                    && _channelId > 0 && _channelType == "text") MaybeReloadMessages();
                 RefreshVoicePresence();
             };
-            // _refresh.Start(); — НЕ запускаем.
+            _refresh.Start();
 
             // Подгружаем аватарки участников «в эфире» при готовности.
             AvatarStore.AvatarLoaded += OnAvatarLoadedForVoice;

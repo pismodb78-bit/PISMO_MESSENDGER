@@ -517,16 +517,21 @@ namespace PISMO
         // ── Polling: таймер на 2.5 с ───────────────────────────────────
         private void SetupPolling()
         {
-            // Периодический опрос БД убран совсем (давал стабильный микролаг через
-            // VPN). Реальное время обеспечивает WebSocket (new_message → PollTick),
-            // а ручное обновление — кнопка ↻ в шапке (btnRefresh).
-            _pollTimer = new System.Windows.Forms.Timer { Interval = 10000 };
+            // Реальное время обеспечивает WebSocket. Таймер — ФОЛБЭК: опрашивает БД
+            // ТОЛЬКО когда WS не подключён (иначе тик почти бесплатный — проверка флага
+            // и выход). Так нет постоянного лага при живом WS, но сообщения доходят и
+            // при обрыве WS. Плюс ручная кнопка ↻.
+            _pollTimer = new System.Windows.Forms.Timer { Interval = 5000 };
             _pollTimer.Tick += PollTick;
-            // _pollTimer.Start(); — НЕ запускаем: опрос только по WS и по кнопке.
+            _pollTimer.Start();
         }
 
         private void PollTick(object sender, EventArgs e)
         {
+            // Если это автоматический тик таймера (sender != null) и WS жив — не
+            // опрашиваем БД (WS уже доставляет всё мгновенно). Ручной вызов
+            // (sender == null: кнопка/WS-событие) выполняется всегда.
+            if (sender != null && WebSocketSignalingClient.Instance.IsConnected) return;
             if (_pollBusy) return;
             _pollBusy = true;
 
