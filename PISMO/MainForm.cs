@@ -3022,11 +3022,20 @@ namespace PISMO
                     if (fileData != null) { lblSz.Text = FormatFileSize(fileData.Length); OpenIt(); return; }
                 }
 
-                // Чанковая загрузка с сервера с круговым индикатором прогресса.
+                // Загрузка одним запросом; индикатор плавно крутим к 90% (точные байты
+                // при одиночном чтении не отследить), 100% — по завершении.
                 downloading = true;
                 dlProgress = 0;
-                lblSz.Text = "Загрузка… 0%";
+                lblSz.Text = "Загрузка…";
                 try { iconPnl.Invalidate(); } catch { }
+
+                var dlAnim = new System.Windows.Forms.Timer { Interval = 80 };
+                dlAnim.Tick += (ts, te) =>
+                {
+                    if (!downloading) { dlAnim.Stop(); dlAnim.Dispose(); return; }
+                    if (dlProgress < 0.9) { dlProgress += (0.9 - dlProgress) * 0.06 + 0.005; try { iconPnl.Invalidate(); } catch { } }
+                };
+                dlAnim.Start();
 
                 string table = isGroup ? "group_messages" : "messages";
                 System.Threading.Tasks.Task.Run(() =>
@@ -3049,36 +3058,15 @@ namespace PISMO
                         if (total <= 0) { err = "Файл пуст"; }
                         else
                         {
-                            const int CHUNK = 256 * 1024; // 256 КБ
-                            using var ms = new MemoryStream((int)Math.Min(total, int.MaxValue));
-                            long off = 0;
-                            while (off < total)
-                            {
-                                int len = (int)Math.Min(CHUNK, total - off);
-                                // MySQL SUBSTRING — 1-based смещение.
-                                using var cmd = new MySqlCommand(
-                                    $"SELECT SUBSTRING(file_data, @off, @len) FROM {table} WHERE id=@id", conn);
-                                cmd.Parameters.AddWithValue("@off", off + 1);
-                                cmd.Parameters.AddWithValue("@len", len);
-                                cmd.Parameters.AddWithValue("@id", msgId);
-                                var chunk = cmd.ExecuteScalar() as byte[];
-                                if (chunk == null || chunk.Length == 0) break;
-                                ms.Write(chunk, 0, chunk.Length);
-                                off += chunk.Length;
-
-                                double p = (double)off / total;
-                                try
-                                {
-                                    card.BeginInvoke(() =>
-                                    {
-                                        dlProgress = p;
-                                        lblSz.Text = $"Загрузка… {(int)(p * 100)}%";
-                                        try { iconPnl.Invalidate(); } catch { }
-                                    });
-                                }
-                                catch { }
-                            }
-                            result = ms.ToArray();
+                            // Читаем файл ОДНИМ запросом — без SUBSTRING по кускам
+                            // (он на каждый кусок перечитывал весь blob → квадратично/медленно).
+                            using var cmd = new MySqlCommand(
+                                $"SELECT file_data FROM {table} WHERE id=@id", conn);
+                            cmd.Parameters.AddWithValue("@id", msgId);
+                            cmd.CommandTimeout = 600;
+                            var o = cmd.ExecuteScalar();
+                            result = o as byte[];
+                            if (result == null || result.Length == 0) err = "Файл пуст";
                         }
                     }
                     catch (Exception ex) { err = ex.Message; }
