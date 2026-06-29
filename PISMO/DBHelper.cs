@@ -221,6 +221,27 @@ namespace PISMO
             }
         }
 
+        private static string _compressedConnString;
+
+        /// <summary>Соединение со сжатием протокола MySQL — для передачи КРУПНЫХ
+        /// плохо сжатых форматов (документы, wav, bmp): меньше байт по сети.
+        /// Для уже сжатых (zip/jpg/mp4) включать НЕ стоит — только трата CPU.</summary>
+        public static MySqlConnection OpenCompressedConnection()
+        {
+            try
+            {
+                if (_compressedConnString == null)
+                {
+                    var b = new MySqlConnectionStringBuilder(_connectionString) { UseCompression = true };
+                    _compressedConnString = b.ConnectionString;
+                }
+                var conn = new MySqlConnection(_compressedConnString);
+                conn.Open();
+                return conn;
+            }
+            catch { return OpenConnection(); }
+        }
+
         public static MySqlConnection OpenConnection()
         {
             var conn = new MySqlConnection(_connectionString);

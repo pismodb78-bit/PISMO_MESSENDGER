@@ -2589,7 +2589,13 @@ namespace PISMO
             {
                 try
                 {
-                    using var conn = DBHelper.OpenConnection();
+                    // Для плохо сжатых форматов включаем сжатие протокола (меньше байт
+                    // по сети). Уже сжатые (zip/rar/jpg/png/mp4/mp3…) шлём без сжатия.
+                    string fext = string.IsNullOrEmpty(fileName) ? "" : Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant();
+                    bool precompressed = fext is "zip" or "rar" or "7z" or "gz" or "tar" or "jpg" or "jpeg"
+                        or "png" or "gif" or "webp" or "mp4" or "webm" or "mov" or "mkv" or "mp3"
+                        or "aac" or "m4a" or "ogg" or "opus" or "flac" or "pdf";
+                    using var conn = precompressed ? DBHelper.OpenConnection() : DBHelper.OpenCompressedConnection();
 
                     // Файл пишем ОДНИМ запросом — без квадратичного CONCAT по порциям
                     // (он перечитывал/переписывал весь blob на каждой порции → для 60 МБ
