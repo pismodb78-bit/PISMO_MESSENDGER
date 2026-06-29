@@ -537,10 +537,10 @@ namespace PISMO
 
         private void PollTick(object sender, EventArgs e)
         {
-            // Опрос работает ВСЕГДА (он дешёвый: 2 пуленных соединения, без пачки
-            // блокировок). Это надёжная доставка сообщений и галочек, даже если
-            // WS подключён, но релеи по факту не доходят. WS, когда работает,
-            // просто обновляет ещё быстрее. Лага нет — запросы в фоне + skip-render.
+            // Доставка идёт по WebSocket (broadcast new_message/read). Периодический
+            // тик при живом WS пропускаем — без постоянного опроса БД. Опрос только
+            // как ФОЛБЭК при обрыве WS. Ручной вызов (sender == null) — всегда.
+            if (sender != null && WebSocketSignalingClient.Instance.IsConnected) return;
             if (_pollBusy) return;
             _pollBusy = true;
 
@@ -2478,7 +2478,7 @@ namespace PISMO
                     imageData: imageData, audioData: audioData, videoData: videoData,
                     fileData: fileData, fileName: fileName);
                 if (ok)
-                    WebSocketSignalingClient.Instance.SendMessage("new_message", themId, 0, "direct");
+                    WebSocketSignalingClient.Instance.SendMessage("new_message", 0, themId, "direct");
                 else
                     return;
             }
@@ -2503,7 +2503,7 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
 
                 cmd.ExecuteNonQuery();
-                WebSocketSignalingClient.Instance.SendMessage("new_message", themId, 0, "direct");
+                WebSocketSignalingClient.Instance.SendMessage("new_message", 0, themId, "direct");
             }
             catch (Exception ex)
             {
@@ -3254,7 +3254,7 @@ namespace PISMO
                 // Сообщаем отправителю по WS, что его сообщения прочитаны — чтобы у
                 // него галочки стали «прочитано» сразу, без переоткрытия чата.
                 if (affected > 0)
-                    try { WebSocketSignalingClient.Instance.SendMessage("read", senderId, UserSession.EffectiveId, "direct"); } catch { }
+                    try { WebSocketSignalingClient.Instance.SendMessage("read", 0, UserSession.EffectiveId, "direct"); } catch { }
 
                 foreach (var p in _userPanels)
                     if (p.Tag is int id && id == senderId)
