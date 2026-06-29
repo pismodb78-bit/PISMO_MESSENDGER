@@ -85,11 +85,12 @@ namespace PISMO
             _ = Task.Run(() => WriteHeartbeat());
             PresenceTick();
 
-            // Периодического ОПРОСА статусов больше нет (давал лаг + спам соединений).
-            // Оставляем только лёгкий heartbeat раз в 60с (одно соединение, без UI),
-            // чтобы собеседники видели нас «в сети». Сами статусы/баннер звонка
-            // обновляются при открытии чата, загрузке списка и по кнопке «Обновить».
-            _presenceTimer = new System.Windows.Forms.Timer { Interval = 60000 };
+            // Heartbeat пишем ЧАСТО (15с) — это критично: порог «не в сети» = 40с,
+            // и если писать реже, статус «протухал» между ударами и точка мерцала
+            // зелёный→серый. 15с << 40с даёт запас даже на пропущенный удар. Это один
+            // лёгкий UPDATE (пул соединений), без обращения к UI — лага нет.
+            // Чтение чужих статусов идёт в общем опросе (PollTick, 3с) с диффом.
+            _presenceTimer = new System.Windows.Forms.Timer { Interval = 15000 };
             _presenceTimer.Tick += (s, e) =>
             {
                 int idle = SystemIdleSeconds();
@@ -138,7 +139,7 @@ namespace PISMO
             try
             {
                 int myId = UserSession.EffectiveId;
-                bool active = idleSec < 300; // активность за последние 5 минут
+                bool active = idleSec < 60; // двигал мышь/печатал за последнюю минуту
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
                     "UPDATE users SET last_seen=NOW(), last_active=IF(@act=1, NOW(), last_active) WHERE id=@id", conn);
@@ -182,8 +183,8 @@ namespace PISMO
                     int activeAgo = activeNull ? int.MaxValue : Convert.ToInt32(r["active_ago"]);
 
                     int status;
-                    if (seenAgo > 45) status = 0;          // не в сети
-                    else if (activeAgo > 300) status = 1;   // бездействует
+                    if (seenAgo > 40) status = 0;          // не в сети (heartbeat 15с, порог 40с)
+                    else if (activeAgo > 90) status = 1;    // бездействует (нет ввода >1.5 мин)
                     else status = 2;                        // в сети
                     result[id] = status;
                 }
