@@ -81,15 +81,21 @@ namespace PISMO
             }
             catch { }
 
-            // Сразу отметимся в сети.
+            // Сразу отметимся в сети и прочитаем статусы один раз.
             _ = Task.Run(() => WriteHeartbeat());
-
-            _presenceTimer = new System.Windows.Forms.Timer { Interval = 10000 };
-            _presenceTimer.Tick += (s, e) => PresenceTick();
-            _presenceTimer.Start();
-
-            // Первичное обновление, не дожидаясь тика.
             PresenceTick();
+
+            // Периодического ОПРОСА статусов больше нет (давал лаг + спам соединений).
+            // Оставляем только лёгкий heartbeat раз в 60с (одно соединение, без UI),
+            // чтобы собеседники видели нас «в сети». Сами статусы/баннер звонка
+            // обновляются при открытии чата, загрузке списка и по кнопке «Обновить».
+            _presenceTimer = new System.Windows.Forms.Timer { Interval = 60000 };
+            _presenceTimer.Tick += (s, e) =>
+            {
+                int idle = SystemIdleSeconds();
+                _ = Task.Run(() => WriteHeartbeat(idle));
+            };
+            _presenceTimer.Start();
         }
 
         private void PresenceTick()

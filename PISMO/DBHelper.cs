@@ -60,6 +60,7 @@ namespace PISMO
 
                         if (uint.TryParse(actualPort, out var p)) builder.Port = p;
                         if (string.IsNullOrWhiteSpace(builder.CharacterSet)) builder.CharacterSet = "utf8mb4";
+                        builder.Pooling = true; builder.MinimumPoolSize = 2; builder.MaximumPoolSize = 30;
 
                         // Сохраняем строку подключения (оставляем пользовательские credentials из ip.txt)
                         _connectionString = builder.ConnectionString;
@@ -93,7 +94,10 @@ namespace PISMO
                     Database = "bdauth",
                     UserID = "root",
                     Password = string.Empty,
-                    CharacterSet = "utf8mb4"
+                    CharacterSet = "utf8mb4",
+                    Pooling = true,
+                    MinimumPoolSize = 2,
+                    MaximumPoolSize = 30
                 };
 
                 _connectionString = defaultBuilder.ConnectionString;
@@ -223,7 +227,6 @@ namespace PISMO
             try
             {
                 conn.Open();
-                System.Diagnostics.Debug.WriteLine("[DBHelper] ✓ Соединение успешно открыто");
                 return conn;
             }
             catch (Exception ex)

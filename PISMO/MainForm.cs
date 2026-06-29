@@ -303,6 +303,11 @@ namespace PISMO
                         {
                             PollTick(null, null);
                         }
+                        else if (type == "read")
+                        {
+                            // Собеседник (senderId) прочитал мои сообщения — обновим галочки.
+                            if (senderId == _currentChatPartnerId) LoadMessages();
+                        }
                         else if (type == "mention")
                         {
                             // payload: serverId|serverName|channelName
@@ -784,6 +789,7 @@ namespace PISMO
                     AddUserCard(uid, name, lastMsg, unread);
                 }
                 if (_convSearch != null) FilterConversations(_convSearch.Text);
+                try { PresenceTick(); } catch { } // разово обновить статусы под список
             }
             catch (Exception ex)
             {
@@ -3233,7 +3239,12 @@ namespace PISMO
                     conn);
                 cmd.Parameters.AddWithValue("@s", senderId);
                 cmd.Parameters.AddWithValue("@r", UserSession.EffectiveId);
-                cmd.ExecuteNonQuery();
+                int affected = cmd.ExecuteNonQuery();
+
+                // Сообщаем отправителю по WS, что его сообщения прочитаны — чтобы у
+                // него галочки стали «прочитано» сразу, без переоткрытия чата.
+                if (affected > 0)
+                    try { WebSocketSignalingClient.Instance.SendMessage("read", senderId, UserSession.EffectiveId, "direct"); } catch { }
 
                 foreach (var p in _userPanels)
                     if (p.Tag is int id && id == senderId)
