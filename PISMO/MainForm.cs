@@ -2550,7 +2550,8 @@ namespace PISMO
                 BackColor = Color.FromArgb(40, 42, 46),
                 ControlBox = false
             };
-            double prog = 0;
+            double prog = 0;     // -1 при завершении не используем; крутим спиннер
+            double angle = 0;    // угол вращающегося индикатора (без фейкового %)
             var pic = new Panel { Size = new Size(72, 72), Location = new Point(114, 14), BackColor = Color.Transparent };
             pic.Paint += (s, e) =>
             {
@@ -2559,10 +2560,10 @@ namespace PISMO
                 using var track = new Pen(Color.FromArgb(90, 255, 255, 255), 6);
                 using var arc = new Pen(Color.FromArgb(88, 101, 242), 6);
                 e.Graphics.DrawEllipse(track, rect);
-                e.Graphics.DrawArc(arc, rect, -90, (float)(360 * Math.Min(1.0, prog)));
-                using var f = new Font("Segoe UI Semibold", 10f, FontStyle.Bold);
-                using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                e.Graphics.DrawString($"{(int)(prog * 100)}%", f, Brushes.White, rect, sf);
+                if (prog >= 1.0)
+                    e.Graphics.DrawArc(arc, rect, -90, 360); // готово — полный круг
+                else
+                    e.Graphics.DrawArc(arc, rect, (float)angle, 110); // крутящийся сегмент
             };
             var lbl = new Label
             {
@@ -2577,8 +2578,8 @@ namespace PISMO
 
             // Заливка идёт одним запросом (нельзя дёшево отслеживать байты), поэтому
             // крутим индикатор плавно к 90% во время отправки, 100% — по завершении.
-            var animTimer = new System.Windows.Forms.Timer { Interval = 80 };
-            animTimer.Tick += (s, e) => { if (prog < 0.9) { prog += (0.9 - prog) * 0.06 + 0.005; pic.Invalidate(); } };
+            var animTimer = new System.Windows.Forms.Timer { Interval = 60 };
+            animTimer.Tick += (s, e) => { if (prog < 1.0) { angle = (angle + 24) % 360; pic.Invalidate(); } };
             dlg.Shown += (s, e) => animTimer.Start();
             dlg.FormClosed += (s, e) => { try { animTimer.Stop(); animTimer.Dispose(); } catch { } };
 
@@ -2919,7 +2920,8 @@ namespace PISMO
                 : (displaySize > 0 ? $"{FormatFileSize(displaySize)} · {actionHint}" : (isMedia ? "▶ Нажмите, чтобы открыть" : "💾 Нажмите для загрузки"));
 
             // Прогресс загрузки: -1 = не идёт, 0..1 = доля. Рисуется поверх иконки.
-            double dlProgress = -1;
+            double dlProgress = -1;   // -1 = не идёт; >=0 = идёт (значение не важно)
+            double dlAngle = 0;       // угол вращающегося индикатора (без фейкового %)
             bool downloading = false;
 
             Color iconBg = ext switch
@@ -2951,7 +2953,7 @@ namespace PISMO
                 using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
                 e.Graphics.DrawString(lbl, f, Brushes.White, new RectangleF(0, 0, 40, 40), sf);
 
-                // Круговой индикатор загрузки поверх иконки.
+                // Индикатор загрузки поверх иконки — честный «крутящийся» сегмент (без %).
                 if (dlProgress >= 0)
                 {
                     using var shade = new SolidBrush(Color.FromArgb(150, 0, 0, 0));
@@ -2960,7 +2962,7 @@ namespace PISMO
                     using var track = new Pen(Color.FromArgb(90, 255, 255, 255), 3);
                     using var arc = new Pen(Color.White, 3);
                     e.Graphics.DrawEllipse(track, rect);
-                    e.Graphics.DrawArc(arc, rect, -90, (float)(360 * Math.Min(1.0, dlProgress)));
+                    e.Graphics.DrawArc(arc, rect, (float)dlAngle, 110);
                 }
             };
             card.Controls.Add(iconPnl);
@@ -3029,11 +3031,12 @@ namespace PISMO
                 lblSz.Text = "Загрузка…";
                 try { iconPnl.Invalidate(); } catch { }
 
-                var dlAnim = new System.Windows.Forms.Timer { Interval = 80 };
+                var dlAnim = new System.Windows.Forms.Timer { Interval = 60 };
                 dlAnim.Tick += (ts, te) =>
                 {
                     if (!downloading) { dlAnim.Stop(); dlAnim.Dispose(); return; }
-                    if (dlProgress < 0.9) { dlProgress += (0.9 - dlProgress) * 0.06 + 0.005; try { iconPnl.Invalidate(); } catch { } }
+                    dlAngle = (dlAngle + 24) % 360; // честное вращение, без процентов
+                    try { iconPnl.Invalidate(); } catch { }
                 };
                 dlAnim.Start();
 
