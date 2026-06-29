@@ -117,8 +117,7 @@ namespace PISMO
             _refresh = new System.Windows.Forms.Timer { Interval = 5000 };
             _refresh.Tick += (s, e) =>
             {
-                if (!WebSocketSignalingClient.Instance.IsConnected
-                    && _channelId > 0 && _channelType == "text") MaybeReloadMessages();
+                if (_channelId > 0 && _channelType == "text") MaybeReloadMessages();
                 RefreshVoicePresence();
             };
             _refresh.Start();

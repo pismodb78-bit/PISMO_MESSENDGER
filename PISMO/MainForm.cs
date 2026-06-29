@@ -537,10 +537,9 @@ namespace PISMO
 
         private void PollTick(object sender, EventArgs e)
         {
-            // Если это автоматический тик таймера (sender != null) и WS жив — не
-            // опрашиваем БД (WS уже доставляет всё мгновенно). Ручной вызов
-            // (sender == null: кнопка/WS-событие) выполняется всегда.
-            if (sender != null && WebSocketSignalingClient.Instance.IsConnected) return;
+            // Опрос лёгкий (2 пуленных соединения, без блокировочной пачки), поэтому
+            // выполняется всегда — это надёжная доставка сообщений/галочек даже когда
+            // WS push не доходит. WS, когда работает, просто обновляет ещё быстрее.
             if (_pollBusy) return;
             _pollBusy = true;
 
@@ -610,25 +609,21 @@ namespace PISMO
             var current = new Dictionary<int, int>();
             try
             {
+                // Один запрос: непрочитанные по отправителям, СРАЗУ исключая блокировки
+                // (раньше на каждого отправителя открывалось по 2 соединения к удалённой
+                // БД — это и был периодический фриз и спам потоков).
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT sender_id, COUNT(*) AS cnt FROM messages " +
-                    "WHERE receiver_id=@me AND is_read=0 GROUP BY sender_id", conn);
+                    "SELECT m.sender_id, COUNT(*) AS cnt FROM messages m " +
+                    "WHERE m.receiver_id=@me AND m.is_read=0 " +
+                    "AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE " +
+                    "   (b.blocker_id=@me AND b.blocked_id=m.sender_id) OR " +
+                    "   (b.blocker_id=m.sender_id AND b.blocked_id=@me)) " +
+                    "GROUP BY m.sender_id", conn);
                 cmd.Parameters.AddWithValue("@me", myId);
-                var dt = new DataTable();
-                new MySqlDataAdapter(cmd).Fill(dt);
-
-                foreach (DataRow row in dt.Rows)
-                {
-                    int sid = Convert.ToInt32(row["sender_id"]);
-                    int cnt = Convert.ToInt32(row["cnt"]);
-                    try
-                    {
-                        if (IsUserBlocked(myId, sid) || IsUserBlocked(sid, myId)) continue;
-                    }
-                    catch { }
-                    current[sid] = cnt;
-                }
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                    current[Convert.ToInt32(r["sender_id"])] = Convert.ToInt32(r["cnt"]);
             }
             catch { return null; }
             return current;
