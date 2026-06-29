@@ -158,6 +158,25 @@ namespace PISMO
             }
         }
 
+        // Безопасное чтение полей JSON (ключ может отсутствовать / иметь иной тип).
+        private static string TryStr(JsonElement root, string name)
+        {
+            if (!root.TryGetProperty(name, out var v)) return "";
+            try { return v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString(); }
+            catch { return ""; }
+        }
+        private static int TryInt(JsonElement root, string name)
+        {
+            if (!root.TryGetProperty(name, out var v)) return 0;
+            try
+            {
+                if (v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out int n)) return n;
+                if (v.ValueKind == JsonValueKind.String && int.TryParse(v.GetString(), out int m)) return m;
+            }
+            catch { }
+            return 0;
+        }
+
         private async Task ReceiveLoop(CancellationToken token)
         {
             var buffer = new byte[1024 * 64];
@@ -176,10 +195,13 @@ namespace PISMO
                         {
                             using var doc = JsonDocument.Parse(json);
                             var root = doc.RootElement;
-                            string type = root.GetProperty("type").GetString();
-                            int senderUserId = root.GetProperty("userId").GetInt32();
-                            int sessionId = root.GetProperty("sessionId").GetInt32();
-                            string payload = root.GetProperty("payload").GetString();
+                            // ТОЛЕРАНТНЫЙ разбор: отсутствие любого ключа НЕ роняет приём
+                            // (раньше GetProperty кидал KeyNotFoundException и сообщение терялось).
+                            string type = TryStr(root, "type");
+                            if (string.IsNullOrEmpty(type)) continue; // без типа — игнор
+                            int senderUserId = TryInt(root, "userId");
+                            int sessionId = TryInt(root, "sessionId");
+                            string payload = TryStr(root, "payload");
 
                             System.Diagnostics.Debug.WriteLine($"[WS RECV] type={type} from={senderUserId} session={sessionId} payload={payload}");
 
