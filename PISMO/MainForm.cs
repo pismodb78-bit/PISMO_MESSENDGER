@@ -301,7 +301,16 @@ namespace PISMO
                     {
                         if (type == "new_message")
                         {
-                            PollTick(null, null);
+                            // Пришло событие — открытый чат перезагружаем напрямую
+                            // (без сверки COUNT: при медленной удалённой БД она
+                            // промахивалась и сообщение появлялось лишь при переоткрытии).
+                            if (_currentGroupId >= 0) LoadGroupMessages();
+                            else if (_currentChatPartnerId >= 0) LoadMessages();
+                            PollTick(null, null); // непрочитанные/бейджи
+                        }
+                        else if (type == "auth_error")
+                        {
+                            System.Diagnostics.Debug.WriteLine("[WS] register отклонён сервером (auth_error)");
                         }
                         else if (type == "read")
                         {

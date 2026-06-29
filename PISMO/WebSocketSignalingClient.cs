@@ -21,6 +21,7 @@ namespace PISMO
         private CancellationTokenSource _cts;
         private int _myUserId;
         private bool _isConnecting;
+        private bool _softToken; // true → регистрируемся без токена (после auth_error)
 
         public bool IsConnected => _ws?.State == WebSocketState.Open;
 
@@ -45,7 +46,10 @@ namespace PISMO
 
                 // Отправляем пакет регистрации с JWT — сервер проверяет подпись
                 // и совпадение userId с токеном (защита от подделки чужого id).
-                var regMsg = JsonSerializer.Serialize(new { type = "register", userId = _myUserId, token = UserSession.AuthToken ?? "" });
+                // После auth_error регистрируемся без токена (мягкий режим сервера),
+                // чтобы сообщения всё равно доставлялись.
+                string regToken = _softToken ? "" : (UserSession.AuthToken ?? "");
+                var regMsg = JsonSerializer.Serialize(new { type = "register", userId = _myUserId, token = regToken });
                 var regBytes = Encoding.UTF8.GetBytes(regMsg);
                 await _ws.SendAsync(new ArraySegment<byte>(regBytes), WebSocketMessageType.Text, true, _cts.Token);
 
@@ -174,6 +178,9 @@ namespace PISMO
                             int senderUserId = root.GetProperty("userId").GetInt32();
                             int sessionId = root.GetProperty("sessionId").GetInt32();
                             string payload = root.GetProperty("payload").GetString();
+
+                            // Сервер отклонил JWT → следующий коннект без токена.
+                            if (type == "auth_error") _softToken = true;
 
                             OnMessageReceived?.Invoke(type, senderUserId, sessionId, payload);
                         }
