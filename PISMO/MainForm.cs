@@ -1766,13 +1766,10 @@ namespace PISMO
                     {
                         bool isRead = row.Table.Columns.Contains("is_read")
                             && row["is_read"] != DBNull.Value && Convert.ToInt32(row["is_read"]) != 0;
-                        if (isRead) readState = 2;
-                        else
-                        {
-                            long age = row.Table.Columns.Contains("age_sec") && row["age_sec"] != DBNull.Value
-                                ? Convert.ToInt64(row["age_sec"]) : 999;
-                            readState = age < 4 ? 0 : 1; // совсем свежее — «отправляется»
-                        }
+                        // Прочитано → ✓✓ синие; иначе доставлено → ✓✓ серые.
+                        // (Состояние «отправляется по возрасту» убрано: оно зависело от
+                        // age_sec, которого нет в подписи перерисовки → галочка застывала.)
+                        readState = isRead ? 2 : 1;
                     }
 
                     var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
