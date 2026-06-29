@@ -2597,12 +2597,16 @@ namespace PISMO
                         or "aac" or "m4a" or "ogg" or "opus" or "flac" or "pdf";
                     using var conn = precompressed ? DBHelper.OpenConnection() : DBHelper.OpenCompressedConnection();
 
-                    // Файл пишем ОДНИМ запросом — без квадратичного CONCAT по порциям
-                    // (он перечитывал/переписывал весь blob на каждой порции → для 60 МБ
-                    // это ~гигабайты трафика к БД и жуткая медлительность).
+                    // Поднимаем серверные сетевые таймауты сессии: запись большого blob
+                    // на медленном диске может длиться дольше дефолтных 30с (иначе сервер
+                    // рвёт соединение → "Fatal error encountered during command execution").
+                    try { using var to = new MySqlCommand("SET SESSION net_read_timeout=600, net_write_timeout=600, wait_timeout=600", conn); to.ExecuteNonQuery(); } catch { }
+
+                    // 1) Строка метаданных, file_data пока NULL (получаем id).
                     string insSql = isGroup
-                        ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@g,@s,@t,@img,@aud,@vid,@fd,@fn)"
-                        : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@s,@r,@t,@img,@aud,@vid,@fd,@fn)";
+                        ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@g,@s,@t,@img,@aud,@vid,NULL,@fn)"
+                        : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@s,@r,@t,@img,@aud,@vid,NULL,@fn)";
+                    long newId;
                     using (var ins = new MySqlCommand(insSql, conn))
                     {
                         if (isGroup) { ins.Parameters.AddWithValue("@g", target); ins.Parameters.AddWithValue("@s", myId); }
@@ -2611,12 +2615,53 @@ namespace PISMO
                         AddBlob(ins, "@img", imageData);
                         AddBlob(ins, "@aud", audioData);
                         AddBlob(ins, "@vid", videoData);
-                        AddBlob(ins, "@fd", fileData);
                         ins.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
                         ins.ExecuteNonQuery();
+                        newId = ins.LastInsertedId;
                     }
 
-                    try { dlg.BeginInvoke(() => { prog = 1.0; pic.Invalidate(); }); } catch { }
+                    // 2) Пытаемся записать файл ОДНИМ запросом (быстро, O(n)).
+                    bool oneShot = false;
+                    try
+                    {
+                        using var upd = new MySqlCommand($"UPDATE {table} SET file_data=@fd WHERE id=@id", conn);
+                        upd.Parameters.Add("@fd", MySqlDbType.LongBlob).Value = fileData;
+                        upd.Parameters.AddWithValue("@id", newId);
+                        upd.CommandTimeout = 600;
+                        upd.ExecuteNonQuery();
+                        oneShot = true;
+                        try { dlg.BeginInvoke(() => { prog = 1.0; pic.Invalidate(); }); } catch { }
+                    }
+                    catch
+                    {
+                        // Пакет великоват для max_allowed_packet — откат на порционную дозапись.
+                        // Соединение могло «упасть» после fatal — берём свежее.
+                        try { conn.Close(); } catch { }
+                        using var conn2 = DBHelper.OpenConnection();
+                        const int CHUNK = 4 * 1024 * 1024; // 4 МБ (безопасно для дефолтного пакета)
+                        long off = 0;
+                        // на всякий случай очищаем возможный полузаписанный blob
+                        using (var clr = new MySqlCommand($"UPDATE {table} SET file_data=NULL WHERE id=@id", conn2))
+                        { clr.Parameters.AddWithValue("@id", newId); clr.ExecuteNonQuery(); }
+                        while (off < total)
+                        {
+                            int len = (int)Math.Min(CHUNK, total - off);
+                            var chunk = new byte[len];
+                            Array.Copy(fileData, off, chunk, 0, len);
+                            using (var up2 = new MySqlCommand(
+                                $"UPDATE {table} SET file_data = CONCAT(IFNULL(file_data, _binary''), @c) WHERE id=@id", conn2))
+                            {
+                                up2.Parameters.Add("@c", MySqlDbType.LongBlob).Value = chunk;
+                                up2.Parameters.AddWithValue("@id", newId);
+                                up2.CommandTimeout = 600;
+                                up2.ExecuteNonQuery();
+                            }
+                            off += len;
+                            double p = (double)off / total;
+                            try { dlg.BeginInvoke(() => { prog = p; pic.Invalidate(); }); } catch { }
+                        }
+                    }
+
                     success = true;
                 }
                 catch (Exception ex) { err = ex.Message; }
