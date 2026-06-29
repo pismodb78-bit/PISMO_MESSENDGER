@@ -52,6 +52,7 @@ namespace PISMO
                 var regMsg = JsonSerializer.Serialize(new { type = "register", userId = _myUserId, token = regToken });
                 var regBytes = Encoding.UTF8.GetBytes(regMsg);
                 await _ws.SendAsync(new ArraySegment<byte>(regBytes), WebSocketMessageType.Text, true, _cts.Token);
+                System.Diagnostics.Debug.WriteLine($"[WS] register отправлен: userId={_myUserId}, token={(string.IsNullOrEmpty(regToken) ? "ПУСТОЙ" : "есть")}");
 
                 _ = Task.Run(() => ReceiveLoop(_cts.Token));
             }
@@ -149,6 +150,7 @@ namespace PISMO
                 });
                 var bytes = Encoding.UTF8.GetBytes(msg);
                 _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                System.Diagnostics.Debug.WriteLine($"[WS SEND] type={type} target={targetUserId} session={sessionId} payload={payload}");
             }
             catch (Exception ex)
             {
@@ -178,6 +180,8 @@ namespace PISMO
                             int senderUserId = root.GetProperty("userId").GetInt32();
                             int sessionId = root.GetProperty("sessionId").GetInt32();
                             string payload = root.GetProperty("payload").GetString();
+
+                            System.Diagnostics.Debug.WriteLine($"[WS RECV] type={type} from={senderUserId} session={sessionId} payload={payload}");
 
                             // Сервер отклонил JWT → следующий коннект без токена.
                             if (type == "auth_error") _softToken = true;
