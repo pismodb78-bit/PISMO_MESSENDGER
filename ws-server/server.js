@@ -26,7 +26,8 @@ const wss = new WebSocket.Server({ port: PORT });
 // Секрет ДОЛЖЕН совпадать с PISMO/JwtAuth.cs (Secret). Можно переопределить
 // переменной окружения JWT_SECRET. REQUIRE_JWT=1 — отклонять клиентов без
 // валидного токена (по умолчанию мягкий режим для совместимости со старыми).
-const JWT_SECRET = process.env.JWT_SECRET || 'PISMO::jwt::secret::v1::change-me-please';
+// Должен совпадать с Secret в PISMO/JwtAuth.cs. Можно переопределить через env JWT_SECRET.
+const JWT_SECRET = process.env.JWT_SECRET || 'uc5KT2e+qYwa6tb0HUXnLZwsC55VuB93szkSpkucr8i1BFjKA6RXbyIrjk0+ign9';
 const REQUIRE_JWT = process.env.REQUIRE_JWT === '1';
 
 function verifyJwt(token) {
