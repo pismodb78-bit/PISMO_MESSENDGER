@@ -537,9 +537,10 @@ namespace PISMO
 
         private void PollTick(object sender, EventArgs e)
         {
-            // Опрос лёгкий (2 пуленных соединения, без блокировочной пачки), поэтому
-            // выполняется всегда — это надёжная доставка сообщений/галочек даже когда
-            // WS push не доходит. WS, когда работает, просто обновляет ещё быстрее.
+            // Авто-тик таймера (sender != null) при живом WS — пропускаем: всё доставляет
+            // WebSocket мгновенно (server.js релеит new_message/read). Опрос работает только
+            // как ФОЛБЭК при обрыве WS. Ручной вызов (sender == null: кнопка/WS-событие) — всегда.
+            if (sender != null && WebSocketSignalingClient.Instance.IsConnected) return;
             if (_pollBusy) return;
             _pollBusy = true;
 
