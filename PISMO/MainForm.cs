@@ -2575,6 +2575,13 @@ namespace PISMO
             dlg.Controls.Add(pic);
             dlg.Controls.Add(lbl);
 
+            // Заливка идёт одним запросом (нельзя дёшево отслеживать байты), поэтому
+            // крутим индикатор плавно к 90% во время отправки, 100% — по завершении.
+            var animTimer = new System.Windows.Forms.Timer { Interval = 80 };
+            animTimer.Tick += (s, e) => { if (prog < 0.9) { prog += (0.9 - prog) * 0.06 + 0.005; pic.Invalidate(); } };
+            dlg.Shown += (s, e) => animTimer.Start();
+            dlg.FormClosed += (s, e) => { try { animTimer.Stop(); animTimer.Dispose(); } catch { } };
+
             bool success = false;
             string err = null;
 
@@ -2583,12 +2590,13 @@ namespace PISMO
                 try
                 {
                     using var conn = DBHelper.OpenConnection();
-                    long newId;
 
-                    // 1) Вставляем строку с метаданными, file_data пока NULL.
+                    // Файл пишем ОДНИМ запросом — без квадратичного CONCAT по порциям
+                    // (он перечитывал/переписывал весь blob на каждой порции → для 60 МБ
+                    // это ~гигабайты трафика к БД и жуткая медлительность).
                     string insSql = isGroup
-                        ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@g,@s,@t,@img,@aud,@vid,NULL,@fn)"
-                        : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@s,@r,@t,@img,@aud,@vid,NULL,@fn)";
+                        ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@g,@s,@t,@img,@aud,@vid,@fd,@fn)"
+                        : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@s,@r,@t,@img,@aud,@vid,@fd,@fn)";
                     using (var ins = new MySqlCommand(insSql, conn))
                     {
                         if (isGroup) { ins.Parameters.AddWithValue("@g", target); ins.Parameters.AddWithValue("@s", myId); }
@@ -2597,31 +2605,12 @@ namespace PISMO
                         AddBlob(ins, "@img", imageData);
                         AddBlob(ins, "@aud", audioData);
                         AddBlob(ins, "@vid", videoData);
+                        AddBlob(ins, "@fd", fileData);
                         ins.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
                         ins.ExecuteNonQuery();
-                        newId = ins.LastInsertedId;
                     }
 
-                    // 2) Дописываем файл порциями (виден прогресс).
-                    const int CHUNK = 512 * 1024; // 512 КБ
-                    long off = 0;
-                    while (off < total)
-                    {
-                        int len = (int)Math.Min(CHUNK, total - off);
-                        var chunk = new byte[len];
-                        Array.Copy(fileData, off, chunk, 0, len);
-                        using (var upd = new MySqlCommand(
-                            $"UPDATE {table} SET file_data = CONCAT(IFNULL(file_data, _binary''), @c) WHERE id=@id", conn))
-                        {
-                            upd.Parameters.Add("@c", MySqlDbType.LongBlob).Value = chunk;
-                            upd.Parameters.AddWithValue("@id", newId);
-                            upd.ExecuteNonQuery();
-                        }
-                        off += len;
-                        double p = (double)off / total;
-                        try { dlg.BeginInvoke(() => { prog = p; pic.Invalidate(); }); } catch { }
-                    }
-
+                    try { dlg.BeginInvoke(() => { prog = 1.0; pic.Invalidate(); }); } catch { }
                     success = true;
                 }
                 catch (Exception ex) { err = ex.Message; }
