@@ -110,8 +110,11 @@ namespace PISMO
             // --allow-running-insecure-content снимает эту блокировку, позволяя
             // подключиться к ws:// LiveKit, сохранив при этом secure context для
             // доступа к камере/микрофону/экрану.
+            // Аппаратное ускорение (GPU) — управляется настройкой (для демонстрации
+            // экрана/видео; на проблемных драйверах его можно выключить).
             var envOptions = new CoreWebView2EnvironmentOptions(
-                "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required");
+                DeviceSettings.WebViewArgs(
+                    "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required"));
             var env = await CoreWebView2Environment.CreateAsync(null, null, envOptions);
             await _webView.EnsureCoreWebView2Async(env);
 

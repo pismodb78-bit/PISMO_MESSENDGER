@@ -29,6 +29,7 @@ namespace PISMO
         private Label _lblGainValue;
         private CheckBox _chkVoiceAuto;
         private CheckBox _chkNoiseSuppress;
+        private CheckBox _chkHwAccel;
         private TrackBar _trkVoiceThreshold;
         private Label _lblVoiceThresholdValue;
         private Panel _pnlLevelBar;
@@ -351,7 +352,7 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, 538),
-                Size = new Size(456, 100)
+                Size = new Size(456, 142)
             };
 
             var lblScreenTitle = new Label
@@ -442,8 +443,32 @@ namespace PISMO
             tblScreen.Controls.Add(lblFps, 2, 0);
             tblScreen.Controls.Add(_cmbScreenFps, 3, 0);
 
+            // Аппаратное ускорение (GPU) — как в Discord; влияет на демонстрацию
+            // экрана и видео в звонке (WebView2/Chromium).
+            _chkHwAccel = new CheckBox
+            {
+                Text = "Аппаратное ускорение (GPU для демонстрации экрана и видео)",
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BackColor = Color.FromArgb(47, 49, 54),
+                AutoSize = true,
+                Location = new Point(14, 92),
+                Cursor = Cursors.Hand
+            };
+            var lblHwHint = new Label
+            {
+                Text = "Изменение применится к следующему звонку. Выключите при чёрном экране/артефактах.",
+                Font = new Font("Segoe UI", 8f),
+                ForeColor = Color.FromArgb(140, 142, 146),
+                AutoSize = false,
+                Size = new Size(430, 16),
+                Location = new Point(16, 114)
+            };
+
             pnlScreen.Controls.Add(lblScreenTitle);
             pnlScreen.Controls.Add(tblScreen);
+            pnlScreen.Controls.Add(_chkHwAccel);
+            pnlScreen.Controls.Add(lblHwHint);
 
             // ── Горячие клавиши в звонке ────────────────────────────────
             var pnlKeys = new Panel
@@ -704,6 +729,9 @@ namespace PISMO
             string sf = DeviceSettings.ScreenShareFps.ToString();
             for (int i = 0; i < _cmbScreenFps.Items.Count; i++)
                 if (_cmbScreenFps.Items[i].ToString() == sf) { _cmbScreenFps.SelectedIndex = i; break; }
+
+            // Аппаратное ускорение.
+            _chkHwAccel.Checked = DeviceSettings.HardwareAcceleration;
         }
 
         // ════════════════════════════════════════════════════════════
@@ -973,6 +1001,8 @@ namespace PISMO
                 if (int.TryParse(_cmbScreenFps.SelectedItem.ToString(), out int sfps))
                     DeviceSettings.ScreenShareFps = Math.Clamp(sfps, 1, 60);
             }
+
+            DeviceSettings.HardwareAcceleration = _chkHwAccel.Checked;
 
             // TURN-сервер больше не используется (звонки через LiveKit).
 

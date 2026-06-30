@@ -44,7 +44,8 @@ namespace PISMO
             try
             {
                 var envOptions = new CoreWebView2EnvironmentOptions(
-                    "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required");
+                    DeviceSettings.WebViewArgs(
+                        "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required"));
                 // Отдельная папка данных, чтобы не конфликтовать с WebView2 звонка
                 // (две среды с одной папкой и разными опциями → пустое окно).
                 string udf = Path.Combine(Path.GetTempPath(), "pismo_wv_mictest");

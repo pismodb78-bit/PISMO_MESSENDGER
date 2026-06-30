@@ -45,6 +45,19 @@ namespace PISMO
         /// не передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
         public static int VoiceThreshold { get; set; } = -40;
 
+        /// <summary>Аппаратное ускорение (GPU) для WebView2 — демонстрация экрана,
+        /// видео в звонке и т.п. По умолчанию ВКЛ (как в Discord). Выключение
+        /// помогает при чёрном экране/артефактах на проблемных видеодрайверах.</summary>
+        public static bool HardwareAcceleration { get; set; } = true;
+
+        /// <summary>Доп. аргументы Chromium для WebView2 с учётом настройки HW-ускорения.
+        /// Базовые аргументы передаются как есть; при выключенном ускорении добавляется
+        /// --disable-gpu (программный рендеринг).</summary>
+        public static string WebViewArgs(string baseArgs)
+            => HardwareAcceleration
+                ? baseArgs
+                : (baseArgs + " --disable-gpu --disable-gpu-compositing").Trim();
+
         // Горячие клавиши в звонке (значение = (int)Keys с модификаторами; 0 = выкл).
         // По умолчанию Ctrl+Alt+M / C / S.
         public static int HotkeyMic { get; set; } = (int)(System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.M);
@@ -98,6 +111,9 @@ namespace PISMO
                         case "VoiceThreshold":
                             if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, -60, 0);
                             break;
+                        case "HardwareAcceleration":
+                            HardwareAcceleration = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
+                            break;
                         case "HotkeyMic":
                             if (int.TryParse(val, out int hm)) HotkeyMic = hm;
                             break;
@@ -131,6 +147,7 @@ namespace PISMO
                     $"VoiceAutoSensitivity={(VoiceAutoSensitivity ? 1 : 0)}\n" +
                     $"NoiseSuppression={(NoiseSuppression ? 1 : 0)}\n" +
                     $"VoiceThreshold={VoiceThreshold}\n" +
+                    $"HardwareAcceleration={(HardwareAcceleration ? 1 : 0)}\n" +
                     $"HotkeyMic={HotkeyMic}\n" +
                     $"HotkeyCamera={HotkeyCamera}\n" +
                     $"HotkeyScreen={HotkeyScreen}\n";
