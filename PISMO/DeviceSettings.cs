@@ -10,8 +10,31 @@ namespace PISMO
     /// </summary>
     internal static class DeviceSettings
     {
-        private static string FilePath =>
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "devices.ini");
+        // Настройки храним в %APPDATA%\PISMO (как user_audio.json) — это переживает
+        // обновления/переустановки, в отличие от папки рядом с exe, которая при
+        // установке новой версии оказывается «чистой».
+        private static string FilePath
+        {
+            get
+            {
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PISMO");
+                try { Directory.CreateDirectory(dir); } catch { }
+                string newPath = Path.Combine(dir, "devices.ini");
+
+                // Одноразовая миграция со старого места (рядом с exe), если в AppData
+                // ещё нет файла, но он есть в старой папке.
+                try
+                {
+                    string oldPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "devices.ini");
+                    if (!File.Exists(newPath) && File.Exists(oldPath))
+                        File.Copy(oldPath, newPath, false);
+                }
+                catch { }
+
+                return newPath;
+            }
+        }
 
         /// <summary>Имя выбранной камеры (DirectShow FilterInfo.Name) или "" если не выбрана / системная по умолчанию.</summary>
         public static string CameraName { get; set; } = "";

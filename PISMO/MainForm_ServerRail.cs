@@ -197,7 +197,8 @@ namespace PISMO
                 }
 
                 // Белый «пилюль»-индикатор слева (как в Discord) — для выбранного/наведённого.
-                if (selected || hover)
+                // У кнопки «+» пилюли нет (в Discord её там не показывают — иначе криво).
+                if ((selected || hover) && !isAdd)
                 {
                     int ph = selected ? 28 : 16;
                     using var pb = new SolidBrush(Color.White);

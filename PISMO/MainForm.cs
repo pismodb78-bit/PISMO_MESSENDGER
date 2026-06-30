@@ -517,6 +517,12 @@ namespace PISMO
 
         private void PollTick(object sender, EventArgs e)
         {
+            // ФОЛБЭК-опрос. Когда WS подключён — реальное время обеспечивает он
+            // (push новых сообщений, чтение, непрочитанные), поэтому таймерный тик
+            // НИЧЕГО не делает: это и убирает лаг «раз в 3 секунды». При обрыве WS
+            // (или при ручном/разовом вызове, sender==null) опрос работает как раньше.
+            if (sender != null && WebSocketSignalingClient.Instance.IsConnected) return;
+
             if (_pollBusy) return;
             _pollBusy = true;
 
@@ -2528,6 +2534,7 @@ namespace PISMO
             double angle = 0;    // угол вращающегося индикатора (без фейкового %)
             bool cancelled = false;
             MySqlCommand activeCmd = null;     // текущая команда (для отмены)
+            MySqlConnection activeConn = null; // текущее соединение (жёсткий обрыв записи при отмене)
             var pic = new Panel { Size = new Size(72, 72), Location = new Point(114, 14), BackColor = Color.Transparent };
             pic.Paint += (s, e) =>
             {
@@ -2565,7 +2572,11 @@ namespace PISMO
                 cancelled = true;
                 btnCancel.Enabled = false;
                 btnCancel.Text = "Отмена…";
+                // Cancel() не прерывает уже идущую потоковую запись blob — поэтому
+                // вдобавок ЖЁСТКО рвём соединение: запись обрывается сразу, а строку
+                // удалит обработчик catch (cancelled=true) на свежем соединении.
                 try { activeCmd?.Cancel(); } catch { }
+                try { var c = activeConn; c?.Close(); } catch { }
             };
             dlg.Controls.Add(pic);
             dlg.Controls.Add(lbl);
@@ -2590,6 +2601,7 @@ namespace PISMO
                         or "png" or "gif" or "webp" or "mp4" or "webm" or "mov" or "mkv" or "mp3"
                         or "aac" or "m4a" or "ogg" or "opus" or "flac" or "pdf";
                     using var conn = precompressed ? DBHelper.OpenConnection() : DBHelper.OpenCompressedConnection();
+                    activeConn = conn;
 
                     // Поднимаем серверные сетевые таймауты сессии: запись большого blob
                     // на медленном диске может длиться дольше дефолтных 30с (иначе сервер
@@ -2636,6 +2648,7 @@ namespace PISMO
                         // Соединение могло «упасть» после fatal — берём свежее.
                         try { conn.Close(); } catch { }
                         using var conn2 = DBHelper.OpenConnection();
+                        activeConn = conn2;
                         const int CHUNK = 4 * 1024 * 1024; // 4 МБ (безопасно для дефолтного пакета)
                         long off = 0;
                         using (var clr = new MySqlCommand($"UPDATE {table} SET file_data=NULL WHERE id=@id", conn2))

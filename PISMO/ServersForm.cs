@@ -1488,7 +1488,7 @@ namespace PISMO
                 ClientSize = new Size(300, 188), BackColor = Color.FromArgb(40, 42, 46), ControlBox = false
             };
             double angle = 0; bool ok = false; bool cancelled = false; bool retryNoReply = false;
-            string err = null; MySqlCommand activeCmd = null;
+            string err = null; MySqlCommand activeCmd = null; MySqlConnection activeConn = null;
             var pic = new Panel { Size = new Size(72, 72), Location = new Point(114, 14), BackColor = Color.Transparent };
             pic.Paint += (s, e) =>
             {
@@ -1502,7 +1502,7 @@ namespace PISMO
             var lbl = new Label { Text = "Отправка " + title, ForeColor = Color.FromArgb(220, 221, 222), TextAlign = ContentAlignment.MiddleCenter, Location = new Point(10, 92), Size = new Size(280, 46), Font = new Font("Segoe UI", 9f) };
             var btnCancel = new Button { Text = "Отмена", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Size = new Size(120, 30), Location = new Point(90, 146), Cursor = Cursors.Hand };
             btnCancel.FlatAppearance.BorderSize = 0;
-            btnCancel.Click += (s, e) => { cancelled = true; btnCancel.Enabled = false; btnCancel.Text = "Отмена…"; try { activeCmd?.Cancel(); } catch { } };
+            btnCancel.Click += (s, e) => { cancelled = true; btnCancel.Enabled = false; btnCancel.Text = "Отмена…"; try { activeCmd?.Cancel(); } catch { } try { var c = activeConn; c?.Close(); } catch { } };
             dlg.Controls.Add(pic); dlg.Controls.Add(lbl); dlg.Controls.Add(btnCancel);
             var anim = new System.Windows.Forms.Timer { Interval = 60 };
             anim.Tick += (s, e) => { angle = (angle + 24) % 360; pic.Invalidate(); };
@@ -1514,6 +1514,7 @@ namespace PISMO
                 try
                 {
                     using var conn = DBHelper.OpenConnection();
+                    activeConn = conn;
                     try { using var to = new MySqlCommand("SET SESSION net_read_timeout=600, net_write_timeout=600, wait_timeout=600", conn); to.ExecuteNonQuery(); } catch { }
                     string cols = "channel_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name";
                     string vals = "@c,@s,@t,@img,@aud,@vid,@fd,@fn";

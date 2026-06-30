@@ -317,7 +317,7 @@ namespace PISMO
 
             _chkNoiseSuppress = new CheckBox
             {
-                Text = "Шумоподавление (RNNoise: давит клавиатуру/мышь/шум)",
+                Text = "Шумоподавление (RNNoise)",
                 Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
@@ -390,7 +390,7 @@ namespace PISMO
             // Метка "Разрешение (по высоте, p):"
             var lblRes = new Label
             {
-                Text = "Разрешение (по высоте, p):",
+                Text = "Разрешение, p:",
                 Font = new Font("Segoe UI", 8.5f),
                 ForeColor = Color.FromArgb(185, 187, 190),
                 AutoSize = false,
@@ -447,7 +447,7 @@ namespace PISMO
             // экрана и видео в звонке (WebView2/Chromium).
             _chkHwAccel = new CheckBox
             {
-                Text = "Аппаратное ускорение (GPU для демонстрации экрана и видео)",
+                Text = "Аппаратное ускорение (GPU)",
                 Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
@@ -457,7 +457,7 @@ namespace PISMO
             };
             var lblHwHint = new Label
             {
-                Text = "Изменение применится к следующему звонку. Выключите при чёрном экране/артефактах.",
+                Text = "Применится к следующему звонку. Выключите при чёрном экране.",
                 Font = new Font("Segoe UI", 8f),
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,
