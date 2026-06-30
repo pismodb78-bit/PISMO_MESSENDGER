@@ -248,12 +248,13 @@ namespace PISMO
             try
             {
                 conn.Open();
+                ConnectionGuard.NotifyOk();   // связь есть — спрятать окно «нет связи», если было
                 return conn;
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[DBHelper] ✗ ОШИБКА ПОДКЛЮЧЕНИЯ: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"[DBHelper] Строка подключения: {_connectionString}");
+                ConnectionGuard.NotifyLost();  // нет связи — показать окно + начать переподключение
                 throw;
             }
         }

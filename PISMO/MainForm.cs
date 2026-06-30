@@ -91,6 +91,7 @@ namespace PISMO
             InitializeComponent();
 
             MediaCache.Init();
+            ConnectionGuard.Init(this);   // окно «нет связи с БД» + авто-переподключение
             SetupPolling();
             BuildSidebarSearch();
             this.Load += MainForm_Load;
