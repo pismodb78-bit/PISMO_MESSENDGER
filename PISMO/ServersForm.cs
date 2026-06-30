@@ -18,6 +18,7 @@ namespace PISMO
     public sealed class ServersForm : Form
     {
         private int _serverId = -1;
+        private int _pendingOpenServerId = -1;   // сервер, который надо открыть сразу после загрузки (из рейла)
         private string _serverName = "";
         private bool _isOwner = false;
         private int _channelId = -1;
@@ -89,6 +90,9 @@ namespace PISMO
         private readonly List<(string token, string display, string desc)> _mentionItems = new();
         private int _mentionAtPos = -1;   // позиция '@' в тексте, для которого открыта подсказка
 
+        /// <summary>Открыть окно серверов сразу на конкретном сервере (клик по иконке в рейле).</summary>
+        public ServersForm(int openServerId) : this() { _pendingOpenServerId = openServerId; }
+
         public ServersForm()
         {
             Text = "PISMO — Серверы";
@@ -109,7 +113,11 @@ namespace PISMO
             catch { }
 
             BuildUi();
-            Load += (s, e) => LoadServers();
+            Load += (s, e) =>
+            {
+                LoadServers();
+                if (_pendingOpenServerId > 0) { SelectServerById(_pendingOpenServerId); _pendingOpenServerId = -1; }
+            };
 
             // Сообщения — real-time по WS (OnWs); опрос сообщений только как ФОЛБЭК,
             // когда WS не подключён. «Кто в эфире» обновляем всегда, но через дифф
@@ -330,6 +338,38 @@ namespace PISMO
                 LoadServers();
             }
             catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        /// <summary>Открыть сервер по id (для внешних вызовов из рейла ЛС/серверов).</summary>
+        public void OpenServer(int sid)
+        {
+            if (IsDisposed) return;
+            try
+            {
+                if (InvokeRequired) { BeginInvoke(new Action(() => SelectServerById(sid))); return; }
+            }
+            catch { }
+            SelectServerById(sid);
+        }
+
+        /// <summary>Подтянуть имя/владельца сервера и выбрать его.</summary>
+        private void SelectServerById(int sid)
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT name, owner_id FROM servers WHERE id=@s", conn);
+                cmd.Parameters.AddWithValue("@s", sid);
+                using var r = cmd.ExecuteReader();
+                if (r.Read())
+                {
+                    string name = r["name"].ToString();
+                    bool owner = Convert.ToInt32(r["owner_id"]) == _me;
+                    r.Close();
+                    SelectServer(sid, name, owner);
+                }
+            }
+            catch { }
         }
 
         private void SelectServer(int sid, string name, bool owner)

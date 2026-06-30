@@ -94,6 +94,7 @@ namespace PISMO
             ConnectionGuard.Init(this);   // окно «нет связи с БД» + авто-переподключение
             SetupPolling();
             BuildSidebarSearch();
+            BuildServerRail();          // левый рейл «Личные сообщения + серверы» (как в Discord)
             this.Load += MainForm_Load;
         }
 
@@ -258,36 +259,8 @@ namespace PISMO
             }
             catch { }
 
-            // Кнопка «Серверы» (как в Discord) в шапке сайдбара.
-            try
-            {
-                var btnServers = new Button
-                {
-                    Text = "🗗",
-                    Font = new Font("Segoe UI", 13F),
-                    Dock = DockStyle.Right,
-                    Size = new Size(36, 48),
-                    FlatStyle = FlatStyle.Flat,
-                    BackColor = Color.Transparent,
-                    ForeColor = Color.FromArgb(185, 187, 190),
-                    Cursor = Cursors.Hand
-                };
-                btnServers.FlatAppearance.BorderSize = 0;
-                btnServers.Click += (s, e) =>
-                {
-                    if (_serversForm == null || _serversForm.IsDisposed)
-                    {
-                        _serversForm = new ServersForm();
-                        _serversForm.FormClosed += (a, b) => _serversForm = null;
-                        _serversForm.Show(this);
-                    }
-                    else _serversForm.Activate();
-                };
-                pnlSidebarHeader.Controls.Add(btnServers);
-                btnServers.BringToFront();
-                new ToolTip().SetToolTip(btnServers, "Серверы");
-            }
-            catch { }
+            // Доступ к серверам теперь через левый рейл (BuildServerRail) — как в Discord,
+            // поэтому отдельная кнопка «Серверы» в шапке сайдбара больше не нужна.
 
             InitMessageActions();
             StartPresence();
