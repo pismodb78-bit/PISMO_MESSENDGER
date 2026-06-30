@@ -1,6 +1,7 @@
 using System;
 using System.Data;
 using System.Drawing;
+using System.IO;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 using MySql.Data.MySqlClient;
@@ -19,6 +20,7 @@ namespace PISMO
     {
         private FlowLayoutPanel _serverRail;
         private int _railSelectedServerId = -1;   // -1 = выбраны «Личные сообщения»
+        private Image _homeIcon;                  // иконка PISMO для кнопки «домой» (если есть)
 
         private const int RailWidth = 72;
         private const int RailCircle = 48;
@@ -45,6 +47,15 @@ namespace PISMO
             // Когда серверов много и появляется вертикальный скролл — подгоняем ширину
             // кружков под клиентскую область, чтобы не вылезал горизонтальный скролл.
             _serverRail.Resize += (s, e) => FitRailItems();
+
+            // Иконка PISMO для кнопки «домой» (как логотип Discord). Если файла нет —
+            // в кнопке покажется текст «ЛС».
+            try
+            {
+                string p = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "pismo.ico");
+                if (File.Exists(p)) _homeIcon = new Icon(p, 44, 44).ToBitmap();
+            }
+            catch { _homeIcon = null; }
 
             LoadServerRailItems();
         }
@@ -73,8 +84,9 @@ namespace PISMO
             _serverRail.SuspendLayout();
             _serverRail.Controls.Clear();
 
-            // 1) «Личные сообщения» — домой.
-            var home = MakeRailCircle("ЛС", Color.FromArgb(88, 101, 242), Color.White, isHome: true);
+            // 1) «Личные сообщения» — домой (иконка PISMO либо текст «ЛС»).
+            var home = MakeRailCircle(_homeIcon != null ? "" : "ЛС",
+                Color.FromArgb(88, 101, 242), Color.White, isHome: true, icon: _homeIcon);
             home.Click += (s, e) => SelectRailHome();
             _tooltip.SetToolTip(home, "Личные сообщения");
             _serverRail.Controls.Add(home);
@@ -111,8 +123,8 @@ namespace PISMO
             }
             catch { /* нет связи — рейл просто без серверов, домой работает */ }
 
-            // 4) «+» — создать / войти на сервер.
-            var add = MakeRailCircle("+", Color.FromArgb(45, 47, 51), Color.FromArgb(59, 165, 93));
+            // 4) «+» — создать / войти на сервер (зеленеет при наведении, как в Discord).
+            var add = MakeRailCircle("+", Color.FromArgb(45, 47, 51), Color.FromArgb(59, 165, 93), isAdd: true);
             add.Click += (s, e) => OpenServerFromRail(-1);
             _tooltip.SetToolTip(add, "Добавить сервер");
             _serverRail.Controls.Add(add);
@@ -124,7 +136,8 @@ namespace PISMO
         private readonly ToolTip _tooltip = new ToolTip();
 
         /// <summary>Круглая «иконка» рейла (Panel с собственной отрисовкой).</summary>
-        private Panel MakeRailCircle(string text, Color back, Color fore, bool isHome = false)
+        private Panel MakeRailCircle(string text, Color back, Color fore,
+            bool isHome = false, bool isAdd = false, Image icon = null)
         {
             var pnl = new Panel
             {
@@ -154,15 +167,34 @@ namespace PISMO
                                 (pnl.Tag is int tg && tg == _railSelectedServerId);
                 int radius = (selected || hover) ? d : 16;
 
-                using (var path = RoundedRect(rect, radius / 2))
-                using (var br = new SolidBrush(back))
-                    g.FillPath(br, path);
+                // Кнопка «+» при наведении зеленеет целиком (как в Discord).
+                Color drawBack = (isAdd && hover) ? Color.FromArgb(59, 165, 93) : back;
+                Color drawFore = (isAdd && hover) ? Color.White : fore;
 
-                using var fnt = new Font(text == "+" ? "Segoe UI" : "Segoe UI Semibold",
-                                         text == "+" ? 20f : (text.Length > 2 ? 11f : 14f),
-                                         FontStyle.Bold);
-                TextRenderer.DrawText(g, text, fnt, rect, fore,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                using (var path = RoundedRect(rect, radius / 2))
+                {
+                    using (var br = new SolidBrush(drawBack))
+                        g.FillPath(br, path);
+
+                    // Иконка (логотип PISMO) — обрезаем по форме кружка.
+                    if (icon != null)
+                    {
+                        var st = g.Save();
+                        g.SetClip(path);
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(icon, rect);
+                        g.Restore(st);
+                    }
+                }
+
+                if (icon == null)
+                {
+                    using var fnt = new Font(text == "+" ? "Segoe UI" : "Segoe UI Semibold",
+                                             text == "+" ? 20f : (text.Length > 2 ? 11f : 14f),
+                                             FontStyle.Bold);
+                    TextRenderer.DrawText(g, text, fnt, rect, drawFore,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                }
 
                 // Белый «пилюль»-индикатор слева (как в Discord) — для выбранного/наведённого.
                 if (selected || hover)
