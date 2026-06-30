@@ -2546,12 +2546,14 @@ namespace PISMO
                 FormBorderStyle = FormBorderStyle.FixedToolWindow,
                 StartPosition = FormStartPosition.CenterParent,
                 ShowInTaskbar = false,
-                ClientSize = new Size(300, 150),
+                ClientSize = new Size(300, 188),
                 BackColor = Color.FromArgb(40, 42, 46),
                 ControlBox = false
             };
             double prog = 0;     // -1 при завершении не используем; крутим спиннер
             double angle = 0;    // угол вращающегося индикатора (без фейкового %)
+            bool cancelled = false;
+            MySqlCommand activeCmd = null;     // текущая команда (для отмены)
             var pic = new Panel { Size = new Size(72, 72), Location = new Point(114, 14), BackColor = Color.Transparent };
             pic.Paint += (s, e) =>
             {
@@ -2573,11 +2575,28 @@ namespace PISMO
                 Location = new Point(10, 92), Size = new Size(280, 46),
                 Font = new Font("Segoe UI", 9f)
             };
+            var btnCancel = new Button
+            {
+                Text = "Отмена",
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(64, 68, 75),
+                ForeColor = Color.White,
+                Size = new Size(120, 30),
+                Location = new Point(90, 146),
+                Cursor = Cursors.Hand
+            };
+            btnCancel.FlatAppearance.BorderSize = 0;
+            btnCancel.Click += (s, e) =>
+            {
+                cancelled = true;
+                btnCancel.Enabled = false;
+                btnCancel.Text = "Отмена…";
+                try { activeCmd?.Cancel(); } catch { }
+            };
             dlg.Controls.Add(pic);
             dlg.Controls.Add(lbl);
+            dlg.Controls.Add(btnCancel);
 
-            // Заливка идёт одним запросом (нельзя дёшево отслеживать байты), поэтому
-            // крутим индикатор плавно к 90% во время отправки, 100% — по завершении.
             var animTimer = new System.Windows.Forms.Timer { Interval = 60 };
             animTimer.Tick += (s, e) => { if (prog < 1.0) { angle = (angle + 24) % 360; pic.Invalidate(); } };
             dlg.Shown += (s, e) => animTimer.Start();
@@ -2621,31 +2640,35 @@ namespace PISMO
                         newId = ins.LastInsertedId;
                     }
 
+                    if (cancelled) { DeleteMsgRow(conn, table, newId); return; }
+
                     // 2) Пытаемся записать файл ОДНИМ запросом (быстро, O(n)).
-                    bool oneShot = false;
                     try
                     {
                         using var upd = new MySqlCommand($"UPDATE {table} SET file_data=@fd WHERE id=@id", conn);
                         upd.Parameters.Add("@fd", MySqlDbType.LongBlob).Value = fileData;
                         upd.Parameters.AddWithValue("@id", newId);
                         upd.CommandTimeout = 600;
+                        activeCmd = upd;
                         upd.ExecuteNonQuery();
-                        oneShot = true;
+                        activeCmd = null;
                         try { dlg.BeginInvoke(() => { prog = 1.0; pic.Invalidate(); }); } catch { }
                     }
                     catch
                     {
+                        activeCmd = null;
+                        if (cancelled) { try { conn.Close(); } catch { } using var cc = DBHelper.OpenConnection(); DeleteMsgRow(cc, table, newId); return; }
                         // Пакет великоват для max_allowed_packet — откат на порционную дозапись.
                         // Соединение могло «упасть» после fatal — берём свежее.
                         try { conn.Close(); } catch { }
                         using var conn2 = DBHelper.OpenConnection();
                         const int CHUNK = 4 * 1024 * 1024; // 4 МБ (безопасно для дефолтного пакета)
                         long off = 0;
-                        // на всякий случай очищаем возможный полузаписанный blob
                         using (var clr = new MySqlCommand($"UPDATE {table} SET file_data=NULL WHERE id=@id", conn2))
                         { clr.Parameters.AddWithValue("@id", newId); clr.ExecuteNonQuery(); }
                         while (off < total)
                         {
+                            if (cancelled) { DeleteMsgRow(conn2, table, newId); return; }
                             int len = (int)Math.Min(CHUNK, total - off);
                             var chunk = new byte[len];
                             Array.Copy(fileData, off, chunk, 0, len);
@@ -2655,7 +2678,9 @@ namespace PISMO
                                 up2.Parameters.Add("@c", MySqlDbType.LongBlob).Value = chunk;
                                 up2.Parameters.AddWithValue("@id", newId);
                                 up2.CommandTimeout = 600;
+                                activeCmd = up2;
                                 up2.ExecuteNonQuery();
+                                activeCmd = null;
                             }
                             off += len;
                             double p = (double)off / total;
@@ -2665,16 +2690,22 @@ namespace PISMO
 
                     success = true;
                 }
-                catch (Exception ex) { err = ex.Message; }
-
-                try { dlg.BeginInvoke(() => { dlg.Close(); }); } catch { }
+                catch (Exception ex) { if (!cancelled) err = ex.Message; }
+                finally { try { dlg.BeginInvoke(() => { dlg.Close(); }); } catch { } }
             });
 
             dlg.ShowDialog(this);
+            if (cancelled) return false;            // отменено пользователем — тихо
             if (!success && err != null)
                 MessageBox.Show("Ошибка отправки файла: " + err, "PISMO",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return success;
+        }
+
+        /// <summary>Удаляет строку сообщения (после отмены отправки файла).</summary>
+        private static void DeleteMsgRow(MySqlConnection conn, string table, long id)
+        {
+            try { using var d = new MySqlCommand($"DELETE FROM {table} WHERE id=@id", conn); d.Parameters.AddWithValue("@id", id); d.ExecuteNonQuery(); } catch { }
         }
 
         /// <summary>Добавляет BLOB-параметр (LongBlob) или DBNull, если данных нет.</summary>
@@ -2923,6 +2954,8 @@ namespace PISMO
             double dlProgress = -1;   // -1 = не идёт; >=0 = идёт (значение не важно)
             double dlAngle = 0;       // угол вращающегося индикатора (без фейкового %)
             bool downloading = false;
+            bool dlCancelled = false;
+            MySqlCommand activeDlCmd = null; // текущая команда скачивания (для отмены)
 
             Color iconBg = ext switch
             {
@@ -3013,7 +3046,8 @@ namespace PISMO
 
             void DoOpen(object s, EventArgs ev)
             {
-                if (downloading) return;
+                // Повторный клик во время загрузки — отмена.
+                if (downloading) { dlCancelled = true; try { activeDlCmd?.Cancel(); } catch { } lblSz.Text = "Отмена…"; return; }
 
                 if (fileData != null) { OpenIt(); return; }
 
@@ -3027,8 +3061,9 @@ namespace PISMO
                 // Загрузка одним запросом; индикатор плавно крутим к 90% (точные байты
                 // при одиночном чтении не отследить), 100% — по завершении.
                 downloading = true;
+                dlCancelled = false;
                 dlProgress = 0;
-                lblSz.Text = "Загрузка…";
+                lblSz.Text = "Загрузка… (клик — отмена)";
                 try { iconPnl.Invalidate(); } catch { }
 
                 var dlAnim = new System.Windows.Forms.Timer { Interval = 60 };
@@ -3067,12 +3102,14 @@ namespace PISMO
                                 $"SELECT file_data FROM {table} WHERE id=@id", conn);
                             cmd.Parameters.AddWithValue("@id", msgId);
                             cmd.CommandTimeout = 600;
+                            activeDlCmd = cmd;
                             var o = cmd.ExecuteScalar();
+                            activeDlCmd = null;
                             result = o as byte[];
                             if (result == null || result.Length == 0) err = "Файл пуст";
                         }
                     }
-                    catch (Exception ex) { err = ex.Message; }
+                    catch (Exception ex) { activeDlCmd = null; if (!dlCancelled) err = ex.Message; }
 
                     try
                     {
@@ -3082,7 +3119,8 @@ namespace PISMO
                             dlProgress = -1;
                             try { iconPnl.Invalidate(); } catch { }
 
-                            if (result != null && result.Length > 0)
+                            if (dlCancelled) { lblSz.Text = szStr; }
+                            else if (result != null && result.Length > 0)
                             {
                                 fileData = result;
                                 MediaCache.Put(msgId, "file", fileData, fileName);
