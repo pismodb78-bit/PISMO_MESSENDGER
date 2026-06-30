@@ -21,6 +21,7 @@ namespace PISMO
         private FlowLayoutPanel _serverRail;
         private int _railSelectedServerId = -1;   // -1 = выбраны «Личные сообщения»
         private Image _homeIcon;                  // иконка PISMO для кнопки «домой» (если есть)
+        private Panel _serverEmbedHost;           // контейнер встроенного окна серверов (как Discord)
 
         private const int RailWidth = 72;
         private const int RailCircle = 48;
@@ -40,8 +41,21 @@ namespace PISMO
             };
 
             Controls.Add(_serverRail);
-            // Док обрабатывается от ВЫСШЕГО индекса к низшему: чтобы рейл занял
-            // самый левый край (левее сайдбара), его индекс должен быть наибольшим.
+
+            // Контейнер встроенного окна серверов (как в Discord — всё в одном окне):
+            // Fill, поверх области ЛС; виден только когда открыт сервер.
+            _serverEmbedHost = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(54, 57, 63),
+                Visible = false
+            };
+            Controls.Add(_serverEmbedHost);
+
+            // Z-порядок дока (обрабатывается от ВЫСШЕГО индекса к низшему):
+            //   рейл (Left) — наибольший индекс (левый край),
+            //   Fill-контейнеры (pnlMain / _serverEmbedHost) — наименьшие (заполняют остаток).
+            try { Controls.SetChildIndex(_serverEmbedHost, 0); } catch { }
             try { Controls.SetChildIndex(_serverRail, Controls.Count - 1); } catch { }
 
             // Когда серверов много и появляется вертикальный скролл — подгоняем ширину
@@ -248,35 +262,50 @@ namespace PISMO
             return palette[((sid % palette.Length) + palette.Length) % palette.Length];
         }
 
-        /// <summary>Клик по «Личные сообщения» — на передний план MainForm.</summary>
+        /// <summary>Клик по «Личные сообщения» — показываем ЛС (прячем встроенный сервер).</summary>
         private void SelectRailHome()
         {
             _railSelectedServerId = -1;
-            try { _serverRail?.Invalidate(true); foreach (Control c in _serverRail.Controls) c.Invalidate(); } catch { }
-            try { Activate(); BringToFront(); } catch { }
+            try { if (_serverEmbedHost != null) _serverEmbedHost.Visible = false; } catch { }
+            try { pnlSidebar.Visible = true; pnlMain.Visible = true; } catch { }
+            try { foreach (Control c in _serverRail.Controls) c.Invalidate(); } catch { }
         }
 
-        /// <summary>Открыть сервер (sid&gt;0) или окно добавления (sid=-1) в окне серверов.</summary>
+        /// <summary>Создаёт (один раз) встроенное окно серверов внутри MainForm.</summary>
+        private void EnsureServerEmbed()
+        {
+            if (_serversForm == null || _serversForm.IsDisposed)
+            {
+                _serversForm = new ServersForm();
+                _serversForm.EnterEmbeddedMode();      // без рамки, Dock=Fill, скрыть колонку серверов
+                _serverEmbedHost.Controls.Add(_serversForm);
+                _serversForm.Show();                   // для TopLevel=false — это просто показ внутри контейнера
+            }
+        }
+
+        /// <summary>Показать встроенный сервер (sid&gt;0) или диалог добавления (sid=-1).</summary>
         private void OpenServerFromRail(int sid)
         {
             try
             {
-                if (_serversForm == null || _serversForm.IsDisposed)
-                {
-                    _serversForm = sid > 0 ? new ServersForm(sid) : new ServersForm();
-                    _serversForm.FormClosed += (a, b) => { _serversForm = null; SelectRailHome(); LoadServerRailItems(); };
-                    _serversForm.Show(this);
-                }
-                else
-                {
-                    if (sid > 0) _serversForm.OpenServer(sid);
-                    _serversForm.Activate();
-                }
+                EnsureServerEmbed();
 
                 if (sid > 0)
                 {
+                    _serversForm.OpenServer(sid);
                     _railSelectedServerId = sid;
+                    pnlSidebar.Visible = false;
+                    pnlMain.Visible = false;
+                    _serverEmbedHost.Visible = true;
+                    _serverEmbedHost.BringToFront();
                     foreach (Control c in _serverRail.Controls) c.Invalidate();
+                }
+                else
+                {
+                    // «+» — создать/войти (колонка серверов скрыта, поэтому через диалог),
+                    // затем обновляем рейл, чтобы новый сервер появился иконкой.
+                    _serversForm.AddServerDialog();
+                    LoadServerRailItems();
                 }
             }
             catch { }

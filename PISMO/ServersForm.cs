@@ -253,6 +253,35 @@ namespace PISMO
             Controls.Add(_pnlMembers);
             Controls.Add(channelHost);
             Controls.Add(serverHost);
+            _serverHostCol = serverHost;
+        }
+
+        private Panel _serverHostCol;   // колонка со списком серверов (прячем при встраивании)
+
+        /// <summary>Переводит окно в режим встраивания в MainForm (как Discord —
+        /// одно окно): убирает рамку/заголовок и прячет колонку серверов, т.к. её
+        /// роль выполняет левый рейл в MainForm.</summary>
+        public void EnterEmbeddedMode()
+        {
+            try
+            {
+                TopLevel = false;
+                FormBorderStyle = FormBorderStyle.None;
+                MinimumSize = new Size(0, 0);   // иначе как Dock=Fill-ребёнок не сожмётся < 820x520
+                Dock = DockStyle.Fill;
+                if (_serverHostCol != null) _serverHostCol.Visible = false;
+            }
+            catch { }
+        }
+
+        /// <summary>Диалог «создать/войти на сервер» для кнопки «+» в рейле.</summary>
+        public void AddServerDialog()
+        {
+            var r = MessageBox.Show(
+                "Создать новый сервер?\n\nДа — создать новый, Нет — войти по ID.",
+                "PISMO — серверы", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (r == DialogResult.Yes) CreateServer();
+            else if (r == DialogResult.No) JoinServer();
         }
 
         // ── Серверы ─────────────────────────────────────────────────────
