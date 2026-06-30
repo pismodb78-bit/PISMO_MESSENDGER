@@ -831,6 +831,22 @@ namespace PISMO
                 };
                 menu.Items.Add(itemProfile);
 
+                // Друзья (только для обычных пользователей — это меню и так вешается
+                // на карточки пользователей, не групп).
+                try
+                {
+                    bool isFriend = FriendsRepository.IsFriend(UserSession.EffectiveId, partnerId);
+                    var itemFriend = new ToolStripMenuItem(isFriend ? "➖ Удалить из друзей" : "➕ Добавить в друзья");
+                    itemFriend.Click += (s2, e2) =>
+                    {
+                        if (isFriend) FriendsRepository.Remove(UserSession.EffectiveId, partnerId);
+                        else FriendsRepository.Add(UserSession.EffectiveId, partnerId);
+                        try { if (UserSession.Role == "admin" && !UserSession.IsImpersonating) LoadAllUsersForAdmin(); else LoadConversations(); } catch { }
+                    };
+                    menu.Items.Add(itemFriend);
+                }
+                catch { }
+
                 var itemCall = new ToolStripMenuItem("📞 Позвонить");
                 itemCall.Click += (s2, e2) =>
                 {
