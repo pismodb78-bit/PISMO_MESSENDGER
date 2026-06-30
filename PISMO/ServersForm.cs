@@ -1436,34 +1436,83 @@ namespace PISMO
                 return;
             }
             int replyId = _replyToId;
-            try
+            int channel = _channelId;
+            string title = fileName ?? "медиа";
+
+            // Окно с отменой + фоновая вставка (большой blob не вешает UI; INSERT
+            // атомарен, поэтому Cancel прерывает до коммита — «хвостов» не остаётся).
+            var dlg = new Form
             {
-                using var conn = DBHelper.OpenConnection();
-                string cols = "channel_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name";
-                string vals = "@c,@s,@t,@img,@aud,@vid,@fd,@fn";
-                if (_replyColOk && replyId > 0) { cols += ", reply_to_id"; vals += ",@r"; }
-                using var cmd = new MySqlCommand($"INSERT INTO server_messages ({cols}) VALUES ({vals})", conn);
-                cmd.Parameters.AddWithValue("@c", _channelId);
-                cmd.Parameters.AddWithValue("@s", _me);
-                cmd.Parameters.AddWithValue("@t", Crypto.Enc(""));
-                AddBlobParam(cmd, "@img", image);
-                AddBlobParam(cmd, "@aud", audio);
-                AddBlobParam(cmd, "@vid", video);
-                AddBlobParam(cmd, "@fd", file);
-                cmd.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
-                if (_replyColOk && replyId > 0) cmd.Parameters.AddWithValue("@r", replyId);
-                cmd.ExecuteNonQuery();
-                CancelServerReply();
-                WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
-                LoadMessages();
-            }
-            catch (MySqlException mex) when (mex.Number == 1054)
+                Text = "Отправка файла", FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false,
+                ClientSize = new Size(300, 188), BackColor = Color.FromArgb(40, 42, 46), ControlBox = false
+            };
+            double angle = 0; bool ok = false; bool cancelled = false; bool retryNoReply = false;
+            string err = null; MySqlCommand activeCmd = null;
+            var pic = new Panel { Size = new Size(72, 72), Location = new Point(114, 14), BackColor = Color.Transparent };
+            pic.Paint += (s, e) =>
             {
-                // Нет reply_to_id — пробуем без него; иначе сообщаем про миграцию медиа.
-                if (_replyColOk) { _replyColOk = false; SendChannelMedia(image, audio, video, file, fileName); }
-                else { _mediaColPresent = false; MessageBox.Show("Медиа в каналах недоступно: на сервере не выполнена миграция\n(scripts/server_media_migration.sql).", "PISMO"); }
-            }
-            catch (Exception ex) { ShowDbError(ex); }
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                var rect = new Rectangle(6, 6, 58, 58);
+                using var track = new Pen(Color.FromArgb(90, 255, 255, 255), 6);
+                using var arc = new Pen(Color.FromArgb(88, 101, 242), 6);
+                e.Graphics.DrawEllipse(track, rect);
+                e.Graphics.DrawArc(arc, rect, (float)angle, 110);
+            };
+            var lbl = new Label { Text = "Отправка " + title, ForeColor = Color.FromArgb(220, 221, 222), TextAlign = ContentAlignment.MiddleCenter, Location = new Point(10, 92), Size = new Size(280, 46), Font = new Font("Segoe UI", 9f) };
+            var btnCancel = new Button { Text = "Отмена", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Size = new Size(120, 30), Location = new Point(90, 146), Cursor = Cursors.Hand };
+            btnCancel.FlatAppearance.BorderSize = 0;
+            btnCancel.Click += (s, e) => { cancelled = true; btnCancel.Enabled = false; btnCancel.Text = "Отмена…"; try { activeCmd?.Cancel(); } catch { } };
+            dlg.Controls.Add(pic); dlg.Controls.Add(lbl); dlg.Controls.Add(btnCancel);
+            var anim = new System.Windows.Forms.Timer { Interval = 60 };
+            anim.Tick += (s, e) => { angle = (angle + 24) % 360; pic.Invalidate(); };
+            dlg.Shown += (s, e) => anim.Start();
+            dlg.FormClosed += (s, e) => { try { anim.Stop(); anim.Dispose(); } catch { } };
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    try { using var to = new MySqlCommand("SET SESSION net_read_timeout=600, net_write_timeout=600, wait_timeout=600", conn); to.ExecuteNonQuery(); } catch { }
+                    string cols = "channel_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name";
+                    string vals = "@c,@s,@t,@img,@aud,@vid,@fd,@fn";
+                    bool withReply = _replyColOk && replyId > 0;
+                    if (withReply) { cols += ", reply_to_id"; vals += ",@r"; }
+                    using var cmd = new MySqlCommand($"INSERT INTO server_messages ({cols}) VALUES ({vals})", conn);
+                    cmd.Parameters.AddWithValue("@c", channel);
+                    cmd.Parameters.AddWithValue("@s", _me);
+                    cmd.Parameters.AddWithValue("@t", Crypto.Enc(""));
+                    AddBlobParam(cmd, "@img", image);
+                    AddBlobParam(cmd, "@aud", audio);
+                    AddBlobParam(cmd, "@vid", video);
+                    AddBlobParam(cmd, "@fd", file);
+                    cmd.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
+                    if (withReply) cmd.Parameters.AddWithValue("@r", replyId);
+                    cmd.CommandTimeout = 600;
+                    activeCmd = cmd;
+                    cmd.ExecuteNonQuery();
+                    activeCmd = null;
+                    ok = true;
+                }
+                catch (MySqlException mex) when (mex.Number == 1054)
+                {
+                    if (_replyColOk) { _replyColOk = false; retryNoReply = true; }
+                    else { _mediaColPresent = false; err = "Медиа в каналах недоступно: не выполнена миграция server_messages."; }
+                }
+                catch (Exception ex) { if (!cancelled) err = ex.Message; }
+                finally { try { dlg.BeginInvoke(() => dlg.Close()); } catch { } }
+            });
+
+            dlg.ShowDialog(this);
+
+            if (cancelled) return;
+            if (retryNoReply) { SendChannelMedia(image, audio, video, file, fileName); return; }
+            if (!ok) { if (err != null) MessageBox.Show(err, "PISMO"); return; }
+
+            CancelServerReply();
+            WebSocketSignalingClient.Instance.SendMessage("new_message", 0, channel, "server");
+            LoadMessages();
         }
 
         /// <summary>Прикрепить файл (или картинку) в канал.</summary>
