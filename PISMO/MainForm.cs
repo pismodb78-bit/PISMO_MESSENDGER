@@ -40,6 +40,7 @@ namespace PISMO
         private System.Windows.Forms.Timer _pollTimer;
         private int _lastMsgCount = 0;
         private bool _pollBusy = false;
+        private int _lastOpenSig = -1;   // число сообщений открытого чата на прошлом опросе (детект новых)
         private readonly Dictionary<int, int> _prevUnread = new();
 
         // Кеш метаданных переписки в памяти: при повторном открытии чата сообщения
@@ -517,26 +518,29 @@ namespace PISMO
 
         private void PollTick(object sender, EventArgs e)
         {
-            // ФОЛБЭК-опрос. Когда WS подключён — реальное время обеспечивает он
-            // (push новых сообщений, чтение, непрочитанные), поэтому таймерный тик
-            // НИЧЕГО не делает: это и убирает лаг «раз в 3 секунды». При обрыве WS
-            // (или при ручном/разовом вызове, sender==null) опрос работает как раньше.
-            if (sender != null && WebSocketSignalingClient.Instance.IsConnected) return;
-
+            // Опрос-страховка идёт ВСЕГДА (даже при «подключённом» WS) — потому что WS
+            // иногда молча перестаёт доставлять, и тогда сообщения не приходят. Чтобы
+            // при этом не было лага «раз в 3 секунды», тяжёлую перезагрузку чата делаем
+            // лишь когда реально пришло новое сообщение (проверка COUNT ниже), а не
+            // каждый тик. Непрочитанные/присутствие — в фоне и с диффом (без работы UI,
+            // если ничего не изменилось).
             if (_pollBusy) return;
             _pollBusy = true;
 
-            // Перезагрузку открытого чата (запрос к БД, который выполняется на
-            // UI-потоке в LoadMessages) делаем ТОЛЬКО при ручном обновлении
-            // (sender==null). На таймерном тике этого НЕ делаем — иначе UI-поток
-            // периодически подвисает и окно «дёргается» при перетаскивании.
+            // Перезагрузку открытого чата (LoadMessages — запрос к БД на UI-потоке)
+            // на таймерном тике делаем ТОЛЬКО если реально пришло новое сообщение
+            // (дешёвая фоновая проверка COUNT). Так и лага «раз в 3 секунды» нет
+            // (обычно перезагрузки не происходит), и сообщения доходят при обрыве WS.
+            // Ручное обновление (sender==null) перезагружает всегда.
             bool forced = sender == null;
+            int grp = _currentGroupId;
+            int dm = _currentChatPartnerId;
 
             // id видимых карточек собираем на UI-потоке (потоконебезопасно иначе).
             var ids = new List<int>();
             try { foreach (var p in _userPanels) if (p.Tag is int uid) ids.Add(uid); } catch { }
 
-            // Запросы непрочитанных/присутствия — в фоне (не вешаем UI).
+            // Запросы непрочитанных/присутствия/проверка нового — в фоне (не вешаем UI).
             System.Threading.Tasks.Task.Run(() =>
             {
                 try
@@ -544,12 +548,21 @@ namespace PISMO
                     var unread = ReadUnreadCounts();
                     var presence = ReadPresence(ids);
 
+                    // Дёшево смотрим, изменилось ли число сообщений в открытом чате.
+                    bool openChanged = false;
+                    try
+                    {
+                        if (grp >= 0) { int c = GetGroupMsgCount(); openChanged = c != _lastOpenSig; _lastOpenSig = c; }
+                        else if (dm >= 0) { int c = GetMsgCount(); openChanged = c != _lastOpenSig; _lastOpenSig = c; }
+                    }
+                    catch { }
+
                     if (IsDisposed || !IsHandleCreated) return;
                     BeginInvoke(new Action(() =>
                     {
                         try
                         {
-                            if (forced)
+                            if (forced || openChanged)
                             {
                                 if (_currentGroupId >= 0) LoadGroupMessages();
                                 else if (_currentChatPartnerId >= 0) LoadMessages();
