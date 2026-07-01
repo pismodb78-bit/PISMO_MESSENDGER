@@ -62,6 +62,9 @@ namespace PISMO
         public event Action LocalCameraStopped;
         public event Action<string> LocalCameraError;
 
+        // Запрос выхода из «театра» (двойной клик / крестик внутри WebView).
+        public event Action TheaterExitRequested;
+
         // --- Превью перед включением ---
         public event Action<byte[]> ScreenPreviewFrameReceived;
         public event Action ScreenPreviewReady;
@@ -998,6 +1001,48 @@ async function setAudioDevice(kind, deviceLabel){
 // Шум давит Krisp, постоянный фон — браузерный noiseSuppression.
 function setVoiceGate(auto, threshold){ /* no-op, оставлено для совместимости команд */ }
 
+// ── «Театр»: нативный полноэкранный рендер видео (плавные 60fps) ──────
+// Показываем реальный <video> прямо в WebView, а не извлекаем JPEG. Тот же
+// MediaStream, что и у скрытого элемента, — поэтому без потери кадров.
+let theaterEl = null;
+function theaterShow(pid, source){
+    let src = null;
+    const entry = remoteVideoMap[tileKey(pid, source)];
+    if (entry && entry.el && entry.el.srcObject) src = entry.el.srcObject;
+    if (!src && source === 'screen' && screenPreviewVideoEl && screenPreviewVideoEl.srcObject) src = screenPreviewVideoEl.srcObject;
+    if (!src && source === 'camera' && localCameraVideoEl && localCameraVideoEl.srcObject) src = localCameraVideoEl.srcObject;
+    if (!src) return;
+    if (!theaterEl){
+        theaterEl = document.createElement('div');
+        theaterEl.style.cssText = 'position:fixed;inset:0;background:#000;z-index:2147483000;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+        const v = document.createElement('video');
+        v.autoplay = true; v.muted = true; v.playsInline = true;
+        v.id = '__theaterVideo';
+        v.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;';
+        theaterEl.appendChild(v);
+        // Выход из театра: двойной клик по видео или крестик.
+        theaterEl.ondblclick = () => post({type:'theaterExitRequested'});
+        const x = document.createElement('div');
+        x.textContent = '✕';
+        x.title = 'Выйти (двойной клик)';
+        x.style.cssText = 'position:absolute;top:12px;right:16px;color:#fff;font:700 22px Segoe UI,sans-serif;background:rgba(0,0,0,.45);border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+        x.onclick = (ev) => { ev.stopPropagation(); post({type:'theaterExitRequested'}); };
+        theaterEl.appendChild(x);
+        document.body.appendChild(theaterEl);
+    }
+    const vid = theaterEl.querySelector('#__theaterVideo');
+    if (vid.srcObject !== src) vid.srcObject = src;
+    try { vid.play(); } catch(e){}
+    theaterEl.style.display = 'flex';
+}
+function theaterHide(){
+    if (theaterEl){
+        theaterEl.style.display = 'none';
+        const vid = theaterEl.querySelector('#__theaterVideo');
+        if (vid) vid.srcObject = null;
+    }
+}
+
 async function disconnectRoom(){
     try { if (room) await room.disconnect(); } catch(e){}
 }
@@ -1029,6 +1074,8 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'setNoiseSuppression': setNoiseSuppression(msg.on); break;
         case 'setMicGain': setMicGain(msg.gain); break;
         case 'setDisplayName': try { if (room) room.localParticipant.setName(msg.name); } catch(e){} break;
+        case 'theaterShow': theaterShow(msg.pid, msg.source); break;
+        case 'theaterHide': theaterHide(); break;
         case 'disconnect': disconnectRoom(); break;
     }
 });
@@ -1055,6 +1102,9 @@ window.chrome.webview.addEventListener('message', (e) => {
                         break;
                     case "remoteLeft":
                         RemoteParticipantLeft?.Invoke();
+                        break;
+                    case "theaterExitRequested":
+                        TheaterExitRequested?.Invoke();
                         break;
                     case "participantJoined":
                         ParticipantJoined?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "name"));
@@ -1211,6 +1261,47 @@ window.chrome.webview.addEventListener('message', (e) => {
         public void HideTransportWindow()
         {
             ReturnTransportWindowToOriginalParent();
+        }
+
+        // ── «Театр»: нативный рендер видео во весь видео-участок (плавные 60fps) ──
+        // WebView остаётся в той же форме звонка — просто разворачиваем его на
+        // переданную область (обычно bounds плиточного хоста) и показываем реальный
+        // <video>. Кнопки звонка ниже него и остаются кликабельными (нет airspace).
+
+        /// <summary>Развернуть WebView на область bounds и показать нативное видео.</summary>
+        public void EnterTheater(string pid, string source, System.Drawing.Rectangle bounds)
+        {
+            try
+            {
+                if (_webView == null) return;
+                _webView.Dock = DockStyle.None;
+                _webView.Bounds = bounds;
+                _webView.Visible = true;
+                _webView.BringToFront();
+            }
+            catch { }
+            SendToJs(JsonSerializer.Serialize(new { cmd = "theaterShow", pid, source }));
+        }
+
+        /// <summary>Обновить область театра (при ресайзе окна).</summary>
+        public void UpdateTheaterBounds(System.Drawing.Rectangle bounds)
+        {
+            try { if (_webView != null && _webView.Visible && _webView.Width > 2) _webView.Bounds = bounds; }
+            catch { }
+        }
+
+        /// <summary>Выйти из театра — вернуть WebView за пределы экрана (1x1).</summary>
+        public void ExitTheater()
+        {
+            SendToJs(JsonSerializer.Serialize(new { cmd = "theaterHide" }));
+            try
+            {
+                if (_webView == null) return;
+                _webView.SendToBack();
+                _webView.Size = new System.Drawing.Size(1, 1);
+                _webView.Location = new System.Drawing.Point(-3000, -3000);
+            }
+            catch { }
         }
 
         private void ReturnTransportWindowToOriginalParent()

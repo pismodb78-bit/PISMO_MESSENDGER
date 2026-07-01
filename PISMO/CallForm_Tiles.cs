@@ -43,7 +43,8 @@ namespace PISMO
         // чтобы рамка не моргала между тиками детектора (он шлёт каждые ~60мс).
         private const int SpeakHoldMs = 200;
 
-        private string _fullscreenKey;  // ключ плитки на весь экран, либо null
+        private string _fullscreenKey;  // ключ плитки на весь экран (PictureBox), либо null
+        private string _theaterKey;     // ключ плитки в нативном «театре» (WebView 60fps), либо null
         private readonly Dictionary<string, float> _userVol = new();   // pid -> громкость
         private readonly Dictionary<string, bool> _userMuted = new();  // pid -> заглушен
         private Form _userAudioPopup;
@@ -63,7 +64,11 @@ namespace PISMO
                 Size = new Size(ClientSize.Width, Math.Max(50, ClientSize.Height - 56 - _pnlButtons.Height)),
                 Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
             };
-            _tilesHost.Resize += (s, e) => LayoutTiles();
+            _tilesHost.Resize += (s, e) =>
+            {
+                if (_theaterKey != null) { try { _transport?.UpdateTheaterBounds(_tilesHost.Bounds); } catch { } }
+                else LayoutTiles();
+            };
 
             // Прячем старую одиночную раскладку видео. В режиме плиток эти
             // PictureBox'ы вообще не нужны — убираем их из формы, чтобы пустой
@@ -225,6 +230,7 @@ namespace PISMO
                 _tiles.Remove(key);
                 _tileOrder.Remove(key);
                 if (_fullscreenKey == key) _fullscreenKey = null;
+                if (_theaterKey == key) ExitTheaterMode(); // демонстрацию прекратили — выходим из театра
             }
         }
 
@@ -493,8 +499,37 @@ namespace PISMO
         // ── Полноэкранная плитка (демка во весь экран) ──────────────────
         private void ToggleFullscreen(string key)
         {
+            // Уже в «театре» по этому ключу — выходим.
+            if (_theaterKey == key) { ExitTheaterMode(); return; }
+
+            int bar = key?.IndexOf('|') ?? -1;
+            string src = bar >= 0 ? key.Substring(bar + 1) : "";
+            string pid = bar >= 0 ? key.Substring(0, bar) : key;
+
+            // Демонстрация экрана — нативный «театр» (плавные 60fps через WebView).
+            if (src == "screen" && _tiles.ContainsKey(key))
+            {
+                _fullscreenKey = null;
+                _theaterKey = key;
+                var b = _tilesHost.Bounds;
+                try { _tilesHost.Visible = false; } catch { }
+                try { _transport?.EnterTheater(pid, "screen", b); } catch { }
+                return;
+            }
+
+            // Прочее (камера) — прежний PictureBox-фуллскрин.
             if (_fullscreenKey == key) _fullscreenKey = null;
             else if (_tiles.ContainsKey(key)) _fullscreenKey = key;
+            LayoutTiles();
+        }
+
+        /// <summary>Выйти из нативного «театра» и вернуть плитки.</summary>
+        private void ExitTheaterMode()
+        {
+            if (_theaterKey == null) return;
+            _theaterKey = null;
+            try { _transport?.ExitTheater(); } catch { }
+            try { if (_tilesHost != null) _tilesHost.Visible = true; } catch { }
             LayoutTiles();
         }
 
