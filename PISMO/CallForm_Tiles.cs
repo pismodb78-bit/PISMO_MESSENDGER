@@ -248,6 +248,16 @@ namespace PISMO
                 _lblScreenAudioVolume.Visible = true;
                 _lblScreenBadge.Text = "🖥 Идёт демонстрация экрана";
                 _lblScreenBadge.Visible = true;
+
+                // Демонстрацию собеседника показываем СРАЗУ нативно (GPU-декод напрямую,
+                // плавные 60fps) — без двойного клика. Выйти можно ✕/двойным кликом.
+                if (pid != SelfPid && _theaterKey == null)
+                {
+                    _theaterKey = TileKey(pid, source);
+                    var b = _tilesHost.Bounds;
+                    try { _tilesHost.Visible = false; } catch { }
+                    try { _transport?.EnterTheater(pid, "screen", b); } catch { }
+                }
             }
         }
 
