@@ -64,6 +64,8 @@ namespace PISMO
 
         // Запрос выхода из «театра» (двойной клик / крестик внутри WebView).
         public event Action TheaterExitRequested;
+        // Запрос развернуть/свернуть театр на весь экран (кнопка ⛶).
+        public event Action TheaterFullscreenToggle;
 
         // --- Превью перед включением ---
         public event Action<byte[]> ScreenPreviewFrameReceived;
@@ -1022,10 +1024,18 @@ function theaterShow(pid, source){
         theaterEl.appendChild(v);
         // Выход из театра: двойной клик по видео или крестик.
         theaterEl.ondblclick = () => post({type:'theaterExitRequested'});
+        const btnCss = 'position:absolute;top:12px;color:#fff;font:700 20px Segoe UI,sans-serif;background:rgba(0,0,0,.45);border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+        // Развернуть на весь экран / свернуть обратно (нативное качество сохраняется).
+        const fs = document.createElement('div');
+        fs.textContent = '⛶';
+        fs.title = 'Во весь экран';
+        fs.style.cssText = btnCss + 'right:64px;';
+        fs.onclick = (ev) => { ev.stopPropagation(); post({type:'theaterFullscreenToggle'}); };
+        theaterEl.appendChild(fs);
         const x = document.createElement('div');
         x.textContent = '✕';
         x.title = 'Выйти (двойной клик)';
-        x.style.cssText = 'position:absolute;top:12px;right:16px;color:#fff;font:700 22px Segoe UI,sans-serif;background:rgba(0,0,0,.45);border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+        x.style.cssText = btnCss + 'right:16px;';
         x.onclick = (ev) => { ev.stopPropagation(); post({type:'theaterExitRequested'}); };
         theaterEl.appendChild(x);
         document.body.appendChild(theaterEl);
@@ -1105,6 +1115,9 @@ window.chrome.webview.addEventListener('message', (e) => {
                         break;
                     case "theaterExitRequested":
                         TheaterExitRequested?.Invoke();
+                        break;
+                    case "theaterFullscreenToggle":
+                        TheaterFullscreenToggle?.Invoke();
                         break;
                     case "participantJoined":
                         ParticipantJoined?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "name"));

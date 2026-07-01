@@ -45,6 +45,10 @@ namespace PISMO
 
         private string _fullscreenKey;  // ключ плитки на весь экран (PictureBox), либо null
         private string _theaterKey;     // ключ плитки в нативном «театре» (WebView 60fps), либо null
+        private bool _theaterFullscreen;                 // театр развёрнут на весь монитор
+        private FormBorderStyle _savedBorder;            // сохранённое состояние окна для возврата
+        private FormWindowState _savedWinState;
+        private Rectangle _savedBounds;
         private readonly Dictionary<string, float> _userVol = new();   // pid -> громкость
         private readonly Dictionary<string, bool> _userMuted = new();  // pid -> заглушен
         private Form _userAudioPopup;
@@ -66,7 +70,7 @@ namespace PISMO
             };
             _tilesHost.Resize += (s, e) =>
             {
-                if (_theaterKey != null) { try { _transport?.UpdateTheaterBounds(_tilesHost.Bounds); } catch { } }
+                if (_theaterKey != null) { try { _transport?.UpdateTheaterBounds(TheaterBounds()); } catch { } }
                 else LayoutTiles();
             };
 
@@ -536,10 +540,47 @@ namespace PISMO
             LayoutTiles();
         }
 
+        /// <summary>Область для нативного видео: весь монитор (fullscreen) либо участок плиток.</summary>
+        private Rectangle TheaterBounds() => _theaterFullscreen ? ClientRectangle : _tilesHost.Bounds;
+
+        /// <summary>Развернуть/свернуть театр на весь монитор (нативное качество сохраняется).</summary>
+        private void ToggleTheaterFullscreen()
+        {
+            if (_theaterKey == null) return;
+            _theaterFullscreen = !_theaterFullscreen;
+
+            if (_theaterFullscreen)
+            {
+                _savedBorder = FormBorderStyle;
+                _savedWinState = WindowState;
+                _savedBounds = Bounds;
+                try
+                {
+                    WindowState = FormWindowState.Normal;   // чтобы можно было задать Bounds
+                    FormBorderStyle = FormBorderStyle.None;
+                    Bounds = Screen.FromHandle(Handle).Bounds; // весь монитор, включая taskbar
+                }
+                catch { }
+            }
+            else
+            {
+                try
+                {
+                    FormBorderStyle = _savedBorder;
+                    Bounds = _savedBounds;
+                    WindowState = _savedWinState;
+                }
+                catch { }
+            }
+            try { _transport?.UpdateTheaterBounds(TheaterBounds()); } catch { }
+        }
+
         /// <summary>Выйти из нативного «театра» и вернуть плитки.</summary>
         private void ExitTheaterMode()
         {
             if (_theaterKey == null) return;
+            // Если были в полноэкранном режиме — сперва вернём обычное окно.
+            if (_theaterFullscreen) ToggleTheaterFullscreen();
             _theaterKey = null;
             try { _transport?.ExitTheater(); } catch { }
             try { if (_tilesHost != null) _tilesHost.Visible = true; } catch { }

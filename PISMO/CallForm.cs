@@ -641,6 +641,7 @@ namespace PISMO
             _transport.LocalCameraStopped += () => UiInvoke(() => { OnLocalCameraStopped(); OnSelfCameraStopped(); });
             _transport.LocalCameraError += err => UiInvoke(() => OnLocalCameraError(err));
             _transport.TheaterExitRequested += () => UiInvoke(ExitTheaterMode);
+            _transport.TheaterFullscreenToggle += () => UiInvoke(ToggleTheaterFullscreen);
 
             // --- LiveKit: подключение к комнате ---
             // Сигналинг, ICE/TURN, renegotiation и многосторонность берёт на себя
