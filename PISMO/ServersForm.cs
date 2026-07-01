@@ -515,39 +515,52 @@ namespace PISMO
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
                 _voiceContainers.Clear();
                 _voiceSig.Clear();
+
+                // Группировка как в Discord: сначала «Текстовые каналы», затем «Голосовые».
+                bool textHeader = false, voiceHeader = false;
                 foreach (DataRow r in dt.Rows)
                 {
-                    int cid = Convert.ToInt32(r["id"]);
-                    string cname = r["name"].ToString();
-                    string ctype = r["type"].ToString();
-                    var b = MakeSideButton((ctype == "voice" ? "🔊 " : "# ") + cname, Color.FromArgb(54, 57, 63));
-                    b.AccessibleName = cname;
-                    b.Click += (s, e) => SelectChannel(cid, ctype, cname);
-                    _pnlChannels.Controls.Add(b);
-
-                    // Под голосовым каналом — список тех, кто сейчас «в эфире».
-                    if (ctype == "voice")
-                    {
-                        var cont = new FlowLayoutPanel
-                        {
-                            FlowDirection = FlowDirection.TopDown,
-                            WrapContents = false,
-                            AutoSize = true,
-                            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                            Width = 180,
-                            Margin = new Padding(10, 0, 0, 4),
-                            BackColor = Color.Transparent
-                        };
-                        cont.AccessibleName = cname;
-                        _voiceContainers[cid] = cont;
-                        _pnlChannels.Controls.Add(cont);
-                    }
+                    if (r["type"].ToString() != "text") continue;
+                    if (!textHeader) { _pnlChannels.Controls.Add(MakeHeader("Текстовые каналы")); textHeader = true; }
+                    AddChannelButton(Convert.ToInt32(r["id"]), r["name"].ToString(), "text");
+                }
+                foreach (DataRow r in dt.Rows)
+                {
+                    if (r["type"].ToString() != "voice") continue;
+                    if (!voiceHeader) { _pnlChannels.Controls.Add(MakeHeader("Голосовые каналы")); voiceHeader = true; }
+                    AddChannelButton(Convert.ToInt32(r["id"]), r["name"].ToString(), "voice");
                 }
                 FilterChannels(_channelSearch?.Text);
             }
             catch (Exception ex) { ShowDbError(ex); }
 
             RefreshVoicePresence();
+        }
+
+        /// <summary>Рисует кнопку канала (+ контейнер «в эфире» для голосовых).</summary>
+        private void AddChannelButton(int cid, string cname, string ctype)
+        {
+            var b = MakeSideButton((ctype == "voice" ? "🔊 " : "# ") + cname, Color.FromArgb(54, 57, 63));
+            b.AccessibleName = cname;
+            b.Click += (s, e) => SelectChannel(cid, ctype, cname);
+            _pnlChannels.Controls.Add(b);
+
+            if (ctype == "voice")
+            {
+                var cont = new FlowLayoutPanel
+                {
+                    FlowDirection = FlowDirection.TopDown,
+                    WrapContents = false,
+                    AutoSize = true,
+                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    Width = 180,
+                    Margin = new Padding(10, 0, 0, 4),
+                    BackColor = Color.Transparent
+                };
+                cont.AccessibleName = cname;
+                _voiceContainers[cid] = cont;
+                _pnlChannels.Controls.Add(cont);
+            }
         }
 
         /// <summary>Разовое обновление сервера (вместо периодического опроса).</summary>

@@ -74,11 +74,19 @@ namespace PISMO
         public static bool HardwareAcceleration { get; set; } = true;
 
         /// <summary>Доп. аргументы Chromium для WebView2 с учётом настройки HW-ускорения.
-        /// Базовые аргументы передаются как есть; при выключенном ускорении добавляется
-        /// --disable-gpu (программный рендеринг).</summary>
+        /// При включённом ускорении ЯВНО разрешаем GPU-растеризацию и, главное,
+        /// аппаратное кодирование/декодирование видео (NVENC/Media Foundation) +
+        /// игнорируем GPU-блоклист — иначе демонстрация экрана кодируется на CPU и
+        /// дискретная видеокарта простаивает (Video Encode 0%). При выключенном —
+        /// программный рендеринг (--disable-gpu).</summary>
         public static string WebViewArgs(string baseArgs)
             => HardwareAcceleration
-                ? baseArgs
+                ? (baseArgs
+                    + " --ignore-gpu-blocklist"
+                    + " --enable-gpu-rasterization"
+                    + " --enable-zero-copy"
+                    + " --enable-accelerated-video-decode"
+                    + " --enable-accelerated-video-encode").Trim()
                 : (baseArgs + " --disable-gpu --disable-gpu-compositing").Trim();
 
         // Горячие клавиши в звонке (значение = (int)Keys с модификаторами; 0 = выкл).
