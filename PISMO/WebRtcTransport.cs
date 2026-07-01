@@ -904,13 +904,13 @@ async function confirmScreenShare(){
             if (!effH || effH <= 0){
                 try { effH = screenVideoTrack.mediaStreamTrack.getSettings().height || 1080; } catch(e){ effH = 1080; }
             }
-            // Для 60 fps даём чуть больше — плавное движение требует больше бит.
+            // Для 60 fps даём больше — плавное движение требует больше бит.
             let hi = screenQualityF >= 45;
-            let maxBitrate = effH >= 1440 ? (hi ? 16_000_000 : 12_000_000)
-                           : effH >= 1080 ? (hi ? 12_000_000 : 8_000_000)
-                           : effH >= 720  ? (hi ? 7_000_000  : 5_000_000)
-                           : effH >= 480  ? 3_000_000
-                           : 1_500_000;
+            let maxBitrate = effH >= 1440 ? (hi ? 30_000_000 : 22_000_000)
+                           : effH >= 1080 ? (hi ? 22_000_000 : 15_000_000)
+                           : effH >= 720  ? (hi ? 12_000_000 : 8_000_000)
+                           : effH >= 480  ? 5_000_000
+                           : 2_500_000;
             await room.localParticipant.publishTrack(screenVideoTrack, {
                 source: LK.Track.Source.ScreenShare,
                 simulcast: false,
