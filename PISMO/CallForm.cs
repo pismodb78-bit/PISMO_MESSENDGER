@@ -1124,10 +1124,15 @@ namespace PISMO
                 _transport.DevicesEnumerated -= OnDevicesForPreview;
                 _cameraPreviewForm = null;
                 _transport.CancelCameraPreview();
-                // Кнопка остаётся в состоянии "выключено", раз пользователь отменил.
+                // Возвращаем кнопку в состояние "выключено" (🚫 + красный). Раньше
+                // тут ошибочно ставился «включённый» вид (📷 + серый) — кнопка
+                // показывала камеру включённой, хотя её отменили.
                 _cameraOff = true;
-                _btnCamera.Text = "📷";
-                _btnCamera.BackColor = Color.FromArgb(64, 68, 75);
+                _cameraStarted = false;
+                _btnCamera.Text = "🚫";
+                _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
+                var oldc = _pbLocal.Image; _pbLocal.Image = null; oldc?.Dispose();
+                _pbLocal.Visible = false;
             };
 
             // DeviceSettings.CameraName хранит имя устройства, выбранное ДО звонка —

@@ -201,11 +201,19 @@ namespace PISMO
                     }
                 }
 
-                if (icon == null)
+                if (isAdd)
                 {
-                    using var fnt = new Font(text == "+" ? "Segoe UI" : "Segoe UI Semibold",
-                                             text == "+" ? 20f : (text.Length > 2 ? 11f : 14f),
-                                             FontStyle.Bold);
+                    // Плюс рисуем вручную двумя полосками — ровно по центру кружка
+                    // (глиф «+» из шрифта оптически смещён и выглядит криво).
+                    int cx = rect.X + d / 2, cy = rect.Y + d / 2;
+                    const int arm = 20, th = 4;
+                    using var pb = new SolidBrush(drawFore);
+                    g.FillRectangle(pb, cx - arm / 2, cy - th / 2, arm, th);   // горизонтальная
+                    g.FillRectangle(pb, cx - th / 2, cy - arm / 2, th, arm);   // вертикальная
+                }
+                else if (icon == null)
+                {
+                    using var fnt = new Font("Segoe UI Semibold", text.Length > 2 ? 11f : 14f, FontStyle.Bold);
                     TextRenderer.DrawText(g, text, fnt, rect, drawFore,
                         TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }

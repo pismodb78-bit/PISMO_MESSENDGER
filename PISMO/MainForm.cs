@@ -750,6 +750,27 @@ namespace PISMO
                 ? $"💬 За: {UserSession.EffectiveName}"
                 : "Личные сообщения";
 
+            FriendsRepository.EnsureTable();
+
+            // Кнопка «Добавить друга» (обычные пользователи видят только друзей,
+            // а новых находят и добавляют через поиск).
+            var btnAddFriend = new Button
+            {
+                Text = "➕  Добавить друга",
+                Width = CardWidth,
+                Height = 34,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(59, 165, 93),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Cursor = Cursors.Hand,
+                Margin = new Padding(6, 4, 6, 6)
+            };
+            btnAddFriend.FlatAppearance.BorderSize = 0;
+            btnAddFriend.Click += (s, e) => OpenAddFriend();
+            pnlUserList.Controls.Add(btnAddFriend);
+
             LoadGroups();
 
             try
@@ -770,6 +791,8 @@ namespace PISMO
                            ON (m.sender_id=@me AND m.receiver_id=u.id)
                            OR (m.sender_id=u.id AND m.receiver_id=@me)
                     WHERE u.id <> @me
+                      AND EXISTS (SELECT 1 FROM friends f
+                                  WHERE f.user_id=@me AND f.friend_id=u.id)
                     GROUP BY u.id, u.Name, u.Surname, u.login
                     ORDER BY last_time DESC, u.Name ASC";
 
@@ -795,6 +818,14 @@ namespace PISMO
             {
                 MessageBox.Show("Ошибка загрузки диалогов: " + ex.Message);
             }
+        }
+
+        /// <summary>Окно поиска и добавления друзей; после изменений — перезагрузка списка.</summary>
+        private void OpenAddFriend()
+        {
+            using var f = new FriendsAddForm(UserSession.EffectiveId);
+            f.ShowDialog(this);
+            if (f.Changed) LoadConversations();
         }
 
         private void LoadAllUsersForAdmin()
