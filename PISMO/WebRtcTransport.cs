@@ -869,27 +869,27 @@ async function previewScreen(resHeight, fps){
         let h = parseInt(resHeight); if (isNaN(h)) h = 1080;   // h<=0 => исходное (без ужатия)
         let f = parseInt(fps) || 30;
         screenQualityH = h; screenQualityF = f;
-        const tracks = await LK.createLocalScreenTracks({ audio: true });
-        screenVideoTrack = tracks.find(t => t.kind === 'video') || null;
-        screenAudioTrack = tracks.find(t => t.kind === 'audio') || null;
-        if (!screenVideoTrack){ post({type:'localScreenError', error:'no screen video track'}); return; }
+
+        // Захват через getDisplayMedia НАПРЯМУЮ: только так можно ЗАПРОСИТЬ нужный fps
+        // (ideal). Раньше createLocalScreenTracks создавал трек со своим дефолтным fps,
+        // а applyConstraints({max:f}) лишь ограничивал сверху — поднять не мог, поэтому
+        // при выборе 60 по факту выходило ~15. Ограничиваем только height (не width) —
+        // без обрезки; при «Исходном» (h<=0) высоту не трогаем.
+        const videoCons = { frameRate: { ideal: f, max: f } };
+        if (h > 0) videoCons.height = { ideal: h };
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoCons, audio: true });
+
+        const vt = stream.getVideoTracks()[0];
+        const at = stream.getAudioTracks()[0] || null;
+        if (!vt){ post({type:'localScreenError', error:'no screen video track'}); return; }
+        // 'motion' → WebRTC держит framerate (плавность), резкость — за счёт битрейта.
+        try { vt.contentHint = 'motion'; } catch(e){}
+
+        screenVideoTrack = new LK.LocalVideoTrack(vt);
+        screenAudioTrack = at ? new LK.LocalAudioTrack(at) : null;
 
         // Остановка через системный диалог Chrome ('Stop sharing').
-        const mst = screenVideoTrack.mediaStreamTrack;
-
-        // Применяем выбранные fps и (если задано) высоту. Ограничиваем только height
-        // (не width) — кадр масштабируется пропорционально, без обрезки. При «Исходном»
-        // (h<=0) высоту НЕ трогаем — захват в полном разрешении монитора (макс. качество).
-        if (mst){
-            const cons = { frameRate: { max: f } };
-            if (h > 0) cons.height = { max: h };
-            try { await mst.applyConstraints(cons); }
-            catch(e){ console.warn('screen applyConstraints', String(e)); }
-            // Приоритет ПЛАВНОСТИ: 'motion' => WebRTC держит framerate (maintain-framerate),
-            // а не режет fps ради резкости. Резкость обеспечивает высокий битрейт.
-            try { mst.contentHint = 'motion'; } catch(e){}
-        }
-
+        const mst = vt;
         if (mst){ mst.onended = () => { if (screenPublished) stopScreenShareTrack(); else cancelScreenPreview(); }; }
 
         if (!screenPreviewVideoEl){ screenPreviewVideoEl = makeHiddenVideo(); }
