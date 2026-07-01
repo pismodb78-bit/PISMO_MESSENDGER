@@ -1136,6 +1136,7 @@ namespace PISMO
                 _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
                 var oldc = _pbLocal.Image; _pbLocal.Image = null; oldc?.Dispose();
                 _pbLocal.Visible = false;
+                try { OnSelfCameraStopped(); } catch { } // убрать плитку, если кадр проскочил
             };
 
             // DeviceSettings.CameraName хранит имя устройства, выбранное ДО звонка —

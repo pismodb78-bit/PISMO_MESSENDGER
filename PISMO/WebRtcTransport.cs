@@ -552,7 +552,7 @@ function onTrackSubscribed(track, publication, participant){
         post({type:'remoteTileStart', pid: pid, name: name, source: source});
         if (!entry.loop){
             const capEl = entry.el;
-            entry.loop = makeExtractorTile(() => capEl, pid, source, source === 'screen' ? 30 : 15, source === 'screen' ? 0 : 360);
+            entry.loop = makeExtractorTile(() => capEl, pid, source, source === 'screen' ? 30 : 15, source === 'screen' ? 1280 : 360);
         }
         entry.loop.start();
     } else if (track.kind === 'audio'){
@@ -883,9 +883,9 @@ async function previewScreen(resHeight, fps){
             if (h > 0) cons.height = { max: h };
             try { await mst.applyConstraints(cons); }
             catch(e){ console.warn('screen applyConstraints', String(e)); }
-            // Подсказка кодировщику: 60 fps → приоритет плавности (motion),
-            // иначе → резкость/детализация текста (detail). Обе — с высоким битрейтом.
-            try { mst.contentHint = (f >= 45 ? 'motion' : 'detail'); } catch(e){}
+            // Приоритет ПЛАВНОСТИ: 'motion' => WebRTC держит framerate (maintain-framerate),
+            // а не режет fps ради резкости. Резкость обеспечивает высокий битрейт.
+            try { mst.contentHint = 'motion'; } catch(e){}
         }
 
         if (mst){ mst.onended = () => { if (screenPublished) stopScreenShareTrack(); else cancelScreenPreview(); }; }

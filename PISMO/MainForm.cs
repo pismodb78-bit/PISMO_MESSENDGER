@@ -526,13 +526,17 @@ namespace PISMO
             if (_pollBusy) return;
             _pollBusy = true;
 
+            // Перезагрузку открытого чата (запрос к БД, который выполняется на
+            // UI-потоке в LoadMessages) делаем ТОЛЬКО при ручном обновлении
+            // (sender==null). На таймерном тике этого НЕ делаем — иначе UI-поток
+            // периодически подвисает и окно «дёргается» при перетаскивании.
+            bool forced = sender == null;
+
             // id видимых карточек собираем на UI-потоке (потоконебезопасно иначе).
             var ids = new List<int>();
             try { foreach (var p in _userPanels) if (p.Tag is int uid) ids.Add(uid); } catch { }
 
-            // Все запросы — в фоне (не вешаем UI). Открытый чат перезагружаем ВСЕГДА
-            // (skip-render не даст мигания, но обновит галочки «прочитано», которые
-            // не меняют число сообщений). Плюс непрочитанные и статусы присутствия.
+            // Запросы непрочитанных/присутствия — в фоне (не вешаем UI).
             System.Threading.Tasks.Task.Run(() =>
             {
                 try
@@ -545,8 +549,11 @@ namespace PISMO
                     {
                         try
                         {
-                            if (_currentGroupId >= 0) LoadGroupMessages();
-                            else if (_currentChatPartnerId >= 0) LoadMessages();
+                            if (forced)
+                            {
+                                if (_currentGroupId >= 0) LoadGroupMessages();
+                                else if (_currentChatPartnerId >= 0) LoadMessages();
+                            }
                             if (unread != null) ApplyUnreadAndNotify(unread);
                             ApplyPresence(presence);
                         }

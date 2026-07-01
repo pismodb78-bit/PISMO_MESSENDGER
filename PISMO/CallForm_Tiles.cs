@@ -335,6 +335,9 @@ namespace PISMO
                 try { _cameraPreviewForm.UpdateFrame(jpeg); } catch { }
                 return;
             }
+            // Камера выключена/отменена — игнорируем «догоняющие» кадры превью,
+            // иначе после «Отмена» они бы создали плитку и камера казалась включённой.
+            if (_cameraOff) return;
             if (_tilesHost == null) return;
             if (!_tiles.TryGetValue(TileKey(SelfPid, "camera"), out var tile))
                 tile = AddParticipantTile(SelfPid, "Вы");

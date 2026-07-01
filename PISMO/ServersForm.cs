@@ -125,6 +125,8 @@ namespace PISMO
             _refresh = new System.Windows.Forms.Timer { Interval = 5000 };
             _refresh.Tick += (s, e) =>
             {
+                // Встроенное окно скрыто (пользователь в ЛС) — не тратим запросы/такты.
+                if (!Visible) return;
                 // Сообщения канала — по WS (broadcast); опрос только при обрыве WS.
                 if (!WebSocketSignalingClient.Instance.IsConnected
                     && _channelId > 0 && _channelType == "text") MaybeReloadMessages();
