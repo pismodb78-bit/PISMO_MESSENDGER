@@ -874,6 +874,16 @@ async function previewScreen(resHeight, fps){
 
         // Остановка через системный диалог Chrome ('Stop sharing').
         const mst = screenVideoTrack.mediaStreamTrack;
+
+        // РЕАЛЬНО ужимаем захват по высоте и fps: ограничиваем только height/frameRate
+        // (не width) — браузер масштабирует кадр пропорционально, без обрезки. Раньше
+        // разрешение не трогали (только битрейт), поэтому 1080 и 360 выглядели одинаково.
+        // Меньше пикселей → и картинка соответствует настройке, и 3D-нагрузка ниже.
+        if (mst){
+            try { await mst.applyConstraints({ height: { max: h }, frameRate: { max: f } }); }
+            catch(e){ console.warn('screen applyConstraints', String(e)); }
+        }
+
         if (mst){ mst.onended = () => { if (screenPublished) stopScreenShareTrack(); else cancelScreenPreview(); }; }
 
         if (!screenPreviewVideoEl){ screenPreviewVideoEl = makeHiddenVideo(); }
