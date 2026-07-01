@@ -526,7 +526,7 @@ namespace PISMO
             // Состояние WS проверяется на каждом тике (и при запуске тоже), так что
             // переключение автоматическое: WS отвалился — опрос включился, поднялся —
             // выключился.
-            if (sender != null && WebSocketSignalingClient.Instance.IsConnected) return;
+            if (sender != null && WebSocketSignalingClient.Instance.IsHealthy) return;
 
             if (_pollBusy) return;
             _pollBusy = true;

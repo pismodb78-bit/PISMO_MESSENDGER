@@ -72,6 +72,14 @@ wss.on('connection', (ws, req) => {
         let msg;
         try { msg = JSON.parse(raw); } catch { return; }
 
+        // Health-check: клиент шлёт {type:'ping'} и ждёт {type:'pong'} по таймеру.
+        // Отвечаем СРАЗУ (даже до register) — это подтверждает, что релей живой и
+        // реально доставляет, а не просто «сокет открыт».
+        if (msg.type === 'ping') {
+            try { ws.send(JSON.stringify({ type: 'pong', t: msg.t })); } catch {}
+            return;
+        }
+
         if (msg.type === 'register') {
             const uid = Number(msg.userId);
             const claims = verifyJwt(msg.token);

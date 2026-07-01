@@ -25,6 +25,37 @@ namespace PISMO
 
         public bool IsConnected => _ws?.State == WebSocketState.Open;
 
+        // ── Health-check (ping/pong с ожиданием по таймеру) ─────────────────
+        // «Сокет открыт» ещё не значит «доставляет». Поэтому раз в PingIntervalMs
+        // шлём {type:'ping'} и ждём {type:'pong'}. IsHealthy = сокет открыт И pong
+        // приходил недавно. Пока pong не пришёл (или перестал приходить) — считаем
+        // WS нерабочим, и MainForm включает опрос-фолбэк.
+        private DateTime _lastPongUtc = DateTime.MinValue;
+        private System.Threading.Timer _pingTimer;
+        private const int PingIntervalMs = 7000;
+        private const int HealthWindowSec = 20;   // ~2–3 пропущенных pong => нездоров
+
+        public bool IsHealthy => IsConnected
+            && (DateTime.UtcNow - _lastPongUtc).TotalSeconds < HealthWindowSec;
+
+        private void StartPing()
+        {
+            SendPing(); // сразу после подключения — чтобы быстро подтвердить живость
+            try { _pingTimer?.Dispose(); } catch { }
+            _pingTimer = new System.Threading.Timer(_ => SendPing(), null, PingIntervalMs, PingIntervalMs);
+        }
+
+        private void SendPing()
+        {
+            if (!IsConnected) return;
+            try
+            {
+                var bytes = Encoding.UTF8.GetBytes("{\"type\":\"ping\"}");
+                _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+            catch { }
+        }
+
         /// <summary>Событие приёма сигнального сообщения: type, senderUserId, sessionId, payload</summary>
         public event Action<string, int, int, string> OnMessageReceived;
 
@@ -55,6 +86,7 @@ namespace PISMO
                 System.Diagnostics.Debug.WriteLine($"[WS] register отправлен: userId={_myUserId}, token={(string.IsNullOrEmpty(regToken) ? "ПУСТОЙ" : "есть")}");
 
                 _ = Task.Run(() => ReceiveLoop(_cts.Token));
+                StartPing();   // health-check ping/pong
             }
             catch (Exception ex)
             {
@@ -199,6 +231,9 @@ namespace PISMO
                             // (раньше GetProperty кидал KeyNotFoundException и сообщение терялось).
                             string type = TryStr(root, "type");
                             if (string.IsNullOrEmpty(type)) continue; // без типа — игнор
+
+                            // Ответ на health-check: WS реально доставляет. Не релеим дальше.
+                            if (type == "pong") { _lastPongUtc = DateTime.UtcNow; continue; }
                             int senderUserId = TryInt(root, "userId");
                             int sessionId = TryInt(root, "sessionId");
                             string payload = TryStr(root, "payload");
@@ -224,6 +259,8 @@ namespace PISMO
             finally
             {
                 _isConnecting = false;
+                try { _pingTimer?.Dispose(); _pingTimer = null; } catch { }
+                _lastPongUtc = DateTime.MinValue; // обрыв → сразу «нездоров» (опрос включится)
                 if (!token.IsCancellationRequested)
                 {
                     // Запускаем переподключение при обрыве
