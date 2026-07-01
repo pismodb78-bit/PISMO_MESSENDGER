@@ -549,7 +549,7 @@ function onTrackSubscribed(track, publication, participant){
         post({type:'remoteTileStart', pid: pid, name: name, source: source});
         if (!entry.loop){
             const capEl = entry.el;
-            entry.loop = makeExtractorTile(() => capEl, pid, source, source === 'screen' ? 20 : 15, source === 'screen' ? 0 : 360);
+            entry.loop = makeExtractorTile(() => capEl, pid, source, source === 'screen' ? 30 : 15, source === 'screen' ? 0 : 360);
         }
         entry.loop.start();
     } else if (track.kind === 'audio'){
@@ -783,7 +783,7 @@ function startRemoteCameraExtraction(){ if(!remoteCameraLoop) remoteCameraLoop =
 function stopRemoteCameraExtraction(){ if(remoteCameraLoop) remoteCameraLoop.stop(); if(remoteCameraVideoEl){ remoteCameraVideoEl.srcObject=null; } }
 function startLocalCameraExtraction(){ if(!localCameraLoop) localCameraLoop = makeExtractor(()=>localCameraVideoEl, 'localCameraFrame', 15, 320); localCameraLoop.start(); }
 function stopLocalCameraExtraction(){ if(localCameraLoop) localCameraLoop.stop(); if(localCameraVideoEl){ localCameraVideoEl.srcObject=null; } }
-function startScreenPreviewExtraction(){ if(!screenPreviewLoop) screenPreviewLoop = makeExtractor(()=>screenPreviewVideoEl, 'screenPreviewFrame', 10, 400); screenPreviewLoop.start(); }
+function startScreenPreviewExtraction(){ if(!screenPreviewLoop) screenPreviewLoop = makeExtractor(()=>screenPreviewVideoEl, 'screenPreviewFrame', 30, 640); screenPreviewLoop.start(); }
 function stopScreenPreviewExtraction(){ if(screenPreviewLoop) screenPreviewLoop.stop(); if(screenPreviewVideoEl){ screenPreviewVideoEl.srcObject=null; } }
 
 // ── Камера ───────────────────────────────────────────────────────────
