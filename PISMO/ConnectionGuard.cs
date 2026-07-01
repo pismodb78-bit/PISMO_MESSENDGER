@@ -6,17 +6,19 @@ namespace PISMO
 {
     /// <summary>
     /// Сторож соединения с БД. Когда любое DBHelper.OpenConnection падает с сетевой
-    /// ошибкой — показывает поверх приложения окно «Нет связи с сервером…» и сам
-    /// пингует БД, пока связь не восстановится (тогда окно скрывается). Так
-    /// приложение не «зависает молча», а показывает понятный статус.
+    /// ошибкой — поверх содержимого главного окна показывается «заставка»
+    /// «Нет связи с сервером…», а сам сторож пингует БД, пока связь не восстановится.
+    ///
+    /// ВАЖНО: это НЕ отдельное окно и НЕ TopMost — это панель внутри самого MainForm
+    /// (перекрывает весь клиентский прямоугольник). Поэтому окно остаётся обычным:
+    /// его можно свернуть/подвинуть, размер не меняется, а взаимодействие с
+    /// интерфейсом под панелью заблокировано тем, что панель его перекрывает.
     /// </summary>
     public static class ConnectionGuard
     {
         private static Form _owner;
         private static System.Threading.SynchronizationContext _ui;
-        private static Form _overlay;
-        private static Label _lbl;
-        private static Panel _spinner;
+        private static Panel _panel;
         private static double _angle;
         private static System.Windows.Forms.Timer _spinTimer;
         private static System.Windows.Forms.Timer _retryTimer;
@@ -29,7 +31,7 @@ namespace PISMO
             _ui = System.Threading.SynchronizationContext.Current;
         }
 
-        /// <summary>Соединение успешно — спрятать окно (если было показано).</summary>
+        /// <summary>Соединение успешно — спрятать заставку (если была показана).</summary>
         public static void NotifyOk()
         {
             if (!_lost) return;
@@ -37,7 +39,7 @@ namespace PISMO
             Post(HideOverlay);
         }
 
-        /// <summary>Соединение потеряно — показать окно и запустить переподключение.</summary>
+        /// <summary>Соединение потеряно — показать заставку и запустить переподключение.</summary>
         public static void NotifyLost()
         {
             if (_lost) return;
@@ -59,46 +61,45 @@ namespace PISMO
             catch { }
         }
 
-        private static void BuildOverlay()
+        private static void BuildPanel()
         {
-            _overlay = new Form
+            _panel = new Panel
             {
-                FormBorderStyle = FormBorderStyle.None,
-                StartPosition = FormStartPosition.CenterParent,
-                ShowInTaskbar = false,
                 BackColor = Color.FromArgb(30, 31, 34),
-                ClientSize = new Size(340, 150),
-                TopMost = true
+                Visible = false
             };
-            _spinner = new Panel { Size = new Size(48, 48), Location = new Point(146, 22), BackColor = Color.Transparent };
-            _spinner.Paint += (s, e) =>
+            _panel.Paint += (s, e) =>
             {
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                var rect = new Rectangle(4, 4, 40, 40);
-                using var track = new Pen(Color.FromArgb(80, 255, 255, 255), 5);
-                using var arc = new Pen(Color.FromArgb(88, 101, 242), 5);
-                e.Graphics.DrawEllipse(track, rect);
-                e.Graphics.DrawArc(arc, rect, (float)_angle, 110);
-            };
-            _lbl = new Label
-            {
-                Text = "Нет связи с сервером.\nПереподключение…",
-                ForeColor = Color.FromArgb(220, 221, 222),
-                Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
-                TextAlign = ContentAlignment.MiddleCenter,
-                Location = new Point(10, 82), Size = new Size(320, 56)
-            };
-            _overlay.Controls.Add(_spinner);
-            _overlay.Controls.Add(_lbl);
-            // Рамка-акцент.
-            _overlay.Paint += (s, e) =>
-            {
-                using var pen = new Pen(Color.FromArgb(88, 101, 242), 2);
-                e.Graphics.DrawRectangle(pen, 1, 1, _overlay.Width - 3, _overlay.Height - 3);
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+                int cx = _panel.ClientSize.Width / 2;
+                int cy = _panel.ClientSize.Height / 2;
+
+                // Спиннер.
+                var rect = new Rectangle(cx - 22, cy - 46, 44, 44);
+                using (var track = new Pen(Color.FromArgb(80, 255, 255, 255), 5))
+                using (var arc = new Pen(Color.FromArgb(88, 101, 242), 5))
+                {
+                    g.DrawEllipse(track, rect);
+                    g.DrawArc(arc, rect, (float)_angle, 110);
+                }
+
+                // Текст.
+                using var font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold);
+                using var sub = new Font("Segoe UI", 9f);
+                TextRenderer.DrawText(g, "Нет связи с сервером", font,
+                    new Rectangle(0, cy + 8, _panel.ClientSize.Width, 24),
+                    Color.FromArgb(230, 231, 232),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.Top);
+                TextRenderer.DrawText(g, "Переподключение…", sub,
+                    new Rectangle(0, cy + 34, _panel.ClientSize.Width, 20),
+                    Color.FromArgb(150, 152, 158),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.Top);
             };
 
             _spinTimer = new System.Windows.Forms.Timer { Interval = 60 };
-            _spinTimer.Tick += (s, e) => { _angle = (_angle + 24) % 360; try { _spinner.Invalidate(); } catch { } };
+            _spinTimer.Tick += (s, e) => { _angle = (_angle + 24) % 360; try { _panel.Invalidate(); } catch { } };
 
             _retryTimer = new System.Windows.Forms.Timer { Interval = 2500 };
             _retryTimer.Tick += (s, e) => PingOnce();
@@ -107,13 +108,22 @@ namespace PISMO
         private static void ShowOverlay()
         {
             if (_owner == null || _owner.IsDisposed) return;
-            if (_overlay == null || _overlay.IsDisposed) BuildOverlay();
-            try { _owner.Enabled = false; } catch { }
-            if (!_overlay.Visible)
+            if (_panel == null || _panel.IsDisposed) BuildPanel();
+
+            if (_panel.Parent != _owner)
             {
-                try { _overlay.Show(_owner); } catch { try { _overlay.Show(); } catch { } }
+                try { _owner.Controls.Add(_panel); } catch { }
             }
-            try { _overlay.BringToFront(); } catch { }
+            // Перекрываем весь клиентский прямоугольник и держим сверху.
+            try
+            {
+                _panel.Bounds = _owner.ClientRectangle;
+                _panel.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+                _panel.Visible = true;
+                _panel.BringToFront();
+            }
+            catch { }
+
             _spinTimer.Start();
             _retryTimer.Start();
             PingOnce();
@@ -123,8 +133,7 @@ namespace PISMO
         {
             try { _retryTimer?.Stop(); } catch { }
             try { _spinTimer?.Stop(); } catch { }
-            try { _owner.Enabled = true; } catch { }
-            try { if (_overlay != null && _overlay.Visible) _overlay.Hide(); } catch { }
+            try { if (_panel != null && !_panel.IsDisposed) _panel.Visible = false; } catch { }
         }
 
         // Пробуем открыть соединение в фоне; успех сам вызовет NotifyOk (внутри OpenConnection).
