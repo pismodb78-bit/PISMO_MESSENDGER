@@ -642,6 +642,10 @@ namespace PISMO
             _transport.LocalCameraError += err => UiInvoke(() => OnLocalCameraError(err));
             _transport.TheaterExitRequested += () => UiInvoke(ExitTheaterMode);
             _transport.TheaterFullscreenToggle += () => UiInvoke(ToggleTheaterFullscreen);
+            _transport.ScreenCaptureInfo += (fps, w, h) => UiInvoke(() =>
+            {
+                try { _lblStatus.Text = $"Демонстрация: {w}×{h} @ {fps} fps"; } catch { }
+            });
 
             // --- LiveKit: подключение к комнате ---
             // Сигналинг, ICE/TURN, renegotiation и многосторонность берёт на себя

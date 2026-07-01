@@ -62,6 +62,8 @@ namespace PISMO
         public event Action LocalCameraStopped;
         public event Action<string> LocalCameraError;
 
+        // Диагностика захвата демонстрации (fps, ширина, высота).
+        public event Action<int, int, int> ScreenCaptureInfo;
         // Запрос выхода из «театра» (двойной клик / крестик внутри WebView).
         public event Action TheaterExitRequested;
         // Запрос развернуть/свернуть театр на весь экран (кнопка ⛶).
@@ -884,6 +886,8 @@ async function previewScreen(resHeight, fps){
         if (!vt){ post({type:'localScreenError', error:'no screen video track'}); return; }
         // 'motion' → WebRTC держит framerate (плавность), резкость — за счёт битрейта.
         try { vt.contentHint = 'motion'; } catch(e){}
+        // Диагностика: реальные параметры захвата (видно в статусе звонка).
+        try { const st = vt.getSettings(); post({type:'screenCaptureInfo', fps: Math.round(st.frameRate||0), w: st.width||0, h: st.height||0}); } catch(e){}
 
         screenVideoTrack = new LK.LocalVideoTrack(vt);
         screenAudioTrack = at ? new LK.LocalAudioTrack(at) : null;
@@ -919,10 +923,26 @@ async function confirmScreenShare(){
             await room.localParticipant.publishTrack(screenVideoTrack, {
                 source: LK.Track.Source.ScreenShare,
                 simulcast: false,
+                degradationPreference: 'maintain-framerate',
                 videoEncoding: { maxBitrate: maxBitrate, maxFramerate: screenQualityF }
             });
             if (screenAudioTrack){ try{ await room.localParticipant.publishTrack(screenAudioTrack, { source: LK.Track.Source.ScreenShareAudio }); }catch(e){} }
             screenPublished = true;
+
+            // ЖЁСТКО задаём приоритет плавности на самом RTCRtpSender: при нехватке
+            // ресурсов WebRTC жертвует РАЗРЕШЕНИЕМ, а не FPS (иначе картинка «рваная»
+            // ~15 fps). Плюс подтверждаем maxFramerate/битрейт в кодировке.
+            try {
+                const sender = screenVideoTrack.sender;
+                if (sender && sender.getParameters){
+                    const p = sender.getParameters();
+                    p.degradationPreference = 'maintain-framerate';
+                    if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+                    p.encodings[0].maxFramerate = screenQualityF;
+                    p.encodings[0].maxBitrate = maxBitrate;
+                    await sender.setParameters(p);
+                }
+            } catch(e){ console.warn('setParameters', String(e)); }
         }
         post({type:'localScreenStarted'});
     } catch(err){ post({type:'localScreenError', error:String(err)}); }
@@ -1113,6 +1133,9 @@ window.chrome.webview.addEventListener('message', (e) => {
                     case "remoteLeft":
                         RemoteParticipantLeft?.Invoke();
                         break;
+                    case "screenCaptureInfo":
+                        ScreenCaptureInfo?.Invoke(SafeInt(msg, "fps"), SafeInt(msg, "w"), SafeInt(msg, "h"));
+                        break;
                     case "theaterExitRequested":
                         TheaterExitRequested?.Invoke();
                         break;
@@ -1222,6 +1245,9 @@ window.chrome.webview.addEventListener('message', (e) => {
 
         private static string SafeStr(JsonElement msg, string prop)
             => msg.TryGetProperty(prop, out var el) ? el.GetString() : "";
+
+        private static int SafeInt(JsonElement msg, string prop)
+            => msg.TryGetProperty(prop, out var el) && el.TryGetInt32(out var v) ? v : 0;
 
         // --- Демонстрация экрана: двухфазный флоу (превью -> подтверждение) ---
 
