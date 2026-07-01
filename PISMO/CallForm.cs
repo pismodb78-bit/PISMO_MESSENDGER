@@ -995,15 +995,17 @@ namespace PISMO
             var rowQ = y;
             var cmbRes = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, rowQ), Size = new Size(135, 24), FlatStyle = FlatStyle.Flat };
             var cmbFps = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(161, rowQ), Size = new Size(135, 24), FlatStyle = FlatStyle.Flat };
-            cmbRes.Items.AddRange(new object[] { "1080p", "720p", "480p", "360p" });
+            cmbRes.Items.AddRange(new object[] { "Исходное", "1080p", "720p", "480p", "360p" });
             cmbFps.Items.AddRange(new object[] { "60 fps", "30 fps", "15 fps" });
-            cmbRes.SelectedItem = DeviceSettings.ScreenShareResolutionHeight + "p";
+            cmbRes.SelectedItem = DeviceSettings.ScreenShareResolutionHeight > 0
+                ? DeviceSettings.ScreenShareResolutionHeight + "p" : "Исходное";
             if (cmbRes.SelectedIndex < 0) cmbRes.SelectedIndex = 0;
             cmbFps.SelectedItem = DeviceSettings.ScreenShareFps + " fps";
             if (cmbFps.SelectedIndex < 0) cmbFps.SelectedIndex = 1;
             cmbRes.SelectedIndexChanged += (s, e) =>
             {
-                int h = int.Parse(((string)cmbRes.SelectedItem).Replace("p", ""));
+                string sel = (string)cmbRes.SelectedItem;
+                int h = sel == "Исходное" ? 0 : int.Parse(sel.Replace("p", ""));
                 DeviceSettings.ScreenShareResolutionHeight = h; try { DeviceSettings.Save(); } catch { }
             };
             cmbFps.SelectedIndexChanged += (s, e) =>

@@ -861,12 +861,9 @@ async function previewScreen(resHeight, fps){
     try {
         // Реально применяем выбранные разрешение и частоту кадров.
         // resHeight: 1080/720/480/360; fps: 60/30/15...
-        let h = parseInt(resHeight) || 1080;
+        let h = parseInt(resHeight); if (isNaN(h)) h = 1080;   // h<=0 => исходное (без ужатия)
         let f = parseInt(fps) || 30;
         screenQualityH = h; screenQualityF = f;
-        // НЕ форсим разрешение/соотношение захвата — иначе экран обрезается
-        // (у мониторов 16:10 и т.п.). Захватываем нативно, а качество и fps
-        // регулируем при публикации (maxBitrate/maxFramerate в confirmScreenShare).
         const tracks = await LK.createLocalScreenTracks({ audio: true });
         screenVideoTrack = tracks.find(t => t.kind === 'video') || null;
         screenAudioTrack = tracks.find(t => t.kind === 'audio') || null;
@@ -875,13 +872,17 @@ async function previewScreen(resHeight, fps){
         // Остановка через системный диалог Chrome ('Stop sharing').
         const mst = screenVideoTrack.mediaStreamTrack;
 
-        // РЕАЛЬНО ужимаем захват по высоте и fps: ограничиваем только height/frameRate
-        // (не width) — браузер масштабирует кадр пропорционально, без обрезки. Раньше
-        // разрешение не трогали (только битрейт), поэтому 1080 и 360 выглядели одинаково.
-        // Меньше пикселей → и картинка соответствует настройке, и 3D-нагрузка ниже.
+        // Применяем выбранные fps и (если задано) высоту. Ограничиваем только height
+        // (не width) — кадр масштабируется пропорционально, без обрезки. При «Исходном»
+        // (h<=0) высоту НЕ трогаем — захват в полном разрешении монитора (макс. качество).
         if (mst){
-            try { await mst.applyConstraints({ height: { max: h }, frameRate: { max: f } }); }
+            const cons = { frameRate: { max: f } };
+            if (h > 0) cons.height = { max: h };
+            try { await mst.applyConstraints(cons); }
             catch(e){ console.warn('screen applyConstraints', String(e)); }
+            // Подсказка кодировщику: 60 fps → приоритет плавности (motion),
+            // иначе → резкость/детализация текста (detail). Обе — с высоким битрейтом.
+            try { mst.contentHint = (f >= 45 ? 'motion' : 'detail'); } catch(e){}
         }
 
         if (mst){ mst.onended = () => { if (screenPublished) stopScreenShareTrack(); else cancelScreenPreview(); }; }
@@ -897,12 +898,19 @@ async function confirmScreenShare(){
     try {
         if (!screenVideoTrack){ post({type:'localScreenError', error:'no preview stream'}); return; }
         if (!screenPublished){
-            // Битрейт под выбранное разрешение — иначе LiveKit зажимает картинку
-            // (выглядело как «фиксированные 720»). Для экрана simulcast выключаем.
-            let maxBitrate = screenQualityH >= 1440 ? 8_000_000
-                           : screenQualityH >= 1080 ? 5_000_000
-                           : screenQualityH >= 720  ? 2_800_000
-                           : 1_200_000;
+            // Битрейт под РЕАЛЬНУЮ высоту (для «Исходного»/native берём фактическую
+            // высоту трека). Высокий битрейт = чёткая картинка без «мыла».
+            let effH = screenQualityH;
+            if (!effH || effH <= 0){
+                try { effH = screenVideoTrack.mediaStreamTrack.getSettings().height || 1080; } catch(e){ effH = 1080; }
+            }
+            // Для 60 fps даём чуть больше — плавное движение требует больше бит.
+            let hi = screenQualityF >= 45;
+            let maxBitrate = effH >= 1440 ? (hi ? 16_000_000 : 12_000_000)
+                           : effH >= 1080 ? (hi ? 12_000_000 : 8_000_000)
+                           : effH >= 720  ? (hi ? 7_000_000  : 5_000_000)
+                           : effH >= 480  ? 3_000_000
+                           : 1_500_000;
             await room.localParticipant.publishTrack(screenVideoTrack, {
                 source: LK.Track.Source.ScreenShare,
                 simulcast: false,

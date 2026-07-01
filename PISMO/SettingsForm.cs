@@ -409,7 +409,7 @@ namespace PISMO
                 Size = new Size(80, 24),
                 Margin = new Padding(0, 0, 0, 0)
             };
-            _cmbScreenRes.Items.AddRange(new object[] { "1080", "720", "480", "360" });
+            _cmbScreenRes.Items.AddRange(new object[] { "Исходное", "1080", "720", "480", "360" });
             _cmbScreenRes.SelectedIndex = 0;
 
             // Метка "FPS:"
@@ -723,7 +723,8 @@ namespace PISMO
             _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
 
             // ScreenShare
-            string sh = DeviceSettings.ScreenShareResolutionHeight.ToString();
+            string sh = DeviceSettings.ScreenShareResolutionHeight > 0
+                ? DeviceSettings.ScreenShareResolutionHeight.ToString() : "Исходное";
             for (int i = 0; i < _cmbScreenRes.Items.Count; i++)
                 if (_cmbScreenRes.Items[i].ToString() == sh) { _cmbScreenRes.SelectedIndex = i; break; }
             string sf = DeviceSettings.ScreenShareFps.ToString();
@@ -993,8 +994,9 @@ namespace PISMO
 
             if (_cmbScreenRes.SelectedIndex >= 0)
             {
-                if (int.TryParse(_cmbScreenRes.SelectedItem.ToString(), out int rh))
-                    DeviceSettings.ScreenShareResolutionHeight = rh;
+                string sr = _cmbScreenRes.SelectedItem.ToString();
+                if (sr == "Исходное") DeviceSettings.ScreenShareResolutionHeight = 0;   // 0 = нативное
+                else if (int.TryParse(sr, out int rh)) DeviceSettings.ScreenShareResolutionHeight = rh;
             }
             if (_cmbScreenFps.SelectedIndex >= 0)
             {
