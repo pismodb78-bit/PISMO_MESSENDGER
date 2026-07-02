@@ -934,9 +934,13 @@ async function confirmScreenShare(){
                            : effH >= 720  ? (hi ? 12_000_000 : 8_000_000)
                            : effH >= 480  ? 5_000_000
                            : 2_500_000;
+            // videoCodec:'h264' — КЛЮЧЕВОЕ для нативных 1080p60: VP8/VP9 (дефолт WebRTC)
+            // на NVIDIA аппаратно НЕ кодируются → софт → просадка. H264 кодирует NVENC
+            // на дискретной GPU в железе → 1080p60 без деградации.
             await room.localParticipant.publishTrack(screenVideoTrack, {
                 source: LK.Track.Source.ScreenShare,
                 simulcast: false,
+                videoCodec: 'h264',
                 degradationPreference: 'maintain-resolution',
                 videoEncoding: { maxBitrate: maxBitrate, maxFramerate: screenQualityF }
             });
