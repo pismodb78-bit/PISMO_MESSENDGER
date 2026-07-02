@@ -95,16 +95,19 @@ namespace PISMO
             ConnectionGuard.Init(this);   // окно «нет связи с БД» + авто-переподключение
             SetupPolling();
             BuildSidebarSearch();
+            BuildVoiceDock();           // «Голосовая связь подключена» над профилем (как в Discord)
             BuildServerRail();          // левый рейл «Личные сообщения + серверы» (как в Discord)
             this.Load += MainForm_Load;
         }
 
         private TextBox _convSearch;
+        private Panel _convSearchHost;   // контейнер поиска (нужен для z-порядка при вставке дока)
 
         /// <summary>Поле поиска чатов над списком диалогов в боковой панели.</summary>
         private void BuildSidebarSearch()
         {
             var host = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = Color.FromArgb(32, 34, 37), Padding = new Padding(8, 5, 8, 5) };
+            _convSearchHost = host;
             _convSearch = new TextBox
             {
                 Dock = DockStyle.Fill,
@@ -793,6 +796,7 @@ namespace PISMO
             };
             btnAddFriend.FlatAppearance.BorderSize = 0;
             btnAddFriend.Click += (s, e) => OpenAddFriend();
+            RoundCorners(btnAddFriend, 8);   // скруглённые углы (как в Discord)
             pnlUserList.Controls.Add(btnAddFriend);
 
             LoadGroups();

@@ -660,8 +660,9 @@ namespace PISMO
             {
                 // Заходим в существующий звонок (обратный заход / присоединение к групповому звонку)
                 _activeCall = new CallForm(existingSessionId, isCaller: false, peerName: targetName, peerId: peerId, hasVideo: withVideo, groupId: _currentGroupId);
-                _activeCall.FormClosed += (s, e) => _activeCall = null;
+                _activeCall.FormClosed += (s, e) => { _activeCall = null; HideVoiceDock(); };
                 _activeCall.Show(this);
+                ShowVoiceDock(targetName);
                 return;
             }
 
@@ -696,8 +697,9 @@ namespace PISMO
             if (sessionId <= 0) return;
 
             _activeCall = new CallForm(sessionId, isCaller: true, peerName: targetName, peerId: peerId, hasVideo: withVideo, groupId: _currentGroupId);
-            _activeCall.FormClosed += (s, e) => _activeCall = null;
+            _activeCall.FormClosed += (s, e) => { _activeCall = null; HideVoiceDock(); };
             _activeCall.Show(this);
+            ShowVoiceDock(targetName);
 
             if (_currentGroupId >= 0)
                 WebSocketSignalingClient.Instance.SendMessage("incoming_call", 0, sessionId, "group");
@@ -788,8 +790,9 @@ namespace PISMO
 
                             _activeCall = new CallForm(sid, isCaller: false,
                                 peerName: cname, peerId: callerId, hasVideo: hasVid, groupId: groupId);
-                            _activeCall.FormClosed += (s2, e2) => _activeCall = null;
+                            _activeCall.FormClosed += (s2, e2) => { _activeCall = null; HideVoiceDock(); };
                             _activeCall.Show(this);
+                            ShowVoiceDock(cname);
                         }
                         else
                         {
