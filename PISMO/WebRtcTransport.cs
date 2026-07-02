@@ -553,6 +553,20 @@ function onTrackSubscribed(track, publication, participant){
         let entry = remoteVideoMap[key];
         if (!entry){ entry = { el: makeHiddenVideo() }; remoteVideoMap[key] = entry; }
         track.attach(entry.el);
+
+        // НИЗКАЯ ЗАДЕРЖКА для демонстрации: по умолчанию WebRTC копит jitter-buffer
+        // «для сглаживания», из-за чего экран/действия отстают на ~секунду. Просим
+        // приёмник держать буфер минимальным. (Для камеры оставляем чуть больше —
+        // там сглаживание важнее, а задержка не критична.)
+        try {
+            const r = track.receiver || (track._receiver) || null;
+            if (r){
+                const targetMs = source === 'screen' ? 100 : 200;
+                if ('jitterBufferTarget' in r) r.jitterBufferTarget = targetMs;          // мс (новый API)
+                else if ('playoutDelayHint' in r) r.playoutDelayHint = targetMs / 1000;  // сек (старый)
+            }
+        } catch(e){ console.warn('jitterBufferTarget', String(e)); }
+
         post({type:'remoteTileStart', pid: pid, name: name, source: source});
         if (!entry.loop){
             const capEl = entry.el;
