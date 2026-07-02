@@ -954,6 +954,9 @@ async function confirmScreenShare(){
                     if (!p.encodings || !p.encodings.length) p.encodings = [{}];
                     p.encodings[0].maxFramerate = screenQualityF;
                     p.encodings[0].maxBitrate = maxBitrate;
+                    p.encodings[0].scaleResolutionDownBy = 1;      // без авто-уменьшения разрешения
+                    try { p.encodings[0].networkPriority = 'high'; } catch(e){}
+                    try { p.encodings[0].priority = 'high'; } catch(e){}
                     await sender.setParameters(p);
                 }
             } catch(e){ console.warn('setParameters', String(e)); }

@@ -86,7 +86,11 @@ namespace PISMO
                     + " --enable-gpu-rasterization"
                     + " --enable-zero-copy"
                     + " --enable-accelerated-video-decode"
-                    + " --enable-accelerated-video-encode").Trim()
+                    + " --enable-accelerated-video-encode"
+                    // Ноутбук с двумя видеокартами (Optimus): заставляем Chromium/WebView2
+                    // выбрать ДИСКРЕТНУЮ (NVIDIA) вместо интегрированной Intel — иначе
+                    // энкод/декод идёт на встройке и дискретка простаивает.
+                    + " --force_high_performance_gpu").Trim()
                 : (baseArgs + " --disable-gpu --disable-gpu-compositing").Trim();
 
         // Горячие клавиши в звонке (значение = (int)Keys с модификаторами; 0 = выкл).
