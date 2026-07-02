@@ -130,12 +130,14 @@ namespace PISMO
             {
                 using (var conn = DBHelper.OpenConnection())
                 {
+                    // Пароль больше НЕ сверяем в SQL (там мог быть открытый текст).
+                    // Берём хеш по логину и проверяем в коде (bcrypt / legacy-plaintext).
                     const string sql =
-                        "SELECT id, Name, Surname, role FROM users WHERE login=@l AND password=@p";
+                        "SELECT id, Name, Surname, role, password FROM users WHERE login=@l";
+                    DataRow row;
                     using (var cmd = new MySqlCommand(sql, conn))
                     {
                         cmd.Parameters.AddWithValue("@l", login);
-                        cmd.Parameters.AddWithValue("@p", pass);
                         var dt = new DataTable();
                         new MySqlDataAdapter(cmd).Fill(dt);
 
@@ -144,14 +146,34 @@ namespace PISMO
                             ShowError("Неверный логин или пароль.");
                             return;
                         }
+                        row = dt.Rows[0];
+                    }
 
-                        DataRow row = dt.Rows[0];
-                        UserSession.UserId   = Convert.ToInt32(row["id"]);
-                        UserSession.UserName = $"{row["Name"]} {row["Surname"]}".Trim();
-                        UserSession.Role     = row["role"].ToString().ToLower();
+                    string stored = row["password"]?.ToString() ?? "";
+                    if (!PasswordHasher.Verify(pass, stored))
+                    {
+                        ShowError("Неверный логин или пароль.");
+                        return;
+                    }
 
-                        if (string.IsNullOrWhiteSpace(UserSession.UserName))
-                            UserSession.UserName = login;
+                    UserSession.UserId   = Convert.ToInt32(row["id"]);
+                    UserSession.UserName = $"{row["Name"]} {row["Surname"]}".Trim();
+                    UserSession.Role     = row["role"].ToString().ToLower();
+                    if (string.IsNullOrWhiteSpace(UserSession.UserName))
+                        UserSession.UserName = login;
+
+                    // Миграция: старый открытый пароль перехешируем в bcrypt.
+                    if (PasswordHasher.NeedsUpgrade(stored))
+                    {
+                        try
+                        {
+                            using var upd = new MySqlCommand(
+                                "UPDATE users SET password=@p WHERE id=@id", conn);
+                            upd.Parameters.AddWithValue("@p", PasswordHasher.Hash(pass));
+                            upd.Parameters.AddWithValue("@id", UserSession.UserId);
+                            upd.ExecuteNonQuery();
+                        }
+                        catch { /* миграция не критична для входа */ }
                     }
                 }
             }

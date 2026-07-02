@@ -103,10 +103,10 @@ namespace PISMO
                 {
                     chk.Parameters.AddWithValue("@id", uid);
                     var cur = chk.ExecuteScalar()?.ToString() ?? "";
-                    if (cur != oldPass) return "Текущий пароль неверный.";
+                    if (!PasswordHasher.Verify(oldPass, cur)) return "Текущий пароль неверный.";
                 }
                 using var cmd = new MySqlCommand("UPDATE users SET password=@p WHERE id=@id", conn);
-                cmd.Parameters.AddWithValue("@p", newPass);
+                cmd.Parameters.AddWithValue("@p", PasswordHasher.Hash(newPass)); // bcrypt
                 cmd.Parameters.AddWithValue("@id", uid);
                 cmd.ExecuteNonQuery();
                 return null;

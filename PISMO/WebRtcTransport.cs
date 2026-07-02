@@ -937,20 +937,21 @@ async function confirmScreenShare(){
             await room.localParticipant.publishTrack(screenVideoTrack, {
                 source: LK.Track.Source.ScreenShare,
                 simulcast: false,
-                degradationPreference: 'maintain-framerate',
+                degradationPreference: 'maintain-resolution',
                 videoEncoding: { maxBitrate: maxBitrate, maxFramerate: screenQualityF }
             });
             if (screenAudioTrack){ try{ await room.localParticipant.publishTrack(screenAudioTrack, { source: LK.Track.Source.ScreenShareAudio }); }catch(e){} }
             screenPublished = true;
 
-            // ЖЁСТКО задаём приоритет плавности на самом RTCRtpSender: при нехватке
-            // ресурсов WebRTC жертвует РАЗРЕШЕНИЕМ, а не FPS (иначе картинка «рваная»
-            // ~15 fps). Плюс подтверждаем maxFramerate/битрейт в кодировке.
+            // Приоритет ЧЁТКОСТИ (стандарт для демонстрации экрана): при нехватке
+            // ресурсов WebRTC жертвует FPS, а не РАЗРЕШЕНИЕМ — иначе 1080 «плыл» в
+            // 480–720. Полноценные 1080p60 достижимы только с аппаратным энкодером
+            // (NVENC на дискретной GPU) — см. --force_high_performance_gpu.
             try {
                 const sender = screenVideoTrack.sender;
                 if (sender && sender.getParameters){
                     const p = sender.getParameters();
-                    p.degradationPreference = 'maintain-framerate';
+                    p.degradationPreference = 'maintain-resolution';
                     if (!p.encodings || !p.encodings.length) p.encodings = [{}];
                     p.encodings[0].maxFramerate = screenQualityF;
                     p.encodings[0].maxBitrate = maxBitrate;
