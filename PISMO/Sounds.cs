@@ -15,17 +15,19 @@ namespace PISMO
         private static SoundPlayer _ring;
 
         // ── Публичные события ───────────────────────────────────────────
-        public static void MicOn()    => PlayBytes(ToneWav(700, 80));
-        public static void MicOff()   => PlayBytes(ToneWav(340, 100));
-        public static void CameraOn() => PlayBytes(ToneWav(660, 90));
-        public static void CameraOff()=> PlayBytes(ToneWav(330, 110));
-        public static void ScreenOn() => PlayBytes(ToneWav(620, 90));
-        public static void ScreenOff()=> PlayBytes(ToneWav(320, 110));
-        public static void Message()  => PlayBytes(ToneWav(880, 70));
-        public static void Hangup()   => PlayBytes(TwoTone(500, 300, 120));
-        public static void CallConnected() => PlayBytes(TwoTone(523, 784, 110));
-        public static void UserJoined() => PlayBytes(TwoTone(523, 698, 90));  // восходящий — зашёл
-        public static void UserLeft()   => PlayBytes(TwoTone(587, 392, 100)); // нисходящий — вышел
+        // Мягкие «колокольчики»: тихие, низкие, с экспоненциальным затуханием
+        // (раньше были громкие плоские синусы — резали слух).
+        public static void MicOn()    => PlayBytes(ToneWav(587, 140, 0.18));
+        public static void MicOff()   => PlayBytes(ToneWav(392, 160, 0.18));
+        public static void CameraOn() => PlayBytes(ToneWav(523, 140, 0.18));
+        public static void CameraOff()=> PlayBytes(ToneWav(349, 160, 0.18));
+        public static void ScreenOn() => PlayBytes(ToneWav(494, 140, 0.18));
+        public static void ScreenOff()=> PlayBytes(ToneWav(330, 160, 0.18));
+        public static void Message()  => PlayBytes(ToneWav(740, 150, 0.16));
+        public static void Hangup()   => PlayBytes(TwoTone(440, 294, 170, 0.18));
+        public static void CallConnected() => PlayBytes(TwoTone(392, 587, 160, 0.2));
+        public static void UserJoined() => PlayBytes(TwoTone(440, 659, 140, 0.18)); // восходящий — зашёл
+        public static void UserLeft()   => PlayBytes(TwoTone(587, 392, 150, 0.18)); // нисходящий — вышел
 
         // ── Рингтон входящего звонка (зацикленный) ──────────────────────
         public static void StartRingtone()
@@ -61,49 +63,53 @@ namespace PISMO
 
         private const int SampleRate = 44100;
 
-        /// <summary>WAV одиночного тона с плавным нарастанием/затуханием.</summary>
-        private static byte[] ToneWav(double freq, int ms, double vol = 0.4)
-            => BuildWav(samples => FillTone(samples, freq, 0, ms, vol));
+        /// <summary>WAV одиночного мягкого тона (атака + экспоненциальное затухание).</summary>
+        private static byte[] ToneWav(double freq, int ms, double vol = 0.18)
+            => BuildWav(samples => FillTone(samples, freq, 0, ms, vol), ms + 40);
 
-        /// <summary>WAV из двух тонов подряд (нисходящий/восходящий сигнал).</summary>
-        private static byte[] TwoTone(double f1, double f2, int eachMs)
+        /// <summary>WAV из двух мягких тонов ВНАХЛЁСТ (перелив, а не стык).</summary>
+        private static byte[] TwoTone(double f1, double f2, int eachMs, double vol = 0.18)
         {
-            int total = eachMs * 2;
+            int overlap = eachMs / 3;                 // второй тон начинается до конца первого
+            int total = eachMs * 2 - overlap + 60;
             return BuildWav(samples =>
             {
-                FillTone(samples, f1, 0, eachMs, 0.4);
-                FillTone(samples, f2, eachMs, eachMs, 0.4);
+                FillTone(samples, f1, 0, eachMs, vol);
+                FillTone(samples, f2, eachMs - overlap, eachMs, vol);
             }, total);
         }
 
-        /// <summary>Рингтон: «бринь-бринь» + пауза, чтобы PlayLooping звучал как телефон.</summary>
+        /// <summary>Рингтон: мягкое «бим-бом» ×2 + пауза (PlayLooping — как телефон).</summary>
         private static byte[] RingtoneWav()
         {
             int total = 2600; // мс на цикл
             return BuildWav(samples =>
             {
-                // Два коротких двухтоновых звонка, затем тишина.
-                FillTone(samples, 520, 0,   350, 0.45);
-                FillTone(samples, 660, 350, 350, 0.45);
-                FillTone(samples, 520, 850, 350, 0.45);
-                FillTone(samples, 660, 1200,350, 0.45);
-                // 850мс..2600мс — тишина (не заполняем).
+                // Два мягких двухтоновых звонка, затем тишина.
+                FillTone(samples, 523, 0,    420, 0.26);
+                FillTone(samples, 659, 300,  420, 0.26);
+                FillTone(samples, 523, 850,  420, 0.26);
+                FillTone(samples, 659, 1150, 420, 0.26);
+                // ~1600мс..2600мс — тишина (не заполняем).
             }, total);
         }
 
+        /// <summary>Мягкий «колокольчик»: атака ~8мс, экспоненциальное затухание,
+        /// тёплый тембр (основной тон + тихая нижняя октава). Без резких краёв.</summary>
         private static void FillTone(short[] samples, double freq, int startMs, int durMs, double vol)
         {
             int start = startMs * SampleRate / 1000;
             int len = durMs * SampleRate / 1000;
-            int fade = Math.Min(len / 4, SampleRate / 200); // мягкие края, без щелчков
+            int attack = SampleRate * 8 / 1000;       // ~8мс плавного входа
+            double decay = 3.0 / len;                 // экспоненциальный спад до конца
             for (int i = 0; i < len; i++)
             {
                 int idx = start + i;
                 if (idx < 0 || idx >= samples.Length) continue;
-                double env = 1.0;
-                if (i < fade) env = (double)i / fade;
-                else if (i > len - fade) env = (double)(len - i) / fade;
-                double s = Math.Sin(2 * Math.PI * freq * i / SampleRate) * vol * env;
+                double env = (i < attack ? (double)i / attack : 1.0) * Math.Exp(-decay * Math.Max(0, i - attack));
+                double t = 2 * Math.PI * i / SampleRate;
+                // Основной тон + нижняя октава (тепло) — без высоких гармоник.
+                double s = (Math.Sin(t * freq) * 0.8 + Math.Sin(t * freq / 2) * 0.35) * vol * env;
                 int v = (int)(s * short.MaxValue) + samples[idx];
                 samples[idx] = (short)Math.Clamp(v, short.MinValue, short.MaxValue);
             }
