@@ -15,19 +15,20 @@ namespace PISMO
         private static SoundPlayer _ring;
 
         // ── Публичные события ───────────────────────────────────────────
-        // Мягкие «колокольчики»: тихие, низкие, с экспоненциальным затуханием
-        // (раньше были громкие плоские синусы — резали слух).
-        public static void MicOn()    => PlayBytes(ToneWav(587, 140, 0.18));
-        public static void MicOff()   => PlayBytes(ToneWav(392, 160, 0.18));
-        public static void CameraOn() => PlayBytes(ToneWav(523, 140, 0.18));
-        public static void CameraOff()=> PlayBytes(ToneWav(349, 160, 0.18));
-        public static void ScreenOn() => PlayBytes(ToneWav(494, 140, 0.18));
-        public static void ScreenOff()=> PlayBytes(ToneWav(330, 160, 0.18));
-        public static void Message()  => PlayBytes(ToneWav(740, 150, 0.16));
-        public static void Hangup()   => PlayBytes(TwoTone(440, 294, 170, 0.18));
-        public static void CallConnected() => PlayBytes(TwoTone(392, 587, 160, 0.2));
-        public static void UserJoined() => PlayBytes(TwoTone(440, 659, 140, 0.18)); // восходящий — зашёл
-        public static void UserLeft()   => PlayBytes(TwoTone(587, 392, 150, 0.18)); // нисходящий — вышел
+        // Не «писки»-тоны, а мягкие «бупы» со скольжением частоты (глайд):
+        // вкл — частота едет вверх («буп↑»), выкл — вниз («буп↓»). Похоже на
+        // капли/поп-звуки Discord, слух не режет.
+        public static void MicOn()    => PlayBytes(GlideWav(300, 560, 130, 0.2));
+        public static void MicOff()   => PlayBytes(GlideWav(560, 280, 150, 0.2));
+        public static void CameraOn() => PlayBytes(GlideWav(340, 620, 130, 0.2));
+        public static void CameraOff()=> PlayBytes(GlideWav(620, 320, 150, 0.2));
+        public static void ScreenOn() => PlayBytes(GlideWav(280, 500, 130, 0.2));
+        public static void ScreenOff()=> PlayBytes(GlideWav(500, 260, 150, 0.2));
+        public static void Message()  => PlayBytes(GlideWav(500, 880, 90, 0.15));   // «плип» капли
+        public static void Hangup()   => PlayBytes(DoubleGlide(450, 260, 300, 170, 140, 0.2)); // «бу-бум» вниз
+        public static void CallConnected() => PlayBytes(DoubleGlide(300, 520, 420, 660, 150, 0.2)); // вверх дважды
+        public static void UserJoined() => PlayBytes(GlideWav(330, 640, 160, 0.18)); // «буп↑» — зашёл
+        public static void UserLeft()   => PlayBytes(GlideWav(640, 300, 170, 0.18)); // «буп↓» — вышел
 
         // ── Рингтон входящего звонка (зацикленный) ──────────────────────
         public static void StartRingtone()
@@ -63,20 +64,44 @@ namespace PISMO
 
         private const int SampleRate = 44100;
 
-        /// <summary>WAV одиночного мягкого тона (атака + экспоненциальное затухание).</summary>
-        private static byte[] ToneWav(double freq, int ms, double vol = 0.18)
-            => BuildWav(samples => FillTone(samples, freq, 0, ms, vol), ms + 40);
+        /// <summary>WAV мягкого «бупа»: частота скользит f1→f2, атака + затухание.</summary>
+        private static byte[] GlideWav(double f1, double f2, int ms, double vol = 0.2)
+            => BuildWav(samples => FillGlide(samples, f1, f2, 0, ms, vol), ms + 40);
 
-        /// <summary>WAV из двух мягких тонов ВНАХЛЁСТ (перелив, а не стык).</summary>
-        private static byte[] TwoTone(double f1, double f2, int eachMs, double vol = 0.18)
+        /// <summary>Два «бупа» подряд (глайды g1: a1→a2, g2: b1→b2) с паузой-переливом.</summary>
+        private static byte[] DoubleGlide(double a1, double a2, double b1, double b2, int eachMs, double vol = 0.2)
         {
-            int overlap = eachMs / 3;                 // второй тон начинается до конца первого
-            int total = eachMs * 2 - overlap + 60;
+            int gap = eachMs / 2;
+            int total = eachMs * 2 + gap + 60;
             return BuildWav(samples =>
             {
-                FillTone(samples, f1, 0, eachMs, vol);
-                FillTone(samples, f2, eachMs - overlap, eachMs, vol);
+                FillGlide(samples, a1, a2, 0, eachMs, vol);
+                FillGlide(samples, b1, b2, eachMs + gap, eachMs, vol);
             }, total);
+        }
+
+        /// <summary>«Буп» со скольжением частоты (фазовое накопление — без щелчков):
+        /// атака ~6мс, экспоненциальное затухание, тёплая нижняя октава.</summary>
+        private static void FillGlide(short[] samples, double f1, double f2, int startMs, int durMs, double vol)
+        {
+            int start = startMs * SampleRate / 1000;
+            int len = durMs * SampleRate / 1000;
+            int attack = SampleRate * 6 / 1000;
+            double decay = 3.0 / len;
+            double phase = 0, phaseLow = 0;
+            for (int i = 0; i < len; i++)
+            {
+                int idx = start + i;
+                if (idx < 0 || idx >= samples.Length) continue;
+                double k = (double)i / len;                          // 0..1
+                double f = f1 * Math.Pow(f2 / f1, k);                // экспоненциальный глайд
+                phase += 2 * Math.PI * f / SampleRate;
+                phaseLow += Math.PI * f / SampleRate;                // нижняя октава (f/2)
+                double env = (i < attack ? (double)i / attack : 1.0) * Math.Exp(-decay * Math.Max(0, i - attack));
+                double s = (Math.Sin(phase) * 0.8 + Math.Sin(phaseLow) * 0.35) * vol * env;
+                int v = (int)(s * short.MaxValue) + samples[idx];
+                samples[idx] = (short)Math.Clamp(v, short.MinValue, short.MaxValue);
+            }
         }
 
         /// <summary>Рингтон: мягкое «бим-бом» ×2 + пауза (PlayLooping — как телефон).</summary>
