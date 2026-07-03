@@ -238,8 +238,57 @@ let remoteVoiceTracks = [];   // голосовые аудио-треки все
 let remoteVoiceVolume = 1.0;
 let remoteVoiceMuted = false;
 let remoteAudioByPid = {};    // pid -> [audioTrack,...]
-let perUserVolume = {};       // pid -> громкость 0..2
+let perUserVolume = {};       // pid -> громкость 0..5 (усилитель до 500%)
 let perUserMuted = {};        // pid -> bool
+
+// ── Свой усилитель звука (WebAudio) ─────────────────────────────────────
+// LiveKit-микшер (webAudioMix) выключен из-за бага «звук в одном ухе».
+// Вместо него — собственный граф на КАЖДЫЙ трек: MediaStreamSource -> Gain
+// (буст >100% возможен) -> общий лимитер -> выход. Моно корректно
+// раскладывается в оба уха, а лимитер (DynamicsCompressor) убирает
+// клиппинг/хрип при усилении.
+let _mixCtx = null, _mixLimiter = null;
+let mixByPid = {};            // pid -> [ {track, src, gain, el}, ... ]
+let screenMix = null;         // { track, src, gain, el }
+
+function mixCtx(){
+    if (!_mixCtx){
+        _mixCtx = new (window.AudioContext || window.webkitAudioContext)();
+        _mixLimiter = _mixCtx.createDynamicsCompressor();
+        _mixLimiter.threshold.value = -3;   // лимитер у потолка
+        _mixLimiter.knee.value = 0;
+        _mixLimiter.ratio.value = 20;
+        _mixLimiter.attack.value = 0.003;
+        _mixLimiter.release.value = 0.25;
+        _mixLimiter.connect(_mixCtx.destination);
+    }
+    try { if (_mixCtx.state === 'suspended') _mixCtx.resume(); } catch(e){}
+    return _mixCtx;
+}
+
+// Подключить аудио-трек через собственный GainNode (усилитель). Возвращает узел.
+function attachAmplified(track, initialGain){
+    const ctx = mixCtx();
+    const mst = track.mediaStreamTrack || track;
+    // Элемент нужен, чтобы Chromium не «засыпал» на WebRTC-дорожке; сам его глушим,
+    // звук идёт ТОЛЬКО через наш GainNode (иначе был бы двойной звук).
+    const el = track.attach();
+    el.style.display = 'none';
+    el.muted = true; el.volume = 0;
+    document.body.appendChild(el);
+    const source = ctx.createMediaStreamSource(new MediaStream([mst]));
+    const gain = ctx.createGain();
+    gain.gain.value = initialGain;
+    source.connect(gain); gain.connect(_mixLimiter);
+    return { track, src: source, gain, el };
+}
+
+function detachAmplified(node){
+    if (!node) return;
+    try { node.src.disconnect(); } catch(e){}
+    try { node.gain.disconnect(); } catch(e){}
+    try { if (node.el){ node.el.srcObject = null; node.el.remove(); } } catch(e){}
+}
 
 function post(msg){ window.chrome.webview.postMessage(msg); }
 
@@ -580,16 +629,15 @@ function onTrackSubscribed(track, publication, participant){
         }
         entry.loop.start();
     } else if (track.kind === 'audio'){
-        const el = track.attach(); // воспроизводится автоматически
-        el.style.display = 'none';
-        document.body.appendChild(el);
         if (src === LK.Track.Source.ScreenShareAudio){
             remoteScreenAudioTrack = track;
-            try { track.setVolume(remoteScreenAudioVolume); } catch(e){}
+            detachAmplified(screenMix);
+            screenMix = attachAmplified(track, remoteVoiceMuted ? 0 : remoteScreenAudioVolume);
         } else {
             remoteVoiceTracks.push(track);
             (remoteAudioByPid[pid] = remoteAudioByPid[pid] || []).push(track);
-            try { track.setVolume(effectiveVolume(pid)); } catch(e){}
+            const node = attachAmplified(track, effectiveVolume(pid));
+            (mixByPid[pid] = mixByPid[pid] || []).push(node);
         }
     }
 }
@@ -675,15 +723,13 @@ function effectiveVolume(pid){
     if (remoteVoiceMuted) return 0;
     if (perUserMuted[pid]) return 0;
     let v = (pid in perUserVolume) ? perUserVolume[pid] : remoteVoiceVolume;
-    // Без webAudioMix громкость применяется через element.volume, который
-    // допускает только 0..1 (больше — исключение, и громкость «залипает»).
-    return Math.max(0, Math.min(1, v));
+    // Свой GainNode принимает буст >1 (лимитер защищает от клиппинга).
+    return Math.max(0, Math.min(v, 5));
 }
 
 function applyPidVolume(pid){
-    const arr = remoteAudioByPid[pid] || [];
     const v = effectiveVolume(pid);
-    arr.forEach(t => { try { t.setVolume(v); } catch(e){} });
+    (mixByPid[pid] || []).forEach(n => { try { n.gain.gain.value = v; } catch(e){} });
 }
 
 function setParticipantVolume(pid, v){
@@ -709,9 +755,15 @@ function onTrackUnsubscribed(track, publication, participant){
     } else if (track.kind === 'audio'){
         if (src === LK.Track.Source.ScreenShareAudio){
             remoteScreenAudioTrack = null;
+            detachAmplified(screenMix); screenMix = null;
         } else {
             remoteVoiceTracks = remoteVoiceTracks.filter(t => t !== track);
             if (remoteAudioByPid[pid]) remoteAudioByPid[pid] = remoteAudioByPid[pid].filter(t => t !== track);
+            if (mixByPid[pid]){
+                mixByPid[pid].filter(n => n.track === track).forEach(detachAmplified);
+                mixByPid[pid] = mixByPid[pid].filter(n => n.track !== track);
+                if (!mixByPid[pid].length) delete mixByPid[pid];
+            }
         }
     }
 }
@@ -726,6 +778,8 @@ function cleanupParticipant(pid){
         }
     });
     delete remoteAudioByPid[pid];
+    (mixByPid[pid] || []).forEach(detachAmplified);
+    delete mixByPid[pid];
 }
 
 // Извлечение кадров плитки: постит remoteTileFrame с pid+source.
@@ -1024,8 +1078,8 @@ async function setMicEnabled(enabled){
 }
 
 function setScreenAudioVolume(v){
-    remoteScreenAudioVolume = Math.max(0, Math.min(1, v));   // element.volume: только 0..1
-    if (remoteScreenAudioTrack){ try{ remoteScreenAudioTrack.setVolume(remoteScreenAudioVolume); }catch(e){} }
+    remoteScreenAudioVolume = Math.max(0, Math.min(v, 5));   // усилитель до 500%
+    if (screenMix){ try{ screenMix.gain.gain.value = remoteVoiceMuted ? 0 : remoteScreenAudioVolume; }catch(e){} }
 }
 
 function setVoiceVolume(v){
@@ -1035,8 +1089,8 @@ function setVoiceVolume(v){
 
 function setRemoteMuted(muted){
     remoteVoiceMuted = muted;
-    Object.keys(remoteAudioByPid).forEach(applyPidVolume);
-    if (remoteScreenAudioTrack){ try{ remoteScreenAudioTrack.setVolume(muted ? 0 : remoteScreenAudioVolume); }catch(e){} }
+    Object.keys(mixByPid).forEach(applyPidVolume);
+    if (screenMix){ try{ screenMix.gain.gain.value = muted ? 0 : remoteScreenAudioVolume; }catch(e){} }
 }
 
 async function setAudioDevice(kind, deviceLabel){

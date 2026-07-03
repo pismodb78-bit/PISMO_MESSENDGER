@@ -608,7 +608,7 @@ namespace PISMO
                 Location = Cursor.Position
             };
             var lbl = new Label { Text = "🔊 Громкость: " + name, ForeColor = Color.White, AutoSize = true, Location = new Point(12, 10), Font = new Font("Segoe UI", 9f) };
-            var tb = new TrackBar { Minimum = 0, Maximum = 200, Value = (int)(vol * 100), TickStyle = TickStyle.None, Location = new Point(8, 32), Size = new Size(224, 40) };
+            var tb = new TrackBar { Minimum = 0, Maximum = 300, Value = Math.Min(300, (int)(vol * 100)), TickStyle = TickStyle.None, Location = new Point(8, 32), Size = new Size(224, 40) };
             tb.ValueChanged += (s, e) => { _userVol[pid] = tb.Value / 100f; try { _transport?.SetParticipantVolume(pid, _userVol[pid]); } catch { } UserAudioPrefs.SetVolume(pid, _userVol[pid]); };
             var chk = new CheckBox { Text = "🔇 Заглушить", ForeColor = Color.White, AutoSize = true, Location = new Point(12, 80), Checked = muted, Font = new Font("Segoe UI", 9.5f) };
             chk.CheckedChanged += (s, e) => { _userMuted[pid] = chk.Checked; try { _transport?.SetParticipantMuted(pid, chk.Checked); } catch { } UserAudioPrefs.SetMuted(pid, chk.Checked); };

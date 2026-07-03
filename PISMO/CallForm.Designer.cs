@@ -208,7 +208,7 @@ namespace PISMO
             _tbScreenAudioVolume = new TrackBar
             {
                 Minimum = 0,
-                Maximum = 100,
+                Maximum = 200,
                 Value = 100,
                 TickStyle = TickStyle.None,
                 Size = new Size(140, 30),

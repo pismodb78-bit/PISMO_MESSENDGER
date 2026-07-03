@@ -659,7 +659,7 @@ namespace PISMO
             }
             TrackBar MkTb(int val)
             {
-                var tb = new TrackBar { Minimum = 0, Maximum = 200, Value = Math.Min(200, val), TickStyle = TickStyle.None, Location = new Point(8, y), Size = new Size(290, 40) };
+                var tb = new TrackBar { Minimum = 0, Maximum = 300, Value = Math.Min(300, val), TickStyle = TickStyle.None, Location = new Point(8, y), Size = new Size(290, 40) };
                 _audioPanel.Controls.Add(tb); y += 58; return tb;
             }
 
