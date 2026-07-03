@@ -92,5 +92,18 @@ namespace PISMO
             e.Muted = muted;
             Save();
         }
+
+        /// <summary>Все сохранённые настройки (pid → громкость/мьют) — для передачи
+        /// в звонок, чтобы применялись к любому участнику (в т.ч. без камеры и к тем,
+        /// кто уже был в звонке до нашего входа).</summary>
+        public static System.Collections.Generic.List<(string pid, float volume, bool muted)> Snapshot()
+        {
+            EnsureLoaded();
+            var list = new System.Collections.Generic.List<(string, float, bool)>();
+            lock (_lock)
+                foreach (var kv in _map)
+                    list.Add((kv.Key, kv.Value.Volume, kv.Value.Muted));
+            return list;
+        }
     }
 }

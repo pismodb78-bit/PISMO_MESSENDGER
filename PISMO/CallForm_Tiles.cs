@@ -594,8 +594,13 @@ namespace PISMO
             { try { _userAudioPopup.Close(); } catch { } _userAudioPopup = null; }
 
             string name = _participants.TryGetValue(pid, out var nm) ? nm : pid;
-            float vol = _userVol.TryGetValue(pid, out var v) ? v : 1.0f;
-            bool muted = _userMuted.TryGetValue(pid, out var m) && m;
+            // Показываем актуальное значение: из текущей сессии, иначе — сохранённое
+            // (для голоса-без-камеры _userVol мог быть не заполнен, но громкость
+            // уже применена через voicePrefs).
+            float vol = _userVol.TryGetValue(pid, out var v) ? v
+                      : (UserAudioPrefs.Has(pid) ? UserAudioPrefs.GetVolume(pid) : 1.0f);
+            bool muted = _userMuted.TryGetValue(pid, out var m) ? m
+                       : (UserAudioPrefs.Has(pid) && UserAudioPrefs.GetMuted(pid));
 
             _userAudioPopup = new Form
             {

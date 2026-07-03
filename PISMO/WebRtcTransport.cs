@@ -2,6 +2,7 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Text.Json;
@@ -185,6 +186,18 @@ namespace PISMO
             _webView.CoreWebView2.Navigate($"https://{VirtualHostName}/index.html");
             await navDone.Task;
             await Task.Delay(200);
+
+            // Сохранённые индивидуальные громкости/мьюты собеседников — ДО connect,
+            // чтобы применились к любому участнику при подписке на его аудио (в т.ч.
+            // без камеры и к тем, кто уже был в звонке).
+            try
+            {
+                var prefs = UserAudioPrefs.Snapshot()
+                    .Select(p => new { pid = p.pid, v = p.volume, m = p.muted }).ToArray();
+                if (prefs.Length > 0)
+                    SendToJs(JsonSerializer.Serialize(new { cmd = "voicePrefs", prefs }));
+            }
+            catch { }
 
             // Запускаем подключение к комнате.
             SendToJs(JsonSerializer.Serialize(new
@@ -737,6 +750,21 @@ function setParticipantVolume(pid, v){
     applyPidVolume(pid);
 }
 
+// Массово применить сохранённые громкости/мьюты (приходит ДО connect). Так
+// значение действует для любого участника при подписке на его аудио, включая
+// голос-без-камеры и тех, кто уже был в звонке до нашего входа.
+function setVoicePrefs(prefs){
+    try {
+        (prefs || []).forEach(p => {
+            if (!p || p.pid == null) return;
+            const pid = String(p.pid);
+            if (typeof p.v === 'number') perUserVolume[pid] = p.v;
+            if (typeof p.m !== 'undefined') perUserMuted[pid] = !!p.m;
+            applyPidVolume(pid); // если трек уже есть — сразу, иначе применится при подписке
+        });
+    } catch(e){ console.warn('setVoicePrefs', String(e)); }
+}
+
 function setParticipantMuted(pid, muted){
     perUserMuted[pid] = muted;
     applyPidVolume(pid);
@@ -1180,6 +1208,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'setScreenAudioVolume': setScreenAudioVolume(msg.volume); break;
         case 'setVoiceVolume': setVoiceVolume(msg.volume); break;
         case 'setRemoteMuted': setRemoteMuted(msg.muted); break;
+        case 'voicePrefs': setVoicePrefs(msg.prefs); break;
         case 'setParticipantVolume': setParticipantVolume(msg.pid, msg.volume); break;
         case 'setParticipantMuted': setParticipantMuted(msg.pid, msg.muted); break;
         case 'setInputDevice': setAudioDevice('audioinput', msg.deviceLabel); break;
