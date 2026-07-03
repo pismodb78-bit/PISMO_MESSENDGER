@@ -666,7 +666,11 @@ namespace PISMO
                 join.Click += (s, e) =>
                 {
                     var call = new CallForm("vch_" + cid, name);
+                    // Показ «Голосовая связь подключена» в сайдбаре главного окна
+                    // (как в Discord: канал / сервер) и скрытие при выходе.
+                    call.FormClosed += (a, b) => MainForm.Current?.NotifyVoiceEnded();
                     call.Show();
+                    MainForm.Current?.NotifyVoiceStarted($"{name} / {_serverName}", call);
                 };
                 _pnlMessages.Controls.Add(join);
             }

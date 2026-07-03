@@ -16,6 +16,11 @@ namespace PISMO
         private Label _voiceTitle;
         private Label _voiceSub;
         private Button _voiceHangup;
+        private Form _voiceDockCall;   // окно звонка, к которому привязан док (серверный голос);
+                                       // null => используется _activeCall (личный/групповой)
+
+        /// <summary>Экземпляр главной формы — для показа дока из других окон (ServersForm).</summary>
+        public static MainForm Current { get; private set; }
 
         private static readonly Color CardBack = Color.FromArgb(35, 36, 41);   // скруглённая карточка
         private static readonly Color FooterBack = Color.FromArgb(28, 29, 34); // фон полосы футера
@@ -36,6 +41,7 @@ namespace PISMO
         /// <summary>Создаёт голосовой док и карточку-футер; вызывать после BuildSidebarSearch.</summary>
         private void BuildVoiceDock()
         {
+            Current = this;
             _voiceDock = new Panel
             {
                 Dock = DockStyle.Bottom,
@@ -97,16 +103,17 @@ namespace PISMO
             new ToolTip().SetToolTip(_voiceHangup, "Завершить звонок");
 
             // Клик по панели/подписям — вернуться в окно звонка.
+            Form DockCall() => (_voiceDockCall != null && !_voiceDockCall.IsDisposed) ? _voiceDockCall : _activeCall;
             void FocusCall(object s, EventArgs e)
             {
-                try { if (_activeCall != null && !_activeCall.IsDisposed) _activeCall.Activate(); } catch { }
+                try { var c = DockCall(); if (c != null && !c.IsDisposed) c.Activate(); } catch { }
             }
             _voiceDock.Click += FocusCall;
             _voiceTitle.Click += FocusCall;
             _voiceSub.Click += FocusCall;
             _voiceHangup.Click += (s, e) =>
             {
-                try { if (_activeCall != null && !_activeCall.IsDisposed) _activeCall.Close(); } catch { }
+                try { var c = DockCall(); if (c != null && !c.IsDisposed) c.Close(); } catch { }
                 HideVoiceDock();
             };
 
@@ -146,10 +153,12 @@ namespace PISMO
             catch { }
         }
 
-        /// <summary>Показать «Голосовая связь подключена» (subtitle — с кем звонок).</summary>
-        private void ShowVoiceDock(string subtitle)
+        /// <summary>Показать «Голосовая связь подключена» (subtitle — с кем/где звонок;
+        /// call — окно звонка, если это не _activeCall, например серверный голос).</summary>
+        private void ShowVoiceDock(string subtitle, Form call = null)
         {
             if (_voiceDock == null) return;
+            _voiceDockCall = call;
             _voiceSub.Text = subtitle ?? "";
             _voiceDock.Visible = true;
             _voiceDock.Invalidate();
@@ -158,7 +167,30 @@ namespace PISMO
         /// <summary>Спрятать голосовой док (звонок завершён).</summary>
         private void HideVoiceDock()
         {
+            _voiceDockCall = null;
             if (_voiceDock != null) _voiceDock.Visible = false;
+        }
+
+        /// <summary>Показ дока из другого окна (голосовой канал сервера).</summary>
+        public void NotifyVoiceStarted(string subtitle, Form call)
+        {
+            try
+            {
+                if (InvokeRequired) { BeginInvoke(new Action(() => ShowVoiceDock(subtitle, call))); }
+                else ShowVoiceDock(subtitle, call);
+            }
+            catch { }
+        }
+
+        /// <summary>Скрытие дока из другого окна.</summary>
+        public void NotifyVoiceEnded()
+        {
+            try
+            {
+                if (InvokeRequired) { BeginInvoke(new Action(HideVoiceDock)); }
+                else HideVoiceDock();
+            }
+            catch { }
         }
     }
 }

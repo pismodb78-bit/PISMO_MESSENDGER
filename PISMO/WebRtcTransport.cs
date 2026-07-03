@@ -449,9 +449,15 @@ async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress,
         // собеседника ('ожидание видео'). С отключённым adaptiveStream видео
         // передаётся всегда. audioCaptureDefaults включают шумоподавление,
         // эхоподавление и авто-усиление микрофона.
+        // webAudioMix ОБЯЗАТЕЛЬНО выключен: WebAudio-микшер LiveKit в Chromium
+        // иногда «прибивает» моно-дорожку нового участника к одному каналу —
+        // собеседника слышно только в левом/правом ухе (проявляется при 3+
+        // участниках). Без микшера звук играет напрямую через <audio> —
+        // моно корректно раскладывается в оба уха.
         room = new LK.Room({
             adaptiveStream: false,
             dynacast: false,
+            webAudioMix: false,
             audioCaptureDefaults: {
                 echoCancellation: true,
                 noiseSuppression: true,
@@ -669,7 +675,9 @@ function effectiveVolume(pid){
     if (remoteVoiceMuted) return 0;
     if (perUserMuted[pid]) return 0;
     let v = (pid in perUserVolume) ? perUserVolume[pid] : remoteVoiceVolume;
-    return v;
+    // Без webAudioMix громкость применяется через element.volume, который
+    // допускает только 0..1 (больше — исключение, и громкость «залипает»).
+    return Math.max(0, Math.min(1, v));
 }
 
 function applyPidVolume(pid){
@@ -1016,8 +1024,8 @@ async function setMicEnabled(enabled){
 }
 
 function setScreenAudioVolume(v){
-    remoteScreenAudioVolume = v;
-    if (remoteScreenAudioTrack){ try{ remoteScreenAudioTrack.setVolume(v); }catch(e){} }
+    remoteScreenAudioVolume = Math.max(0, Math.min(1, v));   // element.volume: только 0..1
+    if (remoteScreenAudioTrack){ try{ remoteScreenAudioTrack.setVolume(remoteScreenAudioVolume); }catch(e){} }
 }
 
 function setVoiceVolume(v){
