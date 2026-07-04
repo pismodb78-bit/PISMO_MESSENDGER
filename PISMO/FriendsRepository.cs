@@ -255,6 +255,79 @@ namespace PISMO
             return list;
         }
 
+        /// <summary>Исходящие заявки (кого я добавил, ещё не приняли).</summary>
+        public static List<UserHit> OutgoingRequests(int me)
+        {
+            EnsureTable();
+            var list = new List<UserHit>();
+            if (!HasStatus) return list;   // без status исходящих заявок нет
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT u.id, u.Name, u.Surname, u.login FROM friends f " +
+                    "JOIN users u ON u.id=f.friend_id WHERE f.user_id=@me AND f.status=0", conn);
+                cmd.Parameters.AddWithValue("@me", me);
+                var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
+                foreach (DataRow r in dt.Rows)
+                {
+                    string nm = string.Join(" ", new[] { r["Name"]?.ToString(), r["Surname"]?.ToString() }).Trim();
+                    string login = r["login"]?.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(nm)) nm = login;
+                    list.Add(new UserHit { Id = Convert.ToInt32(r["id"]), Name = nm, Login = login, Rel = Relation.OutgoingPending });
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        /// <summary>Все принятые друзья (с именами) — для страницы «Друзья».</summary>
+        public static List<UserHit> Friends(int me)
+        {
+            EnsureTable();
+            var list = new List<UserHit>();
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT u.id, u.Name, u.Surname, u.login FROM friends f " +
+                    "JOIN users u ON u.id = IF(f.user_id=@me, f.friend_id, f.user_id) " +
+                    "WHERE " + AcceptedPredicate("f") + " AND (f.user_id=@me OR f.friend_id=@me)", conn);
+                cmd.Parameters.AddWithValue("@me", me);
+                var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
+                foreach (DataRow r in dt.Rows)
+                {
+                    int id = Convert.ToInt32(r["id"]);
+                    if (id == me) continue;
+                    string nm = string.Join(" ", new[] { r["Name"]?.ToString(), r["Surname"]?.ToString() }).Trim();
+                    string login = r["login"]?.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(nm)) nm = login;
+                    list.Add(new UserHit { Id = id, Name = nm, Login = login, Rel = Relation.Friend });
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        /// <summary>Id тех, кто «в сети» (last_seen обновлялся недавно).</summary>
+        public static HashSet<int> OnlineIds(IEnumerable<int> ids)
+        {
+            var set = new HashSet<int>();
+            var idList = new List<int>(ids ?? Array.Empty<int>());
+            if (idList.Count == 0) return set;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT id FROM users WHERE id IN (" + string.Join(",", idList) + ") " +
+                    "AND last_seen IS NOT NULL AND TIMESTAMPDIFF(SECOND, last_seen, NOW()) <= 40", conn);
+                using var r = cmd.ExecuteReader();
+                while (r.Read()) set.Add(Convert.ToInt32(r["id"]));
+            }
+            catch { }
+            return set;
+        }
+
         /// <summary>Поиск пользователей (для «Добавить друга»); @ и # в начале игнорируются.</summary>
         public static List<UserHit> Search(int me, string query)
         {
@@ -317,8 +390,9 @@ namespace PISMO
             catch { }
         }
 
-        /// <summary>Может ли me написать them (учитывая приватность them).</summary>
-        public static bool CanMessage(int me, int them)
-            => GetDmPrivacy(them) == 0 || IsFriend(me, them);
+        /// <summary>Может ли me написать them (учитывая приватность them).
+        /// isAdmin — админ обходит ограничение «только друзья».</summary>
+        public static bool CanMessage(int me, int them, bool isAdmin = false)
+            => isAdmin || GetDmPrivacy(them) == 0 || IsFriend(me, them);
     }
 }

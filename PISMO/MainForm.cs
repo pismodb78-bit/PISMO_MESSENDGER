@@ -779,11 +779,14 @@ namespace PISMO
 
             FriendsRepository.EnsureTable();
 
-            // Кнопка «Добавить друга» (обычные пользователи видят только друзей,
-            // а новых находят и добавляют через поиск).
+            // Кнопка «Друзья» — открывает Discord-подобное окно (В сети / Все /
+            // Ожидание заявок / Добавить в друзья). Заявки больше НЕ показываются
+            // в списке чатов — только внутри окна «Друзья».
+            int pendingCount = 0;
+            try { pendingCount = FriendsRepository.IncomingRequests(myId).Count; } catch { }
             var btnAddFriend = new Button
             {
-                Text = "➕  Добавить друга",
+                Text = pendingCount > 0 ? $"👥  Друзья   ●{pendingCount}" : "👥  Друзья",
                 Width = CardWidth,
                 Height = 34,
                 FlatStyle = FlatStyle.Flat,
@@ -798,54 +801,6 @@ namespace PISMO
             btnAddFriend.Click += (s, e) => OpenAddFriend();
             RoundCorners(btnAddFriend, 8);   // скруглённые углы (как в Discord)
             pnlUserList.Controls.Add(btnAddFriend);
-
-            // Входящие заявки в друзья: принять/отклонить (дружба — только после принятия).
-            try
-            {
-                foreach (var req in FriendsRepository.IncomingRequests(myId))
-                {
-                    var card = new Panel
-                    {
-                        Width = CardWidth,
-                        Height = 54,
-                        BackColor = Color.FromArgb(43, 45, 49),
-                        Margin = new Padding(6, 2, 6, 4)
-                    };
-                    RoundCorners(card, 8);
-                    var lbl = new Label
-                    {
-                        Text = "📨 Заявка в друзья:\n" + req.Name,
-                        ForeColor = Color.White,
-                        Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                        AutoSize = false,
-                        Location = new Point(10, 8),
-                        Size = new Size(CardWidth - 100, 40),
-                        AutoEllipsis = true
-                    };
-                    var ok = new Button
-                    {
-                        Text = "✔", Size = new Size(36, 30), Location = new Point(CardWidth - 84, 12),
-                        FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(59, 165, 93),
-                        ForeColor = Color.White, Cursor = Cursors.Hand
-                    };
-                    ok.FlatAppearance.BorderSize = 0;
-                    var no = new Button
-                    {
-                        Text = "✖", Size = new Size(36, 30), Location = new Point(CardWidth - 44, 12),
-                        FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75),
-                        ForeColor = Color.White, Cursor = Cursors.Hand
-                    };
-                    no.FlatAppearance.BorderSize = 0;
-                    int reqId = req.Id;
-                    ok.Click += (s, e) => { FriendsRepository.AcceptRequest(myId, reqId); LoadConversations(); };
-                    no.Click += (s, e) => { FriendsRepository.DeclineRequest(myId, reqId); LoadConversations(); };
-                    card.Controls.Add(lbl);
-                    card.Controls.Add(ok);
-                    card.Controls.Add(no);
-                    pnlUserList.Controls.Add(card);
-                }
-            }
-            catch { }
 
             LoadGroups();
 
@@ -912,6 +867,26 @@ namespace PISMO
             using var f = new FriendsAddForm(UserSession.EffectiveId);
             f.ShowDialog(this);
             if (f.Changed) LoadConversations();
+            if (f.OpenChatWith is int uid)
+            {
+                string nm = BuildNameById(uid);
+                OpenChat(uid, nm);
+            }
+        }
+
+        /// <summary>Имя пользователя по id (для открытия чата из окна «Друзья»).</summary>
+        private string BuildNameById(int uid)
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT Name, Surname, login FROM users WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", uid);
+                using var r = cmd.ExecuteReader();
+                if (r.Read()) return BuildName(r["Name"], r["Surname"], r["login"]);
+            }
+            catch { }
+            return "Пользователь #" + uid;
         }
 
         private void LoadAllUsersForAdmin()
@@ -2574,7 +2549,7 @@ namespace PISMO
                 }
 
                 // Приватность получателя: «писать могут только друзья».
-                if (!FriendsRepository.CanMessage(myId, themId))
+                if (!FriendsRepository.CanMessage(myId, themId, UserSession.Role == "admin"))
                 {
                     MessageBox.Show(
                         "Этот пользователь принимает сообщения только от друзей.\n" +

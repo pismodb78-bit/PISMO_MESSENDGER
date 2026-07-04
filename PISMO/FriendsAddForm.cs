@@ -1,94 +1,249 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
 namespace PISMO
 {
     /// <summary>
-    /// Окно «Добавить друга»: поиск пользователей по имени или логину (@имя/#имя)
-    /// и добавление/удаление из друзей. После изменений выставляет Changed=true,
-    /// чтобы вызывающая форма перезагрузила список контактов.
+    /// Discord-подобное окно «Друзья»: вкладки «В сети / Все / Ожидание /
+    /// Добавить в друзья». Приём и отправка заявок вынесены сюда (в списке чатов
+    /// их больше нет). Здесь же — настройка «кто может мне писать» (Все / Только
+    /// друзья). После изменений выставляет Changed=true, а при выборе «Написать»
+    /// заполняет OpenChatWith.
     /// </summary>
     public sealed class FriendsAddForm : Form
     {
         private readonly int _me;
-        private readonly TextBox _search;
-        private readonly FlowLayoutPanel _results;
-        private readonly Label _hint;
 
-        /// <summary>Были ли изменения (добавлен/удалён друг) — чтобы обновить список.</summary>
+        private readonly Panel _tabBar;
+        private readonly Panel _content;
+        private readonly Button _btnPrivacy;
+        private readonly TextBox _search;
+        private readonly FlowLayoutPanel _list;
+        private readonly Label _status;
+
+        private enum Tab { Online, All, Pending, Add }
+        private Tab _tab = Tab.Online;
+        private readonly Dictionary<Tab, Button> _tabButtons = new();
+
+        /// <summary>Были ли изменения (заявки/дружба) — чтобы обновить список чатов.</summary>
         public bool Changed { get; private set; }
+
+        /// <summary>Если пользователь нажал «Написать» — id собеседника для открытия чата.</summary>
+        public int? OpenChatWith { get; private set; }
+
+        private static readonly Color Bg = Color.FromArgb(49, 51, 56);
+        private static readonly Color Card = Color.FromArgb(43, 45, 49);
+        private static readonly Color CardHover = Color.FromArgb(56, 58, 64);
+        private static readonly Color Accent = Color.FromArgb(88, 101, 242);
+        private static readonly Color Green = Color.FromArgb(59, 165, 93);
+        private static readonly Color Neutral = Color.FromArgb(64, 68, 75);
+        private static readonly Color Muted = Color.FromArgb(150, 152, 158);
+        private static readonly Color OnlineDot = Color.FromArgb(59, 165, 93);
+        private static readonly Color OfflineDot = Color.FromArgb(116, 127, 141);
 
         public FriendsAddForm(int me)
         {
             _me = me;
-            Text = "Добавить друга";
-            ClientSize = new Size(420, 520);
+            Text = "Друзья";
+            ClientSize = new Size(640, 560);
             StartPosition = FormStartPosition.CenterParent;
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false; MinimizeBox = false;
-            BackColor = Color.FromArgb(54, 57, 63);
+            MinimumSize = new Size(560, 460);
+            BackColor = Bg;
             Font = new Font("Segoe UI", 9.5f);
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
+            // ── Верхняя панель с вкладками + приватность ──────────────────
+            _tabBar = new Panel { Dock = DockStyle.Top, Height = 52, BackColor = Color.FromArgb(43, 45, 49) };
+
             var title = new Label
             {
-                Text = "Добавить друга",
+                Text = "👥 Друзья",
                 ForeColor = Color.White,
-                Font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold),
+                Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
                 AutoSize = true,
-                Location = new Point(16, 14)
+                Location = new Point(14, 15)
             };
+            _tabBar.Controls.Add(title);
 
+            AddTab(Tab.Online, "В сети", 110);
+            AddTab(Tab.All, "Все", 190);
+            AddTab(Tab.Pending, "Ожидание", 250);
+            AddTab(Tab.Add, "Добавить", 345);
+
+            _btnPrivacy = new Button
+            {
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = Color.White,
+                BackColor = Neutral,
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                Size = new Size(180, 30),
+                Location = new Point(_tabBar.Width - 194, 11),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Cursor = Cursors.Hand,
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            _btnPrivacy.FlatAppearance.BorderSize = 0;
+            _btnPrivacy.Click += (s, e) => TogglePrivacyMenu();
+            _tabBar.Controls.Add(_btnPrivacy);
+            RefreshPrivacyButton();
+
+            // ── Поиск (виден только на вкладке «Добавить») ────────────────
             _search = new TextBox
             {
-                Location = new Point(16, 50),
-                Size = new Size(388, 28),
+                Dock = DockStyle.Top,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = Color.FromArgb(40, 42, 46),
+                BackColor = Color.FromArgb(30, 31, 34),
                 ForeColor = Color.White,
                 Font = new Font("Segoe UI", 10.5f),
-                PlaceholderText = "Логин (@имя / #имя) или имя"
+                PlaceholderText = "Логин (@имя / #имя) или имя",
+                Visible = false
             };
-            _search.TextChanged += (s, e) => RunSearch();
+            _search.TextChanged += (s, e) => { if (_tab == Tab.Add) Reload(); };
 
-            _hint = new Label
+            _status = new Label
             {
-                Text = "Введите логин или имя, чтобы найти пользователя.",
-                ForeColor = Color.FromArgb(150, 152, 158),
-                AutoSize = false,
-                Size = new Size(388, 18),
-                Location = new Point(16, 84),
-                Font = new Font("Segoe UI", 8.5f)
+                Dock = DockStyle.Top,
+                Height = 24,
+                ForeColor = Muted,
+                Font = new Font("Segoe UI", 8.5f),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(14, 0, 0, 0)
             };
 
-            _results = new FlowLayoutPanel
+            _list = new FlowLayoutPanel
             {
-                Location = new Point(10, 110),
-                Size = new Size(400, 398),
+                Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoScroll = true,
-                BackColor = Color.FromArgb(54, 57, 63)
+                BackColor = Bg,
+                Padding = new Padding(10, 6, 10, 10)
             };
 
-            Controls.Add(title);
-            Controls.Add(_search);
-            Controls.Add(_hint);
-            Controls.Add(_results);
+            _content = new Panel { Dock = DockStyle.Fill, BackColor = Bg };
+            _content.Controls.Add(_list);
+            _content.Controls.Add(_status);
+            _content.Controls.Add(_search);
+
+            Controls.Add(_content);
+            Controls.Add(_tabBar);
+
+            SelectTab(Tab.Online);
+        }
+
+        private void AddTab(Tab tab, string text, int x)
+        {
+            var b = new Button
+            {
+                Text = text,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = Muted,
+                BackColor = Color.FromArgb(43, 45, 49),
+                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                AutoSize = true,
+                Location = new Point(x, 13),
+                Cursor = Cursors.Hand
+            };
+            b.FlatAppearance.BorderSize = 0;
+            b.FlatAppearance.MouseOverBackColor = Color.FromArgb(56, 58, 64);
+            b.Click += (s, e) => SelectTab(tab);
+            _tabButtons[tab] = b;
+            _tabBar.Controls.Add(b);
+        }
+
+        private void SelectTab(Tab tab)
+        {
+            _tab = tab;
+            foreach (var kv in _tabButtons)
+            {
+                bool on = kv.Key == tab;
+                kv.Value.ForeColor = on ? Color.White : Muted;
+                kv.Value.BackColor = on ? Accent : Color.FromArgb(43, 45, 49);
+            }
+            _search.Visible = tab == Tab.Add;
+            Reload();
+        }
+
+        // ── Приватность «кто может мне писать» ────────────────────────────
+        private void RefreshPrivacyButton()
+        {
+            int mode = FriendsRepository.GetDmPrivacy(_me);
+            _btnPrivacy.Text = mode == 1 ? "✉ Писать: Только друзья ▾" : "✉ Писать: Все ▾";
+        }
+
+        private void TogglePrivacyMenu()
+        {
+            var menu = new ContextMenuStrip();
+            int mode = FriendsRepository.GetDmPrivacy(_me);
+            var all = new ToolStripMenuItem("Все") { Checked = mode == 0 };
+            var fr = new ToolStripMenuItem("Только друзья") { Checked = mode == 1 };
+            all.Click += (s, e) => { FriendsRepository.SetDmPrivacy(_me, 0); RefreshPrivacyButton(); };
+            fr.Click += (s, e) => { FriendsRepository.SetDmPrivacy(_me, 1); RefreshPrivacyButton(); };
+            menu.Items.Add(all);
+            menu.Items.Add(fr);
+            menu.Show(_btnPrivacy, new Point(0, _btnPrivacy.Height));
+        }
+
+        // ── Наполнение списка по вкладке ──────────────────────────────────
+        private void Reload()
+        {
+            if (_tab == Tab.Add) { RunSearch(); return; }
+
+            _list.Controls.Clear();
+            _status.Text = "Загрузка…";
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    List<FriendsRepository.UserHit> rows;
+                    HashSet<int> online = null;
+
+                    if (_tab == Tab.Pending)
+                    {
+                        rows = new List<FriendsRepository.UserHit>();
+                        rows.AddRange(FriendsRepository.IncomingRequests(_me));
+                        rows.AddRange(FriendsRepository.OutgoingRequests(_me));
+                    }
+                    else
+                    {
+                        rows = FriendsRepository.Friends(_me);
+                        var ids = new List<int>();
+                        foreach (var f in rows) ids.Add(f.Id);
+                        online = FriendsRepository.OnlineIds(ids);
+                        if (_tab == Tab.Online)
+                            rows = rows.FindAll(f => online.Contains(f.Id));
+                    }
+
+                    if (IsDisposed || !IsHandleCreated) return;
+                    var fOnline = online;
+                    var fRows = rows;
+                    BeginInvoke(new Action(() =>
+                    {
+                        _list.Controls.Clear();
+                        _status.Text = _tab switch
+                        {
+                            Tab.Online => $"В сети — {fRows.Count}",
+                            Tab.All => $"Всего друзей — {fRows.Count}",
+                            Tab.Pending => fRows.Count == 0 ? "Заявок нет" : $"Заявок — {fRows.Count}",
+                            _ => ""
+                        };
+                        foreach (var h in fRows)
+                            _list.Controls.Add(MakeRow(h, fOnline != null && fOnline.Contains(h.Id)));
+                    }));
+                }
+                catch { }
+            });
         }
 
         private void RunSearch()
         {
             string q = _search.Text;
-            _results.Controls.Clear();
-            if (string.IsNullOrWhiteSpace(q))
-            {
-                _hint.Text = "Введите логин или имя, чтобы найти пользователя.";
-                return;
-            }
-            _hint.Text = "Поиск…";
-
+            _list.Controls.Clear();
+            if (string.IsNullOrWhiteSpace(q)) { _status.Text = "Введите логин или имя, чтобы найти пользователя."; return; }
+            _status.Text = "Поиск…";
             System.Threading.Tasks.Task.Run(() =>
             {
                 var hits = FriendsRepository.Search(_me, q);
@@ -97,26 +252,37 @@ namespace PISMO
                 {
                     BeginInvoke(new Action(() =>
                     {
-                        // Пока запрос менялся, показываем результат только для актуального текста.
                         if (_search.Text != q) return;
-                        _results.Controls.Clear();
-                        _hint.Text = hits.Count == 0 ? "Никого не найдено." : $"Найдено: {hits.Count}";
-                        foreach (var h in hits) _results.Controls.Add(MakeRow(h));
+                        _list.Controls.Clear();
+                        _status.Text = hits.Count == 0 ? "Никого не найдено." : $"Найдено: {hits.Count}";
+                        foreach (var h in hits) _list.Controls.Add(MakeRow(h, false, showPresence: false));
                     }));
                 }
                 catch { }
             });
         }
 
-        private Control MakeRow(FriendsRepository.UserHit h)
+        // ── Карточка пользователя ─────────────────────────────────────────
+        private Control MakeRow(FriendsRepository.UserHit h, bool isOnline, bool showPresence = true)
         {
-            var card = new Panel
+            int w = Math.Max(400, _list.ClientSize.Width - 26);
+            var card = new Panel { Width = w, Height = 56, Margin = new Padding(0, 0, 0, 6), BackColor = Card };
+            card.MouseEnter += (s, e) => card.BackColor = CardHover;
+            card.MouseLeave += (s, e) => card.BackColor = Card;
+
+            // Точка присутствия (только для друзей).
+            if (showPresence)
             {
-                Width = 380,
-                Height = 54,
-                Margin = new Padding(0, 0, 0, 6),
-                BackColor = Color.FromArgb(47, 49, 54)
-            };
+                var dot = new Panel { Size = new Size(12, 12), Location = new Point(14, 22), BackColor = Card };
+                dot.Paint += (s, e) =>
+                {
+                    e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    using var br = new SolidBrush(isOnline ? OnlineDot : OfflineDot);
+                    e.Graphics.FillEllipse(br, 0, 0, 11, 11);
+                };
+                card.Controls.Add(dot);
+            }
+            int textX = showPresence ? 36 : 14;
 
             var lblName = new Label
             {
@@ -124,81 +290,69 @@ namespace PISMO
                 ForeColor = Color.White,
                 Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
                 AutoSize = false,
-                Size = new Size(250, 20),
-                Location = new Point(12, 8),
+                Size = new Size(w - textX - 210, 20),
+                Location = new Point(textX, 9),
                 AutoEllipsis = true
             };
-            var lblLogin = new Label
+            string sub = string.IsNullOrWhiteSpace(h.Login) ? "" : "@" + h.Login;
+            if (h.Rel == FriendsRepository.Relation.IncomingPending) sub = "📨 хочет добавить вас  ·  " + sub;
+            else if (h.Rel == FriendsRepository.Relation.OutgoingPending) sub = "⏳ заявка отправлена  ·  " + sub;
+            else if (showPresence) sub = (isOnline ? "В сети" : "Не в сети") + (sub.Length > 0 ? "  ·  " + sub : "");
+            var lblSub = new Label
             {
-                Text = string.IsNullOrWhiteSpace(h.Login) ? "" : "@" + h.Login,
-                ForeColor = Color.FromArgb(150, 152, 158),
+                Text = sub,
+                ForeColor = Muted,
                 AutoSize = false,
-                Size = new Size(250, 18),
-                Location = new Point(12, 28),
+                Size = new Size(w - textX - 210, 18),
+                Location = new Point(textX, 30),
                 Font = new Font("Segoe UI", 8.5f),
                 AutoEllipsis = true
             };
+            card.Controls.Add(lblName);
+            card.Controls.Add(lblSub);
 
-            var btn = new Button
+            // Кнопки справа зависят от отношения / вкладки.
+            int bx = w - 12;
+            void AddBtn(string text, Color bg, int width, Action onClick)
             {
-                Size = new Size(96, 30),
-                Location = new Point(276, 12),
-                FlatStyle = FlatStyle.Flat,
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                Cursor = Cursors.Hand
-            };
-            btn.FlatAppearance.BorderSize = 0;
-
-            void Render()
-            {
-                switch (h.Rel)
+                bx -= width;
+                var b = new Button
                 {
-                    case FriendsRepository.Relation.Friend:
-                        btn.Text = "➖ Убрать";
-                        btn.BackColor = Color.FromArgb(64, 68, 75);
-                        break;
-                    case FriendsRepository.Relation.OutgoingPending:
-                        btn.Text = "⏳ Отменить";
-                        btn.BackColor = Color.FromArgb(64, 68, 75);
-                        break;
-                    case FriendsRepository.Relation.IncomingPending:
-                        btn.Text = "✔ Принять";
-                        btn.BackColor = Color.FromArgb(88, 101, 242);
-                        break;
-                    default:
-                        btn.Text = "📨 Заявка";
-                        btn.BackColor = Color.FromArgb(59, 165, 93);
-                        break;
-                }
+                    Text = text, Size = new Size(width, 30), Location = new Point(bx, 13),
+                    FlatStyle = FlatStyle.Flat, BackColor = bg, ForeColor = Color.White,
+                    Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold), Cursor = Cursors.Hand,
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right
+                };
+                b.FlatAppearance.BorderSize = 0;
+                b.Click += (s, e) => onClick();
+                card.Controls.Add(b);
+                b.BringToFront();
+                bx -= 6;
             }
-            Render();
 
-            btn.Click += (s, e) =>
+            switch (h.Rel)
             {
-                switch (h.Rel)
-                {
-                    case FriendsRepository.Relation.Friend:            // удалить из друзей
-                    case FriendsRepository.Relation.OutgoingPending:   // отменить заявку
-                        FriendsRepository.Remove(_me, h.Id);
-                        h.Rel = FriendsRepository.Relation.None;
-                        break;
-                    case FriendsRepository.Relation.IncomingPending:   // принять встречную
-                        FriendsRepository.AcceptRequest(_me, h.Id);
-                        h.Rel = FriendsRepository.Relation.Friend;
-                        break;
-                    default:                                           // отправить заявку
+                case FriendsRepository.Relation.Friend:
+                    AddBtn("➖", Neutral, 40, () => { FriendsRepository.Remove(_me, h.Id); Changed = true; Reload(); });
+                    AddBtn("✉ Написать", Green, 100, () => { OpenChatWith = h.Id; Changed = true; Close(); });
+                    break;
+                case FriendsRepository.Relation.IncomingPending:
+                    AddBtn("✖ Отклонить", Neutral, 100, () => { FriendsRepository.DeclineRequest(_me, h.Id); Changed = true; Reload(); });
+                    AddBtn("✔ Принять", Accent, 100, () => { FriendsRepository.AcceptRequest(_me, h.Id); Changed = true; Reload(); });
+                    break;
+                case FriendsRepository.Relation.OutgoingPending:
+                    AddBtn("⏳ Отменить", Neutral, 110, () => { FriendsRepository.Remove(_me, h.Id); Changed = true; Reload(); });
+                    break;
+                default:
+                    AddBtn("📨 Заявка", Green, 100, () =>
+                    {
                         FriendsRepository.SendRequest(_me, h.Id);
                         h.Rel = FriendsRepository.Relation.OutgoingPending;
-                        break;
-                }
-                Changed = true;
-                Render();
-            };
+                        Changed = true; Reload();
+                    });
+                    break;
+            }
 
-            card.Controls.Add(lblName);
-            card.Controls.Add(lblLogin);
-            card.Controls.Add(btn);
             return card;
         }
     }
