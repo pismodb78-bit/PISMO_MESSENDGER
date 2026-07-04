@@ -34,11 +34,20 @@ namespace PISMO
         /// таймаутом). Любая ошибка/отсутствие сети — молча продолжаем работу.</summary>
         public static void CheckOnStartup()
         {
-            try { CheckAsync().GetAwaiter().GetResult(); }
+            try { CheckAsync(null).GetAwaiter().GetResult(); }
             catch { /* нет сети / GitHub недоступен — не мешаем запуску */ }
         }
 
-        private static async Task CheckAsync()
+        /// <summary>Асинхронная проверка обновлений (вызывается из заставки, не
+        /// блокирует её отрисовку). owner — окно-владелец для диалога.
+        /// Возвращает true, если запущено обновление (приложение закроется).</summary>
+        public static async Task<bool> CheckInteractiveAsync(IWin32Window owner)
+        {
+            try { return await CheckAsync(owner); }
+            catch { return false; }
+        }
+
+        private static async Task<bool> CheckAsync(IWin32Window owner)
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(6) };
             http.DefaultRequestHeaders.UserAgent.ParseAdd("PISMO-Updater");
@@ -46,17 +55,17 @@ namespace PISMO
 
             string json;
             try { json = await http.GetStringAsync(ApiUrl); }
-            catch { return; }
+            catch { return false; }
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
             string tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() : null;
-            if (string.IsNullOrWhiteSpace(tag)) return;
+            if (string.IsNullOrWhiteSpace(tag)) return false;
 
             var current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0, 0);
-            if (!TryParseVersion(tag, out var remote)) return;
-            if (remote <= current) return; // уже актуальная версия
+            if (!TryParseVersion(tag, out var remote)) return false;
+            if (remote <= current) return false; // уже актуальная версия
 
             // Ищем .zip-ассет релиза.
             string zipUrl = null, zipName = null;
@@ -73,21 +82,21 @@ namespace PISMO
                     }
                 }
             }
-            if (string.IsNullOrWhiteSpace(zipUrl)) return;
+            if (string.IsNullOrWhiteSpace(zipUrl)) return false;
 
             string notes = root.TryGetProperty("body", out var b) ? b.GetString() : "";
             string msg = $"Доступна новая версия PISMO {tag} (у вас {current.Major}.{current.Minor}.{current.Build}).\n\n" +
                          (string.IsNullOrWhiteSpace(notes) ? "" : (notes.Length > 400 ? notes.Substring(0, 400) + "…" : notes) + "\n\n") +
                          "Обновить сейчас? Программа перезапустится.";
 
-            var res = MessageBox.Show(msg, "PISMO — обновление",
+            var res = MessageBox.Show(owner, msg, "PISMO — обновление",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-            if (res != DialogResult.Yes) return;
+            if (res != DialogResult.Yes) return false;
 
-            await DownloadAndApplyAsync(http, zipUrl, zipName);
+            return await DownloadAndApplyAsync(http, zipUrl, zipName);
         }
 
-        private static async Task DownloadAndApplyAsync(HttpClient http, string zipUrl, string zipName)
+        private static async Task<bool> DownloadAndApplyAsync(HttpClient http, string zipUrl, string zipName)
         {
             string tempZip = Path.Combine(Path.GetTempPath(), "pismo_update_" + Guid.NewGuid().ToString("N") + ".zip");
             try
@@ -103,7 +112,7 @@ namespace PISMO
             {
                 MessageBox.Show("Не удалось скачать обновление. Попробуйте позже.\n\n" + ex.Message, "PISMO",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                return false;
             }
 
             string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
@@ -137,6 +146,7 @@ namespace PISMO
             };
             Process.Start(psi);
             Environment.Exit(0); // закрываем приложение, чтобы апдейтер смог заменить файлы
+            return true;         // недостижимо, но нужно компилятору
         }
 
         /// <summary>Парсит тег релиза (v1.2.3 / 1.2.3) в Version.</summary>

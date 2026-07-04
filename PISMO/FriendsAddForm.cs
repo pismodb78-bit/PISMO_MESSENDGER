@@ -47,30 +47,41 @@ namespace PISMO
         {
             _me = me;
             Text = "Друзья";
-            ClientSize = new Size(640, 560);
+            ClientSize = new Size(760, 560);
             StartPosition = FormStartPosition.CenterParent;
-            MinimumSize = new Size(560, 460);
+            MinimumSize = new Size(740, 460);
             BackColor = Bg;
             Font = new Font("Segoe UI", 9.5f);
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
-            // ── Верхняя панель с вкладками + приватность ──────────────────
+            // ── Верхняя панель: заголовок + вкладки (FlowLayout — ничего не
+            //    накладывается) + кнопка приватности справа ─────────────────
             _tabBar = new Panel { Dock = DockStyle.Top, Height = 52, BackColor = Color.FromArgb(43, 45, 49) };
 
+            var flow = new FlowLayoutPanel
+            {
+                Location = new Point(8, 10),
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                BackColor = Color.FromArgb(43, 45, 49)
+            };
             var title = new Label
             {
                 Text = "👥 Друзья",
                 ForeColor = Color.White,
                 Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
                 AutoSize = true,
-                Location = new Point(14, 15)
+                Margin = new Padding(6, 7, 12, 0)
             };
-            _tabBar.Controls.Add(title);
+            flow.Controls.Add(title);
 
-            AddTab(Tab.Online, "В сети", 110);
-            AddTab(Tab.All, "Все", 190);
-            AddTab(Tab.Pending, "Ожидание", 250);
-            AddTab(Tab.Add, "Добавить", 345);
+            AddTab(flow, Tab.Online, "В сети");
+            AddTab(flow, Tab.All, "Все");
+            AddTab(flow, Tab.Pending, "Ожидание");
+            AddTab(flow, Tab.Add, "Добавить");
+            _tabBar.Controls.Add(flow);
 
             _btnPrivacy = new Button
             {
@@ -78,8 +89,8 @@ namespace PISMO
                 ForeColor = Color.White,
                 BackColor = Neutral,
                 Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                Size = new Size(180, 30),
-                Location = new Point(_tabBar.Width - 194, 11),
+                Size = new Size(190, 30),
+                Location = new Point(ClientSize.Width - 202, 11),
                 Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 Cursor = Cursors.Hand,
                 TextAlign = ContentAlignment.MiddleCenter
@@ -121,6 +132,11 @@ namespace PISMO
                 BackColor = Bg,
                 Padding = new Padding(10, 6, 10, 10)
             };
+            _list.Resize += (s, e) =>
+            {
+                int w = Math.Max(400, _list.ClientSize.Width - 26);
+                foreach (Control c in _list.Controls) c.Width = w;
+            };
 
             _content = new Panel { Dock = DockStyle.Fill, BackColor = Bg };
             _content.Controls.Add(_list);
@@ -133,7 +149,7 @@ namespace PISMO
             SelectTab(Tab.Online);
         }
 
-        private void AddTab(Tab tab, string text, int x)
+        private void AddTab(FlowLayoutPanel flow, Tab tab, string text)
         {
             var b = new Button
             {
@@ -143,14 +159,16 @@ namespace PISMO
                 BackColor = Color.FromArgb(43, 45, 49),
                 Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 AutoSize = true,
-                Location = new Point(x, 13),
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(8, 4, 8, 4),
+                Margin = new Padding(2, 2, 2, 0),
                 Cursor = Cursors.Hand
             };
             b.FlatAppearance.BorderSize = 0;
             b.FlatAppearance.MouseOverBackColor = Color.FromArgb(56, 58, 64);
             b.Click += (s, e) => SelectTab(tab);
             _tabButtons[tab] = b;
-            _tabBar.Controls.Add(b);
+            flow.Controls.Add(b);
         }
 
         private void SelectTab(Tab tab)
@@ -175,15 +193,35 @@ namespace PISMO
 
         private void TogglePrivacyMenu()
         {
-            var menu = new ContextMenuStrip();
+            var menu = new ContextMenuStrip
+            {
+                BackColor = Card,
+                ForeColor = Color.White,
+                Renderer = new ToolStripProfessionalRenderer(new DarkMenuColors())
+            };
             int mode = FriendsRepository.GetDmPrivacy(_me);
-            var all = new ToolStripMenuItem("Все") { Checked = mode == 0 };
-            var fr = new ToolStripMenuItem("Только друзья") { Checked = mode == 1 };
+            var all = new ToolStripMenuItem("✔ Все") { Checked = mode == 0, ForeColor = Color.White };
+            var fr = new ToolStripMenuItem("🔒 Только друзья") { Checked = mode == 1, ForeColor = Color.White };
             all.Click += (s, e) => { FriendsRepository.SetDmPrivacy(_me, 0); RefreshPrivacyButton(); };
             fr.Click += (s, e) => { FriendsRepository.SetDmPrivacy(_me, 1); RefreshPrivacyButton(); };
             menu.Items.Add(all);
             menu.Items.Add(fr);
             menu.Show(_btnPrivacy, new Point(0, _btnPrivacy.Height));
+        }
+
+        /// <summary>Тёмная палитра для выпадающих меню (в стиле Discord).</summary>
+        private sealed class DarkMenuColors : ProfessionalColorTable
+        {
+            public override Color ToolStripDropDownBackground => Card;
+            public override Color MenuItemSelected => Color.FromArgb(64, 68, 75);
+            public override Color MenuItemBorder => Color.FromArgb(64, 68, 75);
+            public override Color MenuBorder => Color.FromArgb(30, 31, 34);
+            public override Color ImageMarginGradientBegin => Card;
+            public override Color ImageMarginGradientMiddle => Card;
+            public override Color ImageMarginGradientEnd => Card;
+            public override Color CheckBackground => Accent;
+            public override Color CheckSelectedBackground => Accent;
+            public override Color CheckPressedBackground => Accent;
         }
 
         // ── Наполнение списка по вкладке ──────────────────────────────────
@@ -290,9 +328,10 @@ namespace PISMO
                 ForeColor = Color.White,
                 Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
                 AutoSize = false,
-                Size = new Size(w - textX - 210, 20),
+                Size = new Size(w - textX - 230, 20),
                 Location = new Point(textX, 9),
-                AutoEllipsis = true
+                AutoEllipsis = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
             };
             string sub = string.IsNullOrWhiteSpace(h.Login) ? "" : "@" + h.Login;
             if (h.Rel == FriendsRepository.Relation.IncomingPending) sub = "📨 хочет добавить вас  ·  " + sub;
@@ -303,10 +342,11 @@ namespace PISMO
                 Text = sub,
                 ForeColor = Muted,
                 AutoSize = false,
-                Size = new Size(w - textX - 210, 18),
+                Size = new Size(w - textX - 230, 18),
                 Location = new Point(textX, 30),
                 Font = new Font("Segoe UI", 8.5f),
-                AutoEllipsis = true
+                AutoEllipsis = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
             };
             card.Controls.Add(lblName);
             card.Controls.Add(lblSub);

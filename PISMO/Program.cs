@@ -24,11 +24,12 @@ namespace PISMO
 
             ApplicationConfiguration.Initialize();
 
-            // Автообновление при запуске (GitHub Releases). Тихо пропускаем при
-            // отсутствии сети. Если началось обновление — приложение закроется само.
-            Updater.CheckOnStartup();
-
-            Application.Run(new LoginForm());
+            // Заставка (как у Discord): показывается СРАЗУ, внутри неё идут
+            // проверка обновлений и подключение к БД, затем она открывает окно
+            // входа. Так приложение не выглядит зависшим при запуске.
+            var ctx = new ApplicationContext();
+            new SplashForm(ctx).Show();
+            Application.Run(ctx);
         }
     }
 }

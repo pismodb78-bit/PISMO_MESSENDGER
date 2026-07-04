@@ -90,12 +90,20 @@ CREATE TABLE IF NOT EXISTS `group_messages` (
   KEY `idx_grpmsg_created` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ── Друзья (личный список) ──────────────────────────────────
+-- ── Друзья (заявки: status 0=ожидает, 1=приняты) ────────────
 CREATE TABLE IF NOT EXISTS `friends` (
-  `user_id`    INT NOT NULL,
-  `friend_id`  INT NOT NULL,
+  `user_id`    INT NOT NULL,                -- кто отправил заявку
+  `friend_id`  INT NOT NULL,                -- кому отправлена
+  `status`     TINYINT NOT NULL DEFAULT 0,  -- 0=заявка, 1=друзья
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`user_id`,`friend_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ── Настройки пользователя (кто может писать и т.п.) ────────
+CREATE TABLE IF NOT EXISTS `user_prefs` (
+  `user_id`    INT NOT NULL,
+  `dm_privacy` TINYINT NOT NULL DEFAULT 0,  -- 0=писать могут все, 1=только друзья
+  PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ── Блокировки пользователей ────────────────────────────────

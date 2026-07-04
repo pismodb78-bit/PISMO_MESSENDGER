@@ -31,6 +31,9 @@ namespace PISMO
         /// с «Unknown column 'f.status'».</summary>
         public static bool HasStatus { get; private set; }
 
+        /// <summary>Есть ли колонка users.dm_privacy (запасное хранилище приватности).</summary>
+        public static bool HasDmPrivacy { get; private set; }
+
         /// <summary>SQL-предикат «принятая дружба» для алиаса таблицы friends.
         /// С колонкой status → "alias.status=1"; без неё любая строка = дружба.</summary>
         public static string AcceptedPredicate(string alias)
@@ -61,7 +64,20 @@ namespace PISMO
                 // Старая таблица без status → добавляем с DEFAULT 1 (существующие
                 // дружбы остаются принятыми). Проверяем наличие явно.
                 HasStatus = EnsureColumn(conn, "friends", "status", "TINYINT NOT NULL DEFAULT 1");
-                EnsureColumn(conn, "users", "dm_privacy", "TINYINT NOT NULL DEFAULT 0");
+
+                // Приватность храним в ОТДЕЛЬНОЙ таблице (CREATE TABLE надёжнее,
+                // чем ALTER на импортированной БД). users.dm_privacy — как запасной
+                // вариант для старых сборок.
+                try
+                {
+                    using var prefs = new MySqlCommand(
+                        "CREATE TABLE IF NOT EXISTS user_prefs (" +
+                        "user_id INT NOT NULL PRIMARY KEY, " +
+                        "dm_privacy TINYINT NOT NULL DEFAULT 0)", conn);
+                    prefs.ExecuteNonQuery();
+                }
+                catch { }
+                HasDmPrivacy = EnsureColumn(conn, "users", "dm_privacy", "TINYINT NOT NULL DEFAULT 0");
 
                 _ensured = true;
             }
@@ -361,19 +377,31 @@ namespace PISMO
 
         // ── Приватность личных сообщений ────────────────────────────────
 
-        /// <summary>0 = писать могут все, 1 = только друзья.</summary>
+        /// <summary>0 = писать могут все, 1 = только друзья. Основное хранилище —
+        /// user_prefs; users.dm_privacy читается как запасное (старые сборки).</summary>
         public static int GetDmPrivacy(int uid)
         {
             EnsureTable();
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand("SELECT dm_privacy FROM users WHERE id=@id", conn);
-                cmd.Parameters.AddWithValue("@id", uid);
-                var o = cmd.ExecuteScalar();
-                return o == null || o == DBNull.Value ? 0 : Convert.ToInt32(o);
+                using (var cmd = new MySqlCommand(
+                    "SELECT dm_privacy FROM user_prefs WHERE user_id=@id", conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", uid);
+                    var o = cmd.ExecuteScalar();
+                    if (o != null && o != DBNull.Value) return Convert.ToInt32(o);
+                }
+                if (HasDmPrivacy)
+                {
+                    using var cmd2 = new MySqlCommand("SELECT dm_privacy FROM users WHERE id=@id", conn);
+                    cmd2.Parameters.AddWithValue("@id", uid);
+                    var o2 = cmd2.ExecuteScalar();
+                    if (o2 != null && o2 != DBNull.Value) return Convert.ToInt32(o2);
+                }
             }
-            catch { return 0; }
+            catch { }
+            return 0;
         }
 
         public static void SetDmPrivacy(int uid, int mode)
@@ -382,10 +410,25 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand("UPDATE users SET dm_privacy=@m WHERE id=@id", conn);
-                cmd.Parameters.AddWithValue("@m", mode);
-                cmd.Parameters.AddWithValue("@id", uid);
-                cmd.ExecuteNonQuery();
+                using (var cmd = new MySqlCommand(
+                    "INSERT INTO user_prefs (user_id, dm_privacy) VALUES (@id, @m) " +
+                    "ON DUPLICATE KEY UPDATE dm_privacy=@m", conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", uid);
+                    cmd.Parameters.AddWithValue("@m", mode);
+                    cmd.ExecuteNonQuery();
+                }
+                if (HasDmPrivacy)
+                {
+                    try
+                    {
+                        using var cmd2 = new MySqlCommand("UPDATE users SET dm_privacy=@m WHERE id=@id", conn);
+                        cmd2.Parameters.AddWithValue("@m", mode);
+                        cmd2.Parameters.AddWithValue("@id", uid);
+                        cmd2.ExecuteNonQuery();
+                    }
+                    catch { }
+                }
             }
             catch { }
         }
