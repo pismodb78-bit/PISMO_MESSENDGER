@@ -825,46 +825,7 @@ namespace PISMO
 
             FriendsRepository.EnsureTable();
 
-            // Кнопка «Друзья» — открывает Discord-подобное окно (В сети / Все /
-            // Ожидание заявок / Добавить в друзья). Заявки больше НЕ показываются
-            // в списке чатов — только внутри окна «Друзья». При входящих заявках
-            // на кнопке горит красный бейдж с числом (как у непрочитанных).
-            int pendingCount = 0;
-            try { pendingCount = FriendsRepository.CountIncoming(myId); } catch { }
-            var btnAddFriend = new Button
-            {
-                Text = "👥  Друзья",
-                Width = CardWidth,
-                Height = 34,
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(59, 165, 93),
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
-                TextAlign = ContentAlignment.MiddleCenter,
-                Cursor = Cursors.Hand,
-                Margin = new Padding(6, 4, 6, 6)
-            };
-            btnAddFriend.FlatAppearance.BorderSize = 0;
-            btnAddFriend.Click += (s, e) => OpenAddFriend();
-            RoundCorners(btnAddFriend, 8);   // скруглённые углы (как в Discord)
-
-            _friendsBadge = new Label
-            {
-                Text = pendingCount > 9 ? "9+" : pendingCount.ToString(),
-                Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
-                ForeColor = Color.White,
-                BackColor = Color.FromArgb(240, 71, 71),
-                Size = new Size(22, 18),
-                Location = new Point(CardWidth - 32, 8),
-                TextAlign = ContentAlignment.MiddleCenter,
-                Visible = pendingCount > 0,
-                Cursor = Cursors.Hand
-            };
-            _friendsBadge.Click += (s, e) => OpenAddFriend();
-            btnAddFriend.Controls.Add(_friendsBadge);
-            _prevFriendReq = pendingCount;
-
-            pnlUserList.Controls.Add(btnAddFriend);
+            AddFriendsHeaderButton(myId);
 
             LoadGroups();
 
@@ -926,6 +887,49 @@ namespace PISMO
         }
 
         /// <summary>Окно поиска и добавления друзей; после изменений — перезагрузка списка.</summary>
+        /// <summary>Кнопка «👥 Друзья» вверху списка (и у обычных пользователей, и у
+        /// админа) — открывает Discord-подобное окно (В сети / Все / Ожидание /
+        /// Добавить). При входящих заявках горит красный бейдж с числом.</summary>
+        private void AddFriendsHeaderButton(int myId)
+        {
+            int pendingCount = 0;
+            try { pendingCount = FriendsRepository.CountIncoming(myId); } catch { }
+            var btnAddFriend = new Button
+            {
+                Text = "👥  Друзья",
+                Width = CardWidth,
+                Height = 34,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(59, 165, 93),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Cursor = Cursors.Hand,
+                Margin = new Padding(6, 4, 6, 6)
+            };
+            btnAddFriend.FlatAppearance.BorderSize = 0;
+            btnAddFriend.Click += (s, e) => OpenAddFriend();
+            RoundCorners(btnAddFriend, 8);   // скруглённые углы (как в Discord)
+
+            _friendsBadge = new Label
+            {
+                Text = pendingCount > 9 ? "9+" : pendingCount.ToString(),
+                Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(240, 71, 71),
+                Size = new Size(22, 18),
+                Location = new Point(CardWidth - 32, 8),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Visible = pendingCount > 0,
+                Cursor = Cursors.Hand
+            };
+            _friendsBadge.Click += (s, e) => OpenAddFriend();
+            btnAddFriend.Controls.Add(_friendsBadge);
+            _prevFriendReq = pendingCount;
+
+            pnlUserList.Controls.Add(btnAddFriend);
+        }
+
         private void OpenAddFriend()
         {
             using var f = new FriendsAddForm(UserSession.EffectiveId);
@@ -959,6 +963,8 @@ namespace PISMO
             _userPanels.Clear();
             _groupPanels.Clear();
             lblSidebarTitle.Text = "Все пользователи";
+
+            AddFriendsHeaderButton(UserSession.UserId);   // окно «Друзья» есть и у админа
 
             LoadGroups();
 

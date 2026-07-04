@@ -95,6 +95,10 @@ namespace PISMO
             {
                 int idle = SystemIdleSeconds();
                 _ = Task.Run(() => WriteHeartbeat(idle));
+                // Дешёвая перерисовка своего кружка в футере: если аватар не успел
+                // загрузиться к первому показу (или загрузка сорвалась), очередная
+                // отрисовка подхватит его из кэша / повторит загрузку.
+                try { pnlMyAvatar?.Invalidate(); } catch { }
             };
             _presenceTimer.Start();
         }
@@ -198,6 +202,10 @@ namespace PISMO
             foreach (var p in _userPanels)
                 foreach (Control c in p.Controls)
                     if (c is Panel avatar) { try { avatar.Invalidate(); } catch { } }
+            // Свой кружок в футере тоже: если первая загрузка аватара сорвалась
+            // (обрыв БД), перерисовка заставит DrawAvatar повторить попытку —
+            // иначе внизу навсегда оставалась буква-заглушка.
+            try { pnlMyAvatar?.Invalidate(); } catch { }
         }
 
         private static readonly Color PresenceOnline = Color.FromArgb(59, 165, 93);

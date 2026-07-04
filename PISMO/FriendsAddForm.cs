@@ -370,6 +370,27 @@ namespace PISMO
                 bx -= 6;
             }
 
+            // «Написать» без дружбы: разрешено, если у адресата НЕ включено
+            // «только друзья» (админ обходит ограничение). Иначе — подсказка
+            // сначала отправить заявку и дождаться принятия.
+            void TryWrite()
+            {
+                bool isAdmin = string.Equals(UserSession.Role, "admin", StringComparison.OrdinalIgnoreCase);
+                if (FriendsRepository.CanMessage(_me, h.Id, isAdmin))
+                {
+                    OpenChatWith = h.Id;
+                    Changed = true;
+                    Close();
+                }
+                else
+                {
+                    MessageBox.Show(this,
+                        "Этот пользователь принимает сообщения только от друзей.\n" +
+                        "Отправьте заявку — когда её примут, вы сможете написать.",
+                        "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+
             switch (h.Rel)
             {
                 case FriendsRepository.Relation.Friend:
@@ -381,9 +402,11 @@ namespace PISMO
                     AddBtn("✔ Принять", Accent, 100, () => { FriendsRepository.AcceptRequest(_me, h.Id); Changed = true; Reload(); });
                     break;
                 case FriendsRepository.Relation.OutgoingPending:
+                    AddBtn("✉ Написать", Neutral, 100, TryWrite);
                     AddBtn("⏳ Отменить", Neutral, 110, () => { FriendsRepository.Remove(_me, h.Id); Changed = true; Reload(); });
                     break;
                 default:
+                    AddBtn("✉ Написать", Neutral, 100, TryWrite);
                     AddBtn("📨 Заявка", Green, 100, () =>
                     {
                         FriendsRepository.SendRequest(_me, h.Id);
