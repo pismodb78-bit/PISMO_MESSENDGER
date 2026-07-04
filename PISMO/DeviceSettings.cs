@@ -45,6 +45,10 @@ namespace PISMO
         /// <summary>Имя микрофона (для отображения / сверки при смене устройств в системе).</summary>
         public static string MicrophoneName { get; set; } = "";
 
+        /// <summary>Имя устройства вывода (динамики/наушники) для звонков;
+        /// "" = системное по умолчанию. Выбирается стрелкой у 🎧 в футере.</summary>
+        public static string SpeakerName { get; set; } = "";
+
         /// <summary>Громкость микрофона при записи (множитель, 0.0–2.0). По умолчанию 1.0.</summary>
         public static float MicrophoneGain { get; set; } = 1.0f;
 
@@ -127,6 +131,9 @@ namespace PISMO
                         case "MicrophoneName":
                             MicrophoneName = val;
                             break;
+                        case "SpeakerName":
+                            SpeakerName = val;
+                            break;
                         case "MicrophoneGain":
                             if (float.TryParse(val, System.Globalization.CultureInfo.InvariantCulture, out float g))
                                 MicrophoneGain = g;
@@ -176,6 +183,7 @@ namespace PISMO
                     $"CameraName={CameraName}\n" +
                     $"MicrophoneIndex={MicrophoneIndex}\n" +
                     $"MicrophoneName={MicrophoneName}\n" +
+                    $"SpeakerName={SpeakerName}\n" +
                     $"MicrophoneGain={MicrophoneGain.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n" +
                     $"ScreenShareResolutionHeight={ScreenShareResolutionHeight}\n" +
                     $"ScreenShareFps={ScreenShareFps}\n" +

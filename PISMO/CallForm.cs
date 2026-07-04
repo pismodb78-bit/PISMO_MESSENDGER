@@ -434,6 +434,18 @@ namespace PISMO
             _durationTimer.Start();
             try { Sounds.CallConnected(); } catch { }
 
+            // Применяем состояние кнопок голосового дока (футер MainForm):
+            // мьют микрофона/«наушники» действуют и на новый звонок, плюс
+            // сохранённое устройство вывода.
+            try
+            {
+                if (VoiceState.MicMuted) SetMicMutedPublic(true);
+                if (VoiceState.Deafened) SetAllMutedPublic(true);
+                if (!string.IsNullOrWhiteSpace(DeviceSettings.SpeakerName))
+                    _transport?.SetOutputDevice(DeviceSettings.SpeakerName);
+            }
+            catch { }
+
             // Камеру запускаем только после подключения к комнате — превью
             // открывается, когда транспорт уже готов опубликовать трек.
             if (_pendingVideoStart)
@@ -620,6 +632,36 @@ namespace PISMO
             try { _transport?.SetMicrophoneEnabled(!_muted); } catch { }
             try { if (_muted) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
         }
+
+        // ── Публичное API для голосового дока в MainForm (кнопки в футере) ──
+
+        /// <summary>Текущий пинг (мс) — для показа по клику на «радар» в доке.</summary>
+        public int CurrentPingMs { get; private set; }
+
+        /// <summary>Мьют микрофона включён?</summary>
+        public bool MicMuted => _muted;
+
+        /// <summary>Выключить/включить микрофон (из дока).</summary>
+        public void SetMicMutedPublic(bool muted)
+        {
+            if (_muted != muted) ToggleMute();
+        }
+
+        /// <summary>Заглушить/включить весь входящий звук (из дока, «наушники»).</summary>
+        public void SetAllMutedPublic(bool muted)
+        {
+            _remoteAllMuted = muted;
+            try { _transport?.SetRemoteMuted(muted); } catch { }
+        }
+
+        /// <summary>Сменить устройство ввода на лету (из дока).</summary>
+        public void SetInputDeviceLive(string label) { try { _transport?.SetInputDevice(label); } catch { } }
+
+        /// <summary>Сменить устройство вывода на лету (из дока).</summary>
+        public void SetOutputDeviceLive(string label) { try { _transport?.SetOutputDevice(label); } catch { } }
+
+        /// <summary>Вкл/выкл шумодав на лету (из дока, «эквалайзер»).</summary>
+        public void SetNoiseSuppressionLive(bool on) { try { _transport?.SetNoiseSuppression(on); } catch { } }
 
         // ── Панель управления входящим звуком: громкость голоса собеседников,
         //    громкость демонстрации экрана и тумблер «заглушить всех». ──
@@ -908,6 +950,7 @@ namespace PISMO
         /// <summary>Обновляет плашку пинга (RTT) и красит её по качеству связи.</summary>
         private void UpdatePing(int ms)
         {
+            CurrentPingMs = ms;
             if (_lblPing == null || _lblPing.IsDisposed) return;
             _lblPing.Text = $"📶 {ms} ms";
             _lblPing.ForeColor = ms < 80 ? Color.FromArgb(120, 220, 130)   // хорошо — зелёный
