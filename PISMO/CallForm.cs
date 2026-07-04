@@ -736,10 +736,16 @@ namespace PISMO
                 using var fB = new Font("Segoe UI Semibold", 9f, FontStyle.Bold);
                 using var fN = new Font("Segoe UI", 9f);
                 using var white = new SolidBrush(Color.FromArgb(230, 231, 232));
+                // Значения рисуем ПОСЛЕ самой длинной подписи (замер, не константа) —
+                // иначе «Последняя задержка:» наползала на число.
+                float labelW = Math.Max(
+                    g.MeasureString("Средняя задержка:", fN).Width,
+                    g.MeasureString("Последняя задержка:", fN).Width);
+                float valX = 12 + labelW + 8;
                 g.DrawString("Средняя задержка:", fN, white, 12, 116);
-                g.DrawString($"{avg} мс", fB, white, 150, 116);
+                g.DrawString($"{avg} мс", fB, white, valX, 116);
                 g.DrawString("Последняя задержка:", fN, white, 12, 138);
-                g.DrawString($"{last} мс", fB, white, 150, 138);
+                g.DrawString($"{last} мс", fB, white, valX, 138);
                 using var hint = new SolidBrush(Color.FromArgb(150, 152, 158));
                 using var f8b = new Font("Segoe UI", 7.5f);
                 g.DrawString("При задержке 250 мс и больше звук может отставать.", f8b, hint, 12, 164);
