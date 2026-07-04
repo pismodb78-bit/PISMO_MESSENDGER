@@ -1115,6 +1115,7 @@ namespace PISMO
 
             var lblLast = new Label
             {
+                Name = "lastPreview",   // чтобы обновлять превью локально (без перезагрузки списка)
                 Text = preview,
                 Font = new Font("Segoe UI", 8.5f),
                 ForeColor = Color.FromArgb(114, 118, 125),
@@ -1315,6 +1316,7 @@ namespace PISMO
 
             var lblLast = new Label
             {
+                Name = "lastPreview",   // чтобы обновлять превью локально (без перезагрузки списка)
                 Text = lastMsg.Length > 42 ? lastMsg[..42] + "…" : lastMsg,
                 Font = new Font("Segoe UI", 8.5f),
                 ForeColor = Color.FromArgb(114, 118, 125),
@@ -1760,14 +1762,11 @@ namespace PISMO
                 return;
             }
 
+            // Как и в личке: без полной перезагрузки списка и повторного
+            // OpenGroup — только сообщения и локальное превью на карточке.
             LoadGroupMessages();
-
-            if (UserSession.Role == "admin" && !UserSession.IsImpersonating)
-                LoadAllUsersForAdmin();
-            else
-                LoadConversations();
-
-            OpenGroup(_currentGroupId, _currentGroupName);
+            UpdateCardPreview(_groupPanels, _currentGroupId,
+                PreviewOf(text, imageData, audioData, videoData, fileName));
         }
 
         private void ClearChat()
@@ -2613,6 +2612,35 @@ namespace PISMO
             ApplyReplyToLastMessage(isGroup);
         }
 
+        /// <summary>Короткое превью для карточки чата по содержимому сообщения.</summary>
+        private static string PreviewOf(string text, byte[] img, byte[] aud, byte[] vid, string fileName)
+            => !string.IsNullOrWhiteSpace(text) ? text
+             : img != null ? "📷 Фото"
+             : aud != null ? "🎤 Голосовое сообщение"
+             : vid != null ? "🎥 Видео"
+             : fileName != null ? "📎 " + fileName
+             : "";
+
+        /// <summary>Обновляет превью последнего сообщения на карточке ЛОКАЛЬНО —
+        /// без перезагрузки всего списка чатов (это давало сильный пролаг
+        /// при каждой отправке).</summary>
+        private void UpdateCardPreview(List<Panel> panels, int id, string preview)
+        {
+            try
+            {
+                preview ??= "";
+                if (preview.Length > 42) preview = preview[..42] + "…";
+                foreach (var p in panels)
+                    if (p.Tag is int t && t == id)
+                    {
+                        foreach (Control c in p.Controls)
+                            if (c is Label l && l.Name == "lastPreview") { l.Text = preview; return; }
+                        return;
+                    }
+            }
+            catch { }
+        }
+
         private void SendMessage(string text, byte[] imageData,
     byte[] audioData = null, byte[] videoData = null,
     byte[] fileData = null, string fileName = null)
@@ -2689,13 +2717,13 @@ namespace PISMO
                 return;
             }
 
+            // Раньше здесь была ПОЛНАЯ перезагрузка списка чатов + повторное
+            // открытие чата (OpenChat → LoadMessages второй раз) — отсюда сильный
+            // пролаг при каждой отправке. Теперь: одна загрузка сообщений и
+            // локальное обновление превью на карточке собеседника.
             LoadMessages();
-            if (UserSession.Role == "admin" && !UserSession.IsImpersonating)
-                LoadAllUsersForAdmin();
-            else
-                LoadConversations();
-
-            OpenChat(_currentChatPartnerId, _currentChatPartnerName);
+            UpdateCardPreview(_userPanels, themId,
+                PreviewOf(text, imageData, audioData, videoData, fileName));
         }
 
         /// <summary>
