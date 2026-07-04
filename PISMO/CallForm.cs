@@ -663,6 +663,87 @@ namespace PISMO
         /// <summary>Вкл/выкл шумодав на лету (из дока, «эквалайзер»).</summary>
         public void SetNoiseSuppressionLive(bool on) { try { _transport?.SetNoiseSuppression(on); } catch { } }
 
+        /// <summary>Попап с живым графиком задержки (клик по плашке 📶, как в Discord).</summary>
+        private void TogglePingGraph()
+        {
+            if (_pingPopup != null && !_pingPopup.IsDisposed) { _pingPopup.Close(); _pingPopup = null; return; }
+
+            var pop = new Form
+            {
+                FormBorderStyle = FormBorderStyle.None,
+                StartPosition = FormStartPosition.Manual,
+                ShowInTaskbar = false,
+                BackColor = Color.FromArgb(30, 31, 34),
+                ClientSize = new Size(300, 190),
+                TopMost = true
+            };
+            try { pop.Location = PointToScreen(new Point(_lblPing.Left - 40, _lblPing.Bottom + 6)); } catch { }
+
+            var canvas = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 31, 34) };
+            canvas.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                var hist = _pingHistory;
+                var rect = new Rectangle(12, 12, canvas.Width - 54, 92);
+
+                // Сетка и шкала (0 / 50 / 100+).
+                int max = 100;
+                foreach (var v in hist) if (v > max) max = v;
+                using (var grid = new Pen(Color.FromArgb(55, 57, 62)))
+                using (var f8 = new Font("Segoe UI", 7.5f))
+                using (var dim = new SolidBrush(Color.FromArgb(150, 152, 158)))
+                {
+                    for (int i = 0; i <= 2; i++)
+                    {
+                        int y = rect.Top + rect.Height * i / 2;
+                        g.DrawLine(grid, rect.Left, y, rect.Right, y);
+                        g.DrawString((max - max * i / 2).ToString(), f8, dim, rect.Right + 4, y - 6);
+                    }
+                }
+
+                // Линия пинга.
+                if (hist.Count >= 2)
+                {
+                    var pts = new PointF[hist.Count];
+                    for (int i = 0; i < hist.Count; i++)
+                    {
+                        float x = rect.Left + rect.Width * i / (float)(hist.Count - 1);
+                        float y = rect.Bottom - rect.Height * Math.Min(hist[i], max) / (float)max;
+                        pts[i] = new PointF(x, y);
+                    }
+                    using var pen = new Pen(Color.FromArgb(88, 101, 242), 2f);
+                    g.DrawLines(pen, pts);
+                }
+
+                // Средняя/последняя задержка.
+                int avg = 0; foreach (var v in hist) avg += v;
+                if (hist.Count > 0) avg /= hist.Count;
+                int last = hist.Count > 0 ? hist[^1] : 0;
+                using var fB = new Font("Segoe UI Semibold", 9f, FontStyle.Bold);
+                using var fN = new Font("Segoe UI", 9f);
+                using var white = new SolidBrush(Color.FromArgb(230, 231, 232));
+                g.DrawString("Средняя задержка:", fN, white, 12, 116);
+                g.DrawString($"{avg} мс", fB, white, 150, 116);
+                g.DrawString("Последняя задержка:", fN, white, 12, 138);
+                g.DrawString($"{last} мс", fB, white, 150, 138);
+                using var hint = new SolidBrush(Color.FromArgb(150, 152, 158));
+                using var f8b = new Font("Segoe UI", 7.5f);
+                g.DrawString("При задержке 250 мс и больше звук может отставать.", f8b, hint, 12, 164);
+            };
+            pop.Controls.Add(canvas);
+
+            // Живое обновление, закрытие при потере фокуса/повторном клике.
+            var t = new System.Windows.Forms.Timer { Interval = 1000 };
+            t.Tick += (s, e) => { try { canvas.Invalidate(); } catch { } };
+            t.Start();
+            pop.Deactivate += (s, e) => { try { pop.Close(); } catch { } };
+            pop.FormClosed += (s, e) => { t.Stop(); t.Dispose(); if (_pingPopup == pop) _pingPopup = null; };
+
+            _pingPopup = pop;
+            pop.Show(this);
+        }
+
         // ── Панель управления входящим звуком: громкость голоса собеседников,
         //    громкость демонстрации экрана и тумблер «заглушить всех». ──
         private void ToggleAudioPanel()
@@ -948,9 +1029,15 @@ namespace PISMO
         }
 
         /// <summary>Обновляет плашку пинга (RTT) и красит её по качеству связи.</summary>
+        // История пинга для графика (клик по плашке 📶 — попап как в Discord).
+        private readonly System.Collections.Generic.List<int> _pingHistory = new();
+        private Form _pingPopup;
+
         private void UpdatePing(int ms)
         {
             CurrentPingMs = ms;
+            _pingHistory.Add(ms);
+            if (_pingHistory.Count > 150) _pingHistory.RemoveAt(0);
             if (_lblPing == null || _lblPing.IsDisposed) return;
             _lblPing.Text = $"📶 {ms} ms";
             _lblPing.ForeColor = ms < 80 ? Color.FromArgb(120, 220, 130)   // хорошо — зелёный

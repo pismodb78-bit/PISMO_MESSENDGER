@@ -260,6 +260,8 @@ namespace PISMO
             });
             _pnlParticipants.BringToFront();
             _lblPing.BringToFront();
+            _lblPing.Cursor = Cursors.Hand;
+            _lblPing.Click += (s, e) => TogglePingGraph();
 
             Resize += (s, e) => LayoutControls();
             LayoutControls();

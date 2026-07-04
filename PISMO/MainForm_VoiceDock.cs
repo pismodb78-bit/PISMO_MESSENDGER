@@ -254,14 +254,36 @@ namespace PISMO
         /// применится к следующему), и на лету в текущем.</summary>
         private void BuildFooterVoiceButtons()
         {
-            Button Mk(string text, int w, float fontSize = 10.5f)
+            // Футер двухэтажный: ВЕРХНИЙ ряд — кнопки (🎤▾ 🎧▾ ⚙), НИЖНИЙ — аватар
+            // и имя на всю ширину (раньше кнопки в одну строку с именем его
+            // перекрывали, текст было «не до конца видно»).
+            pnlSidebarFooter.Height = 88;
+            try
+            {
+                pnlMyAvatar.Dock = DockStyle.None;
+                pnlMyAvatar.Size = new Size(36, 36);
+                pnlMyAvatar.Location = new Point(12, 44);
+                lblCurrentUser.Dock = DockStyle.None;
+                lblCurrentUser.AutoEllipsis = true;
+                lblCurrentUser.Location = new Point(54, 48);
+                lblCurrentUser.Size = new Size(pnlSidebarFooter.Width - 62, 28);
+                lblCurrentUser.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+                btnSettings.Dock = DockStyle.None;
+                btnSettings.Size = new Size(30, 30);
+                btnSettings.Location = new Point(pnlSidebarFooter.Width - 40, 8);
+                btnSettings.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            }
+            catch { }
+
+            Button Mk(string text, int w, int x, float fontSize = 10.5f)
             {
                 var b = new Button
                 {
                     Text = text,
                     Font = new Font("Segoe UI", fontSize),
-                    Dock = DockStyle.Right,
-                    Width = w,
+                    Size = new Size(w, 30),
+                    Location = new Point(x, 8),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     FlatStyle = FlatStyle.Flat,
                     BackColor = Color.Transparent,
                     ForeColor = Color.FromArgb(185, 187, 190),
@@ -272,10 +294,12 @@ namespace PISMO
                 return b;
             }
 
-            var btnMic = Mk("🎤", 30);
-            var btnMicArrow = Mk("▾", 16, 8f);
-            var btnSpk = Mk("🎧", 30);
-            var btnSpkArrow = Mk("▾", 16, 8f);
+            // Справа налево: ⚙(W-40) ▾(W-58) 🎧(W-90) ▾(W-108) 🎤(W-140)
+            int W = pnlSidebarFooter.Width;
+            var btnSpkArrow = Mk("▾", 16, W - 58, 8f);
+            var btnSpk = Mk("🎧", 30, W - 90);
+            var btnMicArrow = Mk("▾", 16, W - 108, 8f);
+            var btnMic = Mk("🎤", 30, W - 140);
 
             void PaintStates()
             {
@@ -361,24 +385,10 @@ namespace PISMO
                 menu.Show(btnSpkArrow, new Point(0, -menu.Items.Count * 24));
             };
 
-            // Порядок Dock=Right (обрабатывается от высшего индекса к низшему):
-            // ⚙ — правее всех, затем ▾вывода, 🎧, ▾ввода, 🎤.
             pnlSidebarFooter.Controls.Add(btnMic);
             pnlSidebarFooter.Controls.Add(btnMicArrow);
             pnlSidebarFooter.Controls.Add(btnSpk);
             pnlSidebarFooter.Controls.Add(btnSpkArrow);
-            try
-            {
-                var c = pnlSidebarFooter.Controls;
-                c.SetChildIndex(lblCurrentUser, 0);
-                c.SetChildIndex(pnlMyAvatar, 1);
-                c.SetChildIndex(btnMic, 2);
-                c.SetChildIndex(btnMicArrow, 3);
-                c.SetChildIndex(btnSpk, 4);
-                c.SetChildIndex(btnSpkArrow, 5);
-                c.SetChildIndex(btnSettings, 6);
-            }
-            catch { }
         }
 
         /// <summary>Показать «Голосовая связь подключена» (subtitle — с кем/где звонок;
