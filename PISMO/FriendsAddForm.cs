@@ -375,8 +375,7 @@ namespace PISMO
             // сначала отправить заявку и дождаться принятия.
             void TryWrite()
             {
-                bool isAdmin = string.Equals(UserSession.Role, "admin", StringComparison.OrdinalIgnoreCase);
-                if (FriendsRepository.CanMessage(_me, h.Id, isAdmin))
+                if (FriendsRepository.CanMessage(_me, h.Id, UserSession.IsAdminActing))
                 {
                     OpenChatWith = h.Id;
                     Changed = true;

@@ -85,7 +85,7 @@ namespace PISMO
             pnlSidebar.Dock = DockStyle.Left;
             pnlSidebar.Location = new Point(0, 0);
             pnlSidebar.Name = "pnlSidebar";
-            pnlSidebar.Size = new Size(250, 700);
+            pnlSidebar.Size = new Size(290, 700);   // шире, чтобы карточки не наползали
             pnlSidebar.TabIndex = 2;
             // 
             // pnlUserList

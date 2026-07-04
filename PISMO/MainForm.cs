@@ -168,6 +168,13 @@ namespace PISMO
             {
                 foreach (Control ctrl in pnlUserList.Controls)
                 {
+                    if (ctrl is Button btn)   // кнопка «Друзья» (+ бейдж заявок на ней)
+                    {
+                        btn.Width = CardWidth;
+                        foreach (Control c in btn.Controls)
+                            if (c is Label lb && lb.BackColor == Color.FromArgb(240, 71, 71))
+                                lb.Location = new Point(Math.Max(0, btn.Width - 32), 8);
+                    }
                     if (ctrl is Panel pnl)
                     {
                         pnl.Width = CardWidth;
@@ -1252,7 +1259,19 @@ namespace PISMO
         }
 
 
-        private int CardWidth => Math.Max(200, pnlSidebar.Width - 12);
+        // Ширина карточки — от РЕАЛЬНОЙ клиентской области списка (без верт.
+        // скроллбара) минус паддинги/отступы, иначе карточки шире панели →
+        // горизонтальный скролл и «наползание» на края.
+        private int CardWidth
+        {
+            get
+            {
+                int w = pnlUserList != null && pnlUserList.ClientSize.Width > 0
+                    ? pnlUserList.ClientSize.Width
+                    : pnlSidebar.Width;
+                return Math.Max(200, w - 22);
+            }
+        }
 
         private void AddUserCard(int uid, string name, string lastMsg, int unread)
         {
@@ -2619,7 +2638,7 @@ namespace PISMO
                 }
 
                 // Приватность получателя: «писать могут только друзья».
-                if (!FriendsRepository.CanMessage(myId, themId, UserSession.Role == "admin"))
+                if (!FriendsRepository.CanMessage(myId, themId, UserSession.IsAdminActing))
                 {
                     MessageBox.Show(
                         "Этот пользователь принимает сообщения только от друзей.\n" +
