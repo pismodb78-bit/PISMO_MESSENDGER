@@ -852,7 +852,7 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                const string sql = @"
+                string sql = @"
                     SELECT u.id, u.Name, u.Surname, u.login,
                            MAX(m.created_at) AS last_time,
                            (SELECT m2.text FROM messages m2
@@ -868,7 +868,7 @@ namespace PISMO
                            OR (m.sender_id=u.id AND m.receiver_id=@me)
                     WHERE u.id <> @me
                       AND ( EXISTS (SELECT 1 FROM friends f
-                                    WHERE f.status=1 AND ((f.user_id=@me AND f.friend_id=u.id)
+                                    WHERE " + FriendsRepository.AcceptedPredicate("f") + @" AND ((f.user_id=@me AND f.friend_id=u.id)
                                                        OR (f.user_id=u.id AND f.friend_id=@me)))
                          OR EXISTS (SELECT 1 FROM messages mm
                                     WHERE (mm.sender_id=@me AND mm.receiver_id=u.id)

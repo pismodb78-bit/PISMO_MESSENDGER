@@ -26,6 +26,16 @@ namespace PISMO
 
         private static bool _ensured;
 
+        /// <summary>Есть ли в таблице friends колонка status (после миграции). Если
+        /// миграция почему-то не прошла — запросы строятся без неё, чтобы не падать
+        /// с «Unknown column 'f.status'».</summary>
+        public static bool HasStatus { get; private set; }
+
+        /// <summary>SQL-предикат «принятая дружба» для алиаса таблицы friends.
+        /// С колонкой status → "alias.status=1"; без неё любая строка = дружба.</summary>
+        public static string AcceptedPredicate(string alias)
+            => HasStatus ? $"{alias}.status=1" : "(1=1)";
+
         /// <summary>Создаёт таблицу friends (+status) и users.dm_privacy при необходимости.
         /// Каждый шаг независим; наличие колонок проверяется через information_schema,
         /// чтобы миграция была надёжной на любой существующей БД.</summary>
@@ -50,7 +60,7 @@ namespace PISMO
 
                 // Старая таблица без status → добавляем с DEFAULT 1 (существующие
                 // дружбы остаются принятыми). Проверяем наличие явно.
-                EnsureColumn(conn, "friends", "status", "TINYINT NOT NULL DEFAULT 1");
+                HasStatus = EnsureColumn(conn, "friends", "status", "TINYINT NOT NULL DEFAULT 1");
                 EnsureColumn(conn, "users", "dm_privacy", "TINYINT NOT NULL DEFAULT 0");
 
                 _ensured = true;
@@ -58,26 +68,32 @@ namespace PISMO
             catch { /* нет связи — попробуем позже (флаг не ставим) */ }
         }
 
-        private static void EnsureColumn(MySqlConnection conn, string table, string column, string ddl)
+        /// <summary>Гарантирует наличие колонки; возвращает true, если она есть по
+        /// итогу (уже была или успешно добавлена).</summary>
+        private static bool EnsureColumn(MySqlConnection conn, string table, string column, string ddl)
         {
             try
             {
-                bool exists;
-                using (var chk = new MySqlCommand(
-                    "SELECT COUNT(*) FROM information_schema.COLUMNS " +
-                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@t AND COLUMN_NAME=@c", conn))
-                {
-                    chk.Parameters.AddWithValue("@t", table);
-                    chk.Parameters.AddWithValue("@c", column);
-                    exists = Convert.ToInt32(chk.ExecuteScalar()) > 0;
-                }
-                if (!exists)
+                if (ColumnExists(conn, table, column)) return true;
+                try
                 {
                     using var alt = new MySqlCommand($"ALTER TABLE `{table}` ADD COLUMN `{column}` {ddl}", conn);
                     alt.ExecuteNonQuery();
                 }
+                catch { /* напр. параллельно уже добавили — проверим ниже */ }
+                return ColumnExists(conn, table, column);
             }
-            catch { }
+            catch { return false; }
+        }
+
+        private static bool ColumnExists(MySqlConnection conn, string table, string column)
+        {
+            using var chk = new MySqlCommand(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS " +
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@t AND COLUMN_NAME=@c", conn);
+            chk.Parameters.AddWithValue("@t", table);
+            chk.Parameters.AddWithValue("@c", column);
+            return Convert.ToInt32(chk.ExecuteScalar()) > 0;
         }
 
         /// <summary>Друзья ли (принятая заявка в ЛЮБОМ направлении).</summary>
@@ -88,7 +104,7 @@ namespace PISMO
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT 1 FROM friends WHERE status=1 AND " +
+                    "SELECT 1 FROM friends WHERE " + AcceptedPredicate("friends") + " AND " +
                     "((user_id=@a AND friend_id=@b) OR (user_id=@b AND friend_id=@a)) LIMIT 1", conn);
                 cmd.Parameters.AddWithValue("@a", a);
                 cmd.Parameters.AddWithValue("@b", b);
@@ -201,7 +217,7 @@ namespace PISMO
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT user_id, friend_id FROM friends WHERE status=1 AND (user_id=@me OR friend_id=@me)", conn);
+                    "SELECT user_id, friend_id FROM friends WHERE " + AcceptedPredicate("friends") + " AND (user_id=@me OR friend_id=@me)", conn);
                 cmd.Parameters.AddWithValue("@me", me);
                 using var r = cmd.ExecuteReader();
                 while (r.Read())
