@@ -271,6 +271,22 @@ namespace PISMO
             return list;
         }
 
+        /// <summary>Число входящих заявок (для бейджа; дёшево, зовётся из опроса).</summary>
+        public static int CountIncoming(int me)
+        {
+            EnsureTable();
+            if (!HasStatus) return 0;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT COUNT(*) FROM friends WHERE friend_id=@me AND status=0", conn);
+                cmd.Parameters.AddWithValue("@me", me);
+                return Convert.ToInt32(cmd.ExecuteScalar());
+            }
+            catch { return 0; }
+        }
+
         /// <summary>Исходящие заявки (кого я добавил, ещё не приняли).</summary>
         public static List<UserHit> OutgoingRequests(int me)
         {

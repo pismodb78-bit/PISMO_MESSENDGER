@@ -42,6 +42,8 @@ namespace PISMO
         private bool _pollBusy = false;
         private int _lastOpenSig = -1;   // число сообщений открытого чата на прошлом опросе (детект новых)
         private readonly Dictionary<int, int> _prevUnread = new();
+        private Label _friendsBadge;      // красный бейдж на кнопке «Друзья»
+        private int _prevFriendReq = -1;  // прошлое число входящих заявок (-1 = ещё не знаем)
 
         // Кеш метаданных переписки в памяти: при повторном открытии чата сообщения
         // показываются мгновенно из кеша, а свежие подгружаются в фоне (не вешая UI).
@@ -517,6 +519,23 @@ namespace PISMO
             _pollTimer = new System.Windows.Forms.Timer { Interval = 3000 };
             _pollTimer.Tick += PollTick;
             _pollTimer.Start();
+
+            // Заявки в друзья не приходят по WS — проверяем отдельным лёгким
+            // таймером (один COUNT раз в 10 с) независимо от состояния WS.
+            var reqTimer = new System.Windows.Forms.Timer { Interval = 10000 };
+            reqTimer.Tick += (s, e) =>
+            {
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    int cnt;
+                    try { cnt = FriendsRepository.CountIncoming(UserSession.EffectiveId); }
+                    catch { return; }
+                    if (IsDisposed || !IsHandleCreated) return;
+                    try { BeginInvoke(new Action(() => ApplyFriendRequests(cnt))); } catch { }
+                });
+            };
+            reqTimer.Start();
+            FormClosed += (s, e) => { try { reqTimer.Stop(); reqTimer.Dispose(); } catch { } };
         }
 
         private void PollTick(object sender, EventArgs e)
@@ -554,6 +573,8 @@ namespace PISMO
                 {
                     var unread = ReadUnreadCounts();
                     var presence = ReadPresence(ids);
+                    int friendReq = -1;
+                    try { friendReq = FriendsRepository.CountIncoming(UserSession.EffectiveId); } catch { }
 
                     // Дёшево смотрим, изменилось ли число сообщений в открытом чате.
                     bool openChanged = false;
@@ -576,6 +597,7 @@ namespace PISMO
                             }
                             if (unread != null) ApplyUnreadAndNotify(unread);
                             ApplyPresence(presence);
+                            if (friendReq >= 0) ApplyFriendRequests(friendReq);
                         }
                         catch { }
                     }));
@@ -685,6 +707,30 @@ namespace PISMO
             }
         }
 
+        /// <summary>Бейдж на кнопке «Друзья» + уведомление при НОВОЙ входящей
+        /// заявке (звук, всплывашка в трее, мигание окна — как у сообщений).</summary>
+        private void ApplyFriendRequests(int cnt)
+        {
+            if (_prevFriendReq >= 0 && cnt > _prevFriendReq)
+            {
+                try { Sounds.Message(); } catch { }
+                try
+                {
+                    _trayIcon.ShowBalloonTip(4000, "PISMO — заявка в друзья",
+                        "Вам отправили заявку в друзья. Откройте «Друзья» → «Ожидание».",
+                        ToolTipIcon.Info);
+                }
+                catch { }
+                if (!this.ContainsFocus) FlashWindow(this.Handle, true);
+            }
+            if (cnt != _prevFriendReq && _friendsBadge != null && !_friendsBadge.IsDisposed)
+            {
+                _friendsBadge.Text = cnt > 9 ? "9+" : cnt.ToString();
+                _friendsBadge.Visible = cnt > 0;
+            }
+            _prevFriendReq = cnt;
+        }
+
         private void ShowNewMessageNotification(int senderId, int unreadCount)
         {
             string senderName = GetNameFromCards(senderId);
@@ -781,12 +827,13 @@ namespace PISMO
 
             // Кнопка «Друзья» — открывает Discord-подобное окно (В сети / Все /
             // Ожидание заявок / Добавить в друзья). Заявки больше НЕ показываются
-            // в списке чатов — только внутри окна «Друзья».
+            // в списке чатов — только внутри окна «Друзья». При входящих заявках
+            // на кнопке горит красный бейдж с числом (как у непрочитанных).
             int pendingCount = 0;
-            try { pendingCount = FriendsRepository.IncomingRequests(myId).Count; } catch { }
+            try { pendingCount = FriendsRepository.CountIncoming(myId); } catch { }
             var btnAddFriend = new Button
             {
-                Text = pendingCount > 0 ? $"👥  Друзья   ●{pendingCount}" : "👥  Друзья",
+                Text = "👥  Друзья",
                 Width = CardWidth,
                 Height = 34,
                 FlatStyle = FlatStyle.Flat,
@@ -800,6 +847,23 @@ namespace PISMO
             btnAddFriend.FlatAppearance.BorderSize = 0;
             btnAddFriend.Click += (s, e) => OpenAddFriend();
             RoundCorners(btnAddFriend, 8);   // скруглённые углы (как в Discord)
+
+            _friendsBadge = new Label
+            {
+                Text = pendingCount > 9 ? "9+" : pendingCount.ToString(),
+                Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(240, 71, 71),
+                Size = new Size(22, 18),
+                Location = new Point(CardWidth - 32, 8),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Visible = pendingCount > 0,
+                Cursor = Cursors.Hand
+            };
+            _friendsBadge.Click += (s, e) => OpenAddFriend();
+            btnAddFriend.Controls.Add(_friendsBadge);
+            _prevFriendReq = pendingCount;
+
             pnlUserList.Controls.Add(btnAddFriend);
 
             LoadGroups();
@@ -3384,6 +3448,23 @@ namespace PISMO
             menu.Items.Add("🎛 Настройки устройств (камера/микрофон)", null, (s, ev) =>
                 new SettingsForm().ShowDialog(this));
 
+            // «Кто может мне писать» — с галочкой на текущем режиме.
+            var priv = new ToolStripMenuItem("✉ Кто может мне писать");
+            var privAll = new ToolStripMenuItem("Все");
+            var privFriends = new ToolStripMenuItem("Только друзья");
+            try
+            {
+                int mode = FriendsRepository.GetDmPrivacy(UserSession.EffectiveId);
+                privAll.Checked = mode == 0;
+                privFriends.Checked = mode == 1;
+            }
+            catch { }
+            privAll.Click += (s, ev) => FriendsRepository.SetDmPrivacy(UserSession.EffectiveId, 0);
+            privFriends.Click += (s, ev) => FriendsRepository.SetDmPrivacy(UserSession.EffectiveId, 1);
+            priv.DropDownItems.Add(privAll);
+            priv.DropDownItems.Add(privFriends);
+            menu.Items.Add(priv);
+
             menu.Items.Add(new ToolStripSeparator());
 
             menu.Items.Add("🗑 Очистить кеш (переписка + медиа)", null, (s, ev) => ClearAllCaches());
@@ -3399,6 +3480,7 @@ namespace PISMO
                 _pollTimer.Stop();
                 _trayIcon.Visible = false;
                 UserSession.Clear();
+                LoginForm.InvalidateSavedToken(); // чтобы при перезапуске не вошло само
                 this.Close();
             });
 

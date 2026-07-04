@@ -137,14 +137,21 @@ namespace PISMO
                 try { FriendsRepository.EnsureTable(); } catch { }
             });
 
-            // 3. Открываем окно входа и закрываем заставку.
+            // 3. Автовход по сохранённому JWT — тоже в фоне, пока висит заставка.
+            //    Если получилось, окно входа даже не показывается (как в Discord).
+            SetStatus("Вход…");
+            bool restored = false;
+            try { restored = await Task.Run(LoginForm.TryRestoreSession); } catch { }
+
+            // 4. Открываем окно входа (или сразу главное) и закрываем заставку.
             SetStatus("Загрузка интерфейса…");
             try
             {
                 var login = new LoginForm();
                 _ctx.MainForm = login;   // теперь жизнь приложения привязана к окну входа
                 _startedNext = true;
-                login.Show();
+                if (restored) login.OpenMainAfterRestore(); // окно входа остаётся скрытым
+                else login.Show();
                 Close();
             }
             catch (Exception ex)

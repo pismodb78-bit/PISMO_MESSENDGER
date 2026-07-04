@@ -18,41 +18,60 @@ namespace PISMO
         {
             InitializeComponent(GetBtnLogin());
             LoadSavedCredentials();
-            // Авто-вход по сохранённому JWT, если он ещё действителен.
-            Shown += (s, e) => TryTokenAutoLogin();
+            // Авто-вход по JWT здесь НЕ делаем: он выполняется в заставке
+            // (SplashForm) ДО показа окна — иначе форма зависала недорисованной.
         }
 
-        /// <summary>Если есть сохранённый действующий JWT — входим без пароля.</summary>
-        private void TryTokenAutoLogin()
+        /// <summary>Восстановление сессии по сохранённому JWT (вызывается из
+        /// заставки в фоне, БЕЗ UI). true — UserSession заполнена, можно
+        /// открывать главное окно, минуя окно входа.</summary>
+        public static bool TryRestoreSession()
+        {
+            try
+            {
+                if (!File.Exists(CredsFile)) return false;
+                var lines = File.ReadAllLines(CredsFile, Encoding.UTF8);
+                if (lines.Length < 4 || lines[2] != "1") return false; // нет токена / «запомнить» снято
+                string token = lines[3];
+                var claims = JwtAuth.Validate(token);
+                if (claims == null || claims.Uid <= 0) return false;   // истёк/повреждён
+
+                // Подтягиваем актуальные данные пользователя по uid из токена.
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT id, Name, Surname, role, login FROM users WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", claims.Uid);
+                var dt = new DataTable();
+                new MySqlDataAdapter(cmd).Fill(dt);
+                if (dt.Rows.Count == 0) return false;
+                var row = dt.Rows[0];
+                UserSession.UserId = Convert.ToInt32(row["id"]);
+                UserSession.UserName = $"{row["Name"]} {row["Surname"]}".Trim();
+                UserSession.Role = row["role"].ToString().ToLower();
+                if (string.IsNullOrWhiteSpace(UserSession.UserName))
+                    UserSession.UserName = row["login"].ToString();
+                UserSession.AuthToken = token;
+                return true;
+            }
+            catch { return false; /* при любой ошибке — обычный вход */ }
+        }
+
+        /// <summary>Открыть главное окно после восстановления сессии из заставки
+        /// (окно входа при этом остаётся скрытым и появится только при выходе).</summary>
+        public void OpenMainAfterRestore() => OpenMainForm();
+
+        /// <summary>Стирает сохранённый JWT (при «Выйти из аккаунта»), чтобы при
+        /// следующем запуске не происходил автовход. Логин/пароль остаются.</summary>
+        public static void InvalidateSavedToken()
         {
             try
             {
                 if (!File.Exists(CredsFile)) return;
                 var lines = File.ReadAllLines(CredsFile, Encoding.UTF8);
-                if (lines.Length < 4 || lines[2] != "1") return; // нет токена / «запомнить» снято
-                string token = lines[3];
-                var claims = JwtAuth.Validate(token);
-                if (claims == null || claims.Uid <= 0) return; // истёк/повреждён
-
-                // Подтягиваем актуальные данные пользователя по uid из токена.
-                using (var conn = DBHelper.OpenConnection())
-                using (var cmd = new MySqlCommand("SELECT id, Name, Surname, role, login FROM users WHERE id=@id", conn))
-                {
-                    cmd.Parameters.AddWithValue("@id", claims.Uid);
-                    var dt = new DataTable();
-                    new MySqlDataAdapter(cmd).Fill(dt);
-                    if (dt.Rows.Count == 0) return;
-                    var row = dt.Rows[0];
-                    UserSession.UserId = Convert.ToInt32(row["id"]);
-                    UserSession.UserName = $"{row["Name"]} {row["Surname"]}".Trim();
-                    UserSession.Role = row["role"].ToString().ToLower();
-                    if (string.IsNullOrWhiteSpace(UserSession.UserName))
-                        UserSession.UserName = row["login"].ToString();
-                    UserSession.AuthToken = token;
-                }
-                OpenMainForm();
+                if (lines.Length < 4) return;
+                lines[3] = "";
+                File.WriteAllLines(CredsFile, lines, Encoding.UTF8);
             }
-            catch { /* при любой ошибке — обычный вход */ }
+            catch { }
         }
 
         /// <summary>Открывает главное окно и прячет окно входа.</summary>
@@ -252,15 +271,26 @@ namespace PISMO
 
         private void LoginForm_Load(object sender, EventArgs e)
         {
-            try
+            // Проверка БД — в фоне, чтобы окно отрисовалось сразу (иначе при
+            // недоступной БД форма висела «белыми прямоугольниками» до таймаута).
+            System.Threading.Tasks.Task.Run(() =>
             {
-                using var conn = DBHelper.OpenConnection();
-                System.Diagnostics.Debug.WriteLine("[TEST] ✓ БД подключена успешно!");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Ошибка БД:\n{ex.Message}", "ОШИБКА", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    System.Diagnostics.Debug.WriteLine("[TEST] ✓ БД подключена успешно!");
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        if (!IsDisposed && IsHandleCreated)
+                            BeginInvoke(new Action(() =>
+                                ShowError("Нет соединения с базой данных: " + ex.Message)));
+                    }
+                    catch { }
+                }
+            });
         }
     }
 }
