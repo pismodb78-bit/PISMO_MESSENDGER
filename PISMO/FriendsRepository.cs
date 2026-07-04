@@ -26,40 +26,58 @@ namespace PISMO
 
         private static bool _ensured;
 
-        /// <summary>Создаёт таблицу friends (+status) и users.dm_privacy при необходимости.</summary>
+        /// <summary>Создаёт таблицу friends (+status) и users.dm_privacy при необходимости.
+        /// Каждый шаг независим; наличие колонок проверяется через information_schema,
+        /// чтобы миграция была надёжной на любой существующей БД.</summary>
         public static void EnsureTable()
         {
             if (_ensured) return;
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                using (var cmd = new MySqlCommand(
-                    "CREATE TABLE IF NOT EXISTS friends (" +
-                    "user_id INT NOT NULL, friend_id INT NOT NULL, " +
-                    "status TINYINT NOT NULL DEFAULT 0, " +   // 0=заявка, 1=приняты
-                    "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
-                    "PRIMARY KEY (user_id, friend_id))", conn))
+
+                try
+                {
+                    using var cmd = new MySqlCommand(
+                        "CREATE TABLE IF NOT EXISTS friends (" +
+                        "user_id INT NOT NULL, friend_id INT NOT NULL, " +
+                        "status TINYINT NOT NULL DEFAULT 0, " +   // 0=заявка, 1=приняты
+                        "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
+                        "PRIMARY KEY (user_id, friend_id))", conn);
                     cmd.ExecuteNonQuery();
-                // Старая таблица без status: добавляем с DEFAULT 1 — существующие
-                // дружбы (до появления заявок) остаются принятыми.
-                try
-                {
-                    using var alt = new MySqlCommand(
-                        "ALTER TABLE friends ADD COLUMN status TINYINT NOT NULL DEFAULT 1", conn);
-                    alt.ExecuteNonQuery();
                 }
-                catch { /* колонка уже есть */ }
-                // Приватность личных сообщений.
-                try
-                {
-                    using var alt2 = new MySqlCommand(
-                        "ALTER TABLE users ADD COLUMN dm_privacy TINYINT NOT NULL DEFAULT 0", conn);
-                    alt2.ExecuteNonQuery();
-                }
-                catch { /* колонка уже есть */ }
+                catch { }
+
+                // Старая таблица без status → добавляем с DEFAULT 1 (существующие
+                // дружбы остаются принятыми). Проверяем наличие явно.
+                EnsureColumn(conn, "friends", "status", "TINYINT NOT NULL DEFAULT 1");
+                EnsureColumn(conn, "users", "dm_privacy", "TINYINT NOT NULL DEFAULT 0");
+
                 _ensured = true;
             }
-            catch { /* нет связи — попробуем позже */ }
+            catch { /* нет связи — попробуем позже (флаг не ставим) */ }
+        }
+
+        private static void EnsureColumn(MySqlConnection conn, string table, string column, string ddl)
+        {
+            try
+            {
+                bool exists;
+                using (var chk = new MySqlCommand(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS " +
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@t AND COLUMN_NAME=@c", conn))
+                {
+                    chk.Parameters.AddWithValue("@t", table);
+                    chk.Parameters.AddWithValue("@c", column);
+                    exists = Convert.ToInt32(chk.ExecuteScalar()) > 0;
+                }
+                if (!exists)
+                {
+                    using var alt = new MySqlCommand($"ALTER TABLE `{table}` ADD COLUMN `{column}` {ddl}", conn);
+                    alt.ExecuteNonQuery();
+                }
+            }
+            catch { }
         }
 
         /// <summary>Друзья ли (принятая заявка в ЛЮБОМ направлении).</summary>

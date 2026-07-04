@@ -631,6 +631,19 @@ namespace PISMO
                 ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
             try { _transport?.SetMicrophoneEnabled(!_muted); } catch { }
             try { if (_muted) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
+            // Синхронизируем глобальное состояние и кнопки футера сайдбара.
+            VoiceState.MicMuted = _muted;
+            try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
+        }
+
+        /// <summary>Заглушить/включить весь входящий звук (наушники) — по хоткею.</summary>
+        private void ToggleDeafen()
+        {
+            _remoteAllMuted = !_remoteAllMuted;
+            try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { }
+            try { if (_remoteAllMuted) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
+            VoiceState.Deafened = _remoteAllMuted;
+            try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
         }
 
         // ── Публичное API для голосового дока в MainForm (кнопки в футере) ──
@@ -1610,6 +1623,7 @@ namespace PISMO
                 Reg(1, DeviceSettings.HotkeyMic);
                 Reg(2, DeviceSettings.HotkeyCamera);
                 Reg(3, DeviceSettings.HotkeyScreen);
+                Reg(4, DeviceSettings.HotkeyDeafen);
                 _hotkeysRegistered = true;
             }
             catch { }
@@ -1618,7 +1632,7 @@ namespace PISMO
         private void UnregisterCallHotkeys()
         {
             if (!_hotkeysRegistered) return;
-            try { UnregisterHotKey(Handle, 1); UnregisterHotKey(Handle, 2); UnregisterHotKey(Handle, 3); } catch { }
+            try { UnregisterHotKey(Handle, 1); UnregisterHotKey(Handle, 2); UnregisterHotKey(Handle, 3); UnregisterHotKey(Handle, 4); } catch { }
             _hotkeysRegistered = false;
         }
 
@@ -1673,6 +1687,7 @@ namespace PISMO
                     case 1: ToggleMute(); break;
                     case 2: ToggleCamera(); break;
                     case 3: ToggleScreen(); break;
+                    case 4: ToggleDeafen(); break;
                 }
             }
             base.WndProc(ref m);

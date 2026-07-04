@@ -32,6 +32,16 @@ namespace PISMO
         private readonly ToolTip _voiceTip = new ToolTip();
         private Form _voiceDockCall;   // окно звонка, к которому привязан док (серверный голос);
                                        // null => используется _activeCall (личный/групповой)
+        private Action _repaintFooterVoice;   // обновить кнопки 🎤/🎧 футера
+
+        /// <summary>Синхронизировать кнопки футера с VoiceState (вызывается, когда
+        /// микрофон/звук переключили горячей клавишей внутри окна звонка).</summary>
+        public void SyncFooterVoiceButtons()
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired) { try { BeginInvoke((Action)SyncFooterVoiceButtons); } catch { } return; }
+            try { _repaintFooterVoice?.Invoke(); } catch { }
+        }
 
         /// <summary>Окно звонка, к которому относится док.</summary>
         private Form DockCallWindow()
@@ -129,10 +139,20 @@ namespace PISMO
             RoundCorners(_voiceHangup, 16);
             new ToolTip().SetToolTip(_voiceHangup, "Завершить звонок");
 
-            // Клик по панели/подписям — вернуться в окно звонка.
+            // Клик по панели/подписям — развернуть текущее окно звонка.
             void FocusCall(object s, EventArgs e)
             {
-                try { var c = DockCallWindow(); if (c != null && !c.IsDisposed) c.Activate(); } catch { }
+                try
+                {
+                    var c = DockCallWindow();
+                    if (c == null || c.IsDisposed) return;
+                    if (!c.Visible) c.Show();
+                    if (c.WindowState == FormWindowState.Minimized)
+                        c.WindowState = FormWindowState.Normal;
+                    c.BringToFront();
+                    c.Activate();
+                }
+                catch { }
             }
             _voiceDock.Click += FocusCall;
             _voiceTitle.Click += FocusCall;
@@ -311,6 +331,7 @@ namespace PISMO
                 _voiceTip.SetToolTip(btnSpk, VoiceState.Deafened ? "Включить звук" : "Отключить звук");
             }
             PaintStates();
+            _repaintFooterVoice = PaintStates;   // чтобы горячие клавиши могли обновить кнопки
             _voiceTip.SetToolTip(btnMicArrow, "Устройство ввода");
             _voiceTip.SetToolTip(btnSpkArrow, "Устройство вывода");
 

@@ -3417,6 +3417,10 @@ namespace PISMO
 
             menu.Items.Add("🚪 Выйти из аккаунта", null, (s, ev) =>
             {
+                // При выходе из аккаунта активный звонок должен прерываться.
+                try { if (_activeCall != null && !_activeCall.IsDisposed) _activeCall.Close(); } catch { }
+                try { var c = DockCallWindow(); if (c != null && !c.IsDisposed) c.Close(); } catch { }
+                HideVoiceDock();
                 _pollTimer.Stop();
                 _trayIcon.Visible = false;
                 UserSession.Clear();

@@ -102,6 +102,7 @@ namespace PISMO
         public static int HotkeyMic { get; set; } = (int)(System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.M);
         public static int HotkeyCamera { get; set; } = (int)(System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.C);
         public static int HotkeyScreen { get; set; } = (int)(System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.S);
+        public static int HotkeyDeafen { get; set; } = (int)(System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.D);
 
         public static void Load()
         {
@@ -162,6 +163,9 @@ namespace PISMO
                         case "HotkeyCamera":
                             if (int.TryParse(val, out int hc)) HotkeyCamera = hc;
                             break;
+                        case "HotkeyDeafen":
+                            if (int.TryParse(val, out int hd)) HotkeyDeafen = hd;
+                            break;
                         case "HotkeyScreen":
                             if (int.TryParse(val, out int hs)) HotkeyScreen = hs;
                             break;
@@ -193,7 +197,8 @@ namespace PISMO
                     $"HardwareAcceleration={(HardwareAcceleration ? 1 : 0)}\n" +
                     $"HotkeyMic={HotkeyMic}\n" +
                     $"HotkeyCamera={HotkeyCamera}\n" +
-                    $"HotkeyScreen={HotkeyScreen}\n";
+                    $"HotkeyScreen={HotkeyScreen}\n" +
+                    $"HotkeyDeafen={HotkeyDeafen}\n";
 
                 File.WriteAllText(FilePath, content);
             }
