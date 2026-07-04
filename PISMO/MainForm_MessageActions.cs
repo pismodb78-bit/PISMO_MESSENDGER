@@ -838,12 +838,27 @@ namespace PISMO
                 // на карточки пользователей, не групп).
                 try
                 {
-                    bool isFriend = FriendsRepository.IsFriend(UserSession.EffectiveId, partnerId);
-                    var itemFriend = new ToolStripMenuItem(isFriend ? "➖ Удалить из друзей" : "➕ Добавить в друзья");
+                    var rel = FriendsRepository.GetRelation(UserSession.EffectiveId, partnerId);
+                    string caption = rel switch
+                    {
+                        FriendsRepository.Relation.Friend => "➖ Удалить из друзей",
+                        FriendsRepository.Relation.OutgoingPending => "⏳ Отменить заявку",
+                        FriendsRepository.Relation.IncomingPending => "✔ Принять заявку в друзья",
+                        _ => "📨 Отправить заявку в друзья"
+                    };
+                    var itemFriend = new ToolStripMenuItem(caption);
                     itemFriend.Click += (s2, e2) =>
                     {
-                        if (isFriend) FriendsRepository.Remove(UserSession.EffectiveId, partnerId);
-                        else FriendsRepository.Add(UserSession.EffectiveId, partnerId);
+                        switch (rel)
+                        {
+                            case FriendsRepository.Relation.Friend:
+                            case FriendsRepository.Relation.OutgoingPending:
+                                FriendsRepository.Remove(UserSession.EffectiveId, partnerId); break;
+                            case FriendsRepository.Relation.IncomingPending:
+                                FriendsRepository.AcceptRequest(UserSession.EffectiveId, partnerId); break;
+                            default:
+                                FriendsRepository.SendRequest(UserSession.EffectiveId, partnerId); break;
+                        }
                         try { if (UserSession.Role == "admin" && !UserSession.IsImpersonating) LoadAllUsersForAdmin(); else LoadConversations(); } catch { }
                     };
                     menu.Items.Add(itemFriend);

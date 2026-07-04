@@ -389,6 +389,24 @@ namespace PISMO
             pnlSidebarFooter.Controls.Add(btnMicArrow);
             pnlSidebarFooter.Controls.Add(btnSpk);
             pnlSidebarFooter.Controls.Add(btnSpkArrow);
+
+            // Приватность: «кто может писать мне» — правый клик по своему профилю.
+            var privMenu = new ContextMenuStrip();
+            var itAll = new ToolStripMenuItem("✉ Писать могут: Все");
+            var itFriends = new ToolStripMenuItem("✉ Писать могут: Только друзья");
+            void RefreshPriv()
+            {
+                int mode = FriendsRepository.GetDmPrivacy(UserSession.EffectiveId);
+                itAll.Checked = mode == 0;
+                itFriends.Checked = mode == 1;
+            }
+            itAll.Click += (s, e) => { FriendsRepository.SetDmPrivacy(UserSession.EffectiveId, 0); RefreshPriv(); };
+            itFriends.Click += (s, e) => { FriendsRepository.SetDmPrivacy(UserSession.EffectiveId, 1); RefreshPriv(); };
+            privMenu.Items.Add(itAll);
+            privMenu.Items.Add(itFriends);
+            privMenu.Opening += (s, e) => RefreshPriv();
+            lblCurrentUser.ContextMenuStrip = privMenu;
+            pnlMyAvatar.ContextMenuStrip = privMenu;
         }
 
         /// <summary>Показать «Голосовая связь подключена» (subtitle — с кем/где звонок;

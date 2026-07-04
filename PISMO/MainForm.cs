@@ -799,6 +799,54 @@ namespace PISMO
             RoundCorners(btnAddFriend, 8);   // скруглённые углы (как в Discord)
             pnlUserList.Controls.Add(btnAddFriend);
 
+            // Входящие заявки в друзья: принять/отклонить (дружба — только после принятия).
+            try
+            {
+                foreach (var req in FriendsRepository.IncomingRequests(myId))
+                {
+                    var card = new Panel
+                    {
+                        Width = CardWidth,
+                        Height = 54,
+                        BackColor = Color.FromArgb(43, 45, 49),
+                        Margin = new Padding(6, 2, 6, 4)
+                    };
+                    RoundCorners(card, 8);
+                    var lbl = new Label
+                    {
+                        Text = "📨 Заявка в друзья:\n" + req.Name,
+                        ForeColor = Color.White,
+                        Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                        AutoSize = false,
+                        Location = new Point(10, 8),
+                        Size = new Size(CardWidth - 100, 40),
+                        AutoEllipsis = true
+                    };
+                    var ok = new Button
+                    {
+                        Text = "✔", Size = new Size(36, 30), Location = new Point(CardWidth - 84, 12),
+                        FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(59, 165, 93),
+                        ForeColor = Color.White, Cursor = Cursors.Hand
+                    };
+                    ok.FlatAppearance.BorderSize = 0;
+                    var no = new Button
+                    {
+                        Text = "✖", Size = new Size(36, 30), Location = new Point(CardWidth - 44, 12),
+                        FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75),
+                        ForeColor = Color.White, Cursor = Cursors.Hand
+                    };
+                    no.FlatAppearance.BorderSize = 0;
+                    int reqId = req.Id;
+                    ok.Click += (s, e) => { FriendsRepository.AcceptRequest(myId, reqId); LoadConversations(); };
+                    no.Click += (s, e) => { FriendsRepository.DeclineRequest(myId, reqId); LoadConversations(); };
+                    card.Controls.Add(lbl);
+                    card.Controls.Add(ok);
+                    card.Controls.Add(no);
+                    pnlUserList.Controls.Add(card);
+                }
+            }
+            catch { }
+
             LoadGroups();
 
             try
@@ -819,8 +867,12 @@ namespace PISMO
                            ON (m.sender_id=@me AND m.receiver_id=u.id)
                            OR (m.sender_id=u.id AND m.receiver_id=@me)
                     WHERE u.id <> @me
-                      AND EXISTS (SELECT 1 FROM friends f
-                                  WHERE f.user_id=@me AND f.friend_id=u.id)
+                      AND ( EXISTS (SELECT 1 FROM friends f
+                                    WHERE f.status=1 AND ((f.user_id=@me AND f.friend_id=u.id)
+                                                       OR (f.user_id=u.id AND f.friend_id=@me)))
+                         OR EXISTS (SELECT 1 FROM messages mm
+                                    WHERE (mm.sender_id=@me AND mm.receiver_id=u.id)
+                                       OR (mm.sender_id=u.id AND mm.receiver_id=@me)) )
                     GROUP BY u.id, u.Name, u.Surname, u.login
                     ORDER BY last_time DESC, u.Name ASC";
 
@@ -830,12 +882,18 @@ namespace PISMO
                 var dt = new DataTable();
                 new MySqlDataAdapter(cmd).Fill(dt);
 
+                // Пометка «не в друзьях» на карточках написавших не-друзей.
+                var friendIds = FriendsRepository.AcceptedIds(myId);
+
                 foreach (DataRow row in dt.Rows)
                 {
                     int uid = Convert.ToInt32(row["id"]);
                     string name = BuildName(row["Name"], row["Surname"], row["login"]);
                     string lastMsg = row["last_msg"] == DBNull.Value ? "" : Crypto.Dec(row["last_msg"].ToString());
                     int unread = row["unread"] == DBNull.Value ? 0 : Convert.ToInt32(row["unread"]);
+
+                    if (!friendIds.Contains(uid))
+                        lastMsg = "🚫 не в друзьях" + (string.IsNullOrEmpty(lastMsg) ? "" : " · " + lastMsg);
 
                     AddUserCard(uid, name, lastMsg, unread);
                 }
@@ -2512,6 +2570,16 @@ namespace PISMO
                 {
                     MessageBox.Show("Нельзя отправлять — этот пользователь заблокировал вас.", "PISMO",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Приватность получателя: «писать могут только друзья».
+                if (!FriendsRepository.CanMessage(myId, themId))
+                {
+                    MessageBox.Show(
+                        "Этот пользователь принимает сообщения только от друзей.\n" +
+                        "Отправьте заявку в друзья (правый клик по карточке пользователя).",
+                        "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
             }

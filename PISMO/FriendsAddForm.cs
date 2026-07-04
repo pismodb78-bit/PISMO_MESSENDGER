@@ -152,24 +152,46 @@ namespace PISMO
 
             void Render()
             {
-                if (h.IsFriend)
+                switch (h.Rel)
                 {
-                    btn.Text = "➖ Убрать";
-                    btn.BackColor = Color.FromArgb(64, 68, 75);
-                }
-                else
-                {
-                    btn.Text = "➕ Добавить";
-                    btn.BackColor = Color.FromArgb(59, 165, 93);
+                    case FriendsRepository.Relation.Friend:
+                        btn.Text = "➖ Убрать";
+                        btn.BackColor = Color.FromArgb(64, 68, 75);
+                        break;
+                    case FriendsRepository.Relation.OutgoingPending:
+                        btn.Text = "⏳ Отменить";
+                        btn.BackColor = Color.FromArgb(64, 68, 75);
+                        break;
+                    case FriendsRepository.Relation.IncomingPending:
+                        btn.Text = "✔ Принять";
+                        btn.BackColor = Color.FromArgb(88, 101, 242);
+                        break;
+                    default:
+                        btn.Text = "📨 Заявка";
+                        btn.BackColor = Color.FromArgb(59, 165, 93);
+                        break;
                 }
             }
             Render();
 
             btn.Click += (s, e) =>
             {
-                if (h.IsFriend) FriendsRepository.Remove(_me, h.Id);
-                else FriendsRepository.Add(_me, h.Id);
-                h.IsFriend = !h.IsFriend;
+                switch (h.Rel)
+                {
+                    case FriendsRepository.Relation.Friend:            // удалить из друзей
+                    case FriendsRepository.Relation.OutgoingPending:   // отменить заявку
+                        FriendsRepository.Remove(_me, h.Id);
+                        h.Rel = FriendsRepository.Relation.None;
+                        break;
+                    case FriendsRepository.Relation.IncomingPending:   // принять встречную
+                        FriendsRepository.AcceptRequest(_me, h.Id);
+                        h.Rel = FriendsRepository.Relation.Friend;
+                        break;
+                    default:                                           // отправить заявку
+                        FriendsRepository.SendRequest(_me, h.Id);
+                        h.Rel = FriendsRepository.Relation.OutgoingPending;
+                        break;
+                }
                 Changed = true;
                 Render();
             };
