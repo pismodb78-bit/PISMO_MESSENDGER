@@ -1139,7 +1139,56 @@ function setVoiceGate(auto, threshold){ /* no-op, оставлено для со
 // Показываем реальный <video> прямо в WebView, а не извлекаем JPEG. Тот же
 // MediaStream, что и у скрытого элемента, — поэтому без потери кадров.
 let theaterEl = null;
+let theaterWatch = null;          // сторож: чёрный экран не должен жить дольше пары секунд
+let theaterPid = null, theaterSource = null;
+let theaterFrames = -1, theaterStallTicks = 0;
+
+// Актуальный поток для театра (при переподписке LiveKit у плитки появляется
+// НОВЫЙ MediaStream — театр обязан переприцепиться, иначе останется чёрным).
+function theaterResolveSrc(){
+    let src = null;
+    const entry = remoteVideoMap[tileKey(theaterPid, theaterSource)];
+    if (entry && entry.el && entry.el.srcObject) src = entry.el.srcObject;
+    if (!src && theaterSource === 'screen' && screenPreviewVideoEl && screenPreviewVideoEl.srcObject) src = screenPreviewVideoEl.srcObject;
+    if (!src && theaterSource === 'camera' && localCameraVideoEl && localCameraVideoEl.srcObject) src = localCameraVideoEl.srcObject;
+    return src;
+}
+
+function theaterTick(){
+    try {
+        if (!theaterEl || theaterEl.style.display === 'none') return;
+        const vid = theaterEl.querySelector('#__theaterVideo');
+        if (!vid) return;
+        const cur = theaterResolveSrc();
+        if (!cur){ post({type:'theaterExitRequested'}); return; }   // трек пропал — выходим из театра
+        if (vid.srcObject !== cur){
+            vid.srcObject = cur;                                     // поток сменился — переприцепились
+            theaterFrames = -1; theaterStallTicks = 0;
+            try { vid.play(); } catch(e){}
+            return;
+        }
+        const t = cur.getVideoTracks && cur.getVideoTracks()[0];
+        if (t && t.readyState === 'ended'){ post({type:'theaterExitRequested'}); return; }
+        if (vid.paused){ try { vid.play(); } catch(e){} }
+        // Детектор «картинка замерла»: кадры не декодируются ≥6 c при живом
+        // треке — жёстко переприцепляем srcObject (лечит чёрный экран).
+        let frames = -1;
+        try { frames = vid.getVideoPlaybackQuality ? vid.getVideoPlaybackQuality().totalVideoFrames : (vid.webkitDecodedFrameCount|0); } catch(e){}
+        if (frames >= 0){
+            if (frames === theaterFrames){
+                if (++theaterStallTicks >= 3){
+                    theaterStallTicks = 0;
+                    try { vid.srcObject = null; vid.srcObject = cur; vid.play(); } catch(e){}
+                }
+            } else theaterStallTicks = 0;
+            theaterFrames = frames;
+        }
+    } catch(e){}
+}
+
 function theaterShow(pid, source){
+    theaterPid = pid; theaterSource = source;
+    theaterFrames = -1; theaterStallTicks = 0;
     let src = null;
     const entry = remoteVideoMap[tileKey(pid, source)];
     if (entry && entry.el && entry.el.srcObject) src = entry.el.srcObject;
@@ -1176,8 +1225,12 @@ function theaterShow(pid, source){
     if (vid.srcObject !== src) vid.srcObject = src;
     try { vid.play(); } catch(e){}
     theaterEl.style.display = 'flex';
+    if (theaterWatch) clearInterval(theaterWatch);
+    theaterWatch = setInterval(theaterTick, 2000);
 }
 function theaterHide(){
+    if (theaterWatch){ clearInterval(theaterWatch); theaterWatch = null; }
+    theaterPid = null; theaterSource = null;
     if (theaterEl){
         theaterEl.style.display = 'none';
         const vid = theaterEl.querySelector('#__theaterVideo');
