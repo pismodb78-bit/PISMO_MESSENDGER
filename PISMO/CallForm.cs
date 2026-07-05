@@ -27,6 +27,8 @@ namespace PISMO
         private readonly string _channelRoom;
         private int _vchId = -1;     // id голосового канала (для voice_presence)
         private int _vchTick = 0;    // троттлинг heartbeat в секундном таймере
+        private int _partsTick = 0;  // троттлинг опроса участников (раз в 3 c)
+        private bool _partsBusy;     // опрос участников уже идёт (не наслаиваем)
         private WebRtcTransport _transport = null;
         private System.Windows.Forms.Timer _signalTimer = null;  // ← явная инициализация
         private System.Windows.Forms.Timer _durationTimer = null;  // ← явная инициализация

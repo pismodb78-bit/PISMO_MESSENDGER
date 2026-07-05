@@ -294,55 +294,74 @@ namespace PISMO
                     return;
                 }
 
-                // Проверка участников и таймера 3 минут
-                try
+                // Список участников и таймер 3 минут: запрос — РАЗ В 3 СЕКУНДЫ и
+                // В ФОНЕ. Раньше JOIN по call_participants шёл КАЖДУЮ секунду
+                // синхронно на UI-потоке — интерфейс фризило весь звонок.
+                if ((++_partsTick % 3) != 0 || _partsBusy) return;
+                _partsBusy = true;
+                int sidParts = _sessionId;
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    using var conn = DBHelper.OpenConnection();
-                    // Запрашиваем имена участников через JOIN с таблицей users, так как в call_participants хранятся только user_id
-                    using var cmd = new MySqlCommand(
-                        "SELECT TRIM(CONCAT(u.Name, ' ', u.Surname)) AS user_name, u.login FROM call_participants cp JOIN users u ON u.id = cp.user_id WHERE cp.call_id=@cid ORDER BY cp.joined_at ASC", conn);
-                    cmd.Parameters.AddWithValue("@cid", _sessionId);
-                    using var r = cmd.ExecuteReader();
-                    var parts = new System.Collections.Generic.List<string>();
-                    while (r.Read())
+                    System.Collections.Generic.List<string> parts = null;
+                    try
                     {
-                        string uname = r["user_name"].ToString().Trim();
-                        if (string.IsNullOrWhiteSpace(uname)) uname = r["login"].ToString();
-                        parts.Add("• " + uname);
-                    }
-                    r.Close();
-
-                    if (_lblParticipants != null && !_lblParticipants.IsDisposed)
-                    {
-                        _lblParticipants.Text = "Участники (" + parts.Count + "):\n" + string.Join("\n", parts);
-                    }
-
-                    // Логика таймера 3 минут для личных звонков (не групп) — в стиле Discord
-                    if (_groupId < 0)
-                    {
-                        if (parts.Count == 1)
+                        using var conn = DBHelper.OpenConnection();
+                        // Имена участников через JOIN с users (в call_participants только user_id).
+                        using var cmd = new MySqlCommand(
+                            "SELECT TRIM(CONCAT(u.Name, ' ', u.Surname)) AS user_name, u.login FROM call_participants cp JOIN users u ON u.id = cp.user_id WHERE cp.call_id=@cid ORDER BY cp.joined_at ASC", conn);
+                        cmd.Parameters.AddWithValue("@cid", sidParts);
+                        using var r = cmd.ExecuteReader();
+                        parts = new System.Collections.Generic.List<string>();
+                        while (r.Read())
                         {
-                            if (_threeMinStartTime == DateTime.MinValue) _threeMinStartTime = DateTime.Now;
-                            var elapsed = DateTime.Now - _threeMinStartTime;
-                            var remaining = TimeSpan.FromSeconds(180) - elapsed;
-                            if (remaining.TotalSeconds <= 0)
-                            {
-                                _threeMinTimerExpired = true;
-                                EndCall();
-                            }
-                            else
-                            {
-                                _lblStatus.Text = $"Ожидание собеседника... (завершится через {remaining:mm\\:ss})";
-                            }
-                        }
-                        else
-                        {
-                            _threeMinStartTime = DateTime.MinValue; // сброс таймера, если зашел второй участник
-                            if (_connected) _lblStatus.Text = "Соединение установлено";
+                            string uname = r["user_name"].ToString().Trim();
+                            if (string.IsNullOrWhiteSpace(uname)) uname = r["login"].ToString();
+                            parts.Add("• " + uname);
                         }
                     }
-                }
-                catch { }
+                    catch { /* запрос не удался — этот тик просто пропускаем */ }
+                    finally { _partsBusy = false; }
+
+                    if (parts == null || IsDisposed || !IsHandleCreated) return;
+                    try
+                    {
+                        BeginInvoke(new Action(() =>
+                        {
+                            try
+                            {
+                                if (_lblParticipants != null && !_lblParticipants.IsDisposed)
+                                    _lblParticipants.Text = "Участники (" + parts.Count + "):\n" + string.Join("\n", parts);
+
+                                // Таймер 3 минут для личных звонков (не групп) — в стиле Discord.
+                                if (_groupId < 0)
+                                {
+                                    if (parts.Count == 1)
+                                    {
+                                        if (_threeMinStartTime == DateTime.MinValue) _threeMinStartTime = DateTime.Now;
+                                        var elapsed = DateTime.Now - _threeMinStartTime;
+                                        var remaining = TimeSpan.FromSeconds(180) - elapsed;
+                                        if (remaining.TotalSeconds <= 0)
+                                        {
+                                            _threeMinTimerExpired = true;
+                                            EndCall();
+                                        }
+                                        else
+                                        {
+                                            _lblStatus.Text = $"Ожидание собеседника... (завершится через {remaining:mm\\:ss})";
+                                        }
+                                    }
+                                    else
+                                    {
+                                        _threeMinStartTime = DateTime.MinValue; // сброс: зашёл второй участник
+                                        if (_connected) _lblStatus.Text = "Соединение установлено";
+                                    }
+                                }
+                            }
+                            catch { }
+                        }));
+                    }
+                    catch { }
+                });
             };
             _durationTimer.Start();
         }
