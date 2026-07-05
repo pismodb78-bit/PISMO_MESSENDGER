@@ -117,22 +117,50 @@ namespace PISMO
 
             string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
             string ps1Path = Path.Combine(Path.GetTempPath(), "pismo_update.ps1");
+            string logPath = Path.Combine(Path.GetTempPath(), "pismo_update.log");
+
+            // Есть ли право писать в папку приложения (Program Files — нет)?
+            // Если нет — апдейтер запускается с повышением прав (UAC), иначе
+            // копирование молча проваливалось и перезапускалась СТАРАЯ версия,
+            // которая снова предлагала то же обновление.
+            bool canWrite = true;
+            try
+            {
+                string probe = Path.Combine(appDir, ".pismo_write_test");
+                File.WriteAllText(probe, "x");
+                File.Delete(probe);
+            }
+            catch { canWrite = false; }
 
             // PowerShell-апдейтер: ждёт закрытия PISMO, распаковывает архив во
-            // временную папку, НАХОДИТ PISMO.exe внутри (устойчиво к вложенным
-            // папкам в архиве), копирует эту папку поверх приложения и перезапускает.
+            // временную папку, находит PISMO.exe (устойчиво к вложенным папкам),
+            // копирует поверх приложения С ПОВТОРАМИ (файлы могут быть заняты
+            // пару секунд), проверяет результат и пишет лог в %TEMP%.
             string ps =
-                "$ErrorActionPreference='SilentlyContinue'\r\n" +
+                $"Start-Transcript -Path '{logPath.Replace("'", "''")}' -Force | Out-Null\r\n" +
+                "$ErrorActionPreference='Continue'\r\n" +
                 "Start-Sleep -Seconds 1\r\n" +
                 "for($i=0;$i -lt 60;$i++){ if(-not (Get-Process -Name 'PISMO' -ErrorAction SilentlyContinue)){break}; Start-Sleep -Milliseconds 700 }\r\n" +
+                "Start-Sleep -Seconds 1\r\n" +   // даём отпустить дескрипторы (WebView2 и т.п.)
                 $"$zip='{tempZip.Replace("'", "''")}'\r\n" +
                 $"$app='{appDir.Replace("'", "''")}'\r\n" +
                 "$tmp=Join-Path $env:TEMP ('pismo_ext_'+[guid]::NewGuid().ToString('N'))\r\n" +
+                "try { Unblock-File -LiteralPath $zip -ErrorAction SilentlyContinue } catch {}\r\n" +
                 "Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force\r\n" +
                 "$exe=Get-ChildItem -Path $tmp -Recurse -Filter 'PISMO.exe' | Select-Object -First 1\r\n" +
-                "if($exe){ $src=$exe.Directory.FullName; Copy-Item -Path (Join-Path $src '*') -Destination $app -Recurse -Force }\r\n" +
+                "$ok=$false\r\n" +
+                "if($exe){\r\n" +
+                "  $src=$exe.Directory.FullName\r\n" +
+                "  for($try=1;$try -le 5;$try++){\r\n" +
+                "    try { Copy-Item -Path (Join-Path $src '*') -Destination $app -Recurse -Force -ErrorAction Stop; $ok=$true; break }\r\n" +
+                "    catch { Write-Output ('copy attempt '+$try+' failed: '+$_.Exception.Message); Start-Sleep -Seconds 2 }\r\n" +
+                "  }\r\n" +
+                "} else { Write-Output 'PISMO.exe not found in archive' }\r\n" +
+                "if($ok){ Write-Output 'update copied OK' } else { Write-Output 'UPDATE FAILED — starting old version' }\r\n" +
                 "Start-Process -FilePath (Join-Path $app 'PISMO.exe')\r\n" +
-                "Remove-Item $zip -Force; Remove-Item $tmp -Recurse -Force\r\n";
+                "Remove-Item $zip -Force -ErrorAction SilentlyContinue\r\n" +
+                "Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n" +
+                "Stop-Transcript | Out-Null\r\n";
 
             File.WriteAllText(ps1Path, ps, new System.Text.UTF8Encoding(false));
 
@@ -141,10 +169,28 @@ namespace PISMO
                 FileName = "powershell.exe",
                 Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{ps1Path}\"",
                 WindowStyle = ProcessWindowStyle.Hidden,
-                CreateNoWindow = true,
-                UseShellExecute = false
+                CreateNoWindow = true
             };
-            Process.Start(psi);
+            if (canWrite)
+            {
+                psi.UseShellExecute = false;
+            }
+            else
+            {
+                // Папка защищена (например Program Files) → просим повышение прав.
+                psi.UseShellExecute = true;
+                psi.Verb = "runas";
+            }
+
+            try { Process.Start(psi); }
+            catch (Exception ex)
+            {
+                // Пользователь отказал в UAC или PowerShell недоступен.
+                MessageBox.Show("Не удалось запустить установку обновления:\n" + ex.Message +
+                    "\n\nПопробуйте запустить PISMO от имени администратора и обновиться снова.",
+                    "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
             Environment.Exit(0); // закрываем приложение, чтобы апдейтер смог заменить файлы
             return true;         // недостижимо, но нужно компилятору
         }
