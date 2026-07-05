@@ -31,12 +31,21 @@ namespace PISMO
         // приходил недавно. Пока pong не пришёл (или перестал приходить) — считаем
         // WS нерабочим, и MainForm включает опрос-фолбэк.
         private DateTime _lastPongUtc = DateTime.MinValue;
+        private bool _pongEverReceived;           // сервер поддерживает ping/pong?
         private System.Threading.Timer _pingTimer;
         private const int PingIntervalMs = 7000;
         private const int HealthWindowSec = 20;   // ~2–3 пропущенных pong => нездоров
 
+        // ВАЖНО: если сервер СТАРЫЙ и не отвечает на {type:'ping'}, pong не придёт
+        // НИКОГДА — раньше из-за этого IsHealthy был вечно false и фоновый опрос БД
+        // молотил каждые 3 секунды (подлагивание), хотя WS исправно доставлял
+        // сообщения. Поэтому строгий режим (окно по pong) включается только после
+        // ПЕРВОГО полученного pong; до этого здоровье = «сокет открыт».
+        // _lastPongUtc также обновляется ЛЮБЫМ входящим сообщением — живой трафик
+        // сам по себе доказывает, что канал доставляет.
         public bool IsHealthy => IsConnected
-            && (DateTime.UtcNow - _lastPongUtc).TotalSeconds < HealthWindowSec;
+            && (!_pongEverReceived
+                || (DateTime.UtcNow - _lastPongUtc).TotalSeconds < HealthWindowSec);
 
         private void StartPing()
         {
@@ -232,8 +241,11 @@ namespace PISMO
                             string type = TryStr(root, "type");
                             if (string.IsNullOrEmpty(type)) continue; // без типа — игнор
 
+                            // Любое входящее сообщение подтверждает живость канала.
+                            _lastPongUtc = DateTime.UtcNow;
+
                             // Ответ на health-check: WS реально доставляет. Не релеим дальше.
-                            if (type == "pong") { _lastPongUtc = DateTime.UtcNow; continue; }
+                            if (type == "pong") { _pongEverReceived = true; continue; }
                             int senderUserId = TryInt(root, "userId");
                             int sessionId = TryInt(root, "sessionId");
                             string payload = TryStr(root, "payload");
@@ -261,6 +273,7 @@ namespace PISMO
                 _isConnecting = false;
                 try { _pingTimer?.Dispose(); _pingTimer = null; } catch { }
                 _lastPongUtc = DateTime.MinValue; // обрыв → сразу «нездоров» (опрос включится)
+                _pongEverReceived = false;        // новое соединение заново определит поддержку pong
                 if (!token.IsCancellationRequested)
                 {
                     // Запускаем переподключение при обрыве
