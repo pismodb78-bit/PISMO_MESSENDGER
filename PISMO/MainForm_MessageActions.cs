@@ -720,7 +720,7 @@ namespace PISMO
             {
                 if (type == "incoming_call")
                 {
-                    try { BeginInvoke(() => CheckIncomingCalls()); } catch { }
+                    try { BeginInvoke(() => { _pushedCheck = true; CheckIncomingCalls(); }); } catch { }
                 }
             };
         }
@@ -730,34 +730,67 @@ namespace PISMO
         // из-за которого часть звонков пропускалась ("не всегда приходит").
         private readonly System.Collections.Generic.HashSet<int> _shownCallIds = new();
 
+        private bool _callPollBusy;   // запрос уже идёт — не наслаиваем
+        private int _callPollSkip;    // прореживание опроса при живом WS
+
         private void CheckIncomingCalls()
         {
             if (_activeCall != null && !_activeCall.IsDisposed) return;
+            if (_callPollBusy) return;
 
+            // При здоровом WS входящий звонок приходит push'ем (incoming_call →
+            // мгновенный CheckIncomingCalls), опрос БД — лишь страховка, поэтому
+            // прореживаем его до ~6 c. Без WS — полный темп (1.5 c).
+            bool pushed = _pushedCheck; _pushedCheck = false;
+            if (!pushed && WebSocketSignalingClient.Instance.IsHealthy && (++_callPollSkip % 4) != 0) return;
+
+            _callPollBusy = true;
             int myId = UserSession.EffectiveId;
+
+            // ВАЖНО: запрос к БД — в фоне. Раньше он шёл каждые 1.5 с прямо на
+            // UI-потоке (JOIN по call_sessions) — это и было «подлагивание раз
+            // в ~3 секунды», особенно с удалённой БД.
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var dt = new DataTable();
+                    using (var conn = DBHelper.OpenConnection())
+                    {
+                        // Берём ВСЕ звонки в статусе ringing, адресованные мне (личные
+                        // по callee_id или групповые по членству), кроме своих же.
+                        // Фильтрация «уже показанных» — на клиенте через _shownCallIds.
+                        const string sql = @"
+                            SELECT cs.id, cs.caller_id, cs.has_video, cs.group_id,
+                                   TRIM(CONCAT(u.Name,' ',u.Surname)) AS caller_name, u.login
+                            FROM call_sessions cs
+                            JOIN users u ON u.id = cs.caller_id
+                            LEFT JOIN group_members gm ON gm.group_id = cs.group_id AND gm.user_id = @me
+                            WHERE (cs.callee_id = @me OR gm.user_id = @me)
+                              AND cs.status = 'ringing'
+                              AND cs.caller_id != @me
+                            ORDER BY cs.id ASC";
+                        using var cmd = new MySqlCommand(sql, conn);
+                        cmd.Parameters.AddWithValue("@me", myId);
+                        new MySqlDataAdapter(cmd).Fill(dt);
+                    }
+
+                    if (dt.Rows.Count == 0 || IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() => ShowIncomingFromRows(dt)));
+                }
+                catch { }
+                finally { _callPollBusy = false; }
+            });
+        }
+
+        private bool _pushedCheck;   // проверка вызвана WS-событием — без прореживания
+
+        /// <summary>UI-часть: показать окно входящего звонка по строкам опроса.</summary>
+        private void ShowIncomingFromRows(DataTable dt)
+        {
+            if (_activeCall != null && !_activeCall.IsDisposed) return;
             try
             {
-                using var conn = DBHelper.OpenConnection();
-                // Берём ВСЕ звонки в статусе ringing, адресованные мне (личные
-                // по callee_id или групповые по членству), кроме своих же.
-                // Фильтрацию "уже показанных" делаем на стороне клиента через
-                // _shownCallIds — это надёжнее, чем sql-гейт по id.
-                const string sql = @"
-                    SELECT cs.id, cs.caller_id, cs.has_video, cs.group_id,
-                           TRIM(CONCAT(u.Name,' ',u.Surname)) AS caller_name, u.login
-                    FROM call_sessions cs
-                    JOIN users u ON u.id = cs.caller_id
-                    LEFT JOIN group_members gm ON gm.group_id = cs.group_id AND gm.user_id = @me
-                    WHERE (cs.callee_id = @me OR gm.user_id = @me)
-                      AND cs.status = 'ringing'
-                      AND cs.caller_id != @me
-                    ORDER BY cs.id ASC";
-                using var cmd = new MySqlCommand(sql, conn);
-                cmd.Parameters.AddWithValue("@me", myId);
-
-                var dt = new DataTable();
-                new MySqlDataAdapter(cmd).Fill(dt);
-
                 foreach (DataRow row in dt.Rows)
                 {
                     int sid = Convert.ToInt32(row["id"]);
