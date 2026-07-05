@@ -356,9 +356,10 @@ namespace PISMO
             // Для голосового канала сервера статусов звонка нет — пропускаем опрос.
             if (!_isChannel)
             {
-                // Постоянный опрос статуса — для корректного закрытия формы при
-                // отклонении/завершении звонка собеседником.
-                _signalTimer = new System.Windows.Forms.Timer { Interval = 800 };
+                // Опрос статуса — фолбэк для корректного закрытия формы при
+                // отклонении/завершении звонка собеседником (мгновенно это
+                // приходит по WS call_status; опрос подстраховывает при обрыве).
+                _signalTimer = new System.Windows.Forms.Timer { Interval = 2000 };
                 _signalTimer.Tick += (s, e) => PollCallStatus();
                 _signalTimer.Start();
             }
@@ -389,25 +390,40 @@ namespace PISMO
         /// <summary>Опрос статуса call-сессии. С LiveKit это нужно только для
         /// корректного закрытия формы, когда собеседник отклонил или завершил
         /// звонок — само медиа-соединение поднимает LiveKit-сервер.</summary>
+        private bool _statusPollBusy;   // запрос уже идёт — не наслаиваем
+
         private void PollCallStatus()
         {
-            if (_ended) return;
+            if (_ended || _statusPollBusy) return;
+            _statusPollBusy = true;
 
-            try
+            // ВАЖНО: запрос статуса — в фоне. Раньше он шёл каждые 800 мс прямо
+            // на UI-потоке — из-за этого во время личного звонка всё интерфейс
+            // подлагивал (а после выхода из звонка «отпускало»).
+            int sid = _sessionId;
+            System.Threading.Tasks.Task.Run(() =>
             {
                 string status = null;
-                using (var conn = DBHelper.OpenConnection())
-                using (var cmd = new MySqlCommand(
-                    "SELECT status FROM call_sessions WHERE id=@id", conn))
+                try
                 {
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "SELECT status FROM call_sessions WHERE id=@id", conn);
+                    cmd.Parameters.AddWithValue("@id", sid);
                     using var reader = cmd.ExecuteReader();
                     if (reader.Read())
                         status = reader["status"]?.ToString();
                 }
-
-                if (status == "rejected" || status == "ended")
+                catch (Exception ex)
                 {
+                    System.Diagnostics.Debug.WriteLine($"[CALL POLL ERROR] {ex.Message}");
+                }
+                finally { _statusPollBusy = false; }
+
+                if (status != "rejected" && status != "ended") return;
+                UiInvoke(() =>
+                {
+                    if (_ended) return;
                     _lblStatus.Text = status == "rejected" ? "Звонок отклонён" : "Завершён";
                     if (!_ended) MarkCallEnded();
                     _ended = true;
@@ -416,12 +432,8 @@ namespace PISMO
                     var t = new System.Windows.Forms.Timer { Interval = 1200 };
                     t.Tick += (_, __) => { t.Stop(); if (!IsDisposed) Close(); };
                     t.Start();
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[CALL POLL ERROR] {ex.Message}");
-            }
+                });
+            });
         }
 
         private void OnConnected()
