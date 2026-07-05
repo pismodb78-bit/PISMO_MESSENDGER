@@ -13,6 +13,7 @@ namespace PISMO
         private readonly System.Windows.Forms.Timer _ringTimer;
         private readonly System.Windows.Forms.Timer _checkTimer;
         private int _blinkState = 0;
+        private bool _checkBusy;   // фоновая проверка статуса уже идёт
         private readonly int _sessionId;
 
         public IncomingCallForm(int sessionId, string callerName, int callerId)
@@ -124,22 +125,30 @@ namespace PISMO
             // Обработчик отмены вызова со стороны звонящего
             WebSocketSignalingClient.Instance.OnMessageReceived += OnWebSocketMessage;
             
-            _checkTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            // Отмена вызова мгновенно приходит по WS (call_status=ended); опрос БД —
+            // страховка, и он идёт В ФОНЕ (раньше — синхронно на UI-потоке каждую
+            // секунду, что подлагивало интерфейс, пока звонит рингтон).
+            _checkTimer = new System.Windows.Forms.Timer { Interval = 1500 };
             _checkTimer.Tick += (s, e) =>
             {
-                try
+                if (_checkBusy) return;
+                _checkBusy = true;
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand("SELECT status FROM call_sessions WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@id", sessionId);
-                    var obj = cmd.ExecuteScalar();
-                    if (obj != null && obj.ToString() == "ended")
+                    bool ended = false;
+                    try
                     {
-                        _checkTimer.Stop();
-                        Close();
+                        using var conn = DBHelper.OpenConnection();
+                        using var cmd = new MySqlCommand("SELECT status FROM call_sessions WHERE id=@id", conn);
+                        cmd.Parameters.AddWithValue("@id", sessionId);
+                        var obj = cmd.ExecuteScalar();
+                        ended = obj != null && obj.ToString() == "ended";
                     }
-                }
-                catch { }
+                    catch { }
+                    finally { _checkBusy = false; }
+                    if (!ended || IsDisposed || !IsHandleCreated) return;
+                    try { BeginInvoke(new Action(() => { _checkTimer.Stop(); Close(); })); } catch { }
+                });
             };
             _checkTimer.Start();
 

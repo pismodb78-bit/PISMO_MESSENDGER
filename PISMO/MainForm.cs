@@ -344,26 +344,36 @@ namespace PISMO
                 if (parts.Length < 3) return;
                 if (!int.TryParse(parts[0], out int serverId)) return;
 
-                // Уважаем заглушение сервера.
-                bool muted = false;
-                try
+                // Проверка «заглушён ли сервер» — в фоне (не держим UI-поток на БД).
+                int me = UserSession.EffectiveId;
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        "SELECT muted_notifs FROM server_members WHERE server_id=@s AND user_id=@u", conn);
-                    cmd.Parameters.AddWithValue("@s", serverId);
-                    cmd.Parameters.AddWithValue("@u", UserSession.EffectiveId);
-                    var o = cmd.ExecuteScalar();
-                    muted = o != null && o != DBNull.Value && Convert.ToInt32(o) == 1;
-                }
-                catch { }
-                if (muted) return;
-
-                try { Sounds.Message(); } catch { }
-                if (_trayIcon != null && _trayIcon.Icon != null)
-                    _trayIcon.ShowBalloonTip(4000, "PISMO — упоминание",
-                        $"Вас упомянули: {parts[1]} · #{parts[2]}", ToolTipIcon.Info);
-                try { FlashWindow(this.Handle, true); } catch { }
+                    bool muted = false;
+                    try
+                    {
+                        using var conn = DBHelper.OpenConnection();
+                        using var cmd = new MySqlCommand(
+                            "SELECT muted_notifs FROM server_members WHERE server_id=@s AND user_id=@u", conn);
+                        cmd.Parameters.AddWithValue("@s", serverId);
+                        cmd.Parameters.AddWithValue("@u", me);
+                        var o = cmd.ExecuteScalar();
+                        muted = o != null && o != DBNull.Value && Convert.ToInt32(o) == 1;
+                    }
+                    catch { }
+                    if (muted || IsDisposed || !IsHandleCreated) return;
+                    try
+                    {
+                        BeginInvoke(new Action(() =>
+                        {
+                            try { Sounds.Message(); } catch { }
+                            if (_trayIcon != null && _trayIcon.Icon != null)
+                                _trayIcon.ShowBalloonTip(4000, "PISMO — упоминание",
+                                    $"Вас упомянули: {parts[1]} · #{parts[2]}", ToolTipIcon.Info);
+                            try { FlashWindow(this.Handle, true); } catch { }
+                        }));
+                    }
+                    catch { }
+                });
             }
             catch { }
         }
