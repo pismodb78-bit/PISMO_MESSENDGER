@@ -877,7 +877,10 @@ function makeExtractorTile(getVideoEl, pid, source, fps, maxW){
 function makeHiddenVideo(){
     const v = document.createElement('video');
     v.autoplay = true; v.muted = true; v.playsInline = true;
-    v.style.display = 'none';
+    // ВАЖНО: не display:none — Chromium жёстко троттлит скрытые так элементы
+    // (rVFC/декод замедляются). Держим за экраном 2×2px — элемент «виден»
+    // движку, но не мешает; извлечение кадров и счётчик захвата честные.
+    v.style.cssText = 'position:fixed;left:-10000px;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;';
     document.body.appendChild(v);
     return v;
 }
@@ -1119,10 +1122,15 @@ async function confirmScreenShare(){
                     stats.forEach(r => { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) o = r; });
                     const enc = (o && o.encoderImplementation) || '';
                     if (/openh264|libvpx|libaom/i.test(enc)){
-                        post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + ') — NVENC не задействован. degradation → balanced'});
+                        // Программный энкодер не тянет 1080p60 → maintain-framerate:
+                        // держим ВЫБРАННЫЙ fps (плавность), снижая разрешение по
+                        // необходимости. Для геймплейной демки плавные 60 при
+                        // меньшем разрешении лучше, чем 1080p в 14fps.
+                        post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + '). degradation → maintain-framerate (плавность в приоритете)'});
                         try {
                             const p = screenVideoTrack.sender.getParameters();
-                            p.degradationPreference = 'balanced';
+                            p.degradationPreference = 'maintain-framerate';
+                            if (p.encodings && p.encodings[0]) p.encodings[0].maxFramerate = screenQualityF;
                             await screenVideoTrack.sender.setParameters(p);
                         } catch(e){}
                         // Освобождаем CPU кодирующей машины: локальное JPEG-превью
