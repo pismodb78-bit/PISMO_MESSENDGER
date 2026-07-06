@@ -65,6 +65,12 @@ namespace PISMO
 
         // Диагностика захвата демонстрации (fps, ширина, высота).
         public event Action<int, int, int> ScreenCaptureInfo;
+
+        /// <summary>Статистика отправки демки (что реально видят собеседники).</summary>
+        public event Action<string> ScreenSendStats;
+
+        /// <summary>Статистика приёма демки (что реально приходит зрителю).</summary>
+        public event Action<string> ScreenRecvStats;
         // Запрос выхода из «театра» (двойной клик / крестик внутри WebView).
         public event Action TheaterExitRequested;
         // Запрос развернуть/свернуть театр на весь экран (кнопка ⛶).
@@ -620,6 +626,7 @@ function onTrackSubscribed(track, publication, participant){
         const key = tileKey(pid, source);
         let entry = remoteVideoMap[key];
         if (!entry){ entry = { el: makeHiddenVideo() }; remoteVideoMap[key] = entry; }
+        entry.track = track;   // для статистики приёма (getStats на receiver)
         track.attach(entry.el);
 
         // НИЗКАЯ ЗАДЕРЖКА для демонстрации: по умолчанию WebRTC копит jitter-buffer
@@ -638,9 +645,14 @@ function onTrackSubscribed(track, publication, participant){
         post({type:'remoteTileStart', pid: pid, name: name, source: source});
         if (!entry.loop){
             const capEl = entry.el;
-            entry.loop = makeExtractorTile(() => capEl, pid, source, source === 'screen' ? 30 : 15, source === 'screen' ? 1280 : 360);
+            // Плитка — это ПРЕВЬЮ: 15fps/960px достаточно. Полное качество и
+            // плавность даёт нативный «театр». 30fps/1280px JPEG-извлечение
+            // создавало у зрителя постоянную нагрузку (кодирование+interop+GC)
+            // и накапливающиеся фризы на длинных демках.
+            entry.loop = makeExtractorTile(() => capEl, pid, source, 15, source === 'screen' ? 960 : 360);
         }
         entry.loop.start();
+        if (source === 'screen') startScreenRecvStats();
     } else if (track.kind === 'audio'){
         if (src === LK.Track.Source.ScreenShareAudio){
             remoteScreenAudioTrack = track;
@@ -779,6 +791,7 @@ function onTrackUnsubscribed(track, publication, participant){
         const key = tileKey(pid, source);
         const entry = remoteVideoMap[key];
         if (entry){ if (entry.loop) entry.loop.stop(); if (entry.el) entry.el.srcObject = null; delete remoteVideoMap[key]; }
+        if (source === 'screen') stopScreenRecvStats();
         post({type:'remoteTileStop', pid: pid, source: source});
     } else if (track.kind === 'audio'){
         if (src === LK.Track.Source.ScreenShareAudio){
@@ -1064,6 +1077,7 @@ async function confirmScreenShare(){
                 audioPreset: { maxBitrate: 128000 }
             }); }catch(e){} }
             screenPublished = true;
+            startScreenSendStats();   // мини-превью показывает, что реально уходит собеседникам
 
             // Приоритет ЧЁТКОСТИ (стандарт для демонстрации экрана): при нехватке
             // ресурсов WebRTC жертвует FPS, а не РАЗРЕШЕНИЕМ — иначе 1080 «плыл» в
@@ -1106,6 +1120,7 @@ async function stopScreenShareTrack(){
             try{ screenAudioTrack.stop(); }catch(e){}
         }
         screenVideoTrack = null; screenAudioTrack = null; screenPublished = false;
+        stopScreenSendStats();
         stopScreenPreviewExtraction();
     } catch(err){ console.error('stopScreenShareTrack', String(err)); }
     post({type:'localScreenStopped'});
@@ -1254,15 +1269,107 @@ function theaterShow(pid, source){
     theaterEl.style.display = 'flex';
     if (theaterWatch) clearInterval(theaterWatch);
     theaterWatch = setInterval(theaterTick, 2000);
+    // Пока открыт театр (нативное видео), JPEG-извлечение плитки этой демки —
+    // лишняя двойная работа (главный источник фризов у зрителя). Ставим на паузу.
+    try { const e2 = remoteVideoMap[tileKey(pid, source)]; if (e2 && e2.loop) e2.loop.stop(); } catch(e){}
 }
 function theaterHide(){
     if (theaterWatch){ clearInterval(theaterWatch); theaterWatch = null; }
+    // Возобновляем извлечение плитки (вернулись из театра к плиткам).
+    try {
+        if (theaterPid){ const e2 = remoteVideoMap[tileKey(theaterPid, theaterSource)]; if (e2 && e2.loop) e2.loop.start(); }
+    } catch(e){}
     theaterPid = null; theaterSource = null;
     if (theaterEl){
         theaterEl.style.display = 'none';
         const vid = theaterEl.querySelector('#__theaterVideo');
         if (vid) vid.srcObject = null;
     }
+}
+
+// ── Чип статистики в театре (что реально приходит по сети) ──────────
+let theaterStatsEl = null;
+function updateTheaterStats(text){
+    if (!theaterEl) return;
+    if (!theaterStatsEl){
+        theaterStatsEl = document.createElement('div');
+        theaterStatsEl.style.cssText = 'position:absolute;left:12px;bottom:12px;color:#ddd;font:12px Consolas,monospace;background:rgba(0,0,0,.55);padding:4px 10px;border-radius:6px;pointer-events:none;';
+        theaterEl.appendChild(theaterStatsEl);
+    }
+    theaterStatsEl.textContent = text || '';
+    theaterStatsEl.style.display = text ? 'block' : 'none';
+}
+
+// ── Статистика демонстрации: ЧТО РЕАЛЬНО уходит собеседникам и что
+//    реально приходит зрителю (для диагностики «у кого лагает») ──────
+let sendStatsTimer = null, _ssBytes = -1, _ssTs = 0;
+function startScreenSendStats(){
+    stopScreenSendStats(false);
+    _ssBytes = -1;
+    sendStatsTimer = setInterval(async () => {
+        try {
+            if (!screenPublished || !screenVideoTrack || !screenVideoTrack.sender) return;
+            const stats = await screenVideoTrack.sender.getStats();
+            let o = null;
+            stats.forEach(r => { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) o = r; });
+            if (!o) return;
+            let mbps = 0;
+            if (_ssBytes >= 0 && o.bytesSent > _ssBytes && o.timestamp > _ssTs)
+                mbps = (o.bytesSent - _ssBytes) * 8 / ((o.timestamp - _ssTs) * 1000);
+            _ssBytes = o.bytesSent; _ssTs = o.timestamp;
+            // qualityLimitationReason — ГЛАВНЫЙ диагност: что душит качество.
+            const lim = o.qualityLimitationReason === 'cpu' ? '  ⚠ упор: CPU/энкодер'
+                      : o.qualityLimitationReason === 'bandwidth' ? '  ⚠ упор: СЕТЬ (аплоад)' : '';
+            post({type:'screenSendStats', text:
+                '→ собеседникам: ' + (o.frameWidth||0) + '×' + (o.frameHeight||0) + ' ' +
+                Math.round(o.framesPerSecond||0) + 'fps · ' + mbps.toFixed(1) + ' Мбит/с' + lim});
+        } catch(e){}
+    }, 2000);
+}
+function stopScreenSendStats(clear = true){
+    if (sendStatsTimer){ clearInterval(sendStatsTimer); sendStatsTimer = null; }
+    if (clear) post({type:'screenSendStats', text:''});
+}
+
+let recvStatsTimer = null, _rsRecv = -1, _rsLost = -1, _rsFreezeDur = -1;
+function startScreenRecvStats(){
+    stopScreenRecvStats(false);
+    _rsRecv = -1; _rsLost = -1; _rsFreezeDur = -1;
+    recvStatsTimer = setInterval(async () => {
+        try {
+            let entry = null;
+            for (const k in remoteVideoMap){ if (k.endsWith('|screen')){ entry = remoteVideoMap[k]; break; } }
+            const tr = entry && entry.track;
+            const rec = tr ? (tr.receiver || tr._receiver) : null;
+            if (!rec){ post({type:'screenRecvStats', text:''}); updateTheaterStats(''); return; }
+            const stats = await rec.getStats();
+            let i = null;
+            stats.forEach(r => { if (r.type === 'inbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) i = r; });
+            if (!i) return;
+            // Потери пакетов за интервал.
+            let lossPart = '';
+            const recvNow = i.packetsReceived || 0, lostNow = i.packetsLost || 0;
+            if (_rsRecv >= 0){
+                const dR = recvNow - _rsRecv, dL = lostNow - _rsLost;
+                if (dR + dL > 0 && dL > 0) lossPart = ' · потери ' + (100 * dL / (dR + dL)).toFixed(1) + '%';
+            }
+            _rsRecv = recvNow; _rsLost = lostNow;
+            // Фризы за интервал (freeze = декодер сидел без кадров).
+            let freezePart = '';
+            const fd = (typeof i.totalFreezesDuration === 'number') ? i.totalFreezesDuration : -1;
+            if (fd >= 0 && _rsFreezeDur >= 0 && fd > _rsFreezeDur)
+                freezePart = ' · ⚠ фриз +' + (fd - _rsFreezeDur).toFixed(1) + 'с';
+            if (fd >= 0) _rsFreezeDur = fd;
+            const text = '← приём: ' + (i.frameWidth||0) + '×' + (i.frameHeight||0) + ' ' +
+                Math.round(i.framesPerSecond||0) + 'fps' + lossPart + freezePart;
+            post({type:'screenRecvStats', text: text});
+            updateTheaterStats(text);
+        } catch(e){}
+    }, 2000);
+}
+function stopScreenRecvStats(clear = true){
+    if (recvStatsTimer){ clearInterval(recvStatsTimer); recvStatsTimer = null; }
+    if (clear){ post({type:'screenRecvStats', text:''}); updateTheaterStats(''); }
 }
 
 // ── Смена качества демонстрации «НА ГОРЯЧУЮ» ────────────────────────
@@ -1368,6 +1475,12 @@ window.chrome.webview.addEventListener('message', (e) => {
                         break;
                     case "screenCaptureInfo":
                         ScreenCaptureInfo?.Invoke(SafeInt(msg, "fps"), SafeInt(msg, "w"), SafeInt(msg, "h"));
+                        break;
+                    case "screenSendStats":
+                        ScreenSendStats?.Invoke(SafeStr(msg, "text"));
+                        break;
+                    case "screenRecvStats":
+                        ScreenRecvStats?.Invoke(SafeStr(msg, "text"));
                         break;
                     case "theaterExitRequested":
                         TheaterExitRequested?.Invoke();
