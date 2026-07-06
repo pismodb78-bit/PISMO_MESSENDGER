@@ -983,7 +983,19 @@ async function previewScreen(resHeight, fps){
         // без обрезки; при «Исходном» (h<=0) высоту не трогаем.
         const videoCons = { frameRate: { ideal: f, max: f } };
         if (h > 0) videoCons.height = { ideal: h };
-        const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoCons, audio: true });
+        // Звук демки — БЕЗ обработки голосового тракта:
+        //  • noiseSuppression:false — шумодав браузера принимал звуки игры
+        //    (двигатель и т.п.) за шум и глушил их, пропуская только речь;
+        //  • autoGainControl:false — не «дышащая» громкость;
+        //  • echoCancellation:true — Chromium вычитает из системного звука
+        //    СОБСТВЕННОЕ воспроизведение приложения (голоса участников из
+        //    колонок), чтобы зрители не слышали в демке самих себя.
+        const audioCons = {
+            echoCancellation: true,
+            noiseSuppression: false,
+            autoGainControl: false
+        };
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoCons, audio: audioCons });
 
         const vt = stream.getVideoTracks()[0];
         const at = stream.getAudioTracks()[0] || null;
@@ -1034,7 +1046,16 @@ async function confirmScreenShare(){
                 degradationPreference: 'maintain-resolution',
                 videoEncoding: { maxBitrate: maxBitrate, maxFramerate: screenQualityF }
             });
-            if (screenAudioTrack){ try{ await room.localParticipant.publishTrack(screenAudioTrack, { source: LK.Track.Source.ScreenShareAudio }); }catch(e){} }
+            // Hi-fi публикация звука демки: dtx:false — DTX режет ТИХИЕ непрерывные
+            // звуки (двигатель, эмбиент) как «тишину»; стерео + высокий битрейт —
+            // звук игры, а не «телефонная» речь.
+            if (screenAudioTrack){ try{ await room.localParticipant.publishTrack(screenAudioTrack, {
+                source: LK.Track.Source.ScreenShareAudio,
+                dtx: false,
+                red: false,
+                forceStereo: true,
+                audioPreset: { maxBitrate: 128000 }
+            }); }catch(e){} }
             screenPublished = true;
 
             // Приоритет ЧЁТКОСТИ (стандарт для демонстрации экрана): при нехватке

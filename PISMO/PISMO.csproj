@@ -10,9 +10,9 @@
     <RootNamespace>PISMO</RootNamespace>
     <ApplicationIcon>pismo.ico</ApplicationIcon>
     <StartupObject>PISMO.Program</StartupObject>
-    <Version>1.8.13</Version>
-    <AssemblyVersion>1.8.13.0</AssemblyVersion>
-    <FileVersion>1.8.13.0</FileVersion>
+    <Version>1.8.14</Version>
+    <AssemblyVersion>1.8.14.0</AssemblyVersion>
+    <FileVersion>1.8.14.0</FileVersion>
     <Company>PISMO</Company>
     <Product>PISMO Messenger</Product>
   </PropertyGroup>
