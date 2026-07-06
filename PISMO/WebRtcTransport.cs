@@ -987,13 +987,17 @@ async function previewScreen(resHeight, fps){
         //  • noiseSuppression:false — шумодав браузера принимал звуки игры
         //    (двигатель и т.п.) за шум и глушил их, пропуская только речь;
         //  • autoGainControl:false — не «дышащая» громкость;
-        //  • echoCancellation:true — Chromium вычитает из системного звука
-        //    СОБСТВЕННОЕ воспроизведение приложения (голоса участников из
-        //    колонок), чтобы зрители не слышали в демке самих себя.
+        //  • echoCancellation:false — AEC к системному звуку не применяем
+        //    (свой голос он не убирал, а обработку добавлял);
+        //  • restrictOwnAudio:true — КЛЮЧЕВОЕ: исключает из захвата звук
+        //    САМОГО приложения (голоса участников, которые PISMO играет в
+        //    колонки) на уровне WASAPI — как это делает Discord. Игра и
+        //    остальной системный звук остаются.
         const audioCons = {
-            echoCancellation: true,
+            echoCancellation: false,
             noiseSuppression: false,
-            autoGainControl: false
+            autoGainControl: false,
+            restrictOwnAudio: true
         };
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoCons, audio: audioCons });
 
@@ -1191,19 +1195,18 @@ function theaterTick(){
         const t = cur.getVideoTracks && cur.getVideoTracks()[0];
         if (t && t.readyState === 'ended'){ post({type:'theaterExitRequested'}); return; }
         if (vid.paused){ try { vid.play(); } catch(e){} }
-        // Детектор «картинка замерла»: кадры не декодируются ≥6 c при живом
-        // треке — жёстко переприцепляем srcObject (лечит чёрный экран).
-        let frames = -1;
-        try { frames = vid.getVideoPlaybackQuality ? vid.getVideoPlaybackQuality().totalVideoFrames : (vid.webkitDecodedFrameCount|0); } catch(e){}
-        if (frames >= 0){
-            if (frames === theaterFrames){
-                if (++theaterStallTicks >= 3){
-                    theaterStallTicks = 0;
-                    try { vid.srcObject = null; vid.srcObject = cur; vid.play(); } catch(e){}
-                }
-            } else theaterStallTicks = 0;
-            theaterFrames = frames;
-        }
+        // Детектор «картинка замерла»: у ЖИВОГО MediaStream currentTime всегда
+        // растёт. (Раньше мерили totalVideoFrames — для WebRTC-потока счётчик
+        // может не расти, и сторож зря передёргивал srcObject каждые 6 секунд,
+        // отчего демка подлагивала.)
+        const ct = vid.currentTime || 0;
+        if (ct === theaterFrames){
+            if (++theaterStallTicks >= 3){
+                theaterStallTicks = 0;
+                try { vid.srcObject = null; vid.srcObject = cur; vid.play(); } catch(e){}
+            }
+        } else theaterStallTicks = 0;
+        theaterFrames = ct;
     } catch(e){}
 }
 
