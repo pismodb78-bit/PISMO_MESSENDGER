@@ -136,7 +136,14 @@ namespace PISMO
                 DeviceSettings.WebViewArgs(
                     "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required" +
                     " --disable-features=WebRtcAllowWgcDesktopCapturer,WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer,WebRtcWgcRequireBorder"));
-            var env = await CoreWebView2Environment.CreateAsync(null, null, envOptions);
+            // ОТДЕЛЬНАЯ папка данных: WebView2 держит ОДИН браузерный процесс на
+            // папку, и если первым стартовал другой WebView приложения (плеер
+            // видео/GIF) БЕЗ наших флагов — транспорт подцеплялся к нему и все
+            // аргументы (GPU, отключение WGC-захвата) молча игнорировались.
+            string rtcUdf = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "PISMO", "webview-rtc");
+            var env = await CoreWebView2Environment.CreateAsync(null, rtcUdf, envOptions);
             await _webView.EnsureCoreWebView2Async(env);
 
             _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
@@ -1310,9 +1317,24 @@ function updateTheaterStats(text){
 // ── Статистика демонстрации: ЧТО РЕАЛЬНО уходит собеседникам и что
 //    реально приходит зрителю (для диагностики «у кого лагает») ──────
 let sendStatsTimer = null, _ssBytes = -1, _ssTs = 0;
+// Реальный fps ЗАХВАТА (кадры, дошедшие до превью-элемента): позволяет отличить
+// «захватчик отдаёт 30» от «энкодер режет до 30».
+let _capFrames = 0, _capMeterOn = false, _capLastTs = 0;
+function startCaptureFpsMeter(){
+    if (_capMeterOn || !screenPreviewVideoEl || !screenPreviewVideoEl.requestVideoFrameCallback) return;
+    _capMeterOn = true; _capFrames = 0; _capLastTs = performance.now();
+    const cb = () => {
+        _capFrames++;
+        if (_capMeterOn && screenPreviewVideoEl) screenPreviewVideoEl.requestVideoFrameCallback(cb);
+    };
+    screenPreviewVideoEl.requestVideoFrameCallback(cb);
+}
+function stopCaptureFpsMeter(){ _capMeterOn = false; }
+
 function startScreenSendStats(){
     stopScreenSendStats(false);
     _ssBytes = -1;
+    startCaptureFpsMeter();
     sendStatsTimer = setInterval(async () => {
         try {
             if (!screenPublished || !screenVideoTrack || !screenVideoTrack.sender) return;
@@ -1324,17 +1346,24 @@ function startScreenSendStats(){
             if (_ssBytes >= 0 && o.bytesSent > _ssBytes && o.timestamp > _ssTs)
                 mbps = (o.bytesSent - _ssBytes) * 8 / ((o.timestamp - _ssTs) * 1000);
             _ssBytes = o.bytesSent; _ssTs = o.timestamp;
+            // Фактический fps захвата за интервал.
+            const nowP = performance.now();
+            const capFps = _capMeterOn && nowP > _capLastTs ? Math.round(_capFrames * 1000 / (nowP - _capLastTs)) : -1;
+            _capFrames = 0; _capLastTs = nowP;
             // qualityLimitationReason — ГЛАВНЫЙ диагност: что душит качество.
             const lim = o.qualityLimitationReason === 'cpu' ? '  ⚠ упор: CPU/энкодер'
                       : o.qualityLimitationReason === 'bandwidth' ? '  ⚠ упор: СЕТЬ (аплоад)' : '';
             post({type:'screenSendStats', text:
                 '→ собеседникам: ' + (o.frameWidth||0) + '×' + (o.frameHeight||0) + ' ' +
-                Math.round(o.framesPerSecond||0) + 'fps · ' + mbps.toFixed(1) + ' Мбит/с' + lim});
+                Math.round(o.framesPerSecond||0) + 'fps' +
+                (capFps >= 0 ? ' (захват ' + capFps + 'fps)' : '') +
+                ' · ' + mbps.toFixed(1) + ' Мбит/с' + lim});
         } catch(e){}
     }, 2000);
 }
 function stopScreenSendStats(clear = true){
     if (sendStatsTimer){ clearInterval(sendStatsTimer); sendStatsTimer = null; }
+    stopCaptureFpsMeter();
     if (clear) post({type:'screenSendStats', text:''});
 }
 
