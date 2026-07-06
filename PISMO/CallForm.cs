@@ -878,16 +878,19 @@ namespace PISMO
                 string sel = (string)cmbRes.SelectedItem;
                 int h = sel == "Исходное" ? 0 : int.Parse(sel.Replace("p", ""));
                 DeviceSettings.ScreenShareResolutionHeight = h; try { DeviceSettings.Save(); } catch { }
+                // Применяем к ИДУЩЕЙ демонстрации сразу (не только «при следующем запуске»).
+                try { _transport?.SetScreenQualityLive(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps); } catch { }
             };
             cmbFps.SelectedIndexChanged += (s, e) =>
             {
                 int f = int.Parse(((string)cmbFps.SelectedItem).Replace(" fps", ""));
                 DeviceSettings.ScreenShareFps = f; try { DeviceSettings.Save(); } catch { }
+                try { _transport?.SetScreenQualityLive(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps); } catch { }
             };
             _audioPanel.Controls.Add(cmbRes);
             _audioPanel.Controls.Add(cmbFps);
             y = rowQ + 34;
-            var lblHint = new Label { Text = "(применится при следующем запуске демонстрации)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
+            var lblHint = new Label { Text = "(применяется сразу, в том числе к идущей демонстрации)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
             _audioPanel.Controls.Add(lblHint); y += 24;
 
             MkLbl("Громкость собеседников");
