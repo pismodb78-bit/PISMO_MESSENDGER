@@ -1377,11 +1377,16 @@ function startScreenSendStats(){
             // qualityLimitationReason — ГЛАВНЫЙ диагност: что душит качество.
             const lim = o.qualityLimitationReason === 'cpu' ? '  ⚠ упор: CPU/энкодер'
                       : o.qualityLimitationReason === 'bandwidth' ? '  ⚠ упор: СЕТЬ (аплоад)' : '';
+            // Имя энкодера: 'OpenH264'/'libvpx' = ПРОГРАММНЫЙ (CPU, отсюда потеря
+            // fps), 'ExternalEncoder'/'MediaFoundation…' = аппаратный (NVENC).
+            let enc = o.encoderImplementation || '';
+            if (/openh264|libvpx|libaom/i.test(enc)) enc = '⚠ SOFT:' + enc;
             post({type:'screenSendStats', text:
                 '→ собеседникам: ' + (o.frameWidth||0) + '×' + (o.frameHeight||0) + ' ' +
                 Math.round(o.framesPerSecond||0) + 'fps' +
                 (capFps >= 0 ? ' (захват ' + capFps + 'fps)' : '') +
-                ' · ' + mbps.toFixed(1) + ' Мбит/с' + lim});
+                ' · ' + mbps.toFixed(1) + ' Мбит/с' +
+                (enc ? ' · ' + enc : '') + lim});
         } catch(e){}
     }, 2000);
 }
