@@ -126,9 +126,16 @@ namespace PISMO
             // доступа к камере/микрофону/экрану.
             // Аппаратное ускорение (GPU) — управляется настройкой (для демонстрации
             // экрана/видео; на проблемных драйверах его можно выключить).
+            // --disable-features=WebRtcAllowWgc…: новые Chromium/WebView2 захватывают
+            // экран через WGC (Windows Graphics Capture), который ограничен ~30 fps
+            // НЕЗАВИСИМО от запрошенной частоты (поэтому «60» в настройках давал
+            // 30-33 fps у собеседников). Отключаем WGC → откат на DXGI Desktop
+            // Duplication, который честно отдаёт 60 fps. Неизвестные имена фич
+            // Chromium просто игнорирует (совместимо со старыми/новыми версиями).
             var envOptions = new CoreWebView2EnvironmentOptions(
                 DeviceSettings.WebViewArgs(
-                    "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required"));
+                    "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required" +
+                    " --disable-features=WebRtcAllowWgcDesktopCapturer,WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer,WebRtcWgcRequireBorder"));
             var env = await CoreWebView2Environment.CreateAsync(null, null, envOptions);
             await _webView.EnsureCoreWebView2Async(env);
 
