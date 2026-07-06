@@ -1122,19 +1122,11 @@ async function confirmScreenShare(){
                     stats.forEach(r => { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) o = r; });
                     const enc = (o && o.encoderImplementation) || '';
                     if (/openh264|libvpx|libaom/i.test(enc)){
-                        // Программный энкодер не тянет 1080p60 → maintain-framerate:
-                        // держим ВЫБРАННЫЙ fps (плавность), снижая разрешение по
-                        // необходимости. Для геймплейной демки плавные 60 при
-                        // меньшем разрешении лучше, чем 1080p в 14fps.
-                        post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + '). degradation → maintain-framerate (плавность в приоритете)'});
-                        try {
-                            const p = screenVideoTrack.sender.getParameters();
-                            p.degradationPreference = 'maintain-framerate';
-                            if (p.encodings && p.encodings[0]) p.encodings[0].maxFramerate = screenQualityF;
-                            await screenVideoTrack.sender.setParameters(p);
-                        } catch(e){}
-                        // Освобождаем CPU кодирующей машины: локальное JPEG-превью
-                        // при софтверном энкодере — заметная лишняя нагрузка.
+                        // Программный энкодер (NVENC не задействован). НЕ меняем
+                        // параметры автоматически — качество/fps держим ровно как
+                        // выставил пользователь. Только сообщаем и освобождаем CPU
+                        // (локальное JPEG-превью — лишняя нагрузка на кодирование).
+                        post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + ') — для 1080p60 нужен аппаратный (NVENC).'});
                         try { setScreenPreviewActive(false); } catch(e){}
                         post({type:'softwareEncoder'});
                     } else if (enc){
