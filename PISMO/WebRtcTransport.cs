@@ -126,16 +126,12 @@ namespace PISMO
             // доступа к камере/микрофону/экрану.
             // Аппаратное ускорение (GPU) — управляется настройкой (для демонстрации
             // экрана/видео; на проблемных драйверах его можно выключить).
-            // --disable-features=WebRtcAllowWgc…: новые Chromium/WebView2 захватывают
-            // экран через WGC (Windows Graphics Capture), который ограничен ~30 fps
-            // НЕЗАВИСИМО от запрошенной частоты (поэтому «60» в настройках давал
-            // 30-33 fps у собеседников). Отключаем WGC → откат на DXGI Desktop
-            // Duplication, который честно отдаёт 60 fps. Неизвестные имена фич
-            // Chromium просто игнорирует (совместимо со старыми/новыми версиями).
+            // Отключение WGC-захвата, анти-троттлинг и GPU-флаги собираются в
+            // DeviceSettings.WebViewArgs ЕДИНЫМ списком (двойной --disable-features
+            // Chromium игнорирует — берёт только последний).
             var envOptions = new CoreWebView2EnvironmentOptions(
                 DeviceSettings.WebViewArgs(
-                    "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required" +
-                    " --disable-features=WebRtcAllowWgcDesktopCapturer,WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer,WebRtcWgcRequireBorder"));
+                    "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required"));
             // ОТДЕЛЬНАЯ папка данных: WebView2 держит ОДИН браузерный процесс на
             // папку, и если первым стартовал другой WebView приложения (плеер
             // видео/GIF) БЕЗ наших флагов — транспорт подцеплялся к нему и все
@@ -930,8 +926,18 @@ function stopLocalCameraExtraction(){ if(localCameraLoop) localCameraLoop.stop()
 // Локальное превью — 10 fps/480px достаточно для мини-плитки; 30 fps/640px
 // создавали постоянную фоновую нагрузку (canvas+JPEG+interop 30 раз/сек всю
 // демонстрацию) — на длинных демках это добавляло фризов.
-function startScreenPreviewExtraction(){ if(!screenPreviewLoop) screenPreviewLoop = makeExtractor(()=>screenPreviewVideoEl, 'screenPreviewFrame', 10, 480); screenPreviewLoop.start(); }
+let screenPreviewPaused = false;
+function startScreenPreviewExtraction(){ if(!screenPreviewLoop) screenPreviewLoop = makeExtractor(()=>screenPreviewVideoEl, 'screenPreviewFrame', 10, 480); if(!screenPreviewPaused) screenPreviewLoop.start(); }
 function stopScreenPreviewExtraction(){ if(screenPreviewLoop) screenPreviewLoop.stop(); if(screenPreviewVideoEl){ screenPreviewVideoEl.srcObject=null; } }
+// Пауза/возобновление извлечения превью «что видит собеседник». Когда PIP-окно
+// свёрнуто/в трее — кадры не нужны, а JPEG-извлечение зря грузит CPU кодирующей
+// машины (конкурирует с энкодером демки). on=false — стоп, on=true — возобновить.
+function setScreenPreviewActive(on){
+    screenPreviewPaused = !on;
+    if (!screenPreviewLoop) return;
+    if (on && screenPublished) screenPreviewLoop.start();
+    else screenPreviewLoop.stop();
+}
 
 // ── Камера ───────────────────────────────────────────────────────────
 async function previewCamera(deviceLabel){
@@ -1098,6 +1104,36 @@ async function confirmScreenShare(){
             }); }catch(e){} }
             screenPublished = true;
             startScreenSendStats();   // мини-превью показывает, что реально уходит собеседникам
+
+            // Через 8 c проверяем, каким энкодером реально кодируется трек.
+            // Если аппаратный (NVENC) недоступен и Chromium выбрал программный
+            // (OpenH264/libvpx) — CPU не тянет 1080p60, поэтому:
+            //  1) переключаем degradationPreference на 'balanced' (иначе
+            //     maintain-resolution давит fps в ноль);
+            //  2) пишем в лог — плашка покажет «⚠ SOFT:…».
+            setTimeout(async () => {
+                try {
+                    if (!screenPublished || !screenVideoTrack || !screenVideoTrack.sender) return;
+                    const stats = await screenVideoTrack.sender.getStats();
+                    let o = null;
+                    stats.forEach(r => { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) o = r; });
+                    const enc = (o && o.encoderImplementation) || '';
+                    if (/openh264|libvpx|libaom/i.test(enc)){
+                        post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + ') — NVENC не задействован. degradation → balanced'});
+                        try {
+                            const p = screenVideoTrack.sender.getParameters();
+                            p.degradationPreference = 'balanced';
+                            await screenVideoTrack.sender.setParameters(p);
+                        } catch(e){}
+                        // Освобождаем CPU кодирующей машины: локальное JPEG-превью
+                        // при софтверном энкодере — заметная лишняя нагрузка.
+                        try { setScreenPreviewActive(false); } catch(e){}
+                        post({type:'softwareEncoder'});
+                    } else if (enc){
+                        post({type:'jsLog', text:'Энкодер демки: ' + enc + ' (аппаратный)'});
+                    }
+                } catch(e){}
+            }, 8000);
 
             // Приоритет ЧЁТКОСТИ (стандарт для демонстрации экрана): при нехватке
             // ресурсов WebRTC жертвует FPS, а не РАЗРЕШЕНИЕМ — иначе 1080 «плыл» в
@@ -1499,6 +1535,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'setMicEnabled': setMicEnabled(msg.enabled); break;
         case 'setScreenAudioVolume': setScreenAudioVolume(msg.volume); break;
         case 'setScreenVolumePid': setScreenVolumePid(msg.pid, msg.volume); break;
+        case 'setScreenPreviewActive': setScreenPreviewActive(msg.on); break;
         case 'setVoiceVolume': setVoiceVolume(msg.volume); break;
         case 'setRemoteMuted': setRemoteMuted(msg.muted); break;
         case 'voicePrefs': setVoicePrefs(msg.prefs); break;
@@ -1544,6 +1581,9 @@ window.chrome.webview.addEventListener('message', (e) => {
                         break;
                     case "screenSendStats":
                         ScreenSendStats?.Invoke(SafeStr(msg, "text"));
+                        break;
+                    case "softwareEncoder":
+                        SoftwareEncoderDetected?.Invoke();
                         break;
                     case "screenRecvStats":
                         ScreenRecvStats?.Invoke(SafeStr(msg, "text"));
@@ -1745,6 +1785,14 @@ window.chrome.webview.addEventListener('message', (e) => {
         /// слайдер «Громкость демонстрации» для этого участника).</summary>
         public void SetScreenShareVolume(string pid, float volume)
             => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenVolumePid", pid, volume }));
+
+        /// <summary>Пауза/возобновление извлечения превью «что видит собеседник».
+        /// Когда PIP-окно скрыто — извлекать кадры не нужно (экономим CPU).</summary>
+        public void SetScreenPreviewActive(bool on)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenPreviewActive", on }));
+
+        /// <summary>Поднимается, если демка кодируется ПРОГРАММНО (NVENC не задействован).</summary>
+        public event Action SoftwareEncoderDetected;
 
         /// <summary>Смена качества демонстрации «на горячую»: применяется к
         /// живому треку (захват + энкодер), а не только сохраняется.</summary>

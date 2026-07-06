@@ -319,6 +319,7 @@ namespace PISMO
             _transport.TheaterFullscreenToggle += () => UiInvoke(ToggleTheaterFullscreen);
             _transport.ScreenSendStats += t => ShowNetStats(t, send: true);
             _transport.ScreenRecvStats += t => ShowNetStats(t, send: false);
+            _transport.SoftwareEncoderDetected += () => UiInvoke(OnSoftwareEncoder);
             _transport.ScreenCaptureInfo += (fps, w, h) => UiInvoke(() =>
             {
                 try { _lblStatus.Text = $"Демонстрация: {w}×{h} @ {fps} fps"; } catch { }
@@ -1360,11 +1361,13 @@ namespace PISMO
                 _screenPipExpandedSize = _screenPipForm.Size;
                 _screenPipPicture.Visible = false;
                 _screenPipForm.Size = new Size(180, 22);
+                try { _transport?.SetScreenPreviewActive(false); } catch { }   // превью скрыто — не извлекаем кадры
             }
             else
             {
                 _screenPipPicture.Visible = true;
                 _screenPipForm.Size = _screenPipExpandedSize;
+                try { _transport?.SetScreenPreviewActive(true); } catch { }
             }
         }
 
@@ -1376,6 +1379,7 @@ namespace PISMO
         {
             if (_screenPipForm == null) return;
             _screenPipForm.Hide();
+            try { _transport?.SetScreenPreviewActive(false); } catch { }   // в трее — превью не нужно
 
             if (_screenPipTrayIcon == null)
             {
@@ -1402,6 +1406,27 @@ namespace PISMO
             if (_screenPipTrayIcon != null)
                 _screenPipTrayIcon.Visible = false;
             _screenPipForm?.Show();
+            if (!_screenPipCollapsed) try { _transport?.SetScreenPreviewActive(true); } catch { }
+        }
+
+        private bool _softwareEncoderWarned;
+
+        /// <summary>Демка кодируется процессором (NVENC не подхватился) — один раз
+        /// подсказываем, как включить аппаратный энкодер, чтобы держать fps.</summary>
+        private void OnSoftwareEncoder()
+        {
+            if (_softwareEncoderWarned) return;
+            _softwareEncoderWarned = true;
+            _lblStatus.Text = "⚠ Демка кодируется процессором — fps ограничен";
+            try
+            {
+                _screenPipTrayIcon?.ShowBalloonTip(6000, "PISMO — производительность демонстрации",
+                    "Демонстрация кодируется процессором (NVENC не задействован), поэтому fps ниже. " +
+                    "Windows → Параметры → Система → Дисплей → Графика → добавьте msedgewebview2.exe и выберите " +
+                    "«Высокая производительность» (дискретная видеокарта), затем перезапустите демонстрацию.",
+                    ToolTipIcon.Warning);
+            }
+            catch { }
         }
 
         private void ShowScreenSharePip(byte[] jpegBytes)

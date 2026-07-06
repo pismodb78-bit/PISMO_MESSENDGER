@@ -84,18 +84,41 @@ namespace PISMO
         /// дискретная видеокарта простаивает (Video Encode 0%). При выключенном —
         /// программный рендеринг (--disable-gpu).</summary>
         public static string WebViewArgs(string baseArgs)
-            => HardwareAcceleration
-                ? (baseArgs
+        {
+            // ЕДИНЫЙ список отключаемых фич: два --disable-features в командной
+            // строке нельзя — Chromium применяет только последний.
+            //  • WebRtcAllowWgc*/WgcRequireBorder — WGC-захватчик экрана ограничен
+            //    ~30 fps независимо от запрошенного; отключение = откат на DXGI
+            //    Desktop Duplication с честными 60 fps;
+            //  • CalculateNativeWinOcclusion — WebView звонка позиционируется ЗА
+            //    экраном (1×1), Windows-окклюзия помечала страницу «невидимой», и
+            //    Chromium троттлил её таймеры/конвейер кадров;
+            //  • IntensiveWakeUpThrottling — то же на длинных демках (таймеры до
+            //    1 раза в секунду после нескольких минут «в фоне»).
+            const string disabled =
+                "--disable-features=WebRtcAllowWgcDesktopCapturer," +
+                "WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer," +
+                "WebRtcWgcRequireBorder,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling";
+
+            // Анти-троттлинг скрытой страницы (транспорт живёт в невидимом WebView).
+            const string always =
+                " --disable-background-timer-throttling" +
+                " --disable-renderer-backgrounding" +
+                " --disable-backgrounding-occluded-windows";
+
+            // Аппаратные видео-энкод/декод в Chromium включены ПО УМОЛЧАНИЮ —
+            // мешает только GPU-блоклист (обходим). «--enable-accelerated-video-*»
+            // не существуют и убраны. --force_high_performance_gpu: на ноутбуках с
+            // двумя GPU выбираем дискретную (NVENC), а не встройку.
+            return HardwareAcceleration
+                ? (baseArgs + " " + disabled + always
                     + " --ignore-gpu-blocklist"
                     + " --enable-gpu-rasterization"
                     + " --enable-zero-copy"
-                    + " --enable-accelerated-video-decode"
-                    + " --enable-accelerated-video-encode"
-                    // Ноутбук с двумя видеокартами (Optimus): заставляем Chromium/WebView2
-                    // выбрать ДИСКРЕТНУЮ (NVIDIA) вместо интегрированной Intel — иначе
-                    // энкод/декод идёт на встройке и дискретка простаивает.
                     + " --force_high_performance_gpu").Trim()
-                : (baseArgs + " --disable-gpu --disable-gpu-compositing").Trim();
+                : (baseArgs + " " + disabled + always
+                    + " --disable-gpu --disable-gpu-compositing").Trim();
+        }
 
         // Горячие клавиши в звонке (значение = (int)Keys с модификаторами; 0 = выкл).
         // По умолчанию Ctrl+Alt+M / C / S.
