@@ -669,9 +669,12 @@ function onTrackSubscribed(track, publication, participant){
         if (source === 'screen') startScreenRecvStats();
     } else if (track.kind === 'audio'){
         if (src === LK.Track.Source.ScreenShareAudio){
+            // ПО УЧАСТНИКАМ: раньше один общий screenMix затирался второй демкой,
+            // и громкость можно было менять только «всем демкам сразу».
             remoteScreenAudioTrack = track;
-            detachAmplified(screenMix);
-            screenMix = attachAmplified(track, remoteVoiceMuted ? 0 : remoteScreenAudioVolume);
+            if (screenMixByPid[pid]) detachAmplified(screenMixByPid[pid]);
+            screenMixByPid[pid] = attachAmplified(track, remoteVoiceMuted ? 0 : effScreenVol(pid));
+            screenMix = screenMixByPid[pid]; // legacy-ссылка (последняя демка)
         } else {
             remoteVoiceTracks.push(track);
             (remoteAudioByPid[pid] = remoteAudioByPid[pid] || []).push(track);
@@ -810,7 +813,8 @@ function onTrackUnsubscribed(track, publication, participant){
     } else if (track.kind === 'audio'){
         if (src === LK.Track.Source.ScreenShareAudio){
             remoteScreenAudioTrack = null;
-            detachAmplified(screenMix); screenMix = null;
+            if (screenMixByPid[pid]){ detachAmplified(screenMixByPid[pid]); delete screenMixByPid[pid]; }
+            screenMix = null;
         } else {
             remoteVoiceTracks = remoteVoiceTracks.filter(t => t !== track);
             if (remoteAudioByPid[pid]) remoteAudioByPid[pid] = remoteAudioByPid[pid].filter(t => t !== track);
@@ -835,6 +839,8 @@ function cleanupParticipant(pid){
     delete remoteAudioByPid[pid];
     (mixByPid[pid] || []).forEach(detachAmplified);
     delete mixByPid[pid];
+    if (screenMixByPid[pid]){ detachAmplified(screenMixByPid[pid]); delete screenMixByPid[pid]; }
+    delete screenVolByPid[pid];
 }
 
 // Извлечение кадров плитки: постит remoteTileFrame с pid+source.
@@ -1162,9 +1168,27 @@ async function setMicEnabled(enabled){
     } catch(e){ console.error('setMic', String(e)); }
 }
 
+// ── Громкость демонстраций: общая + индивидуальная по участнику ─────
+let screenMixByPid = {};   // pid -> узел усилителя звука его демки
+let screenVolByPid = {};   // pid -> личная громкость (перекрывает общую)
+
+function effScreenVol(pid){
+    return screenVolByPid[pid] !== undefined ? screenVolByPid[pid] : remoteScreenAudioVolume;
+}
+function applyScreenVol(pid){
+    const m = screenMixByPid[pid];
+    if (m){ try{ m.gain.gain.value = remoteVoiceMuted ? 0 : Math.max(0, Math.min(effScreenVol(pid), 5)); }catch(e){} }
+}
+
 function setScreenAudioVolume(v){
     remoteScreenAudioVolume = Math.max(0, Math.min(v, 5));   // усилитель до 500%
-    if (screenMix){ try{ screenMix.gain.gain.value = remoteVoiceMuted ? 0 : remoteScreenAudioVolume; }catch(e){} }
+    Object.keys(screenMixByPid).forEach(applyScreenVol);      // общая — для демок без личной
+}
+
+// Личная громкость КОНКРЕТНОЙ демки (правый клик по её плитке).
+function setScreenVolumePid(pid, v){
+    screenVolByPid[pid] = Math.max(0, Math.min(v, 5));
+    applyScreenVol(pid);
 }
 
 function setVoiceVolume(v){
@@ -1175,7 +1199,7 @@ function setVoiceVolume(v){
 function setRemoteMuted(muted){
     remoteVoiceMuted = muted;
     Object.keys(mixByPid).forEach(applyPidVolume);
-    if (screenMix){ try{ screenMix.gain.gain.value = muted ? 0 : remoteScreenAudioVolume; }catch(e){} }
+    Object.keys(screenMixByPid).forEach(applyScreenVol);
 }
 
 async function setAudioDevice(kind, deviceLabel){
@@ -1469,6 +1493,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'enumerateDevices': enumerateDevices(); break;
         case 'setMicEnabled': setMicEnabled(msg.enabled); break;
         case 'setScreenAudioVolume': setScreenAudioVolume(msg.volume); break;
+        case 'setScreenVolumePid': setScreenVolumePid(msg.pid, msg.volume); break;
         case 'setVoiceVolume': setVoiceVolume(msg.volume); break;
         case 'setRemoteMuted': setRemoteMuted(msg.muted); break;
         case 'voicePrefs': setVoicePrefs(msg.prefs); break;
@@ -1710,6 +1735,11 @@ window.chrome.webview.addEventListener('message', (e) => {
             try { if (_webView != null && _webView.Visible && _webView.Width > 2) _webView.Bounds = bounds; }
             catch { }
         }
+
+        /// <summary>Громкость звука КОНКРЕТНОЙ демонстрации (перекрывает общий
+        /// слайдер «Громкость демонстрации» для этого участника).</summary>
+        public void SetScreenShareVolume(string pid, float volume)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenVolumePid", pid, volume }));
 
         /// <summary>Смена качества демонстрации «на горячую»: применяется к
         /// живому треку (захват + энкодер), а не только сохраняется.</summary>

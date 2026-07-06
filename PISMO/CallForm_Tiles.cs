@@ -197,12 +197,15 @@ namespace PISMO
             string capPid = pid, capSource = source, capKey = key;
             tile.Panel.Paint += (s, e) => PaintTile(e.Graphics, tile);
 
-            // Двойной клик — на весь экран; правый клик — громкость/мьют участника.
+            // Двойной клик — на весь экран; правый клик: на камере — громкость
+            // голоса участника, на ДЕМКЕ — громкость именно ЭТОЙ демонстрации
+            // (при двух демках в звонке каждую можно приглушить отдельно).
             void OnDouble(object s, EventArgs e) => ToggleFullscreen(capKey);
             void OnMouse(object s, MouseEventArgs e)
             {
-                if (e.Button == MouseButtons.Right && capPid != SelfPid)
-                    ShowParticipantAudioMenu(capPid);
+                if (e.Button != MouseButtons.Right || capPid == SelfPid) return;
+                if (capSource == "screen") ShowScreenAudioMenu(capPid);
+                else ShowParticipantAudioMenu(capPid);
             }
             tile.Panel.DoubleClick += OnDouble;
             tile.Pb.DoubleClick += OnDouble;
@@ -585,6 +588,42 @@ namespace PISMO
             try { _transport?.ExitTheater(); } catch { }
             try { if (_tilesHost != null) _tilesHost.Visible = true; } catch { }
             LayoutTiles();
+        }
+
+        // ── Индивидуальная громкость КОНКРЕТНОЙ демонстрации (правый клик по
+        //    её плитке): при нескольких демках каждую можно тише/громче отдельно ──
+        private readonly Dictionary<string, float> _screenVol = new();
+
+        private void ShowScreenAudioMenu(string pid)
+        {
+            if (_userAudioPopup != null && !_userAudioPopup.IsDisposed)
+            { try { _userAudioPopup.Close(); } catch { } _userAudioPopup = null; }
+
+            string name = _participants.TryGetValue(pid, out var nm) ? nm : pid;
+            float vol = _screenVol.TryGetValue(pid, out var v) ? v : 1.0f;
+
+            _userAudioPopup = new Form
+            {
+                Text = name,
+                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.Manual,
+                ShowInTaskbar = false,
+                BackColor = Color.FromArgb(40, 42, 46),
+                ClientSize = new Size(240, 84),
+                Location = Cursor.Position
+            };
+            var lbl = new Label { Text = "🖥 Громкость демки: " + name, ForeColor = Color.White, AutoSize = true, Location = new Point(12, 10), Font = new Font("Segoe UI", 9f) };
+            var tb = new TrackBar { Minimum = 0, Maximum = 300, Value = Math.Min(300, (int)(vol * 100)), TickStyle = TickStyle.None, Location = new Point(8, 32), Size = new Size(224, 40) };
+            tb.ValueChanged += (s, e) =>
+            {
+                _screenVol[pid] = tb.Value / 100f;
+                try { _transport?.SetScreenShareVolume(pid, _screenVol[pid]); } catch { }
+            };
+            _userAudioPopup.Controls.Add(lbl);
+            _userAudioPopup.Controls.Add(tb);
+            _userAudioPopup.Deactivate += (s, e) => { try { _userAudioPopup?.Close(); } catch { } };
+            _userAudioPopup.FormClosed += (s, e) => _userAudioPopup = null;
+            _userAudioPopup.Show(this);
         }
 
         // ── Индивидуальная громкость/мьют участника (правый клик) ────────
