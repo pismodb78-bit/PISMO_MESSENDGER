@@ -1799,6 +1799,10 @@ namespace PISMO
             if (fps > 0) DeviceSettings.ScreenShareFps = Math.Clamp(fps, 1, 60);
             try { DeviceSettings.Save(); } catch { }
 
+            // Применяем к ЖИВОЙ демке (раньше настройка лишь сохранялась и до
+            // перезапуска демонстрации ни на что не влияла).
+            try { _transport?.SetScreenQualityLive(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps); } catch { }
+
             // Краткое уведомление в статусе (2 секунды), потом восстанавливаем предыдущее сообщение.
             string prevStatus = _lblStatus.Text;
             _lblStatus.Text = $"Настройки экрана: {DeviceSettings.ScreenShareResolutionHeight}p · {DeviceSettings.ScreenShareFps}fps";

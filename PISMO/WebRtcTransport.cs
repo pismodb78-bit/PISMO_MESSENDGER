@@ -894,7 +894,10 @@ function startRemoteCameraExtraction(){ if(!remoteCameraLoop) remoteCameraLoop =
 function stopRemoteCameraExtraction(){ if(remoteCameraLoop) remoteCameraLoop.stop(); if(remoteCameraVideoEl){ remoteCameraVideoEl.srcObject=null; } }
 function startLocalCameraExtraction(){ if(!localCameraLoop) localCameraLoop = makeExtractor(()=>localCameraVideoEl, 'localCameraFrame', 15, 320); localCameraLoop.start(); }
 function stopLocalCameraExtraction(){ if(localCameraLoop) localCameraLoop.stop(); if(localCameraVideoEl){ localCameraVideoEl.srcObject=null; } }
-function startScreenPreviewExtraction(){ if(!screenPreviewLoop) screenPreviewLoop = makeExtractor(()=>screenPreviewVideoEl, 'screenPreviewFrame', 30, 640); screenPreviewLoop.start(); }
+// Локальное превью — 10 fps/480px достаточно для мини-плитки; 30 fps/640px
+// создавали постоянную фоновую нагрузку (canvas+JPEG+interop 30 раз/сек всю
+// демонстрацию) — на длинных демках это добавляло фризов.
+function startScreenPreviewExtraction(){ if(!screenPreviewLoop) screenPreviewLoop = makeExtractor(()=>screenPreviewVideoEl, 'screenPreviewFrame', 10, 480); screenPreviewLoop.start(); }
 function stopScreenPreviewExtraction(){ if(screenPreviewLoop) screenPreviewLoop.stop(); if(screenPreviewVideoEl){ screenPreviewVideoEl.srcObject=null; } }
 
 // ── Камера ───────────────────────────────────────────────────────────
@@ -1262,6 +1265,45 @@ function theaterHide(){
     }
 }
 
+// ── Смена качества демонстрации «НА ГОРЯЧУЮ» ────────────────────────
+// Применяется к ЖИВОМУ треку: applyConstraints (разрешение/fps захвата) +
+// setParameters на sender (потолок битрейта и fps энкодера). Раньше выбор
+// качества во время демки лишь сохранялся в настройки и ни на что не влиял.
+async function setScreenQuality(resHeight, fps){
+    try {
+        let h = parseInt(resHeight); if (isNaN(h)) h = 0;
+        let f = parseInt(fps) || 30;
+        screenQualityH = h; screenQualityF = f;
+        if (!screenVideoTrack || !screenVideoTrack.mediaStreamTrack) return;
+        const mt = screenVideoTrack.mediaStreamTrack;
+
+        const cons = { frameRate: { ideal: f, max: f } };
+        if (h > 0) cons.height = { ideal: h };
+        await mt.applyConstraints(cons);
+
+        // Потолок битрейта под новое качество (та же шкала, что при публикации).
+        let effH = h;
+        if (!effH || effH <= 0){ try { effH = mt.getSettings().height || 1080; } catch(e){ effH = 1080; } }
+        const hi = f >= 45;
+        const maxBitrate = effH >= 1440 ? (hi ? 30000000 : 22000000)
+                         : effH >= 1080 ? (hi ? 22000000 : 15000000)
+                         : effH >= 720  ? (hi ? 12000000 : 8000000)
+                         : effH >= 480  ? 5000000
+                         : 2500000;
+        const sender = screenVideoTrack.sender;
+        if (sender){
+            const p = sender.getParameters();
+            if (p.encodings && p.encodings.length){
+                p.encodings[0].maxBitrate = maxBitrate;
+                p.encodings[0].maxFramerate = f;
+                await sender.setParameters(p);
+            }
+        }
+        try { const st = mt.getSettings(); post({type:'screenCaptureInfo', fps: Math.round(st.frameRate||0), w: st.width||0, h: st.height||0}); } catch(e){}
+        post({type:'jsLog', text:'Качество демки на горячую: ' + (h>0 ? h+'p' : 'native') + '@' + f});
+    } catch(e){ post({type:'jsLog', text:'setScreenQuality: ' + String(e)}); }
+}
+
 async function disconnectRoom(){
     try { if (room) await room.disconnect(); } catch(e){}
 }
@@ -1277,6 +1319,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'stopCameraTrack': stopCameraTrack(); break;
         case 'switchCameraDevice': switchCameraDevice(msg.deviceLabel); break;
         case 'previewScreen': previewScreen(msg.resHeight, msg.fps); break;
+        case 'setScreenQuality': setScreenQuality(msg.resHeight, msg.fps); break;
         case 'confirmScreenShare': confirmScreenShare(); break;
         case 'cancelScreenPreview': cancelScreenPreview(); break;
         case 'stopScreenTrack': stopScreenShareTrack(); break;
@@ -1518,6 +1561,11 @@ window.chrome.webview.addEventListener('message', (e) => {
             try { if (_webView != null && _webView.Visible && _webView.Width > 2) _webView.Bounds = bounds; }
             catch { }
         }
+
+        /// <summary>Смена качества демонстрации «на горячую»: применяется к
+        /// живому треку (захват + энкодер), а не только сохраняется.</summary>
+        public void SetScreenQualityLive(int resHeight, int fps)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenQuality", resHeight, fps }));
 
         /// <summary>Выйти из театра — вернуть WebView за пределы экрана (1x1).</summary>
         public void ExitTheater()
