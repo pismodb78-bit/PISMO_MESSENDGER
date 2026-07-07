@@ -877,10 +877,10 @@ function makeExtractorTile(getVideoEl, pid, source, fps, maxW){
 function makeHiddenVideo(){
     const v = document.createElement('video');
     v.autoplay = true; v.muted = true; v.playsInline = true;
-    // ВАЖНО: не display:none — Chromium жёстко троттлит скрытые так элементы
-    // (rVFC/декод замедляются). Держим за экраном 2×2px — элемент «виден»
-    // движку, но не мешает; извлечение кадров и счётчик захвата честные.
-    v.style.cssText = 'position:fixed;left:-10000px;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;';
+    // ВАЖНО: не display:none (троттлится) и НЕ за экраном (Chromium исключает
+    // из композиции → кадры не рисуются → серый PIP). Держим В ПРЕДЕЛАХ вьюпорта
+    // 1×1px с opacity:0 — элемент композитится и декодирует, но невидим.
+    v.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1;';
     document.body.appendChild(v);
     return v;
 }
@@ -1049,6 +1049,11 @@ async function previewScreen(resHeight, fps){
         const vt = stream.getVideoTracks()[0];
         const at = stream.getAudioTracks()[0] || null;
         if (!vt){ post({type:'localScreenError', error:'no screen video track'}); return; }
+        // КРИТИЧНО: жёстко ограничиваем ЧАСТОТУ ЗАХВАТА. getDisplayMedia часто
+        // игнорирует frameRate и захватывает с частотой монитора (144/200 Гц),
+        // а это впустую грузит GPU/CPU, из-за чего энкодер не тянет и fps
+        // отправки проседает. applyConstraints уже на живом треке — надёжнее.
+        try { await vt.applyConstraints({ frameRate: { ideal: f, max: f } }); } catch(e){}
         // 'motion' → WebRTC держит framerate (плавность), резкость — за счёт битрейта.
         try { vt.contentHint = 'motion'; } catch(e){}
         // Диагностика: реальные параметры захвата (видно в статусе звонка).
