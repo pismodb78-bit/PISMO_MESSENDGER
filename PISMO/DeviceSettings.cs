@@ -107,15 +107,15 @@ namespace PISMO
                 " --disable-backgrounding-occluded-windows";
 
             // Аппаратные видео-энкод/декод в Chromium включены ПО УМОЛЧАНИЮ —
-            // мешает только GPU-блоклист (обходим). «--enable-accelerated-video-*»
-            // не существуют и убраны. --force_high_performance_gpu: на ноутбуках с
-            // двумя GPU выбираем дискретную (NVENC), а не встройку.
+            // мешает только GPU-блоклист (обходим). Выбор адаптера (встроенная
+            // Intel с Quick Sync — надёжный аппаратный энкодер) делается через
+            // реестр UserGpuPreferences (см. GpuPreference), а НЕ форсом
+            // дискретной: MX-карты часто без NVENC → откат в софт.
             return HardwareAcceleration
                 ? (baseArgs + " " + disabled + always
                     + " --ignore-gpu-blocklist"
                     + " --enable-gpu-rasterization"
-                    + " --enable-zero-copy"
-                    + " --force_high_performance_gpu").Trim()
+                    + " --enable-zero-copy").Trim()
                 : (baseArgs + " " + disabled + always
                     + " --disable-gpu --disable-gpu-compositing").Trim();
         }

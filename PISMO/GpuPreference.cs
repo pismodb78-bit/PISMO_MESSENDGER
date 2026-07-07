@@ -11,20 +11,33 @@ namespace PISMO
     ///
     /// Механизм: та же настройка, что пишет системное окно «Графика» —
     /// HKCU\Software\Microsoft\DirectX\UserGpuPreferences, value = путь к exe,
-    /// data = "GpuPreference=2;" (2 = высокая производительность / дискретная,
-    /// 1 = энергосбережение / встроенная). Права администратора НЕ нужны (HKCU).
+    /// data = "GpuPreference=N;" (1 = энергосбережение/ВСТРОЕННАЯ, 2 = высокая
+    /// производительность/дискретная). Права администратора НЕ нужны (HKCU).
     /// Вступает в силу при следующем старте процесса (перезапуск демонстрации).
+    ///
+    /// ВАЖНО про выбор GPU для КОДИРОВАНИЯ демки: аппаратный H264-энкодер в
+    /// Chromium/MediaFoundation привязан к тому адаптеру, на котором работает
+    /// GPU-процесс. Надёжнее всего аппаратно кодирует ВСТРОЕННАЯ графика Intel
+    /// (Quick Sync) — она есть почти на всех ноутбуках. Многие дискретные
+    /// NVIDIA MX-серии (MX450 и т.п.) НЕ имеют NVENC, поэтому форсировать
+    /// дискретную опасно: попадём на GPU без энкодера → откат в софт (OpenH264,
+    /// ~14 fps). Поэтому при включённом ускорении предпочитаем ВСТРОЕННУЮ
+    /// (Quick Sync); на десктопе без встройки система сама возьмёт единственную
+    /// (дискретную с NVENC).
     /// </summary>
     public static class GpuPreference
     {
         private const string RegPath = @"Software\Microsoft\DirectX\UserGpuPreferences";
 
         /// <summary>Прописать предпочтение GPU для PISMO.exe и всех найденных
-        /// msedgewebview2.exe. mode: 2 = дискретная (HW-ускорение вкл),
-        /// 1 = встроенная (выкл).</summary>
+        /// msedgewebview2.exe. При HW-ускорении — встроенная (Quick Sync,
+        /// надёжный аппаратный энкодер); без ускорения — тоже встроенная
+        /// (меньше нагрев, программный рендер).</summary>
         public static void Apply(bool highPerformance)
         {
-            int mode = highPerformance ? 2 : 1;
+            // 1 = встроенная (Quick Sync). Не форсируем дискретную — на MX-картах
+            // без NVENC это ломает аппаратное кодирование.
+            int mode = 1;
             try
             {
                 using var key = Registry.CurrentUser.CreateSubKey(RegPath);
