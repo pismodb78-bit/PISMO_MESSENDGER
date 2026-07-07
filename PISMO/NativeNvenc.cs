@@ -21,11 +21,15 @@ namespace PISMO
     /// </summary>
     public static class NativeNvenc
     {
+        // СТАБИЛЬНАЯ сборка (gyan release): её NVENC совместим с обычными
+        // драйверами. BtbN «master latest» требовал драйвер 610+ (свежайший SDK).
         private const string FfmpegZipUrl =
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
 
+        // Папка версионирована (r2), чтобы старая несовместимая сборка не
+        // переиспользовалась — при обновлении URL качается заново.
         private static string BaseDir =>
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PISMO", "ffmpeg");
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PISMO", "ffmpeg-r2");
         private static string FfmpegPath => Path.Combine(BaseDir, "ffmpeg.exe");
 
         /// <summary>Прогресс/лог наружу (для окна проверки).</summary>

@@ -84,35 +84,55 @@ namespace PISMO
                 if (encs.Length == 0) { Append("HW-энкодеры не найдены (NVENC/QuickSync недоступны в FFmpeg)."); }
                 else Append("Найдены: " + string.Join(", ", encs));
 
-                // Выбираем предпочтительный энкодер: NVENC → QuickSync → AMF.
-                string enc = PickEncoder(encs, "h264");
-                if (enc == null) { Append("Нет доступного H264 HW-энкодера — нативный путь на этой машине невозможен."); return; }
+                // Пробуем ВСЕ найденные H264 HW-энкодеры по порядку предпочтения
+                // (NVENC → Quick Sync → AMF) и берём первый, что реально работает
+                // и тянет 1080p60. Так даже без обновления драйвера NVIDIA
+                // сработает через Quick Sync (Intel).
+                var order = new[] { "h264_nvenc", "h264_qsv", "h264_amf" };
+                string working = null;
+                double best1080 = -1, best720 = -1;
 
                 Append("");
-                Append("=== Шаг 3: бенчмарк (" + enc + ") ===");
-                double f1080 = await NativeNvenc.BenchmarkAsync(enc, 1080, 60, 5);
-                double f720  = await NativeNvenc.BenchmarkAsync(enc, 720, 60, 5);
+                Append("=== Шаг 3: бенчмарк аппаратных энкодеров ===");
+                foreach (var enc in order)
+                {
+                    if (Array.IndexOf(encs, enc) < 0) continue;
+                    Append("");
+                    Append("— " + enc + " —");
+                    double f1080 = await NativeNvenc.BenchmarkAsync(enc, 1080, 60, 5);
+                    if (f1080 < 0)
+                    {
+                        Append(enc + ": не запустился (см. лог — вероятно старый драйвер). Пробую следующий.");
+                        continue;
+                    }
+                    double f720 = await NativeNvenc.BenchmarkAsync(enc, 720, 60, 5);
+                    Append($"{enc}: 1080p ~{f1080:0} fps, 720p ~{f720:0} fps");
+                    if (working == null) { working = enc; best1080 = f1080; best720 = f720; }
+                    if (f1080 >= 60) break;   // нашли тянущий 1080p60 — хватит
+                }
 
                 Append("");
                 Append("=== ИТОГ ===");
-                Append($"1080p60 → ~{(f1080 >= 0 ? f1080.ToString("0") : "?")} fps");
-                Append($"720p60  → ~{(f720  >= 0 ? f720.ToString("0")  : "?")} fps");
-                if (f1080 >= 55)
-                    Append("✅ Нативный NVENC тянет 1080p60 — можно строить транспорт (Этап 2).");
-                else if (f720 >= 55)
-                    Append("⚠ 1080p60 не дотянул, но 720p60 ок. Транспорт имеет смысл на 720p.");
+                if (working == null)
+                {
+                    Append("❌ Ни один аппаратный энкодер не запустился.");
+                    Append("Для NVENC обновите драйвер NVIDIA (GeForce Experience / nvidia.com).");
+                    Append("Если есть встроенная Intel — должен работать h264_qsv.");
+                }
                 else
-                    Append("❌ Аппаратный энкодер не дал 60 fps — нужно разобраться (лог выше).");
+                {
+                    Append($"Рабочий энкодер: {working}");
+                    Append($"1080p60 → ~{best1080:0} fps · 720p60 → ~{best720:0} fps");
+                    if (best1080 >= 55)
+                        Append("✅ Аппаратное 1080p60 тянет — строим транспорт (Этап 2).");
+                    else if (best720 >= 55)
+                        Append("⚠ 1080p60 не дотянул, но 720p60 ок — транспорт на 720p.");
+                    else
+                        Append("⚠ До 60 fps не дотянул — посмотрим лог/параметры.");
+                }
             }
             catch (Exception ex) { Append("Ошибка проверки: " + ex.Message); }
             finally { _run.Enabled = true; }
-        }
-
-        private static string PickEncoder(string[] encs, string codec)
-        {
-            foreach (var pref in new[] { codec + "_nvenc", codec + "_qsv", codec + "_amf" })
-                foreach (var e in encs) if (e == pref) return pref;
-            return null;
         }
     }
 }
