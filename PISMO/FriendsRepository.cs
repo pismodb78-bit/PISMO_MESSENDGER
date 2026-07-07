@@ -39,67 +39,22 @@ namespace PISMO
         public static string AcceptedPredicate(string alias)
             => HasStatus ? $"{alias}.status=1" : "(1=1)";
 
-        /// <summary>Создаёт таблицу friends (+status) и users.dm_privacy при необходимости.
-        /// Каждый шаг независим; наличие колонок проверяется через information_schema,
-        /// чтобы миграция была надёжной на любой существующей БД.</summary>
+        /// <summary>Гарантирует схему друзей/приватности. С 2.0 сами изменения
+        /// схемы делает DbMigrator (единый версионированный источник); здесь лишь
+        /// определяем, какие колонки в итоге есть, чтобы строить запросы безопасно.</summary>
         public static void EnsureTable()
         {
             if (_ensured) return;
             try
             {
+                DbMigrator.Run();   // применяет friends.status / user_prefs / users.dm_privacy
+
                 using var conn = DBHelper.OpenConnection();
-
-                try
-                {
-                    using var cmd = new MySqlCommand(
-                        "CREATE TABLE IF NOT EXISTS friends (" +
-                        "user_id INT NOT NULL, friend_id INT NOT NULL, " +
-                        "status TINYINT NOT NULL DEFAULT 0, " +   // 0=заявка, 1=приняты
-                        "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
-                        "PRIMARY KEY (user_id, friend_id))", conn);
-                    cmd.ExecuteNonQuery();
-                }
-                catch { }
-
-                // Старая таблица без status → добавляем с DEFAULT 1 (существующие
-                // дружбы остаются принятыми). Проверяем наличие явно.
-                HasStatus = EnsureColumn(conn, "friends", "status", "TINYINT NOT NULL DEFAULT 1");
-
-                // Приватность храним в ОТДЕЛЬНОЙ таблице (CREATE TABLE надёжнее,
-                // чем ALTER на импортированной БД). users.dm_privacy — как запасной
-                // вариант для старых сборок.
-                try
-                {
-                    using var prefs = new MySqlCommand(
-                        "CREATE TABLE IF NOT EXISTS user_prefs (" +
-                        "user_id INT NOT NULL PRIMARY KEY, " +
-                        "dm_privacy TINYINT NOT NULL DEFAULT 0)", conn);
-                    prefs.ExecuteNonQuery();
-                }
-                catch { }
-                HasDmPrivacy = EnsureColumn(conn, "users", "dm_privacy", "TINYINT NOT NULL DEFAULT 0");
-
+                HasStatus = ColumnExists(conn, "friends", "status");
+                HasDmPrivacy = ColumnExists(conn, "users", "dm_privacy");
                 _ensured = true;
             }
             catch { /* нет связи — попробуем позже (флаг не ставим) */ }
-        }
-
-        /// <summary>Гарантирует наличие колонки; возвращает true, если она есть по
-        /// итогу (уже была или успешно добавлена).</summary>
-        private static bool EnsureColumn(MySqlConnection conn, string table, string column, string ddl)
-        {
-            try
-            {
-                if (ColumnExists(conn, table, column)) return true;
-                try
-                {
-                    using var alt = new MySqlCommand($"ALTER TABLE `{table}` ADD COLUMN `{column}` {ddl}", conn);
-                    alt.ExecuteNonQuery();
-                }
-                catch { /* напр. параллельно уже добавили — проверим ниже */ }
-                return ColumnExists(conn, table, column);
-            }
-            catch { return false; }
         }
 
         private static bool ColumnExists(MySqlConnection conn, string table, string column)

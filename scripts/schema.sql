@@ -15,6 +15,15 @@ CREATE DATABASE IF NOT EXISTS `bdauth`
   DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `bdauth`;
 
+-- ── Журнал миграций (PISMO 2.0) ─────────────────────────────
+-- Приложение само доводит схему до актуальной через DbMigrator; эта таблица
+-- фиксирует, какие миграции уже применены (чтобы каждая выполнялась один раз).
+CREATE TABLE IF NOT EXISTS `schema_migrations` (
+  `id`         INT NOT NULL PRIMARY KEY,
+  `name`       VARCHAR(255) NULL,
+  `applied_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ── Пользователи ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS `users` (
   `id`           INT NOT NULL AUTO_INCREMENT,

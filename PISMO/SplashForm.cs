@@ -134,6 +134,7 @@ namespace PISMO
             await Task.Run(() =>
             {
                 try { using var c = DBHelper.OpenConnection(); } catch { }
+                try { DbMigrator.Run(); } catch { }          // 2.0: версионированные миграции схемы
                 try { FriendsRepository.EnsureTable(); } catch { }
             });
 

@@ -1,0 +1,160 @@
+using System;
+using System.Collections.Generic;
+using MySql.Data.MySqlClient;
+
+namespace PISMO
+{
+    /// <summary>
+    /// PISMO 2.0 — версионированные миграции схемы БД (единый источник правды).
+    ///
+    /// Раньше изменения схемы были разбросаны по коду (EnsureTable/EnsureColumn,
+    /// ручные ALTER), из-за чего появлялись баги вроде «Unknown column f.status»
+    /// на импортированных базах. Теперь ВСЕ изменения — здесь, по порядку, с
+    /// номером версии. Применённые миграции фиксируются в таблице
+    /// schema_migrations, поэтому каждая выполняется РОВНО один раз, а на любой
+    /// существующей базе достаётся ровно то, чего не хватает.
+    ///
+    /// Как добавить изменение схемы в будущем: допиши новый пункт в Migrations с
+    /// БОЛЬШИМ Id и идемпотентным телом (CREATE TABLE IF NOT EXISTS / проверка
+    /// колонки перед ALTER через ColumnExists). НИЧЕГО не меняй в уже
+    /// применённых миграциях — только добавляй новые.
+    /// </summary>
+    public static class DbMigrator
+    {
+        private static bool _done;
+        private static readonly object _lock = new();
+
+        /// <summary>Список миграций (Id должен строго возрастать).</summary>
+        private static readonly List<(int Id, string Name, Action<MySqlConnection> Up)> Migrations = new()
+        {
+            (1, "friends: заявки + status", conn =>
+            {
+                Exec(conn,
+                    "CREATE TABLE IF NOT EXISTS friends (" +
+                    "user_id INT NOT NULL, friend_id INT NOT NULL, " +
+                    "status TINYINT NOT NULL DEFAULT 0, " +
+                    "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
+                    "PRIMARY KEY (user_id, friend_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+                // Старая таблица friends без status → добавляем (DEFAULT 1 = уже друзья).
+                if (!ColumnExists(conn, "friends", "status"))
+                    Exec(conn, "ALTER TABLE friends ADD COLUMN status TINYINT NOT NULL DEFAULT 1");
+            }),
+
+            (2, "user_prefs: приватность ЛС", conn =>
+            {
+                Exec(conn,
+                    "CREATE TABLE IF NOT EXISTS user_prefs (" +
+                    "user_id INT NOT NULL PRIMARY KEY, " +
+                    "dm_privacy TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            }),
+
+            (3, "users.dm_privacy (запасное хранилище)", conn =>
+            {
+                if (TableExists(conn, "users") && !ColumnExists(conn, "users", "dm_privacy"))
+                    Exec(conn, "ALTER TABLE users ADD COLUMN dm_privacy TINYINT NOT NULL DEFAULT 0");
+            }),
+        };
+
+        /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>
+        public static int CurrentVersion { get; private set; }
+
+        /// <summary>Прогоняет все ещё не применённые миграции по порядку. Безопасно
+        /// вызывать многократно и параллельно; при отсутствии связи — тихо выходит
+        /// (миграции применятся при следующем успешном запуске).</summary>
+        public static void Run()
+        {
+            lock (_lock)
+            {
+                if (_done) return;
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    EnsureLedger(conn);
+                    var applied = LoadApplied(conn);
+
+                    foreach (var m in Migrations)
+                    {
+                        if (applied.Contains(m.Id)) continue;
+                        try
+                        {
+                            m.Up(conn);
+                            MarkApplied(conn, m.Id, m.Name);
+                            CurrentVersion = Math.Max(CurrentVersion, m.Id);
+                            System.Diagnostics.Debug.WriteLine($"[DbMigrator] ✓ {m.Id} {m.Name}");
+                        }
+                        catch (Exception ex)
+                        {
+                            // Одна миграция упала — не блокируем остальные и не
+                            // помечаем её применённой (повторим в следующий раз).
+                            System.Diagnostics.Debug.WriteLine($"[DbMigrator] ✗ {m.Id} {m.Name}: {ex.Message}");
+                        }
+                    }
+                    _done = true;   // за эту сессию больше не гоняем
+                }
+                catch (Exception ex)
+                {
+                    // Нет связи с БД — попробуем в следующий раз (флаг не ставим).
+                    System.Diagnostics.Debug.WriteLine($"[DbMigrator] нет связи: {ex.Message}");
+                }
+            }
+        }
+
+        // ── Журнал применённых миграций ─────────────────────────────────
+        private static void EnsureLedger(MySqlConnection conn)
+        {
+            Exec(conn,
+                "CREATE TABLE IF NOT EXISTS schema_migrations (" +
+                "id INT NOT NULL PRIMARY KEY, " +
+                "name VARCHAR(255) NULL, " +
+                "applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        }
+
+        private static HashSet<int> LoadApplied(MySqlConnection conn)
+        {
+            var set = new HashSet<int>();
+            try
+            {
+                using var cmd = new MySqlCommand("SELECT id FROM schema_migrations", conn);
+                using var r = cmd.ExecuteReader();
+                while (r.Read()) set.Add(Convert.ToInt32(r["id"]));
+            }
+            catch { }
+            return set;
+        }
+
+        private static void MarkApplied(MySqlConnection conn, int id, string name)
+        {
+            using var cmd = new MySqlCommand(
+                "INSERT IGNORE INTO schema_migrations (id, name) VALUES (@id, @name)", conn);
+            cmd.Parameters.AddWithValue("@id", id);
+            cmd.Parameters.AddWithValue("@name", name ?? "");
+            cmd.ExecuteNonQuery();
+        }
+
+        // ── Помощники (доступны миграциям) ──────────────────────────────
+        private static void Exec(MySqlConnection conn, string sql)
+        {
+            using var cmd = new MySqlCommand(sql, conn);
+            cmd.ExecuteNonQuery();
+        }
+
+        private static bool TableExists(MySqlConnection conn, string table)
+        {
+            using var cmd = new MySqlCommand(
+                "SELECT COUNT(*) FROM information_schema.TABLES " +
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@t", conn);
+            cmd.Parameters.AddWithValue("@t", table);
+            return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+        }
+
+        private static bool ColumnExists(MySqlConnection conn, string table, string column)
+        {
+            using var cmd = new MySqlCommand(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS " +
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@t AND COLUMN_NAME=@c", conn);
+            cmd.Parameters.AddWithValue("@t", table);
+            cmd.Parameters.AddWithValue("@c", column);
+            return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+        }
+    }
+}
