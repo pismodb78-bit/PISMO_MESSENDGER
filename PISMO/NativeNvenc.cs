@@ -116,6 +116,45 @@ namespace PISMO
             return fps;
         }
 
+        /// <summary>Бенчмарк РЕАЛЬНОГО захвата экрана (DXGI ddagrab, аппаратно) +
+        /// кодирование → пишет короткий mp4. Проверяет, что захват+энкод держат fps
+        /// на живом экране. Возвращает (fps, путь к файлу) или (-1, лог).</summary>
+        public static async Task<(double fps, string file)> BenchmarkCaptureAsync(string encoder, int height, int targetFps, int seconds)
+        {
+            if (!FfmpegReady) return (-1, "нет ffmpeg");
+            string outFile = Path.Combine(BaseDir, $"capture_test_{height}p.mp4");
+            string vf = height > 0
+                ? $"-vf \"hwdownload,format=bgra,scale=-2:{height},format=nv12\""
+                : "-vf \"hwdownload,format=bgra,format=nv12\"";
+            string qArg = encoder.Contains("qsv") ? "-global_quality 20"
+                        : encoder.Contains("nvenc") ? "-cq 20 -preset p4"
+                        : "-qp 22";
+
+            // ddagrab — DXGI Desktop Duplication (аппаратный захват основного монитора).
+            string args =
+                $"-hide_banner -y -f lavfi -i ddagrab=framerate={targetFps} -t {seconds} " +
+                $"{vf} -c:v {encoder} {qArg} \"{outFile}\"";
+            L($"Захват экрана (DXGI) + {encoder}, {(height > 0 ? height + "p" : "native")}@{targetFps}, {seconds}с…");
+            string outp = await RunAsync(args);
+            double fps = ParseFps(outp);
+
+            // Фолбэк: ddagrab не поддержан → gdigrab (GDI, программный захват).
+            if (fps < 0)
+            {
+                L("ddagrab не сработал, пробую gdigrab (программный захват)…");
+                string vf2 = height > 0 ? $"-vf \"scale=-2:{height},format=nv12\"" : "-vf format=nv12";
+                string args2 =
+                    $"-hide_banner -y -f gdigrab -framerate {targetFps} -i desktop -t {seconds} " +
+                    $"{vf2} -c:v {encoder} {qArg} \"{outFile}\"";
+                outp = await RunAsync(args2);
+                fps = ParseFps(outp);
+            }
+
+            if (fps < 0) { L("Захват не удался:\n" + Tail(outp, 12)); return (-1, outFile); }
+            L($"Захват+кодирование: ~{fps:0} fps. Файл: {outFile}");
+            return (fps, outFile);
+        }
+
         private static double ParseFps(string outp)
         {
             double fps = -1;

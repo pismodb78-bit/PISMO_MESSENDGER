@@ -16,6 +16,8 @@ namespace PISMO
     {
         private readonly TextBox _log;
         private readonly Button _run;
+        private readonly Button _open;
+        private string _lastFile;
 
         public NvencCheckForm()
         {
@@ -51,6 +53,22 @@ namespace PISMO
             _run.FlatAppearance.BorderSize = 0;
             _run.Click += async (s, e) => await RunAsync();
             bottom.Controls.Add(_run);
+
+            _open = new Button
+            {
+                Text = "📂 Открыть записанный файл",
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(64, 68, 75),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 9.5f),
+                Size = new Size(240, 34),
+                Location = new Point(244, 7),
+                Cursor = Cursors.Hand,
+                Visible = false
+            };
+            _open.FlatAppearance.BorderSize = 0;
+            _open.Click += (s, e) => { try { if (_lastFile != null) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_lastFile) { UseShellExecute = true }); } catch { } };
+            bottom.Controls.Add(_open);
 
             Controls.Add(_log);
             Controls.Add(bottom);
@@ -122,13 +140,32 @@ namespace PISMO
                 else
                 {
                     Append($"Рабочий энкодер: {working}");
-                    Append($"1080p60 → ~{best1080:0} fps · 720p60 → ~{best720:0} fps");
-                    if (best1080 >= 55)
-                        Append("✅ Аппаратное 1080p60 тянет — строим транспорт (Этап 2).");
-                    else if (best720 >= 55)
-                        Append("⚠ 1080p60 не дотянул, но 720p60 ок — транспорт на 720p.");
+                    Append($"Пропускная способность энкодера: 1080p ~{best1080:0} fps · 720p ~{best720:0} fps");
+
+                    // Шаг 4: реальный захват экрана (DXGI) + кодирование в файл.
+                    Append("");
+                    Append("=== Шаг 4: реальный захват экрана (DXGI) ===");
+                    var (capFps, file) = await NativeNvenc.BenchmarkCaptureAsync(working, 1080, 60, 5);
+
+                    Append("");
+                    Append("=== ИТОГ ===");
+                    if (capFps >= 55)
+                    {
+                        Append($"✅ Реальный захват+кодирование 1080p: ~{capFps:0} fps (энкодер {working}).");
+                        Append("Аппаратный путь работает — можно строить транспорт (Этап 2).");
+                        _lastFile = file;
+                        BeginInvoke(new Action(() => _open.Visible = System.IO.File.Exists(file)));
+                    }
+                    else if (capFps >= 0)
+                    {
+                        Append($"⚠ Захват дал ~{capFps:0} fps (ниже 60). Энкодер тянет, узкое место — захват.");
+                        _lastFile = file;
+                        BeginInvoke(new Action(() => _open.Visible = System.IO.File.Exists(file)));
+                    }
                     else
-                        Append("⚠ До 60 fps не дотянул — посмотрим лог/параметры.");
+                    {
+                        Append("⚠ Реальный захват не удался (лог выше), но энкодер рабочий.");
+                    }
                 }
             }
             catch (Exception ex) { Append("Ошибка проверки: " + ex.Message); }
