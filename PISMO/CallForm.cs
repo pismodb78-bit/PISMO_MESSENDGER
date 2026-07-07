@@ -931,6 +931,19 @@ namespace PISMO
             var lblGpuHint = new Label { Text = "(вступит в силу после перезапуска приложения; для MX-карт без NVENC выбирайте «Встроенная»)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = false, Size = new Size(300, 28), Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
             _audioPanel.Controls.Add(lblGpuHint); y += 32;
 
+            // Проверка нативного аппаратного энкодера (демо 2.0, Этап 1).
+            var btnNvenc = new Button
+            {
+                Text = "🚀 Проверить нативный NVENC (60 fps)",
+                FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+                Size = new Size(282, 30), Location = new Point(14, y), Cursor = Cursors.Hand
+            };
+            btnNvenc.FlatAppearance.BorderSize = 0;
+            btnNvenc.Click += (s, e) => { try { using var f = new NvencCheckForm(); f.ShowDialog(this); } catch { } };
+            _audioPanel.Controls.Add(btnNvenc);
+            y += 38;
+
             MkLbl("Громкость собеседников");
             var tbVoice = MkTb((int)(_remoteVoiceVolume * 100));
             tbVoice.ValueChanged += (s, e) => { _remoteVoiceVolume = tbVoice.Value / 100f; try { _transport?.SetRemoteVoiceVolume(_remoteVoiceVolume); } catch { } };
