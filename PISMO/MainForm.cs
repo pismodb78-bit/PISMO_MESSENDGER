@@ -116,7 +116,88 @@ namespace PISMO
             BuildServerRail();          // левый рейл «Личные сообщения + серверы» (как в Discord)
             BuildPinsButton();          // 📌 кнопка «Закреплённые» в шапке чата (2.0)
             BuildTypingIndicator();     // «печатает…» (2.0)
+            BuildMessageSearch();       // 🔍 поиск по открытому чату (2.0)
             this.Load += MainForm_Load;
+        }
+
+        private Button _btnMsgSearch;
+        private TextBox _msgSearch;
+        private Label _msgSearchCount;
+
+        /// <summary>Поиск по открытому чату: кнопка 🔍 в шапке разворачивает поле;
+        /// по вводу подсвечивает совпадения и прокручивает к первому.</summary>
+        private void BuildMessageSearch()
+        {
+            try
+            {
+                _btnMsgSearch = new Button
+                {
+                    Text = "🔍", Font = new Font("Segoe UI Emoji", 10f), FlatStyle = FlatStyle.Flat,
+                    ForeColor = Color.FromArgb(200, 202, 208), BackColor = Color.FromArgb(47, 49, 54),
+                    Size = new Size(38, 34), Location = new Point(pnlChatHeader.Width - 96, 7),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right, Cursor = Cursors.Hand, TabStop = false
+                };
+                _btnMsgSearch.FlatAppearance.BorderSize = 0;
+                new ToolTip().SetToolTip(_btnMsgSearch, "Поиск по чату");
+
+                _msgSearch = new TextBox
+                {
+                    Visible = false, BorderStyle = BorderStyle.FixedSingle,
+                    BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
+                    Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в переписке…",
+                    Size = new Size(240, 26), Location = new Point(pnlChatHeader.Width - 350, 11),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right
+                };
+                _msgSearchCount = new Label
+                {
+                    Visible = false, AutoSize = false, Size = new Size(60, 20),
+                    Location = new Point(pnlChatHeader.Width - 104, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    ForeColor = Color.FromArgb(150, 152, 158), Font = new Font("Segoe UI", 8f),
+                    TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent
+                };
+
+                _btnMsgSearch.Click += (s, e) =>
+                {
+                    bool show = !_msgSearch.Visible;
+                    _msgSearch.Visible = show; _msgSearchCount.Visible = show;
+                    if (show) { _msgSearch.Focus(); }
+                    else { _msgSearch.Clear(); HighlightSearch(""); }
+                };
+                _msgSearch.TextChanged += (s, e) => HighlightSearch(_msgSearch.Text);
+                _msgSearch.KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { _msgSearch.Clear(); _msgSearch.Visible = false; _msgSearchCount.Visible = false; HighlightSearch(""); } };
+
+                pnlChatHeader.Controls.Add(_msgSearch);
+                pnlChatHeader.Controls.Add(_msgSearchCount);
+                pnlChatHeader.Controls.Add(_btnMsgSearch);
+                _msgSearch.BringToFront(); _msgSearchCount.BringToFront(); _btnMsgSearch.BringToFront();
+            }
+            catch { }
+        }
+
+        /// <summary>Подсветка сообщений с текстом query в открытом чате.</summary>
+        private void HighlightSearch(string query)
+        {
+            try
+            {
+                query = (query ?? "").Trim();
+                Panel first = null; int matches = 0;
+                foreach (Control c in pnlMessages.Controls)
+                {
+                    if (c is not Panel b || b.AccessibleDescription == null) continue;
+                    bool isMine = b.Tag is bool mine && mine;
+                    Color orig = isMine ? Color.FromArgb(88, 101, 242) : Color.FromArgb(64, 68, 75);
+                    if (query.Length > 0 && b.AccessibleDescription.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        b.BackColor = Color.FromArgb(83, 108, 60);   // подсветка совпадения
+                        matches++; first ??= b;
+                    }
+                    else b.BackColor = orig;
+                    b.Invalidate();
+                }
+                if (_msgSearchCount != null) _msgSearchCount.Text = query.Length == 0 ? "" : (matches + " найд.");
+                if (first != null) try { pnlMessages.ScrollControlIntoView(first); } catch { }
+            }
+            catch { }
         }
 
         private Label _lblTyping;
@@ -2210,6 +2291,7 @@ namespace PISMO
                 MinimumSize = new Size(80, 36),
                 AutoSize = false,
                 Padding = new Padding(PAD),
+                AccessibleDescription = (senderName + " " + (text ?? "")).Trim(),  // для поиска по чату (2.0)
                 Cursor = Cursors.Default
             };
 
