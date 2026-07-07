@@ -1140,19 +1140,22 @@ async function verifyScreenEncode(retry){
             setTimeout(() => verifyScreenEncode(0), 4000);
             return;
         }
-        // Кадры ещё не набежали (медленный старт) — одна повторная проверка.
-        if (frames === 0 && retry < 1){ setTimeout(() => verifyScreenEncode(retry + 1), 3000); return; }
+        // КЛЮЧЕВОЕ: пока НЕТ реального кодирования (frames==0 — обычно потому что
+        // ты ОДИН в канале, кодировать некому), Chromium ещё НЕ выбрал реальный
+        // энкодер и encoderImplementation врёт «OpenH264». Не делаем вывод и НЕ
+        // пугаем «кодируется процессором». Тихо перепроверяем позже — когда
+        // зайдёт собеседник и пойдут кадры.
+        if (frames === 0){ setTimeout(() => verifyScreenEncode(retry + 1), 4000); return; }
 
+        // Есть реальное кодирование → encoderImplementation достоверен.
         const enc = (o && o.encoderImplementation) || '';
         const shortMime = mime.replace('video/', '');
         if (/openh264|libvpx|libaom/i.test(enc)){
-            // ПРОГРАММНЫЙ энкодер. НЕ трогаем превью (иначе PIP чернеет) —
-            // только сообщаем. Аппаратный H264 требует, чтобы GPU-процесс
-            // WebView2 сел на карту с энкодером (Quick Sync/NVENC).
             post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + ', ' + shortMime + ') — нужен аппаратный (Quick Sync/NVENC).'});
             post({type:'softwareEncoder'});
         } else if (enc){
             post({type:'jsLog', text:'Энкодер демки: ' + enc + ' (' + shortMime + ', аппаратный)'});
+            post({type:'hardwareEncoder', text: enc + ' · ' + shortMime});
         }
     } catch(e){}
 }
@@ -1469,16 +1472,23 @@ function startScreenSendStats(){
             // qualityLimitationReason — ГЛАВНЫЙ диагност: что душит качество.
             const lim = o.qualityLimitationReason === 'cpu' ? '  ⚠ упор: CPU/энкодер'
                       : o.qualityLimitationReason === 'bandwidth' ? '  ⚠ упор: СЕТЬ (аплоад)' : '';
-            // Имя энкодера: 'OpenH264'/'libvpx' = ПРОГРАММНЫЙ (CPU, отсюда потеря
-            // fps), 'ExternalEncoder'/'MediaFoundation…' = аппаратный (NVENC).
-            let enc = o.encoderImplementation || '';
-            if (/openh264|libvpx|libaom/i.test(enc)) enc = '⚠ SOFT:' + enc;
+            // Имя энкодера ДОСТОВЕРНО только когда идёт реальное кодирование
+            // (есть кадры/собеседник). Пока один в канале — не показываем вердикт,
+            // а пишем «ожидание собеседника», иначе врёт «SOFT:OpenH264».
+            const framesEnc = o.framesEncoded || 0;
+            let encPart = '';
+            if (framesEnc > 0){
+                let enc = o.encoderImplementation || '';
+                if (/openh264|libvpx|libaom/i.test(enc)) enc = '⚠ SOFT:' + enc;
+                encPart = enc ? ' · ' + enc : '';
+            }
+            const idle = framesEnc === 0 ? '  (ожидание собеседника — кодирование ещё не идёт)' : '';
             post({type:'screenSendStats', text:
                 '→ собеседникам: ' + (o.frameWidth||0) + '×' + (o.frameHeight||0) + ' ' +
                 Math.round(o.framesPerSecond||0) + 'fps' +
                 (capFps >= 0 ? ' (захват ' + capFps + 'fps)' : '') +
                 ' · ' + mbps.toFixed(1) + ' Мбит/с' +
-                (enc ? ' · ' + enc : '') + lim});
+                encPart + lim + idle});
         } catch(e){}
     }, 2000);
 }
@@ -1641,6 +1651,9 @@ window.chrome.webview.addEventListener('message', (e) => {
                         break;
                     case "softwareEncoder":
                         SoftwareEncoderDetected?.Invoke();
+                        break;
+                    case "hardwareEncoder":
+                        HardwareEncoderDetected?.Invoke(SafeStr(msg, "text"));
                         break;
                     case "screenRecvStats":
                         ScreenRecvStats?.Invoke(SafeStr(msg, "text"));
@@ -1855,6 +1868,9 @@ window.chrome.webview.addEventListener('message', (e) => {
 
         /// <summary>Поднимается, если демка кодируется ПРОГРАММНО (NVENC не задействован).</summary>
         public event Action SoftwareEncoderDetected;
+
+        /// <summary>Поднимается, когда демка кодируется АППАРАТНО (текст — имя энкодера).</summary>
+        public event Action<string> HardwareEncoderDetected;
 
         /// <summary>Смена качества демонстрации «на горячую»: применяется к
         /// живому треку (захват + энкодер), а не только сохраняется.</summary>

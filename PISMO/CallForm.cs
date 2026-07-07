@@ -320,6 +320,12 @@ namespace PISMO
             _transport.ScreenSendStats += t => ShowNetStats(t, send: true);
             _transport.ScreenRecvStats += t => ShowNetStats(t, send: false);
             _transport.SoftwareEncoderDetected += () => UiInvoke(OnSoftwareEncoder);
+            _transport.HardwareEncoderDetected += t => UiInvoke(() =>
+            {
+                _softwareEncoderWarned = false;
+                if (_lblStatus.Text.StartsWith("⚠ Демка кодируется процессором"))
+                    _lblStatus.Text = _connected ? "Соединение установлено" : "";
+            });
             _transport.ScreenCaptureInfo += (fps, w, h) => UiInvoke(() =>
             {
                 try { _lblStatus.Text = $"Демонстрация: {w}×{h} @ {fps} fps"; } catch { }
