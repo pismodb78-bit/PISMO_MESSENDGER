@@ -300,6 +300,14 @@ namespace PISMO
                 menu.Items.Add(itemEdit);
             }
 
+            // ── История изменений (2.0) ──────────────────────────────────
+            if (msgId > 0)
+            {
+                var itemHist = new ToolStripMenuItem("📝  История изменений");
+                itemHist.Click += (s, e) => ShowEditHistory(msgId, isGroup ? 1 : 0);
+                menu.Items.Add(itemHist);
+            }
+
             // ── Удалить сообщение (своё или admin) ───────────────────────
             bool canDelete = isMine || UserSession.Role == "admin";
             if (canDelete)
@@ -463,6 +471,55 @@ namespace PISMO
         /// Вызывать из btnSend_Click ПЕРЕД основной отправкой.
         /// Если активен режим редактирования — сохраняет и возвращает true.
         /// </summary>
+        /// <summary>Показывает историю изменений сообщения (2.0): прежние версии
+        /// текста с датами. Пусто — сообщение не редактировалось.</summary>
+        private void ShowEditHistory(int msgId, int scope)
+        {
+            var rows = new List<(string When, string Text)>();
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT old_text, edited_at FROM message_edits WHERE message_id=@m AND scope=@s ORDER BY edited_at DESC", conn);
+                cmd.Parameters.AddWithValue("@m", msgId);
+                cmd.Parameters.AddWithValue("@s", scope);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    string when = r["edited_at"] == DBNull.Value ? "" : Convert.ToDateTime(r["edited_at"]).ToString("dd.MM.yyyy HH:mm");
+                    string txt;
+                    try { txt = Crypto.Dec(r["old_text"]?.ToString() ?? ""); } catch { txt = ""; }
+                    rows.Add((when, txt));
+                }
+            }
+            catch { }
+
+            var pop = new Form
+            {
+                Text = "📝 История изменений",
+                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.CenterParent,
+                ClientSize = new Size(420, 400),
+                BackColor = Color.FromArgb(49, 51, 56)
+            };
+            var list = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+                AutoScroll = true, BackColor = Color.FromArgb(49, 51, 56), Padding = new Padding(10)
+            };
+            if (rows.Count == 0)
+                list.Controls.Add(new Label { Text = "Это сообщение не редактировалось.", ForeColor = Color.FromArgb(150, 152, 158), AutoSize = true, Font = new Font("Segoe UI", 9.5f) });
+            foreach (var (when, txt) in rows)
+            {
+                var card = new Panel { Width = 388, Height = 58, BackColor = Color.FromArgb(43, 45, 49), Margin = new Padding(0, 0, 0, 6) };
+                card.Controls.Add(new Label { Text = "было · " + when, ForeColor = Color.FromArgb(150, 152, 158), AutoSize = false, Size = new Size(360, 15), Location = new Point(10, 6), Font = new Font("Segoe UI", 8f) });
+                card.Controls.Add(new Label { Text = string.IsNullOrWhiteSpace(txt) ? "[пусто/вложение]" : (txt.Length > 120 ? txt[..120] + "…" : txt), ForeColor = Color.White, AutoSize = false, Size = new Size(368, 32), Location = new Point(10, 22), Font = new Font("Segoe UI", 9f), AutoEllipsis = true });
+                list.Controls.Add(card);
+            }
+            pop.Controls.Add(list);
+            pop.ShowDialog(this);
+        }
+
         public bool TrySaveEdit()
         {
             if (_editMsgId < 0) return false;
@@ -474,6 +531,29 @@ namespace PISMO
             {
                 using var conn = DBHelper.OpenConnection();
                 string table = _isGroupEdit ? "group_messages" : "messages";
+                int scope = _isGroupEdit ? 1 : 0;
+
+                // 2.0: сохраняем ПРЕЖНИЙ текст в историю изменений перед перезаписью.
+                try
+                {
+                    string oldCipher = null;
+                    using (var sel = new MySqlCommand($"SELECT text FROM {table} WHERE id=@id", conn))
+                    {
+                        sel.Parameters.AddWithValue("@id", _editMsgId);
+                        oldCipher = sel.ExecuteScalar() as string;
+                    }
+                    if (oldCipher != null)
+                    {
+                        using var hist = new MySqlCommand(
+                            "INSERT INTO message_edits (message_id, scope, old_text) VALUES (@m, @s, @o)", conn);
+                        hist.Parameters.AddWithValue("@m", _editMsgId);
+                        hist.Parameters.AddWithValue("@s", scope);
+                        hist.Parameters.AddWithValue("@o", oldCipher);
+                        hist.ExecuteNonQuery();
+                    }
+                }
+                catch { /* история не критична для самого редактирования */ }
+
                 using var cmd = new MySqlCommand(
                     $"UPDATE {table} SET text=@t, edited_at=NOW() WHERE id=@id", conn);
                 cmd.Parameters.AddWithValue("@t", Crypto.Enc(newText));

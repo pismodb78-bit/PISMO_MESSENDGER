@@ -77,6 +77,18 @@ namespace PISMO
                     "pinned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
                     "PRIMARY KEY (message_id, scope)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
             }),
+
+            (6, "message_edits: история изменений сообщений", conn =>
+            {
+                Exec(conn,
+                    "CREATE TABLE IF NOT EXISTS message_edits (" +
+                    "id INT NOT NULL AUTO_INCREMENT, " +
+                    "message_id INT NOT NULL, " +
+                    "scope TINYINT NOT NULL DEFAULT 0, " +   // 0=личное, 1=групповое
+                    "old_text TEXT NULL, " +                 // прежний текст (зашифрован)
+                    "edited_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
+                    "PRIMARY KEY (id), KEY idx_edits_msg (message_id, scope)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>
