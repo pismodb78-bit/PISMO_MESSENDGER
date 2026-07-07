@@ -153,19 +153,19 @@ namespace PISMO
                 $"-hide_banner -y -f gdigrab -framerate {targetFps} -i desktop -t {seconds} " +
                 $"-vf \"{scale}format=nv12\" -c:v {encoder} {qArg} \"{outFile}\""));
 
-            double fps = -1; string outp = "";
+            double best = -1; string outp = "";
             foreach (var (name, args) in pipelines)
             {
                 L($"Захват ({name}) {(height > 0 ? height + "p" : "native")}@{targetFps}…");
                 outp = await RunAsync(args);
-                fps = ParseFps(outp);
-                if (fps >= 0) { L($"→ {name}: ~{fps:0} fps"); if (fps >= 55 || name.Contains("zero-copy")) break; }
+                double fps = ParseFps(outp);
+                if (fps >= 0) { L($"→ {name}: ~{fps:0} fps"); if (fps > best) best = fps; if (fps >= 55) break; }
                 else L($"→ {name}: не сработал");
             }
 
-            if (fps < 0) { L("Захват не удался:\n" + Tail(outp, 12)); return (-1, outFile); }
-            L($"Захват+кодирование: ~{fps:0} fps. Файл: {outFile}");
-            return (fps, outFile);
+            if (best < 0) { L("Захват не удался:\n" + Tail(outp, 12)); return (-1, outFile); }
+            L($"Захват+кодирование: ~{best:0} fps. Файл: {outFile}");
+            return (best, outFile);
         }
 
         private static double ParseFps(string outp)
