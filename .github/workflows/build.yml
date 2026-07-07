@@ -1,0 +1,29 @@
+name: build
+
+# Автосборка PISMO при каждом пуше/PR — ловит ошибки компиляции до ручного
+# билда в Visual Studio (актуально для активной разработки 2.0).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore PISMO.sln
+
+      - name: Build (Release)
+        run: dotnet build PISMO.sln -c Release --no-restore
