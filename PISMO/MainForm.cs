@@ -114,7 +114,70 @@ namespace PISMO
             BuildVoiceDock();           // «Голосовая связь подключена» над профилем (как в Discord)
             BuildServerRail();          // левый рейл «Личные сообщения + серверы» (как в Discord)
             BuildPinsButton();          // 📌 кнопка «Закреплённые» в шапке чата (2.0)
+            BuildTypingIndicator();     // «печатает…» (2.0)
             this.Load += MainForm_Load;
+        }
+
+        private Label _lblTyping;
+        private System.Windows.Forms.Timer _typingHideTimer;
+        private DateTime _lastTypingSent = DateTime.MinValue;
+
+        /// <summary>Индикатор «печатает…» в шапке чата + отправка своего статуса
+        /// набора по WS (не чаще раза в 2 c).</summary>
+        private void BuildTypingIndicator()
+        {
+            try
+            {
+                _lblTyping = new Label
+                {
+                    Text = "",
+                    Font = new Font("Segoe UI Italic", 8.5f, FontStyle.Italic),
+                    ForeColor = Color.FromArgb(150, 152, 158),
+                    AutoSize = false,
+                    Size = new Size(220, 20),
+                    Location = new Point(pnlChatHeader.Width - 290, 14),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    TextAlign = ContentAlignment.MiddleRight,
+                    BackColor = Color.Transparent,
+                    Visible = false
+                };
+                pnlChatHeader.Controls.Add(_lblTyping);
+                _lblTyping.BringToFront();
+
+                _typingHideTimer = new System.Windows.Forms.Timer { Interval = 4000 };
+                _typingHideTimer.Tick += (s, e) => { _typingHideTimer.Stop(); if (_lblTyping != null) _lblTyping.Visible = false; };
+
+                txtMessage.TextChanged += (s, e) =>
+                {
+                    if (_editMsgId >= 0) return;                 // при редактировании не шлём
+                    if (string.IsNullOrEmpty(txtMessage.Text)) return;
+                    if ((DateTime.UtcNow - _lastTypingSent).TotalSeconds < 2) return;
+                    _lastTypingSent = DateTime.UtcNow;
+                    try
+                    {
+                        if (_currentGroupId > 0)
+                            WebSocketSignalingClient.Instance.SendMessage("typing", 0, _currentGroupId, "group");
+                        else if (_currentChatPartnerId > 0)
+                            WebSocketSignalingClient.Instance.SendMessage("typing", _currentChatPartnerId, UserSession.EffectiveId, "direct");
+                    }
+                    catch { }
+                };
+            }
+            catch { }
+        }
+
+        /// <summary>Показать «X печатает…» на пару секунд (по WS-событию).</summary>
+        private void ShowTyping(int fromUid, bool group, int groupOrPeer)
+        {
+            if (_lblTyping == null) return;
+            bool relevant = group ? (_currentGroupId == groupOrPeer) : (_currentChatPartnerId == fromUid);
+            if (!relevant || fromUid == UserSession.EffectiveId) return;
+            string name = GetNameFromCards(fromUid);
+            if (string.IsNullOrWhiteSpace(name)) name = "Собеседник";
+            _lblTyping.Text = $"✍ {name} печатает…";
+            _lblTyping.Visible = true;
+            _typingHideTimer.Stop();
+            _typingHideTimer.Start();
         }
 
         private Button _btnPins;
@@ -420,6 +483,13 @@ namespace PISMO
                             ForceMessageRerender();
                             if (_currentGroupId > 0) LoadGroupMessages();
                             else if (_currentChatPartnerId > 0) LoadMessages();
+                        }
+                        else if (type == "typing")
+                        {
+                            // «печатает…»: для группы sessionId=groupId, для лички
+                            // senderId=печатающий.
+                            bool grp = payload == "group";
+                            ShowTyping(senderId, grp, grp ? sessionId : senderId);
                         }
                         else if (type == "mention")
                         {
