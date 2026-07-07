@@ -484,12 +484,17 @@ async function applyNoiseFilter(){
     }
 }
 
-// Публикация микрофона — простой надёжный путь.
+// Желаемое состояние микрофона. КРИТИЧНО против гонки при входе с выключенным
+// микрофоном: если C# успел прислать setMicEnabled(false) до/во время публикации,
+// publishMic опубликует РОВНО желаемое состояние, а не «включён».
+let micDesiredEnabled = true;
+
+// Публикация микрофона — публикуем в ЖЕЛАЕМОМ состоянии (не всегда «включён»).
 async function publishMic(){
-    try { await room.localParticipant.setMicrophoneEnabled(true, micCaptureOpts()); }
+    try { await room.localParticipant.setMicrophoneEnabled(micDesiredEnabled, micCaptureOpts()); }
     catch(e){ console.error('mic enable', String(e)); return; }
-    // Навешиваем шумодав после публикации (через небольшую паузу — трек должен появиться).
-    setTimeout(() => { applyNoiseFilter(); }, 300);
+    // Навешиваем шумодав только если микрофон включён (иначе трека нет).
+    if (micDesiredEnabled) setTimeout(() => { applyNoiseFilter(); }, 300);
 }
 
 function setMicGain(v){
@@ -560,15 +565,18 @@ async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress,
         } catch(e){}
 
         await room.connect(url, token);
+
+        // Микрофон публикуем ДО события 'connected' — чтобы к моменту, когда C#
+        // применит сохранённый мьют (VoiceState.MicMuted), трек уже существовал и
+        // мьют «прилип». Иначе публикация после мьюта включала микрофон обратно.
+        try { await publishMic(); } catch(e){ console.error('mic enable', String(e)); }
+
         post({type:'connected'});
 
         // Сообщаем об уже присутствующих участниках (мы зашли в идущий звонок).
         try {
             room.remoteParticipants.forEach((p) => post({type:'participantJoined', pid:p.identity, name:pidName(p)}));
         } catch(e){ console.error('enum participants', String(e)); }
-
-        // Микрофон публикуем сразу — аудиозвонок начинается мгновенно.
-        try { await publishMic(); } catch(e){ console.error('mic enable', String(e)); }
 
         // Периодически читаем RTT (пинг) из WebRTC-статистики и шлём в C#.
         try { if (window.__pingTimer) clearInterval(window.__pingTimer); } catch(e){}
@@ -1261,10 +1269,14 @@ async function enumerateDevices(){
 }
 
 async function setMicEnabled(enabled){
+    // Запоминаем желаемое состояние ВСЕГДА (даже если room ещё нет) — publishMic
+    // при подключении применит именно его. Иначе «зашёл с выкл. микрофоном» →
+    // кнопка выкл, а звук идёт.
+    micDesiredEnabled = !!enabled;
     try {
         if (!room) return;
         // Стандартный mute/unmute LiveKit — надёжно отключает передачу звука.
-        await room.localParticipant.setMicrophoneEnabled(enabled, micCaptureOpts());
+        await room.localParticipant.setMicrophoneEnabled(!!enabled, micCaptureOpts());
         // После повторного включения трек новый — навешиваем шумодав заново.
         if (enabled) setTimeout(() => applyNoiseFilter(), 300);
     } catch(e){ console.error('setMic', String(e)); }
