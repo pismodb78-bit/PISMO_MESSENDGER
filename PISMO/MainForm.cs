@@ -55,6 +55,11 @@ namespace PISMO
         // полное пересоздание пузырей лишнее и тормозит).
         private string _renderedChatKey;
         private string _renderedChatSig;
+        private HashSet<int> _pinnedInView;   // id закреплённых сообщений текущего чата (2.0)
+
+        /// <summary>Сбросить кеш отрисовки, чтобы следующий Load перерисовал чат
+        /// (нужно, когда изменились реакции/закрепления — данные сообщений те же).</summary>
+        private void ForceMessageRerender() { _renderedChatKey = null; _renderedChatSig = null; }
 
         /// <summary>Дешёвая «подпись» переписки (без создания контролов) для сравнения.</summary>
         internal static string SigOf(DataTable dt)
@@ -108,7 +113,97 @@ namespace PISMO
             BuildSidebarSearch();
             BuildVoiceDock();           // «Голосовая связь подключена» над профилем (как в Discord)
             BuildServerRail();          // левый рейл «Личные сообщения + серверы» (как в Discord)
+            BuildPinsButton();          // 📌 кнопка «Закреплённые» в шапке чата (2.0)
             this.Load += MainForm_Load;
+        }
+
+        private Button _btnPins;
+
+        /// <summary>Кнопка «📌 Закреплённые» в шапке чата — открывает список
+        /// закреплённых сообщений текущего диалога/группы.</summary>
+        private void BuildPinsButton()
+        {
+            try
+            {
+                _btnPins = new Button
+                {
+                    Text = "📌",
+                    Font = new Font("Segoe UI Emoji", 11f),
+                    FlatStyle = FlatStyle.Flat,
+                    ForeColor = Color.FromArgb(200, 202, 208),
+                    BackColor = Color.FromArgb(47, 49, 54),
+                    Size = new Size(40, 34),
+                    Location = new Point(pnlChatHeader.Width - 52, 7),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    Cursor = Cursors.Hand,
+                    TabStop = false
+                };
+                _btnPins.FlatAppearance.BorderSize = 0;
+                new ToolTip().SetToolTip(_btnPins, "Закреплённые сообщения");
+                _btnPins.Click += (s, e) => ShowPinnedList();
+                pnlChatHeader.Controls.Add(_btnPins);
+                _btnPins.BringToFront();
+            }
+            catch { }
+        }
+
+        /// <summary>Всплывающий список закреплённых сообщений текущего чата.</summary>
+        private void ShowPinnedList()
+        {
+            List<PinsRepository.PinnedItem> items;
+            if (_currentGroupId > 0) items = PinsRepository.ForGroup(_currentGroupId);
+            else if (_currentChatPartnerId > 0) items = PinsRepository.ForDirect(UserSession.EffectiveId, _currentChatPartnerId);
+            else return;
+
+            var pop = new Form
+            {
+                Text = "📌 Закреплённые сообщения",
+                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.CenterParent,
+                ClientSize = new Size(420, 440),
+                BackColor = Color.FromArgb(49, 51, 56)
+            };
+            var list = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = true,
+                BackColor = Color.FromArgb(49, 51, 56),
+                Padding = new Padding(10)
+            };
+            if (items.Count == 0)
+            {
+                list.Controls.Add(new Label
+                {
+                    Text = "В этом чате нет закреплённых сообщений.\nПКМ по сообщению → 📌 Закрепить.",
+                    ForeColor = Color.FromArgb(150, 152, 158),
+                    AutoSize = true,
+                    Font = new Font("Segoe UI", 9.5f)
+                });
+            }
+            foreach (var it in items)
+            {
+                string body;
+                try { body = Crypto.Dec(it.TextCipher ?? ""); } catch { body = ""; }
+                if (string.IsNullOrWhiteSpace(body)) body = "[вложение]";
+                var card = new Panel { Width = 388, Height = 60, BackColor = Color.FromArgb(43, 45, 49), Margin = new Padding(0, 0, 0, 6) };
+                card.Controls.Add(new Label
+                {
+                    Text = it.Sender, ForeColor = Color.FromArgb(120, 140, 255),
+                    Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                    AutoSize = false, Size = new Size(360, 16), Location = new Point(10, 6), AutoEllipsis = true
+                });
+                card.Controls.Add(new Label
+                {
+                    Text = body.Length > 120 ? body[..120] + "…" : body,
+                    ForeColor = Color.White, AutoSize = false, Size = new Size(368, 32),
+                    Location = new Point(10, 24), Font = new Font("Segoe UI", 9f), AutoEllipsis = true
+                });
+                list.Controls.Add(card);
+            }
+            pop.Controls.Add(list);
+            pop.ShowDialog(this);
         }
 
         private TextBox _convSearch;
@@ -322,6 +417,7 @@ namespace PISMO
                         else if (type == "reaction")
                         {
                             // Кто-то поставил/снял реакцию — перерисуем открытый чат.
+                            ForceMessageRerender();
                             if (_currentGroupId > 0) LoadGroupMessages();
                             else if (_currentChatPartnerId > 0) LoadMessages();
                         }
@@ -1672,6 +1768,7 @@ namespace PISMO
             string key = "g" + group, sig = SigOf(dt);
             if (_renderedChatKey == key && _renderedChatSig == sig) return;
             _renderedChatKey = key; _renderedChatSig = sig;
+            try { _pinnedInView = PinsRepository.PinnedIds(1); } catch { _pinnedInView = null; }
 
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
@@ -1871,6 +1968,7 @@ namespace PISMO
             string key = "d" + partner, sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0);
             if (_renderedChatKey == key && _renderedChatSig == sig) return;
             _renderedChatKey = key; _renderedChatSig = sig;
+            try { _pinnedInView = PinsRepository.PinnedIds(0); } catch { _pinnedInView = null; }
 
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
@@ -2329,6 +2427,27 @@ namespace PISMO
             }
 
             innerY += lblTime.PreferredHeight + 4;
+
+            // ── Закреплено (2.0): маркер под сообщением ──────────────────
+            bool isPinned = false;
+            if (msgId > 0)
+            {
+                try { isPinned = _pinnedInView != null && _pinnedInView.Contains(msgId); } catch { }
+                if (isPinned)
+                {
+                    var pin = new Label
+                    {
+                        Text = "📌 закреплено",
+                        Font = new Font("Segoe UI Emoji", 7.5f),
+                        AutoSize = true,
+                        ForeColor = Color.FromArgb(isMine ? 210 : 190, isMine ? 214 : 192, isMine ? 255 : 200),
+                        BackColor = Color.Transparent,
+                        Location = new Point(PAD, innerY)
+                    };
+                    bubble.Controls.Add(pin);
+                    innerY += pin.PreferredHeight + 4;
+                }
+            }
 
             // ── Реакции-эмодзи (2.0): чипы под сообщением; клик — снять/поставить ──
             if (msgId > 0)

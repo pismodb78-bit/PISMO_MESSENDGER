@@ -208,6 +208,7 @@ namespace PISMO
                 {
                     BeginInvoke(new Action(() =>
                     {
+                        ForceMessageRerender();   // реакции изменились — данные те же, форсим перерисовку
                         if (_currentGroupId > 0) LoadGroupMessages();
                         else if (_currentChatPartnerId > 0) LoadMessages();
                     }));
@@ -238,6 +239,25 @@ namespace PISMO
                 }
                 menu.Items.Add(itemReact);
                 menu.Items.Add(new ToolStripSeparator());
+            }
+
+            // ── Закрепить / открепить ────────────────────────────────────
+            if (msgId > 0)
+            {
+                int pinScope = isGroup ? 1 : 0;
+                bool pinned = false;
+                try { pinned = PinsRepository.IsPinned(msgId, pinScope); } catch { }
+                var itemPin = new ToolStripMenuItem(pinned ? "📌  Открепить" : "📌  Закрепить");
+                itemPin.Click += (s, e) =>
+                {
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { PinsRepository.Toggle(msgId, pinScope, UserSession.EffectiveId); } catch { }
+                        if (IsDisposed || !IsHandleCreated) return;
+                        try { BeginInvoke(new Action(() => { ForceMessageRerender(); if (_currentGroupId > 0) LoadGroupMessages(); else if (_currentChatPartnerId > 0) LoadMessages(); })); } catch { }
+                    });
+                };
+                menu.Items.Add(itemPin);
             }
 
             // ── Ответить ─────────────────────────────────────────────────

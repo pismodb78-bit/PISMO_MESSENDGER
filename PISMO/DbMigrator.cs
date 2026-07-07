@@ -66,6 +66,17 @@ namespace PISMO
                     "PRIMARY KEY (message_id, scope, user_id, emoji), " +
                     "KEY idx_react_msg (message_id, scope)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
             }),
+
+            (5, "pinned_messages: закреплённые сообщения", conn =>
+            {
+                Exec(conn,
+                    "CREATE TABLE IF NOT EXISTS pinned_messages (" +
+                    "message_id INT NOT NULL, " +
+                    "scope TINYINT NOT NULL DEFAULT 0, " +   // 0=личное, 1=групповое
+                    "pinned_by INT NOT NULL, " +
+                    "pinned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
+                    "PRIMARY KEY (message_id, scope)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>
