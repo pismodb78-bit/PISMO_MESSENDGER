@@ -361,3 +361,8 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# PISMO local secrets / config (never commit)
+pismo.config
+**/pismo.config
+ip.txt
+**/ip.txt

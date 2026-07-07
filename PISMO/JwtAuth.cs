@@ -10,13 +10,15 @@ namespace PISMO
     /// с uid/login/срок действия. Используется для «Запомнить меня» (вместо
     /// хранения пароля) и для подтверждения личности на WS-сервере сигналинга.
     ///
-    /// Секрет общий (вшит в приложение и в ws-server). Меняется одновременно в
-    /// обоих местах. Для настоящей защиты секрет должен совпадать на сервере.
+    /// Секрет берётся из внешней конфигурации (env PISMO_JWT_SECRET или файл
+    /// pismo.config), НЕ хранится в репозитории. Должен совпадать с JWT_SECRET
+    /// на ws-server.
     /// </summary>
     public static class JwtAuth
     {
         // ВАЖНО: тот же секрет должен стоять в ws-server/server.js (JWT_SECRET).
-        private const string Secret = "PISMO::jwt::secret::v1::change-me-please";
+        // Значение приходит из AppConfig (env/файл), а не из исходников.
+        private static string Secret => AppConfig.JwtSecret;
 
         public sealed class Claims
         {
