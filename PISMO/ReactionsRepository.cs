@@ -63,6 +63,40 @@ namespace PISMO
             catch { return false; }
         }
 
+        /// <summary>Реакции СРАЗУ для набора сообщений — один запрос на отрисовку
+        /// (без роундтрипа на каждое сообщение). Ключ — message_id.</summary>
+        public static Dictionary<int, List<Reaction>> ForMessages(IEnumerable<int> ids, Scope scope, int myId)
+        {
+            var map = new Dictionary<int, List<Reaction>>();
+            var list = new List<int>(ids ?? Array.Empty<int>());
+            if (list.Count == 0) return map;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT message_id, emoji, COUNT(*) AS cnt, " +
+                    "MAX(CASE WHEN user_id=@me THEN 1 ELSE 0 END) AS mine " +
+                    "FROM message_reactions WHERE scope=@s AND message_id IN (" + string.Join(",", list) + ") " +
+                    "GROUP BY message_id, emoji ORDER BY MIN(created_at)", conn);
+                cmd.Parameters.AddWithValue("@s", (int)scope);
+                cmd.Parameters.AddWithValue("@me", myId);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    int mid = Convert.ToInt32(r["message_id"]);
+                    if (!map.TryGetValue(mid, out var l)) { l = new List<Reaction>(); map[mid] = l; }
+                    l.Add(new Reaction
+                    {
+                        Emoji = r["emoji"].ToString(),
+                        Count = Convert.ToInt32(r["cnt"]),
+                        Mine = Convert.ToInt32(r["mine"]) == 1
+                    });
+                }
+            }
+            catch { }
+            return map;
+        }
+
         /// <summary>Реакции одного сообщения (сгруппированы по эмодзи, с флагом «моя»).</summary>
         public static List<Reaction> ForMessage(int messageId, Scope scope, int myId)
         {

@@ -56,6 +56,7 @@ namespace PISMO
         private string _renderedChatKey;
         private string _renderedChatSig;
         private HashSet<int> _pinnedInView;   // id закреплённых сообщений текущего чата (2.0)
+        private Dictionary<int, List<ReactionsRepository.Reaction>> _reactionsInView;  // реакции всех видимых сообщений (2.0)
 
         /// <summary>Сбросить кеш отрисовки, чтобы следующий Load перерисовал чат
         /// (нужно, когда изменились реакции/закрепления — данные сообщений те же).</summary>
@@ -1839,6 +1840,13 @@ namespace PISMO
             if (_renderedChatKey == key && _renderedChatSig == sig) return;
             _renderedChatKey = key; _renderedChatSig = sig;
             try { _pinnedInView = PinsRepository.PinnedIds(1); } catch { _pinnedInView = null; }
+            try
+            {
+                var ids = new List<int>();
+                foreach (DataRow rr in dt.Rows) if (rr["id"] != DBNull.Value) ids.Add(Convert.ToInt32(rr["id"]));
+                _reactionsInView = ReactionsRepository.ForMessages(ids, ReactionsRepository.Scope.Group, UserSession.EffectiveId);
+            }
+            catch { _reactionsInView = null; }
 
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
@@ -2039,6 +2047,13 @@ namespace PISMO
             if (_renderedChatKey == key && _renderedChatSig == sig) return;
             _renderedChatKey = key; _renderedChatSig = sig;
             try { _pinnedInView = PinsRepository.PinnedIds(0); } catch { _pinnedInView = null; }
+            try
+            {
+                var ids = new List<int>();
+                foreach (DataRow rr in dt.Rows) if (rr["id"] != DBNull.Value) ids.Add(Convert.ToInt32(rr["id"]));
+                _reactionsInView = ReactionsRepository.ForMessages(ids, ReactionsRepository.Scope.Direct, UserSession.EffectiveId);
+            }
+            catch { _reactionsInView = null; }
 
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
@@ -2524,7 +2539,9 @@ namespace PISMO
             {
                 var scope = isGroup ? ReactionsRepository.Scope.Group : ReactionsRepository.Scope.Direct;
                 List<ReactionsRepository.Reaction> reacts = null;
-                try { reacts = ReactionsRepository.ForMessage(msgId, scope, UserSession.EffectiveId); } catch { }
+                // Берём из пакетно загруженного кеша (один запрос на всю отрисовку),
+                // а не роундтрип на каждое сообщение.
+                if (_reactionsInView != null) _reactionsInView.TryGetValue(msgId, out reacts);
                 if (reacts != null && reacts.Count > 0)
                 {
                     int rx = PAD, rh = 0;
