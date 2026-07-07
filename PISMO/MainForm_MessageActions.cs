@@ -184,6 +184,49 @@ namespace PISMO
         private static readonly string[] QuickReactionEmojis =
             { "👍", "❤️", "😂", "😮", "😢", "🔥", "🎉", "👀" };
 
+        /// <summary>Мини-окно ввода эмодзи: пользователь жмёт Win + . (стандартная
+        /// панель эмодзи Windows) и выбирает любой символ. Возвращает выбранное
+        /// (обрезано до 16 символов под колонку emoji), либо null.</summary>
+        private string PromptEmoji()
+        {
+            using var dlg = new Form
+            {
+                Text = "Реакция — выберите эмодзи",
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                MaximizeBox = false, MinimizeBox = false,
+                ClientSize = new Size(340, 120),
+                BackColor = Color.FromArgb(49, 51, 56)
+            };
+            var lbl = new Label
+            {
+                Text = "Нажмите Win + .  и выберите эмодзи,\nзатем «Поставить».",
+                ForeColor = Color.FromArgb(200, 202, 208), AutoSize = false,
+                Size = new Size(316, 36), Location = new Point(12, 10), Font = new Font("Segoe UI", 9f)
+            };
+            var tb = new TextBox
+            {
+                Location = new Point(12, 52), Size = new Size(316, 30),
+                Font = new Font("Segoe UI Emoji", 14f), TextAlign = HorizontalAlignment.Center,
+                BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle
+            };
+            var ok = new Button
+            {
+                Text = "Поставить", DialogResult = DialogResult.OK,
+                FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White,
+                Location = new Point(228, 88), Size = new Size(100, 28), Cursor = Cursors.Hand
+            };
+            ok.FlatAppearance.BorderSize = 0;
+            tb.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; dlg.DialogResult = DialogResult.OK; dlg.Close(); } };
+            dlg.Controls.Add(lbl); dlg.Controls.Add(tb); dlg.Controls.Add(ok);
+            dlg.AcceptButton = ok;
+            dlg.Shown += (s, e) => tb.Focus();
+            if (dlg.ShowDialog(this) != DialogResult.OK) return null;
+            string v = (tb.Text ?? "").Trim();
+            if (v.Length == 0) return null;
+            return v.Length > 16 ? v.Substring(0, 16) : v;
+        }
+
         /// <summary>Ставит/снимает реакцию и перерисовывает открытый чат.</summary>
         private void ToggleReactionAndReload(int msgId, ReactionsRepository.Scope scope, string emoji)
         {
@@ -237,6 +280,14 @@ namespace PISMO
                     sub.Click += (s, e) => { ToggleReactionAndReload(msgId, scope, e2); };
                     itemReact.DropDownItems.Add(sub);
                 }
+                itemReact.DropDownItems.Add(new ToolStripSeparator());
+                var itemOther = new ToolStripMenuItem("➕ Другой эмодзи… (Win + .)");
+                itemOther.Click += (s, e) =>
+                {
+                    string emo = PromptEmoji();
+                    if (!string.IsNullOrWhiteSpace(emo)) ToggleReactionAndReload(msgId, scope, emo);
+                };
+                itemReact.DropDownItems.Add(itemOther);
                 menu.Items.Add(itemReact);
                 menu.Items.Add(new ToolStripSeparator());
             }
