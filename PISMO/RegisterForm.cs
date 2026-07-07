@@ -9,6 +9,7 @@ namespace PISMO
         public RegisterForm()
         {
             InitializeComponent();
+            this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
         }
 
         private void btnRegister_Click(object sender, EventArgs e)

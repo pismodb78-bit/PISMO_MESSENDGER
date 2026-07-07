@@ -308,7 +308,7 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, 538),
-                Size = new Size(456, 142)
+                Size = new Size(456, 186)
             };
 
             var lblScreenTitle = new Label
@@ -421,10 +421,32 @@ namespace PISMO
                 Location = new Point(16, 114)
             };
 
+            _chkLightTheme = new CheckBox
+            {
+                Text = "Светлая тема оформления",
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BackColor = Color.FromArgb(47, 49, 54),
+                AutoSize = true,
+                Location = new Point(14, 136),
+                Cursor = Cursors.Hand
+            };
+            var lblThemeHint = new Label
+            {
+                Text = "Переключение применится после перезапуска приложения.",
+                Font = new Font("Segoe UI", 8f),
+                ForeColor = Color.FromArgb(140, 142, 146),
+                AutoSize = false,
+                Size = new Size(430, 16),
+                Location = new Point(16, 158)
+            };
+
             pnlScreen.Controls.Add(lblScreenTitle);
             pnlScreen.Controls.Add(tblScreen);
             pnlScreen.Controls.Add(_chkHwAccel);
             pnlScreen.Controls.Add(lblHwHint);
+            pnlScreen.Controls.Add(_chkLightTheme);
+            pnlScreen.Controls.Add(lblThemeHint);
 
             // ── Горячие клавиши в звонке ────────────────────────────────
             var pnlKeys = new Panel

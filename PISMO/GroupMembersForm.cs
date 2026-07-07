@@ -26,6 +26,7 @@ namespace PISMO
 
         public GroupMembersForm(int groupId, string groupName)
         {
+            this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
             _groupId = groupId;
             _groupName = groupName;
 

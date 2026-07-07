@@ -28,6 +28,7 @@ namespace PISMO
 
         public ProfileForm(int uid, bool readOnly = false)
         {
+            this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
             _uid = uid;
             _readOnly = readOnly;
             Text = "PISMO — Профиль";

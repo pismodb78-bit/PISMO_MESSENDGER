@@ -86,6 +86,9 @@ namespace PISMO
         /// помогает при чёрном экране/артефактах на проблемных видеодрайверах.</summary>
         public static bool HardwareAcceleration { get; set; } = true;
 
+        /// <summary>Тема оформления: "dark" (по умолчанию, как раньше) или "light".</summary>
+        public static string ThemeMode { get; set; } = "dark";
+
         /// <summary>Доп. аргументы Chromium для WebView2 с учётом настройки HW-ускорения.
         /// При включённом ускорении ЯВНО разрешаем GPU-растеризацию и, главное,
         /// аппаратное кодирование/декодирование видео (NVENC/Media Foundation) +
@@ -203,6 +206,9 @@ namespace PISMO
                         case "HardwareAcceleration":
                             HardwareAcceleration = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
                             break;
+                        case "ThemeMode":
+                            if (!string.IsNullOrWhiteSpace(val)) ThemeMode = val.Trim().ToLowerInvariant() == "light" ? "light" : "dark";
+                            break;
                         case "HotkeyMic":
                             if (int.TryParse(val, out int hm)) HotkeyMic = hm;
                             break;
@@ -243,6 +249,7 @@ namespace PISMO
                     $"NoiseSuppression={(NoiseSuppression ? 1 : 0)}\n" +
                     $"VoiceThreshold={VoiceThreshold}\n" +
                     $"HardwareAcceleration={(HardwareAcceleration ? 1 : 0)}\n" +
+                    $"ThemeMode={ThemeMode}\n" +
                     $"HotkeyMic={HotkeyMic}\n" +
                     $"HotkeyCamera={HotkeyCamera}\n" +
                     $"HotkeyScreen={HotkeyScreen}\n" +

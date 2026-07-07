@@ -95,6 +95,7 @@ namespace PISMO
 
         public ServersForm()
         {
+            this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
             Text = "PISMO — Серверы";
             ClientSize = new Size(1000, 640);
             MinimumSize = new Size(820, 520);

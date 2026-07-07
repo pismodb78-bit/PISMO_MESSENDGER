@@ -45,6 +45,7 @@ namespace PISMO
 
         public FriendsAddForm(int me)
         {
+            this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
             _me = me;
             Text = "Друзья";
             ClientSize = new Size(760, 560);

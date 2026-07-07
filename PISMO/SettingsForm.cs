@@ -30,6 +30,7 @@ namespace PISMO
         private CheckBox _chkVoiceAuto;
         private CheckBox _chkNoiseSuppress;
         private CheckBox _chkHwAccel;
+        private CheckBox _chkLightTheme;
         private TrackBar _trkVoiceThreshold;
         private Label _lblVoiceThresholdValue;
         private Panel _pnlLevelBar;
@@ -51,6 +52,7 @@ namespace PISMO
 
         public SettingsForm()
         {
+            this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
             BuildUi();
             LoadDevices();
             ApplySavedSelection();
@@ -207,6 +209,9 @@ namespace PISMO
 
             // Аппаратное ускорение.
             _chkHwAccel.Checked = DeviceSettings.HardwareAcceleration;
+
+            // Тема оформления.
+            _chkLightTheme.Checked = Theme.IsLight;
         }
 
         // ════════════════════════════════════════════════════════════
@@ -479,6 +484,7 @@ namespace PISMO
             }
 
             DeviceSettings.HardwareAcceleration = _chkHwAccel.Checked;
+            DeviceSettings.ThemeMode = _chkLightTheme.Checked ? "light" : "dark";
 
             // TURN-сервер больше не используется (звонки через LiveKit).
 

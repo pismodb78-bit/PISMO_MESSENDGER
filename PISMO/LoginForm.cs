@@ -17,6 +17,7 @@ namespace PISMO
         public LoginForm()
         {
             InitializeComponent(GetBtnLogin());
+            this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
             LoadSavedCredentials();
             // Авто-вход по JWT здесь НЕ делаем: он выполняется в заставке
             // (SplashForm) ДО показа окна — иначе форма зависала недорисованной.
