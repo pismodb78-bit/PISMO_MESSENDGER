@@ -110,19 +110,24 @@ namespace PISMO
                 "WebRtcWgcRequireBorder,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling";
 
             // Анти-троттлинг скрытой страницы (транспорт живёт в невидимом WebView)
-            // + включение HEVC в WebRTC (по умолчанию Chromium его не разрешает
-            // ни на отправку, ни на приём — нужны обе фичи + аппаратный HEVC).
+            // enable-features:
+            //  • WebRtcAllowH265* / PlatformHEVC* — включают HEVC в WebRTC;
+            //  • MediaFoundationD3D11VideoCapture — аппаратный конвейер;
+            //  • MediaFoundationVP8/VP9/H264/HEVC hardware encoding в WebRTC у
+            //    Chromium ГАТИТСЯ фичей — без неё используется софт OpenH264/libvpx
+            //    даже при наличии Quick Sync/NVENC. Включаем аппаратный энкод явно.
             const string always =
                 " --disable-background-timer-throttling" +
                 " --disable-renderer-backgrounding" +
                 " --disable-backgrounding-occluded-windows" +
-                " --enable-features=WebRtcAllowH265Send,WebRtcAllowH265Receive,PlatformHEVCEncoderSupport,PlatformHEVCDecoderSupport";
+                " --disable-gpu-driver-bug-workarounds" +   // снимает «обходы», прячущие HW-энкодер
+                " --enable-features=WebRtcAllowH265Send,WebRtcAllowH265Receive,PlatformHEVCEncoderSupport,PlatformHEVCDecoderSupport,MediaFoundationH264Encoding,MediaFoundationH264CbpEncoding,HardwareMediaKeyHandling";
 
-            // Аппаратные видео-энкод/декод в Chromium включены ПО УМОЛЧАНИЮ —
-            // мешает только GPU-блоклист (обходим). Выбор адаптера (встроенная
-            // Intel с Quick Sync — надёжный аппаратный энкодер) делается через
-            // реестр UserGpuPreferences (см. GpuPreference), а НЕ форсом
-            // дискретной: MX-карты часто без NVENC → откат в софт.
+            // Аппаратные видео-энкод/декод: GPU-блоклист обходим (--ignore-gpu-
+            // blocklist), «обходы багов драйвера», прячущие HW-энкодер, снимаем
+            // (--disable-gpu-driver-bug-workarounds). Выбор адаптера (RTX/NVENC
+            // или Intel Quick Sync) — через реестр UserGpuPreferences (см.
+            // GpuPreference / настройка «Видеокарта для кодирования»).
             return HardwareAcceleration
                 ? (baseArgs + " " + disabled + always
                     + " --ignore-gpu-blocklist"
