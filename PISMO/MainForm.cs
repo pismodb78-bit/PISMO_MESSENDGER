@@ -91,6 +91,16 @@ namespace PISMO
             // TURN больше не используется — звонки идут через LiveKit (SFU).
             // (Раньше здесь запускался генератор TURN-кредов, всплывавший окном.)
             DeviceSettings.Load();
+
+            // Программно закрепляем дискретную видеокарту за приложением и
+            // WebView2 (как Discord) — чтобы демонстрация кодировалась на NVENC
+            // без ручной возни в «Параметры Windows → Графика». В фоне, т.к.
+            // ищет msedgewebview2.exe по диску. Вступит в силу к первому звонку.
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try { GpuPreference.Apply(DeviceSettings.HardwareAcceleration); } catch { }
+            });
+
             InitializeComponent();
 
             MediaCache.Init();

@@ -479,6 +479,11 @@ namespace PISMO
             }
 
             DeviceSettings.HardwareAcceleration = _chkHwAccel.Checked;
+            // Перепривязываем GPU под новое значение тумблера (в фоне).
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try { GpuPreference.Apply(DeviceSettings.HardwareAcceleration); } catch { }
+            });
 
             // TURN-сервер больше не используется (звонки через LiveKit).
 
