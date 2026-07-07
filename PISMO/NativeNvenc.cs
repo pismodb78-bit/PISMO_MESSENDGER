@@ -86,39 +86,45 @@ namespace PISMO
             return found.ToArray();
         }
 
-        /// <summary>Бенчмарк: захват экрана (ddagrab — DXGI, аппаратный) +
-        /// кодирование выбранным энкодером на targetFps в течение seconds секунд.
-        /// Возвращает достигнутый fps (по строке 'frame= … fps=…' от FFmpeg) или -1.</summary>
+        /// <summary>Бенчмарк ПРОПУСКНОЙ СПОСОБНОСТИ энкодера: синтетический
+        /// источник нужного размера кодируется как можно быстрее (без -re и без
+        /// узкого места захвата). Возвращает достигнутый fps — это «сколько кадров
+        /// в секунду энкодер способен выдать». >=60 значит realtime 1080p60 тянет.</summary>
         public static async Task<double> BenchmarkAsync(string encoder, int height, int targetFps, int seconds)
         {
             if (!FfmpegReady) return -1;
-            // ddagrab захватывает основной монитор через DXGI Desktop Duplication
-            // (аппаратно), scale масштабирует до нужной высоты, энкодер кодирует,
-            // вывод в null (нам важен только fps кодирования).
-            string vf = height > 0 ? $"-vf \"scale=-2:{height}\"" : "";
+            int h = height > 0 ? height : 1080;
+            int w = (int)Math.Round(h * 16.0 / 9.0 / 2) * 2;  // чётная ширина 16:9
+            int frames = Math.Max(60, targetFps * seconds);
+
+            // testsrc2 — синтетика (нагружает ТОЛЬКО энкодер). format=nv12 — то, что
+            // ждёт NVENC/QSV. Кодируем frames кадров как можно быстрее → fps = потолок.
+            string preset = encoder.Contains("nvenc") ? " -preset p1 -tune ll" : "";
             string args =
-                $"-hide_banner -y -f lavfi -i ddagrab=framerate={targetFps} -t {seconds} " +
-                $"{vf} -c:v {encoder} -preset p1 -tune ll -f null -";
-            L($"Бенчмарк: {encoder}, {(height > 0 ? height + "p" : "native")}@{targetFps}, {seconds}с…");
+                $"-hide_banner -y -f lavfi -i testsrc2=size={w}x{h}:rate={targetFps} " +
+                $"-frames:v {frames} -vf format=nv12 -c:v {encoder}{preset} -f null -";
+            L($"Бенчмарк энкодера: {encoder}, {h}p, {frames} кадров…");
             string outp = await RunAsync(args);
 
-            // Из stderr FFmpeg берём последний 'fps='.
+            double fps = ParseFps(outp);
+            if (fps < 0) L("Не удалось замерить (см. хвост лога ниже):\n" + Tail(outp, 12));
+            else L($"Пропускная способность: ~{fps:0} fps ({(fps >= 60 ? "хватает на 60" : "ниже 60")}).");
+            return fps;
+        }
+
+        private static double ParseFps(string outp)
+        {
             double fps = -1;
             foreach (Match m in Regex.Matches(outp, @"fps=\s*([0-9]+(?:\.[0-9]+)?)"))
-                if (double.TryParse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture, out var v)) fps = v;
-            // Если ddagrab недоступен (старый ffmpeg/нет DXGI) — пробуем gdigrab.
-            if (fps < 0 && args.Contains("ddagrab"))
-            {
-                L("ddagrab недоступен, пробую gdigrab…");
-                string args2 =
-                    $"-hide_banner -y -f gdigrab -framerate {targetFps} -i desktop -t {seconds} " +
-                    $"{vf} -c:v {encoder} -preset p1 -tune ll -f null -";
-                string o2 = await RunAsync(args2);
-                foreach (Match m in Regex.Matches(o2, @"fps=\s*([0-9]+(?:\.[0-9]+)?)"))
-                    if (double.TryParse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture, out var v)) fps = v;
-            }
-            L(fps >= 0 ? $"Достигнуто ~{fps:0} fps кодирования." : "Не удалось замерить fps (см. лог).");
+                if (double.TryParse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture, out var v) && v > 0) fps = v;
             return fps;
+        }
+
+        private static string Tail(string s, int lines)
+        {
+            var arr = (s ?? "").Replace("\r", "").Split('\n');
+            int from = Math.Max(0, arr.Length - lines);
+            return string.Join("\n", arr[from..]);
         }
 
         private static async Task<string> RunAsync(string args)
