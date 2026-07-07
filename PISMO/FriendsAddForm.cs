@@ -408,7 +408,12 @@ namespace PISMO
                     AddBtn("✉ Написать", Neutral, 100, TryWrite);
                     AddBtn("📨 Заявка", Green, 100, () =>
                     {
-                        FriendsRepository.SendRequest(_me, h.Id);
+                        if (!FriendsRepository.SendRequest(_me, h.Id))
+                        {
+                            MessageBox.Show("Слишком много заявок за короткое время. Немного подождите.",
+                                "Заявка в друзья", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return;
+                        }
                         h.Rel = FriendsRepository.Relation.OutgoingPending;
                         Changed = true; Reload();
                     });

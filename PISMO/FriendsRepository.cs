@@ -111,23 +111,27 @@ namespace PISMO
 
         /// <summary>Отправить заявку в друзья. Если встречная заявка уже есть —
         /// считается взаимным согласием (сразу друзья).</summary>
-        public static void SendRequest(int me, int them)
+        public static bool SendRequest(int me, int them)
         {
-            if (me == them) return;
+            if (me == them) return false;
+            // Антиспам: не более 20 заявок в минуту с одного аккаунта.
+            if (!RateLimiter.Allow("friendreq:" + me, 20, TimeSpan.FromMinutes(1)))
+                return false;
             EnsureTable();
             try
             {
                 var rel = GetRelation(me, them);
-                if (rel == Relation.Friend || rel == Relation.OutgoingPending) return;
-                if (rel == Relation.IncomingPending) { AcceptRequest(me, them); return; }
+                if (rel == Relation.Friend || rel == Relation.OutgoingPending) return false;
+                if (rel == Relation.IncomingPending) { AcceptRequest(me, them); return true; }
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
                     "INSERT IGNORE INTO friends (user_id, friend_id, status) VALUES (@me, @them, 0)", conn);
                 cmd.Parameters.AddWithValue("@me", me);
                 cmd.Parameters.AddWithValue("@them", them);
                 cmd.ExecuteNonQuery();
+                return true;
             }
-            catch { }
+            catch { return false; }
         }
 
         /// <summary>Принять заявку от requester (только адресат может принять).</summary>

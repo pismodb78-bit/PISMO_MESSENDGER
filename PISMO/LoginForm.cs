@@ -145,6 +145,14 @@ namespace PISMO
                 return;
             }
 
+            // Защита от перебора пароля: после серии неудач — временная блокировка.
+            var lockLeft = RateLimiter.LoginLockRemaining(login);
+            if (lockLeft > TimeSpan.Zero)
+            {
+                ShowError($"Слишком много попыток. Повторите через {Math.Ceiling(lockLeft.TotalSeconds):0} с.");
+                return;
+            }
+
             try
             {
                 using (var conn = DBHelper.OpenConnection())
@@ -162,6 +170,7 @@ namespace PISMO
 
                         if (dt.Rows.Count == 0)
                         {
+                            RateLimiter.RegisterLoginFailure(login);
                             ShowError("Неверный логин или пароль.");
                             return;
                         }
@@ -171,10 +180,12 @@ namespace PISMO
                     string stored = row["password"]?.ToString() ?? "";
                     if (!PasswordHasher.Verify(pass, stored))
                     {
+                        RateLimiter.RegisterLoginFailure(login);
                         ShowError("Неверный логин или пароль.");
                         return;
                     }
 
+                    RateLimiter.RegisterLoginSuccess(login);
                     UserSession.UserId   = Convert.ToInt32(row["id"]);
                     UserSession.UserName = $"{row["Name"]} {row["Surname"]}".Trim();
                     UserSession.Role     = row["role"].ToString().ToLower();
