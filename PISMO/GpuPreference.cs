@@ -5,65 +5,65 @@ using Microsoft.Win32;
 namespace PISMO
 {
     /// <summary>
-    /// Программно закрепляет за приложением и его WebView2-процессами ДИСКРЕТНУЮ
-    /// видеокарту (как это делает Discord — «просто работает» при включённом
-    /// аппаратном ускорении, без ручной возни в «Параметры → Графика»).
+    /// Управляет тем, на какой видеокарте работают приложение и его WebView2 —
+    /// от этого зависит, каким энкодером кодируется демонстрация:
+    ///  • дискретная NVIDIA с NVENC (RTX/GTX) — отличный аппаратный H264/HEVC;
+    ///  • встроенная Intel с Quick Sync — тоже отличный аппаратный H264/HEVC;
+    ///  • многие NVIDIA MX-серии (MX450 и т.п.) БЕЗ NVENC — на них дискретная
+    ///    даёт софт-энкодер, а Quick Sync (встроенная) — аппаратный.
+    /// Поэтому «правильная» карта зависит от железа, и выбор отдаётся
+    /// пользователю (см. DeviceSettings.GpuEncodePref).
     ///
     /// Механизм: та же настройка, что пишет системное окно «Графика» —
     /// HKCU\Software\Microsoft\DirectX\UserGpuPreferences, value = путь к exe,
-    /// data = "GpuPreference=N;" (1 = энергосбережение/ВСТРОЕННАЯ, 2 = высокая
-    /// производительность/дискретная). Права администратора НЕ нужны (HKCU).
-    /// Вступает в силу при следующем старте процесса (перезапуск демонстрации).
-    ///
-    /// ВАЖНО про выбор GPU для КОДИРОВАНИЯ демки: аппаратный H264-энкодер в
-    /// Chromium/MediaFoundation привязан к тому адаптеру, на котором работает
-    /// GPU-процесс. Надёжнее всего аппаратно кодирует ВСТРОЕННАЯ графика Intel
-    /// (Quick Sync) — она есть почти на всех ноутбуках. Многие дискретные
-    /// NVIDIA MX-серии (MX450 и т.п.) НЕ имеют NVENC, поэтому форсировать
-    /// дискретную опасно: попадём на GPU без энкодера → откат в софт (OpenH264,
-    /// ~14 fps). Поэтому при включённом ускорении предпочитаем ВСТРОЕННУЮ
-    /// (Quick Sync); на десктопе без встройки система сама возьмёт единственную
-    /// (дискретную с NVENC).
+    /// data = "GpuPreference=N;" (2 = высокая производительность/дискретная,
+    /// 1 = энергосбережение/встроенная). Права администратора НЕ нужны.
+    /// Режим "auto" — НЕ трогаем выбор Windows (что выставил пользователь/ОС).
+    /// Вступает в силу при следующем старте процесса (перезапуск демки).
     /// </summary>
     public static class GpuPreference
     {
         private const string RegPath = @"Software\Microsoft\DirectX\UserGpuPreferences";
 
-        /// <summary>Прописать предпочтение GPU для PISMO.exe и всех найденных
-        /// msedgewebview2.exe. При HW-ускорении — встроенная (Quick Sync,
-        /// надёжный аппаратный энкодер); без ускорения — тоже встроенная
-        /// (меньше нагрев, программный рендер).</summary>
-        public static void Apply(bool highPerformance)
+        /// <summary>mode: "high" = дискретная (RTX/NVENC), "integrated" = встроенная
+        /// (Quick Sync), "auto"/иное = не переопределять настройку Windows.</summary>
+        public static void Apply(string mode)
         {
-            // 1 = встроенная (Quick Sync). Не форсируем дискретную — на MX-картах
-            // без NVENC это ломает аппаратное кодирование.
-            int mode = 1;
+            mode = (mode ?? "auto").Trim().ToLowerInvariant();
             try
             {
                 using var key = Registry.CurrentUser.CreateSubKey(RegPath);
                 if (key == null) return;
 
-                // Само приложение.
-                try { SetFor(key, Environment.ProcessPath, mode); } catch { }
-
-                // Все msedgewebview2.exe (демка/камера кодируются именно там).
-                foreach (var exe in FindWebView2Executables())
-                    try { SetFor(key, exe, mode); } catch { }
+                // auto → НИЧЕГО не пишем и не удаляем (уважаем ручную настройку
+                // Windows / выбор ОС). Явный выбор — пишем предпочтение.
+                if (mode != "high" && mode != "integrated") return;
+                foreach (var exe in AllTargetExecutables())
+                {
+                    try { SetFor(key, exe, mode == "high" ? 2 : 1); }
+                    catch { }
+                }
             }
             catch { /* реестр недоступен — не критично */ }
+        }
+
+        private static System.Collections.Generic.IEnumerable<string> AllTargetExecutables()
+        {
+            if (!string.IsNullOrWhiteSpace(Environment.ProcessPath))
+                yield return Environment.ProcessPath;
+            foreach (var exe in FindWebView2Executables())
+                yield return exe;
         }
 
         private static void SetFor(RegistryKey key, string exePath, int mode)
         {
             if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath)) return;
             string desired = $"GpuPreference={mode};";
-            var current = key.GetValue(exePath) as string;
-            if (current == desired) return;               // уже стоит — не трогаем
+            if (key.GetValue(exePath) as string == desired) return;
             key.SetValue(exePath, desired, RegistryValueKind.String);
         }
 
-        /// <summary>Ищет msedgewebview2.exe во всех типичных местах установки
-        /// рантайма (per-machine x86/x64 и per-user), включая версионные папки.</summary>
+        /// <summary>Ищет msedgewebview2.exe во всех типичных местах установки.</summary>
         private static System.Collections.Generic.IEnumerable<string> FindWebView2Executables()
         {
             var roots = new[]

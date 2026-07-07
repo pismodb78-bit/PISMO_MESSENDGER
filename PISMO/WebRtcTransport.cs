@@ -1113,10 +1113,28 @@ async function verifyScreenEncode(retry){
         stats.forEach(r => { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) o = r; });
         const frames = (o && o.framesEncoded) || 0;
 
-        // HEVC/VP9 не кодирует ни кадра → тихий провал, откат на H264.
-        if (frames === 0 && screenCurCodec !== 'h264' && !screenFellBack){
+        // ФАКТИЧЕСКИЙ кодек (не тот, что просили — LiveKit при отсутствии H265
+        // молча падает на VP8, который в софте). Берём из codec-статистики.
+        let mime = '';
+        try { if (o && o.codecId){ const c = stats.get(o.codecId); if (c && c.mimeType) mime = c.mimeType.toLowerCase(); } } catch(e){}
+        const isVpx  = mime.includes('vp8') || mime.includes('vp9');
+        const isH264 = mime.includes('h264') || mime.includes('avc');
+
+        // Оказались на VP8/VP9 (софт), хотя хотели H26x → форсим H264 ОДИН раз.
+        // H264 умеет и Quick Sync (Intel), и NVENC (NVIDIA) — аппаратно.
+        if (!screenFellBack && isVpx && (screenCodecPref === 'h265' || screenCodecPref === 'h264')){
             screenFellBack = true;
-            post({type:'jsLog', text:'Кодек ' + screenCurCodec + ' не кодирует — откат на H264'});
+            post({type:'jsLog', text:'Фактический кодек ' + mime + ' (софт) — принудительно H264'});
+            try { await room.localParticipant.unpublishTrack(screenVideoTrack, false); } catch(e){}
+            try { await publishScreenWithCodec('h264'); } catch(e){ post({type:'localScreenError', error:'republish h264: '+String(e)}); }
+            setTimeout(() => verifyScreenEncode(0), 4000);
+            return;
+        }
+
+        // HEVC/кодек не кодирует ни кадра → тихий провал, откат на H264.
+        if (frames === 0 && !isH264 && !screenFellBack){
+            screenFellBack = true;
+            post({type:'jsLog', text:'Кодек ' + (mime||screenCurCodec) + ' не кодирует — откат на H264'});
             try { await room.localParticipant.unpublishTrack(screenVideoTrack, false); } catch(e){}
             try { await publishScreenWithCodec('h264'); } catch(e){ post({type:'localScreenError', error:'republish h264: '+String(e)}); }
             setTimeout(() => verifyScreenEncode(0), 4000);
@@ -1126,12 +1144,15 @@ async function verifyScreenEncode(retry){
         if (frames === 0 && retry < 1){ setTimeout(() => verifyScreenEncode(retry + 1), 3000); return; }
 
         const enc = (o && o.encoderImplementation) || '';
+        const shortMime = mime.replace('video/', '');
         if (/openh264|libvpx|libaom/i.test(enc)){
-            post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + ') — нужен аппаратный (Quick Sync/NVENC).'});
-            try { setScreenPreviewActive(false); } catch(e){}
+            // ПРОГРАММНЫЙ энкодер. НЕ трогаем превью (иначе PIP чернеет) —
+            // только сообщаем. Аппаратный H264 требует, чтобы GPU-процесс
+            // WebView2 сел на карту с энкодером (Quick Sync/NVENC).
+            post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + ', ' + shortMime + ') — нужен аппаратный (Quick Sync/NVENC).'});
             post({type:'softwareEncoder'});
         } else if (enc){
-            post({type:'jsLog', text:'Энкодер демки: ' + enc + ' (' + screenCurCodec + ', аппаратный)'});
+            post({type:'jsLog', text:'Энкодер демки: ' + enc + ' (' + shortMime + ', аппаратный)'});
         }
     } catch(e){}
 }

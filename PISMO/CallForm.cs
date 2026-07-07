@@ -910,6 +910,21 @@ namespace PISMO
             var lblCodecHint = new Label { Text = "(смена кодека применится при следующем запуске демонстрации)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
             _audioPanel.Controls.Add(lblCodecHint); y += 24;
 
+            MkLbl("Видеокарта для кодирования");
+            var cmbGpu = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
+            cmbGpu.Items.AddRange(new object[] { "Авто (как в Windows)", "Дискретная (RTX/GTX, NVENC)", "Встроенная (Intel Quick Sync)" });
+            cmbGpu.SelectedIndex = DeviceSettings.GpuEncodePref == "high" ? 1 : DeviceSettings.GpuEncodePref == "integrated" ? 2 : 0;
+            cmbGpu.SelectedIndexChanged += (s, e) =>
+            {
+                DeviceSettings.GpuEncodePref = cmbGpu.SelectedIndex == 1 ? "high" : cmbGpu.SelectedIndex == 2 ? "integrated" : "auto";
+                try { DeviceSettings.Save(); } catch { }
+                System.Threading.Tasks.Task.Run(() => { try { GpuPreference.Apply(DeviceSettings.GpuEncodePref); } catch { } });
+            };
+            _audioPanel.Controls.Add(cmbGpu);
+            y += 30;
+            var lblGpuHint = new Label { Text = "(вступит в силу после перезапуска приложения; для MX-карт без NVENC выбирайте «Встроенная»)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = false, Size = new Size(300, 28), Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
+            _audioPanel.Controls.Add(lblGpuHint); y += 32;
+
             MkLbl("Громкость собеседников");
             var tbVoice = MkTb((int)(_remoteVoiceVolume * 100));
             tbVoice.ValueChanged += (s, e) => { _remoteVoiceVolume = tbVoice.Value / 100f; try { _transport?.SetRemoteVoiceVolume(_remoteVoiceVolume); } catch { } };

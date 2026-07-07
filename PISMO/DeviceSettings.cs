@@ -62,6 +62,11 @@ namespace PISMO
         /// с авто-откатом на H264), "h264" (совместимость), "vp9". По умолчанию H265.</summary>
         public static string ScreenShareCodec { get; set; } = "h265";
 
+        /// <summary>Видеокарта для кодирования демки (через реестр UserGpuPreferences):
+        /// "auto" (не трогать выбор Windows), "high" (дискретная RTX/NVENC),
+        /// "integrated" (встроенная Intel Quick Sync). По умолчанию auto.</summary>
+        public static string GpuEncodePref { get; set; } = "auto";
+
         /// <summary>Автоопределение чувствительности микрофона (как в Discord).
         /// true = звук передаётся всегда (без порога), false = используется
         /// ручной порог VoiceThreshold.</summary>
@@ -175,6 +180,9 @@ namespace PISMO
                         case "ScreenShareCodec":
                             if (!string.IsNullOrWhiteSpace(val)) ScreenShareCodec = val.Trim().ToLowerInvariant();
                             break;
+                        case "GpuEncodePref":
+                            if (!string.IsNullOrWhiteSpace(val)) GpuEncodePref = val.Trim().ToLowerInvariant();
+                            break;
                         case "ScreenShareFps":
                             if (int.TryParse(val, out int sf)) ScreenShareFps = sf;
                             break;
@@ -225,6 +233,7 @@ namespace PISMO
                     $"ScreenShareResolutionHeight={ScreenShareResolutionHeight}\n" +
                     $"ScreenShareFps={ScreenShareFps}\n" +
                     $"ScreenShareCodec={ScreenShareCodec}\n" +
+                    $"GpuEncodePref={GpuEncodePref}\n" +
                     $"VoiceAutoSensitivity={(VoiceAutoSensitivity ? 1 : 0)}\n" +
                     $"NoiseSuppression={(NoiseSuppression ? 1 : 0)}\n" +
                     $"VoiceThreshold={VoiceThreshold}\n" +
