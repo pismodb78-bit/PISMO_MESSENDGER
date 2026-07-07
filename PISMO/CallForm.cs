@@ -460,6 +460,7 @@ namespace PISMO
                 if (VoiceState.Deafened) SetAllMutedPublic(true);
                 if (!string.IsNullOrWhiteSpace(DeviceSettings.SpeakerName))
                     _transport?.SetOutputDevice(DeviceSettings.SpeakerName);
+                _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec);   // HEVC c авто-откатом
             }
             catch { }
 
@@ -893,6 +894,21 @@ namespace PISMO
             y = rowQ + 34;
             var lblHint = new Label { Text = "(применяется сразу, в том числе к идущей демонстрации)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
             _audioPanel.Controls.Add(lblHint); y += 24;
+
+            MkLbl("Кодек демонстрации");
+            var cmbCodec = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
+            cmbCodec.Items.AddRange(new object[] { "H.265 / HEVC (чётче, с откатом на H.264)", "H.264 (совместимость)" });
+            cmbCodec.SelectedIndex = DeviceSettings.ScreenShareCodec == "h264" ? 1 : 0;
+            cmbCodec.SelectedIndexChanged += (s, e) =>
+            {
+                DeviceSettings.ScreenShareCodec = cmbCodec.SelectedIndex == 1 ? "h264" : "h265";
+                try { DeviceSettings.Save(); } catch { }
+                try { _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec); } catch { }
+            };
+            _audioPanel.Controls.Add(cmbCodec);
+            y += 30;
+            var lblCodecHint = new Label { Text = "(смена кодека применится при следующем запуске демонстрации)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
+            _audioPanel.Controls.Add(lblCodecHint); y += 24;
 
             MkLbl("Громкость собеседников");
             var tbVoice = MkTb((int)(_remoteVoiceVolume * 100));

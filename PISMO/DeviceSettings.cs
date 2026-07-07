@@ -58,6 +58,10 @@ namespace PISMO
         /// <summary>FPS для демонстрации экрана (1..60). Обычно 60,45,30,15.</summary>
         public static int ScreenShareFps { get; set; } = 30;
 
+        /// <summary>Кодек демонстрации: "h265" (HEVC — чётче при том же битрейте,
+        /// с авто-откатом на H264), "h264" (совместимость), "vp9". По умолчанию H265.</summary>
+        public static string ScreenShareCodec { get; set; } = "h265";
+
         /// <summary>Автоопределение чувствительности микрофона (как в Discord).
         /// true = звук передаётся всегда (без порога), false = используется
         /// ручной порог VoiceThreshold.</summary>
@@ -100,11 +104,14 @@ namespace PISMO
                 "WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer," +
                 "WebRtcWgcRequireBorder,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling";
 
-            // Анти-троттлинг скрытой страницы (транспорт живёт в невидимом WebView).
+            // Анти-троттлинг скрытой страницы (транспорт живёт в невидимом WebView)
+            // + включение HEVC в WebRTC (по умолчанию Chromium его не разрешает
+            // ни на отправку, ни на приём — нужны обе фичи + аппаратный HEVC).
             const string always =
                 " --disable-background-timer-throttling" +
                 " --disable-renderer-backgrounding" +
-                " --disable-backgrounding-occluded-windows";
+                " --disable-backgrounding-occluded-windows" +
+                " --enable-features=WebRtcAllowH265Send,WebRtcAllowH265Receive,PlatformHEVCEncoderSupport,PlatformHEVCDecoderSupport";
 
             // Аппаратные видео-энкод/декод в Chromium включены ПО УМОЛЧАНИЮ —
             // мешает только GPU-блоклист (обходим). Выбор адаптера (встроенная
@@ -165,6 +172,9 @@ namespace PISMO
                         case "ScreenShareResolutionHeight":
                             if (int.TryParse(val, out int rh)) ScreenShareResolutionHeight = rh;
                             break;
+                        case "ScreenShareCodec":
+                            if (!string.IsNullOrWhiteSpace(val)) ScreenShareCodec = val.Trim().ToLowerInvariant();
+                            break;
                         case "ScreenShareFps":
                             if (int.TryParse(val, out int sf)) ScreenShareFps = sf;
                             break;
@@ -214,6 +224,7 @@ namespace PISMO
                     $"MicrophoneGain={MicrophoneGain.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n" +
                     $"ScreenShareResolutionHeight={ScreenShareResolutionHeight}\n" +
                     $"ScreenShareFps={ScreenShareFps}\n" +
+                    $"ScreenShareCodec={ScreenShareCodec}\n" +
                     $"VoiceAutoSensitivity={(VoiceAutoSensitivity ? 1 : 0)}\n" +
                     $"NoiseSuppression={(NoiseSuppression ? 1 : 0)}\n" +
                     $"VoiceThreshold={VoiceThreshold}\n" +

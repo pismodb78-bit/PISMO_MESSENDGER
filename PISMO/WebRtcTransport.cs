@@ -1068,6 +1068,74 @@ async function previewScreen(resHeight, fps){
     } catch(err){ post({type:'localScreenError', error:String(err)}); }
 }
 
+let screenCodecPref = 'h265';   // 'h265' | 'h264' | 'vp9' — из настроек (C#)
+let screenParams = null;        // { effH, maxBitrate } — для переиздания при откате
+let screenCurCodec = 'h264';
+let screenFellBack = false;
+
+// Публикация видео-трека демки заданным кодеком + применение параметров энкодера.
+async function publishScreenWithCodec(codec){
+    const p = screenParams || { effH: 1080, maxBitrate: 15000000 };
+    await room.localParticipant.publishTrack(screenVideoTrack, {
+        source: LK.Track.Source.ScreenShare,
+        simulcast: false,
+        videoCodec: codec,
+        degradationPreference: 'maintain-resolution',
+        videoEncoding: { maxBitrate: p.maxBitrate, maxFramerate: screenQualityF }
+    });
+    screenCurCodec = codec;
+    post({type:'jsLog', text:'Демка опубликована кодеком: ' + codec});
+    // Приоритет ЧЁТКОСТИ: при нехватке ресурсов WebRTC жертвует FPS, а не
+    // разрешением — иначе 1080 «плыл» в 480-720.
+    try {
+        const sender = screenVideoTrack.sender;
+        if (sender && sender.getParameters){
+            const sp = sender.getParameters();
+            sp.degradationPreference = 'maintain-resolution';
+            if (!sp.encodings || !sp.encodings.length) sp.encodings = [{}];
+            sp.encodings[0].maxFramerate = screenQualityF;
+            sp.encodings[0].maxBitrate = p.maxBitrate;
+            sp.encodings[0].scaleResolutionDownBy = 1;
+            try { sp.encodings[0].networkPriority = 'high'; } catch(e){}
+            try { sp.encodings[0].priority = 'high'; } catch(e){}
+            await sender.setParameters(sp);
+        }
+    } catch(e){ console.warn('setParameters', String(e)); }
+}
+
+// Проверка, что демка реально кодируется. Если кадры не идут (HEVC не
+// поднялся) — жёсткий откат на H264. Диагностика софт/аппаратного энкодера.
+async function verifyScreenEncode(retry){
+    try {
+        if (!screenPublished || !screenVideoTrack || !screenVideoTrack.sender) return;
+        const stats = await screenVideoTrack.sender.getStats();
+        let o = null;
+        stats.forEach(r => { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) o = r; });
+        const frames = (o && o.framesEncoded) || 0;
+
+        // HEVC/VP9 не кодирует ни кадра → тихий провал, откат на H264.
+        if (frames === 0 && screenCurCodec !== 'h264' && !screenFellBack){
+            screenFellBack = true;
+            post({type:'jsLog', text:'Кодек ' + screenCurCodec + ' не кодирует — откат на H264'});
+            try { await room.localParticipant.unpublishTrack(screenVideoTrack, false); } catch(e){}
+            try { await publishScreenWithCodec('h264'); } catch(e){ post({type:'localScreenError', error:'republish h264: '+String(e)}); }
+            setTimeout(() => verifyScreenEncode(0), 4000);
+            return;
+        }
+        // Кадры ещё не набежали (медленный старт) — одна повторная проверка.
+        if (frames === 0 && retry < 1){ setTimeout(() => verifyScreenEncode(retry + 1), 3000); return; }
+
+        const enc = (o && o.encoderImplementation) || '';
+        if (/openh264|libvpx|libaom/i.test(enc)){
+            post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + ') — нужен аппаратный (Quick Sync/NVENC).'});
+            try { setScreenPreviewActive(false); } catch(e){}
+            post({type:'softwareEncoder'});
+        } else if (enc){
+            post({type:'jsLog', text:'Энкодер демки: ' + enc + ' (' + screenCurCodec + ', аппаратный)'});
+        }
+    } catch(e){}
+}
+
 async function confirmScreenShare(){
     try {
         if (!screenVideoTrack){ post({type:'localScreenError', error:'no preview stream'}); return; }
@@ -1085,16 +1153,23 @@ async function confirmScreenShare(){
                            : effH >= 720  ? (hi ? 12_000_000 : 8_000_000)
                            : effH >= 480  ? 5_000_000
                            : 2_500_000;
-            // videoCodec:'h264' — КЛЮЧЕВОЕ для нативных 1080p60: VP8/VP9 (дефолт WebRTC)
-            // на NVIDIA аппаратно НЕ кодируются → софт → просадка. H264 кодирует NVENC
-            // на дискретной GPU в железе → 1080p60 без деградации.
-            await room.localParticipant.publishTrack(screenVideoTrack, {
-                source: LK.Track.Source.ScreenShare,
-                simulcast: false,
-                videoCodec: 'h264',
-                degradationPreference: 'maintain-resolution',
-                videoEncoding: { maxBitrate: maxBitrate, maxFramerate: screenQualityF }
-            });
+            // Кодек: сначала пробуем выбранный (по умолчанию H265/HEVC — при
+            // аппаратном энкодере даёт заметно чётче при том же битрейте), с
+            // АВТО-ОТКАТОМ на H264, если HEVC не поднялся или реально не кодирует
+            // кадры (нет аппаратного HEVC / собеседник не умеет декодировать).
+            // H264 через Quick Sync/NVENC — надёжный базовый путь.
+            screenParams = { effH, maxBitrate };
+            screenFellBack = false;
+            let firstCodec = (screenCodecPref === 'h265' || screenCodecPref === 'vp9') ? screenCodecPref : 'h264';
+            try {
+                await publishScreenWithCodec(firstCodec);
+            } catch(ePub){
+                // HEVC отклонён на публикации → сразу H264 (железобетонный путь).
+                post({type:'jsLog', text:'Публикация ' + firstCodec + ' не удалась (' + String(ePub) + ') — H264'});
+                if (firstCodec !== 'h264'){ screenFellBack = true; await publishScreenWithCodec('h264'); }
+                else throw ePub;
+            }
+
             // Hi-fi публикация звука демки: dtx:false — DTX режет ТИХИЕ непрерывные
             // звуки (двигатель, эмбиент) как «тишину»; стерео + высокий битрейт —
             // звук игры, а не «телефонная» речь.
@@ -1108,51 +1183,11 @@ async function confirmScreenShare(){
             screenPublished = true;
             startScreenSendStats();   // мини-превью показывает, что реально уходит собеседникам
 
-            // Через 8 c проверяем, каким энкодером реально кодируется трек.
-            // Если аппаратный (NVENC) недоступен и Chromium выбрал программный
-            // (OpenH264/libvpx) — CPU не тянет 1080p60, поэтому:
-            //  1) переключаем degradationPreference на 'balanced' (иначе
-            //     maintain-resolution давит fps в ноль);
-            //  2) пишем в лог — плашка покажет «⚠ SOFT:…».
-            setTimeout(async () => {
-                try {
-                    if (!screenPublished || !screenVideoTrack || !screenVideoTrack.sender) return;
-                    const stats = await screenVideoTrack.sender.getStats();
-                    let o = null;
-                    stats.forEach(r => { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) o = r; });
-                    const enc = (o && o.encoderImplementation) || '';
-                    if (/openh264|libvpx|libaom/i.test(enc)){
-                        // Программный энкодер (NVENC не задействован). НЕ меняем
-                        // параметры автоматически — качество/fps держим ровно как
-                        // выставил пользователь. Только сообщаем и освобождаем CPU
-                        // (локальное JPEG-превью — лишняя нагрузка на кодирование).
-                        post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + ') — для 1080p60 нужен аппаратный (NVENC).'});
-                        try { setScreenPreviewActive(false); } catch(e){}
-                        post({type:'softwareEncoder'});
-                    } else if (enc){
-                        post({type:'jsLog', text:'Энкодер демки: ' + enc + ' (аппаратный)'});
-                    }
-                } catch(e){}
-            }, 8000);
-
-            // Приоритет ЧЁТКОСТИ (стандарт для демонстрации экрана): при нехватке
-            // ресурсов WebRTC жертвует FPS, а не РАЗРЕШЕНИЕМ — иначе 1080 «плыл» в
-            // 480–720. Полноценные 1080p60 достижимы только с аппаратным энкодером
-            // (NVENC на дискретной GPU) — см. --force_high_performance_gpu.
-            try {
-                const sender = screenVideoTrack.sender;
-                if (sender && sender.getParameters){
-                    const p = sender.getParameters();
-                    p.degradationPreference = 'maintain-resolution';
-                    if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-                    p.encodings[0].maxFramerate = screenQualityF;
-                    p.encodings[0].maxBitrate = maxBitrate;
-                    p.encodings[0].scaleResolutionDownBy = 1;      // без авто-уменьшения разрешения
-                    try { p.encodings[0].networkPriority = 'high'; } catch(e){}
-                    try { p.encodings[0].priority = 'high'; } catch(e){}
-                    await sender.setParameters(p);
-                }
-            } catch(e){ console.warn('setParameters', String(e)); }
+            // Через 4 c проверяем, реально ли трек кодируется. framesEncoded==0 при
+            // HEVC = тихий провал (нет аппаратного HEVC-энкодера или собеседник не
+            // декодирует) → жёсткий откат на H264. Иначе — только диагностика
+            // софт/аппарат.
+            setTimeout(() => verifyScreenEncode(0), 4000);
         }
         post({type:'localScreenStarted'});
     } catch(err){ post({type:'localScreenError', error:String(err)}); }
@@ -1536,6 +1571,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'setScreenAudioVolume': setScreenAudioVolume(msg.volume); break;
         case 'setScreenVolumePid': setScreenVolumePid(msg.pid, msg.volume); break;
         case 'setScreenPreviewActive': setScreenPreviewActive(msg.on); break;
+        case 'setScreenCodec': screenCodecPref = msg.codec || 'h265'; break;
         case 'setVoiceVolume': setVoiceVolume(msg.volume); break;
         case 'setRemoteMuted': setRemoteMuted(msg.muted); break;
         case 'voicePrefs': setVoicePrefs(msg.prefs); break;
@@ -1790,6 +1826,11 @@ window.chrome.webview.addEventListener('message', (e) => {
         /// Когда PIP-окно скрыто — извлекать кадры не нужно (экономим CPU).</summary>
         public void SetScreenPreviewActive(bool on)
             => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenPreviewActive", on }));
+
+        /// <summary>Предпочитаемый кодек демонстрации ('h265'/'h264'/'vp9'); при
+        /// невозможности HEVC — авто-откат на H264.</summary>
+        public void SetScreenCodec(string codec)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenCodec", codec }));
 
         /// <summary>Поднимается, если демка кодируется ПРОГРАММНО (NVENC не задействован).</summary>
         public event Action SoftwareEncoderDetected;
