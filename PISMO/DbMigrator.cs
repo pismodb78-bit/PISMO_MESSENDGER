@@ -53,6 +53,19 @@ namespace PISMO
                 if (TableExists(conn, "users") && !ColumnExists(conn, "users", "dm_privacy"))
                     Exec(conn, "ALTER TABLE users ADD COLUMN dm_privacy TINYINT NOT NULL DEFAULT 0");
             }),
+
+            (4, "message_reactions: реакции на сообщения", conn =>
+            {
+                Exec(conn,
+                    "CREATE TABLE IF NOT EXISTS message_reactions (" +
+                    "message_id INT NOT NULL, " +
+                    "scope TINYINT NOT NULL DEFAULT 0, " +   // 0=личное, 1=групповое, 2=серверное
+                    "user_id INT NOT NULL, " +
+                    "emoji VARCHAR(16) NOT NULL, " +
+                    "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
+                    "PRIMARY KEY (message_id, scope, user_id, emoji), " +
+                    "KEY idx_react_msg (message_id, scope)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>

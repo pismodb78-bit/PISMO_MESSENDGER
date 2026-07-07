@@ -319,6 +319,12 @@ namespace PISMO
                             // Собеседник (senderId) прочитал мои сообщения — обновим галочки.
                             if (senderId == _currentChatPartnerId) LoadMessages();
                         }
+                        else if (type == "reaction")
+                        {
+                            // Кто-то поставил/снял реакцию — перерисуем открытый чат.
+                            if (_currentGroupId > 0) LoadGroupMessages();
+                            else if (_currentChatPartnerId > 0) LoadMessages();
+                        }
                         else if (type == "mention")
                         {
                             // payload: serverId|serverName|channelName
@@ -2322,7 +2328,43 @@ namespace PISMO
                 bubble.Controls.Add(lblCheck);
             }
 
-            innerY += lblTime.PreferredHeight + PAD;
+            innerY += lblTime.PreferredHeight + 4;
+
+            // ── Реакции-эмодзи (2.0): чипы под сообщением; клик — снять/поставить ──
+            if (msgId > 0)
+            {
+                var scope = isGroup ? ReactionsRepository.Scope.Group : ReactionsRepository.Scope.Direct;
+                List<ReactionsRepository.Reaction> reacts = null;
+                try { reacts = ReactionsRepository.ForMessage(msgId, scope, UserSession.EffectiveId); } catch { }
+                if (reacts != null && reacts.Count > 0)
+                {
+                    int rx = PAD, rh = 0;
+                    foreach (var re in reacts)
+                    {
+                        var chip = new Label
+                        {
+                            Text = $"{re.Emoji} {re.Count}",
+                            Font = new Font("Segoe UI Emoji", 8.5f),
+                            AutoSize = true,
+                            ForeColor = Color.White,
+                            BackColor = re.Mine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(48, 51, 58),
+                            Padding = new Padding(5, 2, 5, 2),
+                            Location = new Point(rx, innerY),
+                            Cursor = Cursors.Hand
+                        };
+                        RoundCorners(chip, 8);
+                        string emo = re.Emoji;
+                        chip.Click += (s, e) => ToggleReactionAndReload(msgId, scope, emo);
+                        bubble.Controls.Add(chip);
+                        chip.BringToFront();
+                        rx += chip.PreferredWidth + 10 + 4;
+                        rh = Math.Max(rh, chip.Height);
+                    }
+                    innerY += rh + 6;
+                }
+            }
+
+            innerY += PAD - 4;
 
             bubble.Size = new Size(
                 Math.Max(120, CalcBubbleWidth(bubble, PAD)),
@@ -2331,7 +2373,7 @@ namespace PISMO
             bubble.Region = System.Drawing.Region.FromHrgn(
                 NativeMethods.CreateRoundRectRgn(0, 0, bubble.Width, bubble.Height, 10, 10));
 
-            // Контекстное меню (ответ/пересылка/копировать/редактировать/удалить)
+            // Контекстное меню (реакция/ответ/пересылка/копировать/редактировать/удалить)
             if (msgId > 0)
                 AttachBubbleContextMenu(bubble, msgId, isGroup, isMine, text, senderName);
 

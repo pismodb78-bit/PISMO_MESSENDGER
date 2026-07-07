@@ -180,6 +180,42 @@ namespace PISMO
         /// isMine — наше сообщение?
         /// text — текст сообщения (для edit/forward).
         /// </summary>
+        /// <summary>Быстрый набор эмодзи для реакций (как в Discord).</summary>
+        private static readonly string[] QuickReactionEmojis =
+            { "👍", "❤️", "😂", "😮", "😢", "🔥", "🎉", "👀" };
+
+        /// <summary>Ставит/снимает реакцию и перерисовывает открытый чат.</summary>
+        private void ToggleReactionAndReload(int msgId, ReactionsRepository.Scope scope, string emoji)
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    ReactionsRepository.Toggle(msgId, scope, UserSession.EffectiveId, emoji);
+                    // Сообщаем собеседникам, чтобы они увидели реакцию сразу.
+                    try
+                    {
+                        if (scope == ReactionsRepository.Scope.Group && _currentGroupId > 0)
+                            WebSocketSignalingClient.Instance.SendMessage("reaction", 0, _currentGroupId, "group");
+                        else if (_currentChatPartnerId > 0)
+                            WebSocketSignalingClient.Instance.SendMessage("reaction", _currentChatPartnerId, UserSession.EffectiveId, "direct");
+                    }
+                    catch { }
+                }
+                catch { }
+                if (IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (_currentGroupId > 0) LoadGroupMessages();
+                        else if (_currentChatPartnerId > 0) LoadMessages();
+                    }));
+                }
+                catch { }
+            });
+        }
+
         public void AttachBubbleContextMenu(Panel bubble, int msgId, bool isGroup,
     bool isMine, string text, string senderName)
         {
@@ -187,6 +223,22 @@ namespace PISMO
             menu.BackColor = Color.FromArgb(24, 25, 28);
             menu.ForeColor = Color.FromArgb(220, 221, 222);
             menu.Font = new Font("Segoe UI", 9.5f);
+
+            // ── Реакция (эмодзи) ─────────────────────────────────────────
+            if (msgId > 0)
+            {
+                var itemReact = new ToolStripMenuItem("😀  Реакция");
+                var scope = isGroup ? ReactionsRepository.Scope.Group : ReactionsRepository.Scope.Direct;
+                foreach (var em in QuickReactionEmojis)
+                {
+                    string e2 = em;
+                    var sub = new ToolStripMenuItem(em) { Font = new Font("Segoe UI Emoji", 12f) };
+                    sub.Click += (s, e) => { ToggleReactionAndReload(msgId, scope, e2); };
+                    itemReact.DropDownItems.Add(sub);
+                }
+                menu.Items.Add(itemReact);
+                menu.Items.Add(new ToolStripSeparator());
+            }
 
             // ── Ответить ─────────────────────────────────────────────────
             var itemReply = new ToolStripMenuItem("↩  Ответить");
