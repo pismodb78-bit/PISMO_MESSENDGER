@@ -64,10 +64,4 @@
     <EmbeddedResource Include="SettingsForm.resx" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Update="CallForm - Копировать.cs">
-      <SubType>Form</SubType>
-    </Compile>
-  </ItemGroup>
-
 </Project>

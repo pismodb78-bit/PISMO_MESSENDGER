@@ -930,10 +930,9 @@ namespace PISMO
             y += 30;
             var lblGpuHint = new Label { Text = "(вступит в силу после перезапуска приложения; для MX-карт без NVENC выбирайте «Встроенная»)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = false, Size = new Size(300, 28), Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
             _audioPanel.Controls.Add(lblGpuHint); y += 32;
-            // (Диагностика нативного NVENC вынесена из UI — потолок демки на этой
-            //  машине определяется частотой ЗАХВАТА экрана ~50fps, а не энкодером,
-            //  поэтому нативный путь fps не поднимает. Классы NativeNvenc/
-            //  NvencCheckForm оставлены в коде для диагностики на другом железе.)
+            // (Диагностическое окно нативного NVENC убрано из сборки — потолок
+            //  демонстрации на этой машине определяется частотой ЗАХВАТА экрана
+            //  ~50fps, а не энкодером, поэтому нативный путь fps не поднимает.)
 
             MkLbl("Громкость собеседников");
             var tbVoice = MkTb((int)(_remoteVoiceVolume * 100));

@@ -145,13 +145,13 @@ namespace PISMO
                     Visible = false, BorderStyle = BorderStyle.FixedSingle,
                     BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
                     Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в переписке…",
-                    Size = new Size(240, 26), Location = new Point(pnlChatHeader.Width - 350, 11),
+                    Size = new Size(190, 26), Location = new Point(pnlChatHeader.Width - 350, 11),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right
                 };
                 _msgSearchCount = new Label
                 {
-                    Visible = false, AutoSize = false, Size = new Size(60, 20),
-                    Location = new Point(pnlChatHeader.Width - 104, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    Visible = false, AutoSize = false, Size = new Size(56, 20),
+                    Location = new Point(pnlChatHeader.Width - 156, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     ForeColor = Color.FromArgb(150, 152, 158), Font = new Font("Segoe UI", 8f),
                     TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent
                 };
@@ -185,7 +185,10 @@ namespace PISMO
                 {
                     if (c is not Panel b || b.AccessibleDescription == null) continue;
                     bool isMine = b.Tag is bool mine && mine;
-                    Color orig = isMine ? Color.FromArgb(88, 101, 242) : Color.FromArgb(64, 68, 75);
+                    // Восстанавливаем исходный фон пузыря с учётом темы (в светлой
+                    // теме нейтральный фон собеседника перекрашивается, иначе после
+                    // поиска пузыри стали бы тёмными на светлом фоне).
+                    Color orig = Theme.Map(isMine ? Color.FromArgb(88, 101, 242) : Color.FromArgb(64, 68, 75));
                     if (query.Length > 0 && b.AccessibleDescription.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         b.BackColor = Color.FromArgb(83, 108, 60);   // подсветка совпадения
