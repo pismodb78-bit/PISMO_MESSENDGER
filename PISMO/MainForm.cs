@@ -134,7 +134,7 @@ namespace PISMO
                 {
                     Text = "🔍", Font = new Font("Segoe UI Emoji", 10f), FlatStyle = FlatStyle.Flat,
                     ForeColor = Color.FromArgb(200, 202, 208), BackColor = Color.FromArgb(47, 49, 54),
-                    Size = new Size(38, 34), Location = new Point(pnlChatHeader.Width - 96, 7),
+                    Size = new Size(38, 34), Location = new Point(pnlChatHeader.Width - 140, 7),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right, Cursor = Cursors.Hand, TabStop = false
                 };
                 _btnMsgSearch.FlatAppearance.BorderSize = 0;
@@ -145,13 +145,13 @@ namespace PISMO
                     Visible = false, BorderStyle = BorderStyle.FixedSingle,
                     BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
                     Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в переписке…",
-                    Size = new Size(190, 26), Location = new Point(pnlChatHeader.Width - 350, 11),
+                    Size = new Size(190, 26), Location = new Point(pnlChatHeader.Width - 394, 11),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right
                 };
                 _msgSearchCount = new Label
                 {
                     Visible = false, AutoSize = false, Size = new Size(56, 20),
-                    Location = new Point(pnlChatHeader.Width - 156, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    Location = new Point(pnlChatHeader.Width - 200, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     ForeColor = Color.FromArgb(150, 152, 158), Font = new Font("Segoe UI", 8f),
                     TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent
                 };
@@ -281,7 +281,9 @@ namespace PISMO
                     ForeColor = Color.FromArgb(200, 202, 208),
                     BackColor = Color.FromArgb(47, 49, 54),
                     Size = new Size(40, 34),
-                    Location = new Point(pnlChatHeader.Width - 52, 7),
+                    // Правее (Width-38..Width) живёт докнутая кнопка звонка 📞 —
+                    // не заезжаем на неё (раньше 📌 стояла на Width-52 и перекрывала).
+                    Location = new Point(pnlChatHeader.Width - 96, 7),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     Cursor = Cursors.Hand,
                     TabStop = false
