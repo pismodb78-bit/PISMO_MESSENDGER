@@ -324,8 +324,9 @@ namespace PISMO
             _transport.LocalCameraError += err => UiInvoke(() => OnLocalCameraError(err));
             _transport.TheaterExitRequested += () => UiInvoke(ExitTheaterMode);
             _transport.TheaterFullscreenToggle += () => UiInvoke(ToggleTheaterFullscreen);
-            _transport.ScreenSendStats += t => { ShowNetStats(t, send: true); UiInvoke(() => UpdatePipStats(t)); };
-            _transport.ScreenRecvStats += t => ShowNetStats(t, send: false);
+            // Диагностика демки в окне звонка убрана (просьба 2.1): цифры отправки
+            // живут ТОЛЬКО в плашке PIP-превью стримера, приёма — в чипе театра.
+            _transport.ScreenSendStats += t => UiInvoke(() => UpdatePipStats(t));
 
             // ПКМ по кнопке демонстрации — смена источника на лету (игра ↔ экран).
             try
@@ -337,17 +338,12 @@ namespace PISMO
                 _btnScreen.ContextMenuStrip = screenMenu;
             }
             catch { }
-            _transport.SoftwareEncoderDetected += () => UiInvoke(OnSoftwareEncoder);
-            _transport.HardwareEncoderDetected += t => UiInvoke(() =>
-            {
-                _softwareEncoderWarned = false;
-                if (_lblStatus.Text.StartsWith("⚠ Демка кодируется процессором"))
-                    _lblStatus.Text = _connected ? "Соединение установлено" : "";
-            });
-            _transport.ScreenCaptureInfo += (fps, w, h) => UiInvoke(() =>
-            {
-                try { _lblStatus.Text = $"Демонстрация: {w}×{h} @ {fps} fps"; } catch { }
-            });
+            // Предупреждение «кодируется процессором» и строка «Демонстрация:
+            // WxH @ fps» в статусе убраны — только Debug-лог (просьба 2.1).
+            _transport.SoftwareEncoderDetected += () =>
+                System.Diagnostics.Debug.WriteLine("[SCREEN] программный энкодер (NVENC/QuickSync не задействован)");
+            _transport.ScreenCaptureInfo += (fps, w, h) =>
+                System.Diagnostics.Debug.WriteLine($"[SCREEN] захват {w}×{h} @ {fps} fps");
 
             // --- LiveKit: подключение к комнате ---
             // Сигналинг, ICE/TURN, renegotiation и многосторонность берёт на себя
@@ -723,39 +719,8 @@ namespace PISMO
         /// <summary>Текущий пинг (мс) — для показа по клику на «радар» в доке.</summary>
         public int CurrentPingMs { get; private set; }
 
-        // ── Стат-плашка демонстрации: отправка (у ведущего) / приём (у зрителя) ──
-        private Label _lblNetStats;
-        private string _netSend = "", _netRecv = "";
-
-        /// <summary>Показывает статистику демки в углу окна звонка. У ведущего —
-        /// что реально уходит собеседникам (качество/фпс/битрейт и «упор»), у
-        /// зрителя — что реально приходит (фпс/потери/фризы).</summary>
-        private void ShowNetStats(string text, bool send)
-        {
-            if (send) _netSend = text ?? ""; else _netRecv = text ?? "";
-            UiInvoke(() =>
-            {
-                string t = _netSend.Length > 0 && _netRecv.Length > 0
-                    ? _netSend + "\n" + _netRecv
-                    : (_netSend.Length > 0 ? _netSend : _netRecv);
-                if (_lblNetStats == null || _lblNetStats.IsDisposed)
-                {
-                    _lblNetStats = new Label
-                    {
-                        AutoSize = true,
-                        ForeColor = Color.FromArgb(200, 202, 208),
-                        BackColor = Color.FromArgb(32, 34, 38),
-                        Font = new Font("Consolas", 8.5f),
-                        Location = new Point(8, 60),
-                        Padding = new Padding(5, 3, 5, 3)
-                    };
-                    Controls.Add(_lblNetStats);
-                }
-                _lblNetStats.Text = t;
-                _lblNetStats.Visible = t.Length > 0;
-                if (t.Length > 0) _lblNetStats.BringToFront();
-            });
-        }
+        // (Стат-плашка демонстрации в углу окна звонка удалена по просьбе 2.1 —
+        //  цифры отправки видны в плашке PIP-превью, приёма — в чипе театра.)
 
         /// <summary>Мьют микрофона включён?</summary>
         public bool MicMuted => _muted;
@@ -1548,25 +1513,8 @@ namespace PISMO
             if (!_screenPipCollapsed) try { _transport?.SetScreenPreviewActive(true); } catch { }
         }
 
-        private bool _softwareEncoderWarned;
-
-        /// <summary>Демка кодируется процессором (NVENC не подхватился) — один раз
-        /// подсказываем, как включить аппаратный энкодер, чтобы держать fps.</summary>
-        private void OnSoftwareEncoder()
-        {
-            if (_softwareEncoderWarned) return;
-            _softwareEncoderWarned = true;
-            _lblStatus.Text = "⚠ Демка кодируется процессором — fps ограничен";
-            try
-            {
-                _screenPipTrayIcon?.ShowBalloonTip(6000, "PISMO — производительность демонстрации",
-                    "Демонстрация кодируется процессором (NVENC не задействован), поэтому fps ниже. " +
-                    "Windows → Параметры → Система → Дисплей → Графика → добавьте msedgewebview2.exe и выберите " +
-                    "«Высокая производительность» (дискретная видеокарта), затем перезапустите демонстрацию.",
-                    ToolTipIcon.Warning);
-            }
-            catch { }
-        }
+        // (Предупреждение «демка кодируется процессором» с балуном из трея
+        //  удалено по просьбе 2.1 — факт софт-энкода виден в плашке PIP и Debug-логе.)
 
         private void ShowScreenSharePip(byte[] jpegBytes)
         {
