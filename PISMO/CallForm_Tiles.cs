@@ -1163,24 +1163,24 @@ namespace PISMO
                 if (keys.Count == 0) return;
 
                 const int sgap = 8;
-                int cellH = Math.Max(40, h - 10);
-                int cellW = cellH * 16 / 9;
-                int total = keys.Count * cellW + (keys.Count - 1) * sgap;
+                int stripCellH = Math.Max(40, h - 10);
+                int stripCellW = stripCellH * 16 / 9;
+                int total = keys.Count * stripCellW + (keys.Count - 1) * sgap;
                 if (total > w - 16)
                 {
-                    cellW = Math.Max(60, (w - 16 - (keys.Count - 1) * sgap) / keys.Count);
-                    cellH = Math.Min(cellH, cellW * 9 / 16);
-                    total = keys.Count * cellW + (keys.Count - 1) * sgap;
+                    stripCellW = Math.Max(60, (w - 16 - (keys.Count - 1) * sgap) / keys.Count);
+                    stripCellH = Math.Min(stripCellH, stripCellW * 9 / 16);
+                    total = keys.Count * stripCellW + (keys.Count - 1) * sgap;
                 }
                 int sx = (w - total) / 2;
-                int sy = (h - cellH) / 2;
+                int sy = (h - stripCellH) / 2;
                 foreach (var k in keys)
                 {
                     if (!_tiles.TryGetValue(k, out var t)) continue;
                     t.Panel.Visible = true;
-                    t.Panel.SetBounds(sx, sy, cellW, cellH);
+                    t.Panel.SetBounds(sx, sy, stripCellW, stripCellH);
                     t.Panel.Invalidate();
-                    sx += cellW + sgap;
+                    sx += stripCellW + sgap;
                 }
                 return;
             }
