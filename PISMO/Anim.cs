@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Windows.Forms;
+using Timer = System.Windows.Forms.Timer;   // ImplicitUsings тянет System.Threading — без алиаса Timer неоднозначен (CS0104)
 
 namespace PISMO
 {
