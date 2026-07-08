@@ -25,9 +25,32 @@ namespace PISMO
             public Panel Panel;
             public PictureBox Pb;
             public Label Lbl;
+            public Button WatchBtn;    // «▶ Смотреть стрим» (пока стрим не смотрим)
             public bool Speaking;
             public bool HasVideo;
         }
+
+        // ── «Смотреть стрим» (2.0): стрим не открывается сам — к нему подключаются ──
+        private readonly Dictionary<string, string> _publishedStreams = new(); // pid -> имя стримера
+        private readonly Dictionary<string, string> _watchIntent = new();      // pid -> "theater"|"popout"
+        private readonly Dictionary<string, System.Windows.Forms.Timer> _watchTimeouts = new();
+
+        // ── Стрим в отдельном окне (pop-out) ──
+        private sealed class StreamPopout
+        {
+            public Form Form;
+            public PictureBox Pb;
+            public Label LblInfo;
+        }
+        private readonly Dictionary<string, StreamPopout> _streamPopouts = new();
+
+        // ── Лента участников под театром (Discord-стиль) + шеврон «Скрыть участников» ──
+        private Panel _theaterLane;          // узкая полоса с кнопкой-шевроном (вне WebView — airspace)
+        private Button _btnStripToggle;
+        private bool _stripVisible = true;   // лента миниатюр показана
+        private int _stripCurH;              // текущая (анимируемая) высота ленты
+        private const int LaneH = 28;
+        private const int StripH = 112;
 
         private Panel _tilesHost;
         private readonly Dictionary<string, CallTile> _tiles = new();
@@ -138,9 +161,15 @@ namespace PISMO
         {
             if (string.IsNullOrEmpty(pid)) return;
             bool existed = _participants.Remove(pid);
+            // Участник вышел (в т.ч. аварийно) — гасим весь его стрим-контекст.
+            _publishedStreams.Remove(pid);
+            _watchIntent.Remove(pid);
+            CancelWatchTimeout(pid);
+            ClosePopout(pid);
             RemoveTile(TileKey(pid, "camera"));
             RemoveTile(TileKey(pid, "screen"));
             LayoutTiles();
+            RefreshScreenPresence();
             if (existed && (DateTime.UtcNow - _tilesReadyAt).TotalMilliseconds > 1500)
                 try { Sounds.UserLeft(); } catch { }
         }
@@ -204,7 +233,7 @@ namespace PISMO
             void OnMouse(object s, MouseEventArgs e)
             {
                 if (e.Button != MouseButtons.Right || capPid == SelfPid) return;
-                if (capSource == "screen") ShowScreenAudioMenu(capPid);
+                if (capSource == "screen") ShowScreenTileMenu(capPid);
                 else ShowParticipantAudioMenu(capPid);
             }
             tile.Panel.DoubleClick += OnDouble;
@@ -241,6 +270,171 @@ namespace PISMO
             }
         }
 
+        // ── «Смотреть стрим»: объявление/подключение/отключение ─────────
+        /// <summary>У участника начался стрим (или он уже шёл, когда мы вошли в
+        /// звонок): показываем плитку с кнопкой подключения. Данные стрима при
+        /// этом НЕ качаются — подписка случится только по нажатию.</summary>
+        private void OnStreamPublished(string pid, string name)
+        {
+            if (string.IsNullOrEmpty(pid) || pid == SelfPid) return;
+            if (string.IsNullOrWhiteSpace(name))
+                name = _participants.TryGetValue(pid, out var nm) ? nm : pid;
+            _publishedStreams[pid] = name;
+            EnsureWatchTile(pid, name);
+            RefreshScreenPresence();
+            if ((DateTime.UtcNow - _tilesReadyAt).TotalMilliseconds > 1500)
+                try { Sounds.ScreenOn(); } catch { }
+        }
+
+        /// <summary>Стрим участника завершён: убираем плитку/поп-аут/театр.</summary>
+        private void OnStreamUnpublished(string pid)
+        {
+            if (string.IsNullOrEmpty(pid)) return;
+            _publishedStreams.Remove(pid);
+            _watchIntent.Remove(pid);
+            CancelWatchTimeout(pid);
+            ClosePopout(pid);
+            RemoveTile(TileKey(pid, "screen"));   // выйдет из театра, если смотрели
+            LayoutTiles();
+            RefreshScreenPresence();
+        }
+
+        /// <summary>Плитка-приглашение с кнопкой «▶ Смотреть стрим» (идемпотентно).</summary>
+        private void EnsureWatchTile(string pid, string name)
+        {
+            var tile = EnsureTile(pid, name, "screen");
+            if (tile == null) return;
+            if (tile.WatchBtn == null)
+            {
+                var btn = new Button
+                {
+                    Text = "▶  Смотреть стрим",
+                    Size = new Size(180, 42),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(56, 58, 64),
+                    ForeColor = Color.White,
+                    Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+                    Cursor = Cursors.Hand,
+                    TabStop = false
+                };
+                btn.FlatAppearance.BorderSize = 0;
+                btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(71, 74, 82);
+                string capPid = pid;
+                btn.Click += (s, e) => WatchStream(capPid, "theater");
+                btn.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowScreenTileMenu(capPid); };
+                tile.WatchBtn = btn;
+                tile.Panel.Controls.Add(btn);
+                btn.BringToFront();
+                var capTile = tile;
+                tile.Panel.Resize += (s, e) => CenterWatchBtn(capTile);
+                CenterWatchBtn(tile);
+            }
+            if (!tile.HasVideo)
+            {
+                tile.WatchBtn.Visible = true;
+                tile.WatchBtn.Enabled = true;
+                tile.WatchBtn.Text = "▶  Смотреть стрим";
+            }
+            LayoutTiles();
+        }
+
+        private static void CenterWatchBtn(CallTile tile)
+        {
+            try
+            {
+                if (tile?.WatchBtn == null || tile.Panel == null) return;
+                // В узкой ленте миниатюр большая кнопка не влезает — ужимаем.
+                bool tiny = tile.Panel.Width < 210 || tile.Panel.Height < 80;
+                tile.WatchBtn.Size = tiny ? new Size(Math.Max(60, tile.Panel.Width - 16), 26) : new Size(180, 42);
+                tile.WatchBtn.Font = new Font("Segoe UI Semibold", tiny ? 7.5f : 10f, FontStyle.Bold);
+                tile.WatchBtn.Location = new Point(
+                    (tile.Panel.Width - tile.WatchBtn.Width) / 2,
+                    (tile.Panel.Height - tile.WatchBtn.Height) / 2 - 6);
+            }
+            catch { }
+        }
+
+        /// <summary>Подключиться к идущему стриму (с живой точки — не «с начала»).
+        /// intent: "theater" — открыть на весь видео-участок; "popout" — кадры в
+        /// отдельное окно, театр не трогаем.</summary>
+        private void WatchStream(string pid, string intent)
+        {
+            if (string.IsNullOrEmpty(pid) || pid == SelfPid) return;
+            _watchIntent[pid] = intent;
+            if (_tiles.TryGetValue(TileKey(pid, "screen"), out var t) && t.WatchBtn != null)
+            {
+                t.WatchBtn.Enabled = false;
+                t.WatchBtn.Text = "Подключение…";
+            }
+            try { _transport?.WatchScreen(pid); } catch { }
+            ArmWatchTimeout(pid);
+        }
+
+        /// <summary>Полностью перестать смотреть стрим (театр/поп-аут/подписка).</summary>
+        private void StopWatching(string pid)
+        {
+            string key = TileKey(pid, "screen");
+            if (_theaterKey == key) ExitTheaterMode();   // сам отпишется, если нет поп-аута
+            ClosePopout(pid);
+            _watchIntent.Remove(pid);
+            try { _transport?.UnwatchScreen(pid); } catch { }
+        }
+
+        // Сторож подключения: если кадры так и не пошли — возвращаем кнопку,
+        // а не оставляем вечное «Подключение…».
+        private void ArmWatchTimeout(string pid)
+        {
+            CancelWatchTimeout(pid);
+            var t = new System.Windows.Forms.Timer { Interval = 12000 };
+            t.Tick += (s, e) => { CancelWatchTimeout(pid); OnWatchFailed(pid, "стрим не отвечает (таймаут)"); };
+            _watchTimeouts[pid] = t;
+            t.Start();
+        }
+
+        private void CancelWatchTimeout(string pid)
+        {
+            if (_watchTimeouts.TryGetValue(pid, out var t))
+            {
+                try { t.Stop(); t.Dispose(); } catch { }
+                _watchTimeouts.Remove(pid);
+            }
+        }
+
+        /// <summary>Подключение к стриму не удалось (участник вышел, стрим завершён,
+        /// таймаут) — откатываем кнопку и сообщаем причину.</summary>
+        private void OnWatchFailed(string pid, string err)
+        {
+            CancelWatchTimeout(pid);
+            _watchIntent.Remove(pid);
+            try { _transport?.UnwatchScreen(pid); } catch { }
+            if (_tiles.TryGetValue(TileKey(pid, "screen"), out var t) && t.WatchBtn != null && !t.HasVideo)
+            {
+                t.WatchBtn.Enabled = true;
+                t.WatchBtn.Text = "▶  Смотреть стрим";
+            }
+            ClosePopout(pid);
+            try { _lblStatus.Text = "Не удалось подключиться к стриму: " + err; } catch { }
+        }
+
+        /// <summary>Бейдж «идёт демонстрация» — по факту ОПУБЛИКОВАННЫХ стримов;
+        /// ползунок громкости демки — только когда реально что-то смотрим.</summary>
+        private void RefreshScreenPresence()
+        {
+            bool anyWatching = false;
+            foreach (var kv in _tiles)
+                if (kv.Value.Source == "screen" && kv.Value.HasVideo) { anyWatching = true; break; }
+            _peerScreenSharing = anyWatching;
+            _tbScreenAudioVolume.Visible = anyWatching;
+            _lblScreenAudioVolume.Visible = anyWatching;
+            if (_publishedStreams.Count > 0)
+            {
+                _lblScreenBadge.Text = "🖥 Идёт демонстрация экрана";
+                _lblScreenBadge.Visible = true;
+            }
+            else if (_lblScreenBadge.Visible && _lblScreenBadge.Text.Contains("демонстрац"))
+                _lblScreenBadge.Visible = false;
+        }
+
         // ── События треков ──────────────────────────────────────────────
         private void OnTileStarted(string pid, string name, string source)
         {
@@ -250,20 +444,19 @@ namespace PISMO
 
             if (source == "screen")
             {
-                _peerScreenSharing = true;
-                _tbScreenAudioVolume.Visible = true;
-                _lblScreenAudioVolume.Visible = true;
-                _lblScreenBadge.Text = "🖥 Идёт демонстрация экрана";
-                _lblScreenBadge.Visible = true;
+                CancelWatchTimeout(pid);
+                if (tile?.WatchBtn != null) tile.WatchBtn.Visible = false;
+                RefreshScreenPresence();
 
-                // Демонстрацию собеседника показываем СРАЗУ нативно (GPU-декод напрямую,
-                // плавные 60fps) — без двойного клика. Выйти можно ✕/двойным кликом.
-                if (pid != SelfPid && _theaterKey == null)
+                // Театр открываем только когда зритель подключился сам («Смотреть
+                // стрим»/двойной клик). Для поп-аута театр не трогаем. Если уже
+                // смотрели другой стрим — переключаемся на новый.
+                _watchIntent.TryGetValue(pid, out var intent);
+                if (pid != SelfPid && intent != "popout")
                 {
-                    _theaterKey = TileKey(pid, source);
-                    var b = _tilesHost.Bounds;
-                    try { _tilesHost.Visible = false; } catch { }
-                    try { _transport?.EnterTheater(pid, "screen", b); } catch { }
+                    string key = TileKey(pid, source);
+                    if (_theaterKey != null && _theaterKey != key) ExitTheaterMode();
+                    if (_theaterKey == null) EnterTheaterMode(key);
                 }
             }
         }
@@ -273,19 +466,22 @@ namespace PISMO
             string key = TileKey(pid, source);
             if (source == "screen")
             {
-                RemoveTile(key);
-                LayoutTiles();
-                // Если больше никто не шарит экран — прячем бейдж/громкость.
-                bool anyScreen = false;
-                foreach (var k in _tileOrder) if (k.EndsWith("|screen")) { anyScreen = true; break; }
-                if (!anyScreen)
+                if (_publishedStreams.ContainsKey(pid) && _tiles.TryGetValue(key, out var wt))
                 {
-                    _peerScreenSharing = false;
-                    _tbScreenAudioVolume.Visible = false;
-                    _lblScreenAudioVolume.Visible = false;
-                    if (_lblScreenBadge.Visible && _lblScreenBadge.Text.Contains("демонстрац"))
-                        _lblScreenBadge.Visible = false;
+                    // Мы отписались, но стрим ещё идёт — плитка возвращается к кнопке.
+                    if (_theaterKey == key) ExitTheaterMode();
+                    wt.HasVideo = false;
+                    wt.Pb.Visible = false;
+                    var old = wt.Pb.Image; wt.Pb.Image = null; old?.Dispose();
+                    EnsureWatchTile(pid, wt.Name);
+                    wt.Panel.Invalidate();
                 }
+                else
+                {
+                    RemoveTile(key);
+                    LayoutTiles();
+                }
+                RefreshScreenPresence();
             }
             else
             {
@@ -340,7 +536,25 @@ namespace PISMO
             tile.Pb.Image = img;
             tile.HasVideo = true;
             if (!tile.Pb.Visible) tile.Pb.Visible = true;
+            if (tile.WatchBtn != null && tile.WatchBtn.Visible) tile.WatchBtn.Visible = false;
             old?.Dispose();
+
+            // Стрим открыт в отдельном окне — дублируем кадр туда (своя копия
+            // Bitmap: делить один GDI-объект между двумя PictureBox нельзя —
+            // Dispose одного уронит отрисовку другого).
+            if (source == "screen" && _streamPopouts.TryGetValue(pid, out var po)
+                && po.Form != null && !po.Form.IsDisposed)
+            {
+                try
+                {
+                    var copy = (Bitmap)img.Clone();
+                    var oldP = po.Pb.Image;
+                    po.Pb.Image = copy;
+                    oldP?.Dispose();
+                    if (po.LblInfo != null && po.LblInfo.Visible) po.LblInfo.Visible = false;
+                }
+                catch { }
+            }
         }
 
         /// <summary>Кадр своей камеры (из LocalCameraFrameReceived).</summary>
@@ -516,6 +730,25 @@ namespace PISMO
             return palette[h % palette.Length];
         }
 
+        // ── Контекстное меню плитки стрима (ПКМ) ────────────────────────
+        private void ShowScreenTileMenu(string pid)
+        {
+            try
+            {
+                bool watching = _tiles.TryGetValue(TileKey(pid, "screen"), out var t) && t.HasVideo;
+                var menu = new ContextMenuStrip();
+                if (!watching)
+                    menu.Items.Add("▶  Смотреть стрим", null, (s, e) => WatchStream(pid, "theater"));
+                else
+                    menu.Items.Add("⏹  Перестать смотреть", null, (s, e) => StopWatching(pid));
+                menu.Items.Add("🗔  Стрим в отдельном окне", null, (s, e) => OpenStreamPopout(pid));
+                menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add("🔊  Громкость демки…", null, (s, e) => ShowScreenAudioMenu(pid));
+                menu.Show(Cursor.Position);
+            }
+            catch { }
+        }
+
         // ── Полноэкранная плитка (демка во весь экран) ──────────────────
         private void ToggleFullscreen(string key)
         {
@@ -529,11 +762,11 @@ namespace PISMO
             // Демонстрация экрана — нативный «театр» (плавные 60fps через WebView).
             if (src == "screen" && _tiles.ContainsKey(key))
             {
+                // Стрим ещё не смотрим — сперва подключаемся (двойной клик по
+                // плитке-приглашению = «Смотреть стрим»), театр откроется сам.
+                if (!_tiles[key].HasVideo) { WatchStream(pid, "theater"); return; }
                 _fullscreenKey = null;
-                _theaterKey = key;
-                var b = _tilesHost.Bounds;
-                try { _tilesHost.Visible = false; } catch { }
-                try { _transport?.EnterTheater(pid, "screen", b); } catch { }
+                EnterTheaterMode(key);
                 return;
             }
 
@@ -543,8 +776,118 @@ namespace PISMO
             LayoutTiles();
         }
 
-        /// <summary>Область для нативного видео: весь монитор (fullscreen) либо участок плиток.</summary>
-        private Rectangle TheaterBounds() => _theaterFullscreen ? ClientRectangle : _tilesHost.Bounds;
+        /// <summary>Войти в «театр»: видео — нативно на весь участок, остальные
+        /// участники — лентой миниатюр снизу (Discord-стиль), над ней шеврон
+        /// «Скрыть участников».</summary>
+        private void EnterTheaterMode(string key)
+        {
+            int bar = key.IndexOf('|');
+            string pid = bar > 0 ? key.Substring(0, bar) : key;
+            _fullscreenKey = null;
+            _theaterKey = key;
+            BuildTheaterChrome();
+            _stripCurH = _stripVisible ? StripH : 0;
+            try { _tilesHost.Anchor = AnchorStyles.None; } catch { }  // раскладка ленты — вручную
+            UpdateStripToggleText();
+            LayoutTheaterChrome();
+            try { _transport?.EnterTheater(pid, "screen", TheaterBounds()); } catch { }
+        }
+
+        /// <summary>Полоса с шевроном + подписка на ресайз формы (создаётся один раз).</summary>
+        private void BuildTheaterChrome()
+        {
+            if (_theaterLane != null) return;
+            _theaterLane = new Panel { BackColor = Color.FromArgb(20, 21, 23), Visible = false };
+            _btnStripToggle = new Button
+            {
+                Size = new Size(200, 22),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(40, 42, 46),
+                ForeColor = Color.FromArgb(200, 202, 208),
+                Font = new Font("Segoe UI", 8f),
+                Cursor = Cursors.Hand,
+                TabStop = false,
+                Top = 3
+            };
+            _btnStripToggle.FlatAppearance.BorderSize = 0;
+            _btnStripToggle.FlatAppearance.MouseOverBackColor = Color.FromArgb(56, 58, 64);
+            _btnStripToggle.Click += (s, e) => ToggleStrip();
+            new ToolTip().SetToolTip(_btnStripToggle, "Скрыть/показать участников");
+            _theaterLane.Controls.Add(_btnStripToggle);
+            Controls.Add(_theaterLane);
+            Resize += (s, e) => { if (_theaterKey != null) LayoutTheaterChrome(); };
+        }
+
+        private void UpdateStripToggleText()
+        {
+            if (_btnStripToggle != null)
+                _btnStripToggle.Text = _stripVisible ? "⌄  Скрыть участников" : "⌃  Показать участников";
+        }
+
+        /// <summary>Плавно скрыть/показать ленту участников под театром —
+        /// видео при этом плавно занимает освободившееся место.</summary>
+        private void ToggleStrip()
+        {
+            if (_theaterKey == null) return;
+            _stripVisible = !_stripVisible;
+            UpdateStripToggleText();
+            int to = _stripVisible ? StripH : 0;
+            Anim.Int(_btnStripToggle, _stripCurH, to, 240,
+                v => { _stripCurH = v; LayoutTheaterChrome(); });
+        }
+
+        /// <summary>Раскладка театра: видео сверху, лента миниатюр и шеврон снизу.
+        /// Шеврон живёт в СВОЕЙ полосе вне WebView — нативный контрол поверх
+        /// WebView не отрисовывается (airspace).</summary>
+        private void LayoutTheaterChrome()
+        {
+            if (_theaterKey == null || _theaterLane == null) return;
+            if (_theaterFullscreen)
+            {
+                _theaterLane.Visible = false;
+                _tilesHost.Visible = false;
+                try { _transport?.UpdateTheaterBounds(TheaterBounds()); } catch { }
+                return;
+            }
+            int w = ClientSize.Width;
+            int bottom = ClientSize.Height - _pnlButtons.Height;
+            int laneTop = bottom - LaneH - _stripCurH;
+            _theaterLane.Visible = true;
+            _theaterLane.SetBounds(0, laneTop, w, LaneH);
+            _theaterLane.BringToFront();
+            _btnStripToggle.Left = (w - _btnStripToggle.Width) / 2;
+            _tilesHost.Visible = _stripCurH > 4;
+            _tilesHost.SetBounds(0, laneTop + LaneH, w, Math.Max(1, _stripCurH));
+            try { _transport?.UpdateTheaterBounds(TheaterBounds()); } catch { }
+            if (_tilesHost.Visible) LayoutTiles();
+        }
+
+        /// <summary>Убрать ленту/шеврон и вернуть плиткам всю область.</summary>
+        private void HideTheaterChrome()
+        {
+            Anim.Cancel(_btnStripToggle);
+            if (_theaterLane != null) _theaterLane.Visible = false;
+            _stripVisible = true;
+            _stripCurH = StripH;
+            UpdateStripToggleText();
+            if (_tilesHost != null)
+            {
+                _tilesHost.Visible = true;
+                _tilesHost.SetBounds(0, 56, ClientSize.Width,
+                    Math.Max(50, ClientSize.Height - 56 - _pnlButtons.Height));
+                _tilesHost.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            }
+        }
+
+        /// <summary>Область для нативного видео: весь монитор (fullscreen) либо
+        /// участок над лентой участников (высота ленты анимируется).</summary>
+        private Rectangle TheaterBounds()
+        {
+            if (_theaterFullscreen) return ClientRectangle;
+            int bottom = ClientSize.Height - _pnlButtons.Height;
+            int laneTop = bottom - LaneH - _stripCurH;
+            return new Rectangle(0, 56, ClientSize.Width, Math.Max(50, laneTop - 56));
+        }
 
         /// <summary>Развернуть/свернуть театр на весь монитор (нативное качество сохраняется).</summary>
         private void ToggleTheaterFullscreen()
@@ -575,19 +918,156 @@ namespace PISMO
                 }
                 catch { }
             }
-            try { _transport?.UpdateTheaterBounds(TheaterBounds()); } catch { }
+            LayoutTheaterChrome();   // лента/шеврон: спрятать в fullscreen, вернуть при выходе
         }
 
-        /// <summary>Выйти из нативного «театра» и вернуть плитки.</summary>
+        /// <summary>Выйти из нативного «театра» и вернуть плитки. Как в Discord:
+        /// выход из просмотра = отписка от стрима (если он не открыт в поп-ауте) —
+        /// плитка возвращается к кнопке «Смотреть стрим».</summary>
         private void ExitTheaterMode()
         {
             if (_theaterKey == null) return;
+            string exitKey = _theaterKey;
             // Если были в полноэкранном режиме — сперва вернём обычное окно.
             if (_theaterFullscreen) ToggleTheaterFullscreen();
             _theaterKey = null;
             try { _transport?.ExitTheater(); } catch { }
-            try { if (_tilesHost != null) _tilesHost.Visible = true; } catch { }
+            HideTheaterChrome();
             LayoutTiles();
+
+            int bar = exitKey.IndexOf('|');
+            string pid = bar > 0 ? exitKey.Substring(0, bar) : exitKey;
+            bool hasPopout = _streamPopouts.TryGetValue(pid, out var po)
+                             && po.Form != null && !po.Form.IsDisposed;
+            if (!hasPopout && _publishedStreams.ContainsKey(pid))
+            {
+                _watchIntent.Remove(pid);
+                try { _transport?.UnwatchScreen(pid); } catch { }
+            }
+        }
+
+        // ── Стрим в отдельном окне (pop-out) ─────────────────────────────
+        /// <summary>Открыть стрим участника в отдельном окне. Повторный вызов
+        /// фокусирует существующее окно; окно, умершее некорректно (краш/
+        /// невалидный хэндл), пересоздаётся заново — «неоткрывающихся» окон нет.</summary>
+        private void OpenStreamPopout(string pid)
+        {
+            try
+            {
+                if (_streamPopouts.TryGetValue(pid, out var existing))
+                {
+                    if (existing.Form != null && !existing.Form.IsDisposed)
+                    {
+                        try
+                        {
+                            if (existing.Form.WindowState == FormWindowState.Minimized)
+                                existing.Form.WindowState = FormWindowState.Normal;
+                            existing.Form.BringToFront();
+                            existing.Form.Activate();
+                        }
+                        catch { }
+                        return;
+                    }
+                    _streamPopouts.Remove(pid);   // окно умерло некорректно — пересоздаём
+                }
+
+                string name = _participants.TryGetValue(pid, out var nm) ? nm
+                            : (_publishedStreams.TryGetValue(pid, out var pn) ? pn : pid);
+
+                var f = new Form
+                {
+                    Text = "🖥 Стрим — " + name,
+                    StartPosition = FormStartPosition.CenterScreen,
+                    Size = new Size(900, 560),
+                    MinimumSize = new Size(320, 220),
+                    BackColor = Color.FromArgb(15, 16, 18),
+                    KeyPreview = true,
+                    ShowInTaskbar = true
+                };
+
+                var top = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = Color.FromArgb(30, 31, 34) };
+                var chkTop = new CheckBox
+                {
+                    Text = "📌 Поверх всех окон",
+                    ForeColor = Color.FromArgb(200, 202, 208),
+                    AutoSize = true,
+                    Location = new Point(8, 4),
+                    Font = new Font("Segoe UI", 8f)
+                };
+                chkTop.CheckedChanged += (s, e) => { try { f.TopMost = chkTop.Checked; } catch { } };
+                top.Controls.Add(chkTop);
+
+                var pb = new PictureBox
+                {
+                    Dock = DockStyle.Fill,
+                    SizeMode = PictureBoxSizeMode.Zoom,
+                    BackColor = Color.FromArgb(15, 16, 18)
+                };
+                var lblInfo = new Label
+                {
+                    Text = "Подключение к стриму…",
+                    Dock = DockStyle.Bottom,
+                    Height = 24,
+                    ForeColor = Color.FromArgb(150, 152, 158),
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Font = new Font("Segoe UI", 9f)
+                };
+                f.Controls.Add(pb);
+                f.Controls.Add(lblInfo);
+                f.Controls.Add(top);
+                f.KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { try { f.Close(); } catch { } } };
+
+                string capPid = pid;
+                f.FormClosed += (s, e) => OnPopoutClosed(capPid);
+
+                _streamPopouts[pid] = new StreamPopout { Form = f, Pb = pb, LblInfo = lblInfo };
+                f.Show();
+                Anim.FadeIn(f);
+
+                // Кадры чаще и крупнее — это окно и есть «экран» для зрителя.
+                try { _transport?.SetTileRate(pid, "screen", 30, 1280, true); } catch { }
+
+                // Ещё не смотрим стрим — подключаемся (театр не трогаем).
+                bool watching = _tiles.TryGetValue(TileKey(pid, "screen"), out var t) && t.HasVideo;
+                if (!watching) WatchStream(pid, "popout");
+                else lblInfo.Visible = false;
+            }
+            catch { }
+        }
+
+        /// <summary>Окно поп-аута закрылось (любым способом, включая некорректный):
+        /// снимаем ускоренную выкачку кадров и отписываемся от стрима, если его
+        /// больше никто не смотрит (нет театра).</summary>
+        private void OnPopoutClosed(string pid)
+        {
+            try
+            {
+                _streamPopouts.Remove(pid);
+                try { _transport?.SetTileRate(pid, "screen", 15, 960, false); } catch { }
+                if (_theaterKey != TileKey(pid, "screen"))
+                {
+                    _watchIntent.Remove(pid);
+                    try { _transport?.UnwatchScreen(pid); } catch { }
+                }
+            }
+            catch { }
+        }
+
+        private void ClosePopout(string pid)
+        {
+            if (_streamPopouts.TryGetValue(pid, out var po))
+            {
+                try { if (po.Form != null && !po.Form.IsDisposed) po.Form.Close(); } catch { }
+                _streamPopouts.Remove(pid);
+            }
+        }
+
+        /// <summary>Закрыть все поп-ауты и сторожевые таймеры (выход из звонка).</summary>
+        private void CloseAllStreamPopouts()
+        {
+            foreach (var pid in new List<string>(_streamPopouts.Keys)) ClosePopout(pid);
+            foreach (var t in _watchTimeouts.Values) { try { t.Stop(); t.Dispose(); } catch { } }
+            _watchTimeouts.Clear();
         }
 
         // ── Индивидуальная громкость КОНКРЕТНОЙ демонстрации (правый клик по
@@ -672,6 +1152,38 @@ namespace PISMO
             int w = _tilesHost.ClientSize.Width;
             int h = _tilesHost.ClientSize.Height;
             if (w <= 0 || h <= 0) return;
+
+            // Театр: остальные участники — горизонтальная лента миниатюр внизу
+            // (сам стрим рисуется нативно выше и в ленте не дублируется).
+            if (_theaterKey != null)
+            {
+                var keys = new List<string>();
+                foreach (var k in _tileOrder) if (k != _theaterKey) keys.Add(k);
+                if (_tiles.TryGetValue(_theaterKey, out var th)) th.Panel.Visible = false;
+                if (keys.Count == 0) return;
+
+                const int sgap = 8;
+                int cellH = Math.Max(40, h - 10);
+                int cellW = cellH * 16 / 9;
+                int total = keys.Count * cellW + (keys.Count - 1) * sgap;
+                if (total > w - 16)
+                {
+                    cellW = Math.Max(60, (w - 16 - (keys.Count - 1) * sgap) / keys.Count);
+                    cellH = Math.Min(cellH, cellW * 9 / 16);
+                    total = keys.Count * cellW + (keys.Count - 1) * sgap;
+                }
+                int sx = (w - total) / 2;
+                int sy = (h - cellH) / 2;
+                foreach (var k in keys)
+                {
+                    if (!_tiles.TryGetValue(k, out var t)) continue;
+                    t.Panel.Visible = true;
+                    t.Panel.SetBounds(sx, sy, cellW, cellH);
+                    t.Panel.Invalidate();
+                    sx += cellW + sgap;
+                }
+                return;
+            }
 
             // Режим «на весь экран»: показываем только выбранную плитку.
             if (_fullscreenKey != null && _tiles.ContainsKey(_fullscreenKey))

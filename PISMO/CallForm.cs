@@ -288,6 +288,13 @@ namespace PISMO
             _transport.RemoteTileStarted += (pid, name, source) => UiInvoke(() => OnTileStarted(pid, name, source));
             _transport.RemoteTileStopped += (pid, source) => UiInvoke(() => OnTileStopped(pid, source));
             _transport.RemoteTileFrame += (pid, source, frame) => OnTileFrameOffThread(pid, source, frame);
+
+            // --- «Смотреть стрим»: подключение к идущей демке по кнопке ---
+            _transport.RemoteStreamPublished += (pid, name) => UiInvoke(() => OnStreamPublished(pid, name));
+            _transport.RemoteStreamUnpublished += pid => UiInvoke(() => OnStreamUnpublished(pid));
+            _transport.WatchFailed += (pid, err) => UiInvoke(() => OnWatchFailed(pid, err));
+            _transport.StreamWatchersChanged += n => UiInvoke(() => OnStreamWatchers(n));
+            _transport.ScreenSourceSwitched += (ok, err) => UiInvoke(() => OnScreenSourceSwitched(ok, err));
             _transport.ActiveSpeakers += json => UiInvoke(() => OnActiveSpeakers(json));
             _transport.PingUpdated += ms => UiInvoke(() => UpdatePing(ms));
             _transport.ParticipantRenamed += (pid, name) => UiInvoke(() => OnParticipantRenamed(pid, name));
@@ -317,8 +324,19 @@ namespace PISMO
             _transport.LocalCameraError += err => UiInvoke(() => OnLocalCameraError(err));
             _transport.TheaterExitRequested += () => UiInvoke(ExitTheaterMode);
             _transport.TheaterFullscreenToggle += () => UiInvoke(ToggleTheaterFullscreen);
-            _transport.ScreenSendStats += t => ShowNetStats(t, send: true);
+            _transport.ScreenSendStats += t => { ShowNetStats(t, send: true); UiInvoke(() => UpdatePipStats(t)); };
             _transport.ScreenRecvStats += t => ShowNetStats(t, send: false);
+
+            // ПКМ по кнопке демонстрации — смена источника на лету (игра ↔ экран).
+            try
+            {
+                var screenMenu = new ContextMenuStrip();
+                screenMenu.Items.Add("🔁 Сменить источник (игра / весь экран)", null,
+                    (s, e) => { if (_screenSharing) try { _transport?.SwitchScreenSource(); } catch { } });
+                screenMenu.Opening += (s, e) => { e.Cancel = !_screenSharing; };
+                _btnScreen.ContextMenuStrip = screenMenu;
+            }
+            catch { }
             _transport.SoftwareEncoderDetected += () => UiInvoke(OnSoftwareEncoder);
             _transport.HardwareEncoderDetected += t => UiInvoke(() =>
             {
@@ -572,6 +590,36 @@ namespace PISMO
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
             HideScreenSharePip();
+        }
+
+        /// <summary>Итог смены источника демонстрации «на лету». При любом исходе
+        /// стрим продолжает идти: успех — уже новым источником, отмена/ошибка —
+        /// прежним (состояние демки не трогаем, только возвращаем WebView).</summary>
+        private void OnScreenSourceSwitched(bool ok, string error)
+        {
+            try { _transport?.HideTransportWindow(); } catch { }
+            if (ok)
+            {
+                _lblStatus.Text = "Источник демонстрации изменён";
+                return;
+            }
+            bool userCancel = error != null &&
+                (error.Contains("NotAllowedError") || error.Contains("отмен") || error.Contains("таймаут"));
+            if (!userCancel && !string.IsNullOrEmpty(error))
+                _lblStatus.Text = "Смена источника: " + error;
+        }
+
+        /// <summary>Сколько человек сейчас смотрят нашу демку — в заголовок PIP.</summary>
+        private void OnStreamWatchers(int n)
+        {
+            if (_screenPipTitleLbl == null || _screenPipTitleLbl.IsDisposed) return;
+            try
+            {
+                _screenPipTitleLbl.Text = n > 0
+                    ? $"🖥 Ваша демонстрация · 👁 {n}"
+                    : "🖥 Ваша демонстрация";
+            }
+            catch { }
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1252,9 +1300,24 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════
         private PictureBox _screenPipPicture;
         private Panel _screenPipTitleBar;
+        private Label _screenPipTitleLbl;    // «Ваша демонстрация · 👁 N»
+        private Label _screenPipStats;       // что реально уходит зрителям (fps/битрейт)
         private bool _screenPipCollapsed = false;
         private Size _screenPipExpandedSize = new Size(260, 170);
         private NotifyIcon _screenPipTrayIcon;
+
+        /// <summary>Строка отправки в PIP: превью подстраивает свой темп под
+        /// РЕАЛЬНЫЙ исходящий поток, а эта плашка показывает его цифрами.</summary>
+        private void UpdatePipStats(string text)
+        {
+            if (_screenPipStats == null || _screenPipStats.IsDisposed) return;
+            try
+            {
+                _screenPipStats.Text = text ?? "";
+                _screenPipStats.Visible = !string.IsNullOrEmpty(text) && !_screenPipCollapsed;
+            }
+            catch { }
+        }
 
         private void ShowScreenSharePipContainer()
         {
@@ -1289,6 +1352,7 @@ namespace PISMO
                 Padding = new Padding(6, 0, 0, 0),
                 Font = new Font("Segoe UI", 8)
             };
+            _screenPipTitleLbl = lbl;
             var btnTray = new Button
             {
                 Text = "▾",
@@ -1312,7 +1376,24 @@ namespace PISMO
             };
             btnToggle.FlatAppearance.BorderSize = 0;
             btnToggle.Click += (s, e) => ToggleScreenSharePipCollapsed();
+
+            // Смена источника трансляции на лету (игра ↔ весь экран).
+            var btnSwitch = new Button
+            {
+                Text = "🔁",
+                Dock = DockStyle.Right,
+                Width = 24,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(40, 42, 46),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Emoji", 8f)
+            };
+            btnSwitch.FlatAppearance.BorderSize = 0;
+            new ToolTip().SetToolTip(btnSwitch, "Сменить источник (игра / весь экран)");
+            btnSwitch.Click += (s, e) => { if (_screenSharing) try { _transport?.SwitchScreenSource(); } catch { } };
+
             _screenPipTitleBar.Controls.Add(lbl);
+            _screenPipTitleBar.Controls.Add(btnSwitch);
             _screenPipTitleBar.Controls.Add(btnToggle);
             _screenPipTitleBar.Controls.Add(btnTray);
 
@@ -1323,7 +1404,23 @@ namespace PISMO
                 SizeMode = PictureBoxSizeMode.Zoom
             };
 
+            // Плашка «что реально уходит зрителям» — превью живёт в том же
+            // темпе/размере, а здесь цифры (fps, битрейт, упор CPU/сеть).
+            _screenPipStats = new Label
+            {
+                Dock = DockStyle.Bottom,
+                Height = 17,
+                Visible = false,
+                ForeColor = Color.FromArgb(170, 173, 179),
+                BackColor = Color.FromArgb(26, 27, 30),
+                Font = new Font("Consolas", 7.25f),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(4, 0, 0, 0),
+                AutoEllipsis = true
+            };
+
             _screenPipForm.Controls.Add(_screenPipPicture);
+            _screenPipForm.Controls.Add(_screenPipStats);
             _screenPipForm.Controls.Add(_screenPipTitleBar);
 
             // Перетаскивание окна за титульную полосу, метку и само превью.
@@ -1390,6 +1487,7 @@ namespace PISMO
             resizeHandle.BringToFront();
 
             _screenPipForm.Show();
+            Anim.FadeIn(_screenPipForm);
         }
 
         private void ToggleScreenSharePipCollapsed()
@@ -1400,6 +1498,7 @@ namespace PISMO
             {
                 _screenPipExpandedSize = _screenPipForm.Size;
                 _screenPipPicture.Visible = false;
+                if (_screenPipStats != null) _screenPipStats.Visible = false;
                 _screenPipForm.Size = new Size(180, 22);
                 try { _transport?.SetScreenPreviewActive(false); } catch { }   // превью скрыто — не извлекаем кадры
             }
@@ -1497,6 +1596,8 @@ namespace PISMO
             _screenPipForm = null;
             _screenPipPicture = null;
             _screenPipTitleBar = null;
+            _screenPipTitleLbl = null;
+            _screenPipStats = null;
         }
 
         /// <summary>Масштабирует изображение по высоте до targetHeight; не повышает разрешение (нет апскейла).</summary>
@@ -1837,6 +1938,7 @@ namespace PISMO
                 _durationTimer?.Stop(); _durationTimer?.Dispose();
                 _speakHoldTimer?.Stop(); _speakHoldTimer?.Dispose();
 
+                CloseAllStreamPopouts();   // окна стримов не должны переживать звонок
                 StopScreenShare();
                 if (_cameraStarted)
                 {
