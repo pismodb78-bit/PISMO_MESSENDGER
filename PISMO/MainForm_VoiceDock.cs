@@ -34,6 +34,10 @@ namespace PISMO
                                        // null => используется _activeCall (личный/групповой)
         private Action _repaintFooterVoice;   // обновить кнопки 🎤/🎧 футера
 
+        /// <summary>Поднимается при смене VoiceState — чтобы футер в окне серверов
+        /// перекрашивал свои кнопки 🎤/🎧 синхронно с футером ЛС.</summary>
+        public event Action FooterVoiceChanged;
+
         /// <summary>Синхронизировать кнопки футера с VoiceState (вызывается, когда
         /// микрофон/звук переключили горячей клавишей внутри окна звонка).</summary>
         public void SyncFooterVoiceButtons()
@@ -41,6 +45,83 @@ namespace PISMO
             if (IsDisposed) return;
             if (InvokeRequired) { try { BeginInvoke((Action)SyncFooterVoiceButtons); } catch { } return; }
             try { _repaintFooterVoice?.Invoke(); } catch { }
+            try { FooterVoiceChanged?.Invoke(); } catch { }
+        }
+
+        /// <summary>Мьют микрофона из любого футера (ЛС/серверы): глобальное
+        /// состояние + живое применение к текущему звонку.</summary>
+        public void ToggleMicGlobal()
+        {
+            VoiceState.MicMuted = !VoiceState.MicMuted;
+            try { (DockCallWindow() as CallForm)?.SetMicMutedPublic(VoiceState.MicMuted); } catch { }
+            SyncFooterVoiceButtons();
+        }
+
+        /// <summary>«Наушники» (заглушить весь входящий звук) из любого футера.</summary>
+        public void ToggleDeafenGlobal()
+        {
+            VoiceState.Deafened = !VoiceState.Deafened;
+            try { (DockCallWindow() as CallForm)?.SetAllMutedPublic(VoiceState.Deafened); } catch { }
+            SyncFooterVoiceButtons();
+        }
+
+        /// <summary>Меню выбора микрофона (общее для футеров ЛС и серверов).</summary>
+        public ContextMenuStrip BuildMicDeviceMenu()
+        {
+            var menu = new ContextMenuStrip();
+            try
+            {
+                for (int i = 0; i < WaveInEvent.DeviceCount; i++)
+                {
+                    string nm = WaveInEvent.GetCapabilities(i).ProductName;
+                    int idx = i;
+                    var item = new ToolStripMenuItem(nm)
+                    { Checked = nm == DeviceSettings.MicrophoneName || idx == DeviceSettings.MicrophoneIndex };
+                    item.Click += (s2, e2) =>
+                    {
+                        DeviceSettings.MicrophoneIndex = idx;
+                        DeviceSettings.MicrophoneName = nm;
+                        try { DeviceSettings.Save(); } catch { }
+                        (DockCallWindow() as CallForm)?.SetInputDeviceLive(nm);
+                    };
+                    menu.Items.Add(item);
+                }
+            }
+            catch { }
+            if (menu.Items.Count == 0)
+                menu.Items.Add(new ToolStripMenuItem("Микрофоны не найдены") { Enabled = false });
+            return menu;
+        }
+
+        /// <summary>Меню выбора устройства вывода (общее для футеров ЛС и серверов).</summary>
+        public ContextMenuStrip BuildSpeakerDeviceMenu()
+        {
+            var menu = new ContextMenuStrip();
+            try
+            {
+                var def = new ToolStripMenuItem("Системное по умолчанию")
+                { Checked = string.IsNullOrWhiteSpace(DeviceSettings.SpeakerName) };
+                def.Click += (s2, e2) =>
+                {
+                    DeviceSettings.SpeakerName = "";
+                    try { DeviceSettings.Save(); } catch { }
+                };
+                menu.Items.Add(def);
+                for (int i = 0; i < WaveOut.DeviceCount; i++)
+                {
+                    string nm = WaveOut.GetCapabilities(i).ProductName;
+                    var item = new ToolStripMenuItem(nm) { Checked = nm == DeviceSettings.SpeakerName };
+                    item.Click += (s2, e2) =>
+                    {
+                        DeviceSettings.SpeakerName = nm;
+                        try { DeviceSettings.Save(); } catch { }
+                        (DockCallWindow() as CallForm)?.SetOutputDeviceLive(nm);
+                    };
+                    menu.Items.Add(item);
+                }
+            }
+            catch { }
+            return menu;
         }
 
         /// <summary>Окно звонка, к которому относится док.</summary>
@@ -335,74 +416,18 @@ namespace PISMO
             _voiceTip.SetToolTip(btnMicArrow, "Устройство ввода");
             _voiceTip.SetToolTip(btnSpkArrow, "Устройство вывода");
 
-            btnMic.Click += (s, e) =>
-            {
-                VoiceState.MicMuted = !VoiceState.MicMuted;
-                (DockCallWindow() as CallForm)?.SetMicMutedPublic(VoiceState.MicMuted);
-                PaintStates();
-            };
-            btnSpk.Click += (s, e) =>
-            {
-                VoiceState.Deafened = !VoiceState.Deafened;
-                (DockCallWindow() as CallForm)?.SetAllMutedPublic(VoiceState.Deafened);
-                PaintStates();
-            };
+            btnMic.Click += (s, e) => ToggleMicGlobal();
+            btnSpk.Click += (s, e) => ToggleDeafenGlobal();
 
-            // ▾ микрофон — список устройств ввода (NAudio), галочка на выбранном.
+            // ▾ микрофон / ▾ вывод — общие меню устройств (те же в футере серверов).
             btnMicArrow.Click += (s, e) =>
             {
-                var menu = new ContextMenuStrip();
-                try
-                {
-                    for (int i = 0; i < WaveInEvent.DeviceCount; i++)
-                    {
-                        string nm = WaveInEvent.GetCapabilities(i).ProductName;
-                        int idx = i;
-                        var item = new ToolStripMenuItem(nm)
-                        { Checked = nm == DeviceSettings.MicrophoneName || idx == DeviceSettings.MicrophoneIndex };
-                        item.Click += (s2, e2) =>
-                        {
-                            DeviceSettings.MicrophoneIndex = idx;
-                            DeviceSettings.MicrophoneName = nm;
-                            try { DeviceSettings.Save(); } catch { }
-                            (DockCallWindow() as CallForm)?.SetInputDeviceLive(nm);
-                        };
-                        menu.Items.Add(item);
-                    }
-                }
-                catch { }
-                if (menu.Items.Count == 0) menu.Items.Add(new ToolStripMenuItem("Микрофоны не найдены") { Enabled = false });
+                var menu = BuildMicDeviceMenu();
                 menu.Show(btnMicArrow, new Point(0, -menu.Items.Count * 24));
             };
-
-            // ▾ вывод — список устройств воспроизведения (NAudio).
             btnSpkArrow.Click += (s, e) =>
             {
-                var menu = new ContextMenuStrip();
-                try
-                {
-                    var def = new ToolStripMenuItem("Системное по умолчанию")
-                    { Checked = string.IsNullOrWhiteSpace(DeviceSettings.SpeakerName) };
-                    def.Click += (s2, e2) =>
-                    {
-                        DeviceSettings.SpeakerName = "";
-                        try { DeviceSettings.Save(); } catch { }
-                    };
-                    menu.Items.Add(def);
-                    for (int i = 0; i < WaveOut.DeviceCount; i++)
-                    {
-                        string nm = WaveOut.GetCapabilities(i).ProductName;
-                        var item = new ToolStripMenuItem(nm) { Checked = nm == DeviceSettings.SpeakerName };
-                        item.Click += (s2, e2) =>
-                        {
-                            DeviceSettings.SpeakerName = nm;
-                            try { DeviceSettings.Save(); } catch { }
-                            (DockCallWindow() as CallForm)?.SetOutputDeviceLive(nm);
-                        };
-                        menu.Items.Add(item);
-                    }
-                }
-                catch { }
+                var menu = BuildSpeakerDeviceMenu();
                 menu.Show(btnSpkArrow, new Point(0, -menu.Items.Count * 24));
             };
 

@@ -1109,6 +1109,26 @@ namespace PISMO
                 };
                 menu.Items.Add(itemCall);
 
+                // Закрепление чата (2.1): диалог прижимается к верху списка ЛС
+                // (ниже групп) независимо от свежести переписки. Хранится локально.
+                try
+                {
+                    bool chatPinned = ChatPins.IsPinned(partnerId);
+                    var itemPinChat = new ToolStripMenuItem(chatPinned ? "📌 Открепить чат" : "📌 Закрепить чат");
+                    itemPinChat.Click += (s2, e2) =>
+                    {
+                        ChatPins.Toggle(partnerId);
+                        try
+                        {
+                            if (UserSession.Role == "admin" && !UserSession.IsImpersonating) LoadAllUsersForAdmin();
+                            else LoadConversations();
+                        }
+                        catch { }
+                    };
+                    menu.Items.Add(itemPinChat);
+                }
+                catch { }
+
                 // Блок/разблок пользователя
                 try
                 {

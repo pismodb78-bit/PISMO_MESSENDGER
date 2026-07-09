@@ -90,6 +90,10 @@ namespace PISMO
             btnRefreshSrv.Click += (s, e) => RefreshNow();
             var channelHost = new Panel { Dock = DockStyle.Left, Width = 200, BackColor = Color.FromArgb(47, 49, 54) };
             channelHost.Controls.Add(_pnlChannels);
+            // Плашка профиля (аватар/имя/🎤/🎧/⚙) внизу колонки каналов — как в ЛС.
+            // Порядок добавления важен: докинг идёт с конца списка, футер должен
+            // занять низ ДО _pnlChannels (Fill).
+            channelHost.Controls.Add(BuildChannelFooter());
             channelHost.Controls.Add(_channelSearch);
             channelHost.Controls.Add(btnRefreshSrv);
 

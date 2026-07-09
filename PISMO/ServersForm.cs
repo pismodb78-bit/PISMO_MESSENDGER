@@ -159,9 +159,145 @@ namespace PISMO
                         foreach (Control row in cont.Controls)
                             foreach (Control c in row.Controls)
                                 if (c is Panel) { try { c.Invalidate(); } catch { } }
+                    try { _footerAvatar?.Invalidate(); } catch { }
                 }));
             }
             catch { }
+        }
+
+        // ── Футер профиля под списком каналов (2.1) — как плашка в сайдбаре ЛС:
+        //    аватар + имя, кнопки 🎤(мьют)/▾ 🎧(заглушить всё)/▾ и ⚙ настройки.
+        //    Состояние общее с футером ЛС (VoiceState через MainForm.Current). ──
+        private Panel _footerAvatar;
+        private Action _footerRepaint;
+
+        private Panel BuildChannelFooter()
+        {
+            var footer = new Panel { Dock = DockStyle.Bottom, Height = 88, Width = 200, BackColor = Color.FromArgb(28, 29, 34) };
+            footer.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                var r = new Rectangle(4, 4, footer.Width - 8, footer.Height - 8);
+                using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                const int d = 20;
+                path.AddArc(r.X, r.Y, d, d, 180, 90);
+                path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+                path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+                path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+                path.CloseFigure();
+                using var br = new SolidBrush(Color.FromArgb(35, 36, 41));
+                g.FillPath(br, path);
+            };
+
+            // Нижний ряд: аватар + имя.
+            var avatar = new Panel { Size = new Size(36, 36), Location = new Point(12, 44), BackColor = Color.Transparent };
+            avatar.Paint += (s, e) =>
+            {
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                if (!AvatarStore.DrawAvatar(e.Graphics, _me, 0, 0, avatar.Width - 1))
+                {
+                    using var br = new SolidBrush(Color.FromArgb(88, 101, 242));
+                    e.Graphics.FillEllipse(br, 0, 0, avatar.Width - 1, avatar.Height - 1);
+                    string letter = (UserSession.EffectiveName ?? "?").Trim();
+                    letter = letter.Length > 0 ? letter[0].ToString().ToUpper() : "?";
+                    using var f = new Font("Segoe UI Black", 13f, FontStyle.Bold);
+                    var sz = e.Graphics.MeasureString(letter, f);
+                    e.Graphics.DrawString(letter, f, Brushes.White,
+                        (avatar.Width - sz.Width) / 2, (avatar.Height - sz.Height) / 2);
+                }
+            };
+            _footerAvatar = avatar;
+            try { AvatarStore.EnsureLoaded(_me); } catch { }
+
+            var lblMe = new Label
+            {
+                Text = UserSession.EffectiveName ?? "",
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+                Location = new Point(54, 48),
+                Size = new Size(footer.Width - 62, 28),
+                AutoEllipsis = true,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom
+            };
+
+            // Верхний ряд: кнопки справа налево ⚙ ▾ 🎧 ▾ 🎤 (как в футере ЛС).
+            Button Mk(string text, int w, int x, float size = 10.5f)
+            {
+                var b = new Button
+                {
+                    Text = text,
+                    Font = new Font("Segoe UI", size),
+                    Size = new Size(w, 30),
+                    Location = new Point(x, 8),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.Transparent,
+                    ForeColor = Color.FromArgb(185, 187, 190),
+                    Cursor = Cursors.Hand,
+                    TabStop = false
+                };
+                b.FlatAppearance.BorderSize = 0;
+                b.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 52, 58);
+                return b;
+            }
+
+            int W = footer.Width;
+            var btnSet = Mk("⚙", 30, W - 40, 12f);
+            var btnSpkArrow = Mk("▾", 16, W - 58, 8f);
+            var btnSpk = Mk("🎧", 30, W - 90);
+            var btnMicArrow = Mk("▾", 16, W - 108, 8f);
+            var btnMic = Mk("🎤", 30, W - 140);
+
+            var tip = new ToolTip();
+            void PaintStates()
+            {
+                if (footer.IsDisposed) return;
+                btnMic.Text = VoiceState.MicMuted ? "🔇" : "🎤";
+                btnMic.ForeColor = VoiceState.MicMuted ? Color.FromArgb(237, 66, 69) : Color.FromArgb(185, 187, 190);
+                btnSpk.Text = VoiceState.Deafened ? "🔕" : "🎧";
+                btnSpk.ForeColor = VoiceState.Deafened ? Color.FromArgb(237, 66, 69) : Color.FromArgb(185, 187, 190);
+                tip.SetToolTip(btnMic, VoiceState.MicMuted ? "Включить микрофон" : "Выключить микрофон");
+                tip.SetToolTip(btnSpk, VoiceState.Deafened ? "Включить звук" : "Отключить звук");
+            }
+            PaintStates();
+            tip.SetToolTip(btnSet, "Настройки устройств");
+            tip.SetToolTip(btnMicArrow, "Устройство ввода");
+            tip.SetToolTip(btnSpkArrow, "Устройство вывода");
+
+            btnMic.Click += (s, e) => MainForm.Current?.ToggleMicGlobal();
+            btnSpk.Click += (s, e) => MainForm.Current?.ToggleDeafenGlobal();
+            btnMicArrow.Click += (s, e) =>
+            {
+                var m = MainForm.Current?.BuildMicDeviceMenu();
+                if (m != null) m.Show(btnMicArrow, new Point(0, -m.Items.Count * 24));
+            };
+            btnSpkArrow.Click += (s, e) =>
+            {
+                var m = MainForm.Current?.BuildSpeakerDeviceMenu();
+                if (m != null) m.Show(btnSpkArrow, new Point(0, -m.Items.Count * 24));
+            };
+            btnSet.Click += (s, e) => { try { new SettingsForm().ShowDialog(this); } catch { } };
+
+            // Синхронизация с футером ЛС: мьют по хоткею/в звонке/в другом окне
+            // сразу перекрашивает и эти кнопки.
+            _footerRepaint = PaintStates;
+            try { if (MainForm.Current != null) MainForm.Current.FooterVoiceChanged += _footerRepaint; } catch { }
+            FormClosed += (s, e) =>
+            {
+                try { if (MainForm.Current != null && _footerRepaint != null) MainForm.Current.FooterVoiceChanged -= _footerRepaint; } catch { }
+            };
+
+            footer.Controls.Add(avatar);
+            footer.Controls.Add(lblMe);
+            footer.Controls.Add(btnMic);
+            footer.Controls.Add(btnMicArrow);
+            footer.Controls.Add(btnSpk);
+            footer.Controls.Add(btnSpkArrow);
+            footer.Controls.Add(btnSet);
+            return footer;
         }
 
         private void OnWs(string type, int senderId, int sessionId, string payload)

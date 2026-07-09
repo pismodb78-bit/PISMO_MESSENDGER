@@ -125,7 +125,9 @@ namespace PISMO
         private Label _msgSearchCount;
 
         /// <summary>Поиск по открытому чату: кнопка 🔍 в шапке разворачивает поле;
-        /// по вводу подсвечивает совпадения и прокручивает к первому.</summary>
+        /// по вводу подсвечивает совпадения; стрелки ▲/▼ (и Enter/Shift+Enter)
+        /// ходят по найденному; клик по счётчику — выпадающий список совпадений
+        /// (полный текст сообщения + дата отправки).</summary>
         private void BuildMessageSearch()
         {
             try
@@ -140,47 +142,98 @@ namespace PISMO
                 _btnMsgSearch.FlatAppearance.BorderSize = 0;
                 new ToolTip().SetToolTip(_btnMsgSearch, "Поиск по чату");
 
+                Button MkNav(string text, int right, string tip)
+                {
+                    var b = new Button
+                    {
+                        Text = text, Font = new Font("Segoe UI", 8f), FlatStyle = FlatStyle.Flat,
+                        ForeColor = Color.FromArgb(200, 202, 208), BackColor = Color.FromArgb(47, 49, 54),
+                        Size = new Size(26, 26), Location = new Point(pnlChatHeader.Width - right, 11),
+                        Anchor = AnchorStyles.Top | AnchorStyles.Right, Cursor = Cursors.Hand,
+                        TabStop = false, Visible = false
+                    };
+                    b.FlatAppearance.BorderSize = 0;
+                    new ToolTip().SetToolTip(b, tip);
+                    return b;
+                }
+                _btnMsgSearchNext = MkNav("▼", 170, "Следующее совпадение (Enter)");
+                _btnMsgSearchPrev = MkNav("▲", 198, "Предыдущее совпадение (Shift+Enter)");
+                _btnMsgSearchPrev.Click += (s, e) => GoToSearchMatch(-1);
+                _btnMsgSearchNext.Click += (s, e) => GoToSearchMatch(+1);
+
                 _msgSearch = new TextBox
                 {
                     Visible = false, BorderStyle = BorderStyle.FixedSingle,
                     BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
                     Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в переписке…",
-                    Size = new Size(190, 26), Location = new Point(pnlChatHeader.Width - 394, 11),
+                    Size = new Size(190, 26), Location = new Point(pnlChatHeader.Width - 460, 11),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right
                 };
                 _msgSearchCount = new Label
                 {
-                    Visible = false, AutoSize = false, Size = new Size(56, 20),
-                    Location = new Point(pnlChatHeader.Width - 200, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    Visible = false, AutoSize = false, Size = new Size(62, 20),
+                    Location = new Point(pnlChatHeader.Width - 264, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     ForeColor = Color.FromArgb(150, 152, 158), Font = new Font("Segoe UI", 8f),
-                    TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent
+                    TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent,
+                    Cursor = Cursors.Hand
                 };
+                new ToolTip().SetToolTip(_msgSearchCount, "Список найденных сообщений");
+                _msgSearchCount.Click += (s, e) => ShowSearchResults();
 
-                _btnMsgSearch.Click += (s, e) =>
+                void SetSearchVisible(bool show)
                 {
-                    bool show = !_msgSearch.Visible;
-                    _msgSearch.Visible = show; _msgSearchCount.Visible = show;
-                    if (show) { _msgSearch.Focus(); }
-                    else { _msgSearch.Clear(); HighlightSearch(""); }
-                };
+                    _msgSearch.Visible = show;
+                    _msgSearchCount.Visible = show;
+                    _btnMsgSearchPrev.Visible = show;
+                    _btnMsgSearchNext.Visible = show;
+                    if (show) _msgSearch.Focus();
+                    else
+                    {
+                        try { _searchResultsPopup?.Close(); } catch { }
+                        _msgSearch.Clear();
+                        HighlightSearch("");
+                    }
+                }
+
+                _btnMsgSearch.Click += (s, e) => SetSearchVisible(!_msgSearch.Visible);
                 _msgSearch.TextChanged += (s, e) => HighlightSearch(_msgSearch.Text);
-                _msgSearch.KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { _msgSearch.Clear(); _msgSearch.Visible = false; _msgSearchCount.Visible = false; HighlightSearch(""); } };
+                _msgSearch.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode == Keys.Escape) { SetSearchVisible(false); e.SuppressKeyPress = true; }
+                    else if (e.KeyCode == Keys.Enter)
+                    {
+                        GoToSearchMatch(e.Shift ? -1 : +1);
+                        e.SuppressKeyPress = true;   // без «динь» системного бипа
+                    }
+                };
 
                 pnlChatHeader.Controls.Add(_msgSearch);
                 pnlChatHeader.Controls.Add(_msgSearchCount);
+                pnlChatHeader.Controls.Add(_btnMsgSearchPrev);
+                pnlChatHeader.Controls.Add(_btnMsgSearchNext);
                 pnlChatHeader.Controls.Add(_btnMsgSearch);
-                _msgSearch.BringToFront(); _msgSearchCount.BringToFront(); _btnMsgSearch.BringToFront();
+                _msgSearch.BringToFront(); _msgSearchCount.BringToFront();
+                _btnMsgSearchPrev.BringToFront(); _btnMsgSearchNext.BringToFront();
+                _btnMsgSearch.BringToFront();
             }
             catch { }
         }
 
-        /// <summary>Подсветка сообщений с текстом query в открытом чате.</summary>
+        // ── Поиск по чату: список совпадений + навигация (2.1) ──
+        private readonly List<Panel> _searchMatches = new();
+        private int _searchIndex = -1;
+        private Button _btnMsgSearchPrev, _btnMsgSearchNext;
+        private Form _searchResultsPopup;
+
+        /// <summary>Подсветка сообщений с текстом query в открытом чате.
+        /// Строит список совпадений (сверху вниз) и встаёт на первое.</summary>
         private void HighlightSearch(string query)
         {
             try
             {
                 query = (query ?? "").Trim();
-                Panel first = null; int matches = 0;
+                _searchMatches.Clear();
+                _searchIndex = -1;
                 foreach (Control c in pnlMessages.Controls)
                 {
                     if (c is not Panel b || b.AccessibleDescription == null) continue;
@@ -190,15 +243,137 @@ namespace PISMO
                     // поиска пузыри стали бы тёмными на светлом фоне).
                     Color orig = Theme.Map(isMine ? Color.FromArgb(88, 101, 242) : Color.FromArgb(64, 68, 75));
                     if (query.Length > 0 && b.AccessibleDescription.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        b.BackColor = Color.FromArgb(83, 108, 60);   // подсветка совпадения
-                        matches++; first ??= b;
-                    }
-                    else b.BackColor = orig;
-                    b.Invalidate();
+                        _searchMatches.Add(b);
+                    else { b.BackColor = orig; b.Invalidate(); }
                 }
-                if (_msgSearchCount != null) _msgSearchCount.Text = query.Length == 0 ? "" : (matches + " найд.");
-                if (first != null) try { pnlMessages.ScrollControlIntoView(first); } catch { }
+                // Порядок — визуальный, сверху вниз (Controls может не совпадать).
+                _searchMatches.Sort((a, b2) => a.Top.CompareTo(b2.Top));
+                if (_searchMatches.Count > 0) _searchIndex = 0;
+                RepaintSearchMatches();
+                UpdateSearchNavUi(query.Length > 0);
+                if (_searchIndex >= 0)
+                    try { pnlMessages.ScrollControlIntoView(_searchMatches[_searchIndex]); } catch { }
+            }
+            catch { }
+        }
+
+        /// <summary>Текущее совпадение — ярче остальных.</summary>
+        private void RepaintSearchMatches()
+        {
+            for (int i = 0; i < _searchMatches.Count; i++)
+            {
+                var b = _searchMatches[i];
+                if (b == null || b.IsDisposed) continue;
+                b.BackColor = i == _searchIndex
+                    ? Color.FromArgb(124, 162, 80)    // текущее
+                    : Color.FromArgb(83, 108, 60);    // остальные
+                b.Invalidate();
+            }
+        }
+
+        private void UpdateSearchNavUi(bool active)
+        {
+            if (_msgSearchCount != null)
+                _msgSearchCount.Text = !active ? ""
+                    : _searchMatches.Count == 0 ? "0 найд."
+                    : $"{_searchIndex + 1}/{_searchMatches.Count} ▾";
+            bool canNav = active && _searchMatches.Count > 0;
+            if (_btnMsgSearchPrev != null) _btnMsgSearchPrev.Enabled = canNav;
+            if (_btnMsgSearchNext != null) _btnMsgSearchNext.Enabled = canNav;
+        }
+
+        /// <summary>Перейти к следующему/предыдущему совпадению (с зацикливанием).</summary>
+        private void GoToSearchMatch(int delta)
+        {
+            try
+            {
+                // Сообщение могли удалить/перерисовать — чистим мёртвые панели.
+                _searchMatches.RemoveAll(p => p == null || p.IsDisposed);
+                if (_searchMatches.Count == 0) { UpdateSearchNavUi(true); return; }
+                _searchIndex = ((_searchIndex + delta) % _searchMatches.Count + _searchMatches.Count) % _searchMatches.Count;
+                RepaintSearchMatches();
+                UpdateSearchNavUi(true);
+                pnlMessages.ScrollControlIntoView(_searchMatches[_searchIndex]);
+            }
+            catch { }
+        }
+
+        /// <summary>Выпадающий список найденных: полный текст сообщения + дата
+        /// отправки; клик по строке — переход к сообщению в чате.</summary>
+        private void ShowSearchResults()
+        {
+            try
+            {
+                if (_searchResultsPopup != null && !_searchResultsPopup.IsDisposed)
+                { try { _searchResultsPopup.Close(); } catch { } _searchResultsPopup = null; return; }
+                _searchMatches.RemoveAll(p => p == null || p.IsDisposed);
+                if (_searchMatches.Count == 0) return;
+
+                var pop = new Form
+                {
+                    FormBorderStyle = FormBorderStyle.None,
+                    StartPosition = FormStartPosition.Manual,
+                    ShowInTaskbar = false,
+                    BackColor = Color.FromArgb(30, 31, 34),
+                    Size = new Size(380, Math.Min(408, 14 + _searchMatches.Count * 66))
+                };
+                var list = new FlowLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    FlowDirection = FlowDirection.TopDown,
+                    WrapContents = false,
+                    AutoScroll = true,
+                    BackColor = Color.FromArgb(30, 31, 34),
+                    Padding = new Padding(6)
+                };
+                for (int i = 0; i < _searchMatches.Count; i++)
+                {
+                    var b = _searchMatches[i];
+                    string full = b.AccessibleDescription ?? "";
+                    // Дата отправки кладётся пузырю при построении (см. загрузчики).
+                    string when = string.IsNullOrEmpty(b.AccessibleDefaultActionDescription)
+                        ? "" : b.AccessibleDefaultActionDescription;
+
+                    var card = new Panel
+                    {
+                        Width = 348, Height = 60,
+                        BackColor = i == _searchIndex ? Color.FromArgb(56, 66, 46) : Color.FromArgb(43, 45, 49),
+                        Cursor = Cursors.Hand,
+                        Margin = new Padding(0, 0, 0, 6)
+                    };
+                    card.Controls.Add(new Label
+                    {
+                        Text = when, ForeColor = Color.FromArgb(140, 142, 148),
+                        Font = new Font("Segoe UI", 7.5f), AutoSize = false,
+                        Size = new Size(330, 14), Location = new Point(8, 4)
+                    });
+                    card.Controls.Add(new Label
+                    {
+                        Text = full, ForeColor = Color.White,
+                        Font = new Font("Segoe UI", 9f), AutoSize = false,
+                        Size = new Size(332, 38), Location = new Point(8, 19), AutoEllipsis = true
+                    });
+                    int idx = i;
+                    void Go(object s, EventArgs e)
+                    {
+                        _searchIndex = idx;
+                        RepaintSearchMatches();
+                        UpdateSearchNavUi(true);
+                        try { pnlMessages.ScrollControlIntoView(_searchMatches[idx]); } catch { }
+                        try { pop.Close(); } catch { }
+                    }
+                    card.Click += Go;
+                    foreach (Control cc in card.Controls) { cc.Click += Go; cc.Cursor = Cursors.Hand; }
+                    list.Controls.Add(card);
+                }
+                pop.Controls.Add(list);
+
+                var anchor = (Control)(_msgSearch != null && _msgSearch.Visible ? _msgSearch : _msgSearchCount);
+                pop.Location = anchor.PointToScreen(new Point(0, anchor.Height + 4));
+                pop.Deactivate += (s, e) => { try { pop.Close(); } catch { } };
+                pop.FormClosed += (s, e) => _searchResultsPopup = null;
+                _searchResultsPopup = pop;
+                pop.Show(this);
             }
             catch { }
         }
@@ -1155,7 +1330,16 @@ namespace PISMO
                 // Пометка «не в друзьях» на карточках написавших не-друзей.
                 var friendIds = FriendsRepository.AcceptedIds(myId);
 
+                // Закреплённые чаты (2.1) — к ВЕРХУ списка ЛС (группы выше и не
+                // трогаются). Внутри закреплённых и обычных сохраняется порядок
+                // SQL (по свежести переписки). Закрепы хранятся локально.
+                var ordered = new List<DataRow>();
                 foreach (DataRow row in dt.Rows)
+                    if (ChatPins.IsPinned(Convert.ToInt32(row["id"]))) ordered.Add(row);
+                foreach (DataRow row in dt.Rows)
+                    if (!ChatPins.IsPinned(Convert.ToInt32(row["id"]))) ordered.Add(row);
+
+                foreach (DataRow row in ordered)
                 {
                     int uid = Convert.ToInt32(row["id"]);
                     string name = BuildName(row["Name"], row["Surname"], row["login"]);
@@ -1165,7 +1349,7 @@ namespace PISMO
                     if (!friendIds.Contains(uid))
                         lastMsg = "🚫 не в друзьях" + (string.IsNullOrEmpty(lastMsg) ? "" : " · " + lastMsg);
 
-                    AddUserCard(uid, name, lastMsg, unread);
+                    AddUserCard(uid, name, lastMsg, unread, pinned: ChatPins.IsPinned(uid));
                 }
                 if (_convSearch != null) FilterConversations(_convSearch.Text);
                 try { PresenceTick(); } catch { } // разово обновить статусы под список
@@ -1557,7 +1741,7 @@ namespace PISMO
             }
         }
 
-        private void AddUserCard(int uid, string name, string lastMsg, int unread)
+        private void AddUserCard(int uid, string name, string lastMsg, int unread, bool pinned = false)
         {
             var pnl = new Panel
             {
@@ -1587,7 +1771,8 @@ namespace PISMO
 
             var lblName = new Label
             {
-                Text = name,
+                // 📌 — визуальный признак закреплённого чата (2.1).
+                Text = (pinned ? "📌 " : "") + name,
                 Font = unread > 0
                     ? new Font("Segoe UI Semibold", 10f, FontStyle.Bold)
                     : new Font("Segoe UI", 10f),
@@ -1990,6 +2175,8 @@ namespace PISMO
                     bubble.Top = yOffset;
                     PositionBubble(bubble, isMine);
                     bubble.Tag = isMine;
+                    // Полная дата отправки — для выпадающего списка результатов поиска.
+                    bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
 
                     pnlMessages.Controls.Add(bubble);
                     yOffset += bubble.Height + 8;
@@ -2242,6 +2429,8 @@ namespace PISMO
                     bubble.Top = yOffset;
                     PositionBubble(bubble, isMine);
                     bubble.Tag = isMine;
+                    // Полная дата отправки — для выпадающего списка результатов поиска.
+                    bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
 
                     pnlMessages.Controls.Add(bubble);
                     yOffset += bubble.Height + 8;
