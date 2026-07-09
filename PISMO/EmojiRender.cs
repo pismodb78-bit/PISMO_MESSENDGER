@@ -37,30 +37,27 @@ namespace PISMO
 
         private static Bitmap RenderWpf(string emoji, int px)
         {
-            var typeface = new System.Windows.Media.Typeface(
-                new System.Windows.Media.FontFamily("Segoe UI Emoji"),
-                System.Windows.FontStyles.Normal,
-                System.Windows.FontWeights.Normal,
-                System.Windows.FontStretches.Normal);
-            var ft = new System.Windows.Media.FormattedText(
-                emoji,
-                CultureInfo.InvariantCulture,
-                System.Windows.FlowDirection.LeftToRight,
-                typeface,
-                px,
-                System.Windows.Media.Brushes.White,
-                1.0);   // pixelsPerDip: рендерим в 96dpi-битмап, масштабирует GDI
+            // ВАЖНО: не FormattedText/DrawText — этот путь рисует глиф ОДНОЙ
+            // кистью (получались белые силуэты). Цветные COLR-глифы WPF отдаёт
+            // только через текстовые ЭЛЕМЕНТЫ — рендерим TextBlock в битмап.
+            var tb = new System.Windows.Controls.TextBlock
+            {
+                Text = emoji,
+                FontFamily = new System.Windows.Media.FontFamily("Segoe UI Emoji"),
+                FontSize = px,
+                Foreground = System.Windows.Media.Brushes.Black,
+                Background = System.Windows.Media.Brushes.Transparent
+            };
+            tb.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+            tb.Arrange(new System.Windows.Rect(tb.DesiredSize));
+            tb.UpdateLayout();
 
-            int w = Math.Max(1, (int)Math.Ceiling(ft.WidthIncludingTrailingWhitespace));
-            int h = Math.Max(1, (int)Math.Ceiling(ft.Height));
-
-            var visual = new System.Windows.Media.DrawingVisual();
-            using (var dc = visual.RenderOpen())
-                dc.DrawText(ft, new System.Windows.Point(0, 0));
+            int w = Math.Max(1, (int)Math.Ceiling(tb.DesiredSize.Width));
+            int h = Math.Max(1, (int)Math.Ceiling(tb.DesiredSize.Height));
 
             var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
                 w, h, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-            rtb.Render(visual);
+            rtb.Render(tb);
 
             var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
             enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
@@ -68,17 +65,35 @@ namespace PISMO
             enc.Save(ms);
             ms.Position = 0;
             using var tmp = new Bitmap(ms);
-            return new Bitmap(tmp);   // отвязываем Bitmap от потока
+            var result = new Bitmap(tmp);   // отвязываем Bitmap от потока
+
+            // Сторож: пустой кадр (глифа нет) → null, сработает GDI-фолбэк.
+            if (IsBlank(result)) { result.Dispose(); return null; }
+            return result;
+        }
+
+        private static bool IsBlank(Bitmap b)
+        {
+            try
+            {
+                for (int y = 0; y < b.Height; y += Math.Max(1, b.Height / 8))
+                    for (int x = 0; x < b.Width; x += Math.Max(1, b.Width / 8))
+                        if (b.GetPixel(x, y).A > 8) return false;
+            }
+            catch { return false; }
+            return true;
         }
 
         // Монохромный фолбэк — лучше, чем ничего (например, WPF не поднялся).
+        // Средне-серый: читается и на тёмном пикере, и на светлом системном меню.
         private static Bitmap RenderGdi(string emoji, int px)
         {
             var bmp = new Bitmap(px + 6, px + 6);
             using var g = Graphics.FromImage(bmp);
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
             using var f = new Font("Segoe UI Emoji", px * 0.72f);
-            g.DrawString(emoji, f, Brushes.White, -1, 1);
+            using var br = new SolidBrush(Color.FromArgb(128, 131, 138));
+            g.DrawString(emoji, f, br, -1, 1);
             return bmp;
         }
     }

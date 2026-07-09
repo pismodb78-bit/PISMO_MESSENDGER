@@ -47,10 +47,30 @@ namespace PISMO
             catch { return false; }
         }
 
+        /// <summary>HttpClient с ЯВНЫМИ TLS 1.2/1.3. У части пользователей системные
+        /// умолчания SSL сломаны (старые шифры/политики) — «The SSL connection
+        /// could not be established»; явный список протоколов чинит рукопожатие.
+        /// Проверка сертификатов остаётся строгой (обновления подменять нельзя).</summary>
+        private static HttpClient MakeHttp(TimeSpan timeout)
+        {
+            var handler = new SocketsHttpHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.All,
+                AllowAutoRedirect = true,   // GitHub отдаёт ассет через redirect на objects.githubusercontent.com
+                SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+                {
+                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                                          System.Security.Authentication.SslProtocols.Tls13
+                }
+            };
+            var http = new HttpClient(handler) { Timeout = timeout };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("PISMO-Updater");
+            return http;
+        }
+
         private static async Task<bool> CheckAsync(IWin32Window owner)
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(6) };
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("PISMO-Updater");
+            using var http = MakeHttp(TimeSpan.FromSeconds(6));
             http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
 
             string json;
@@ -99,19 +119,40 @@ namespace PISMO
         private static async Task<bool> DownloadAndApplyAsync(HttpClient http, string zipUrl, string zipName)
         {
             string tempZip = Path.Combine(Path.GetTempPath(), "pismo_update_" + Guid.NewGuid().ToString("N") + ".zip");
-            try
+            Exception lastErr = null;
+            bool downloaded = false;
+            // До 3 попыток с паузой: разовые обрывы TLS/сети — обычное дело.
+            for (int attempt = 1; attempt <= 3 && !downloaded; attempt++)
             {
-                // Отдельный клиент с большим таймаутом: проверочный http имеет 6 сек,
-                // чего НЕ хватает на скачивание полного архива (рантайм WebView2 и т.д.).
-                using var dl = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-                dl.DefaultRequestHeaders.UserAgent.ParseAdd("PISMO-Updater");
-                var bytes = await dl.GetByteArrayAsync(zipUrl);
-                File.WriteAllBytes(tempZip, bytes);
+                try
+                {
+                    // Отдельный клиент с большим таймаутом: проверочный имеет 6 сек,
+                    // чего НЕ хватает на скачивание полного архива.
+                    using var dl = MakeHttp(TimeSpan.FromMinutes(10));
+                    var bytes = await dl.GetByteArrayAsync(zipUrl);
+                    if (bytes == null || bytes.Length < 1024)
+                        throw new IOException("архив пустой/битый (" + (bytes?.Length ?? 0) + " байт)");
+                    File.WriteAllBytes(tempZip, bytes);
+                    downloaded = true;
+                }
+                catch (Exception ex)
+                {
+                    lastErr = ex;
+                    if (attempt < 3) await Task.Delay(1500 * attempt);
+                }
             }
-            catch (Exception ex)
+            if (!downloaded)
             {
-                MessageBox.Show("Не удалось скачать обновление. Попробуйте позже.\n\n" + ex.Message, "PISMO",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                // Показываем и внутреннюю причину — по ней видно, ЧТО именно с TLS
+                // (часы системы, антивирус-перехват, фильтрация сети).
+                string detail = lastErr?.Message ?? "";
+                if (lastErr?.InnerException != null) detail += "\n→ " + lastErr.InnerException.Message;
+                MessageBox.Show(
+                    "Не удалось скачать обновление. Попробуйте позже.\n\n" + detail +
+                    "\n\nЧастые причины: сбитые дата/время на компьютере, антивирус или " +
+                    "сеть, режущая доступ к github.com. Архив также можно скачать вручную " +
+                    "со страницы релизов и распаковать поверх папки программы.",
+                    "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return false;
             }
 

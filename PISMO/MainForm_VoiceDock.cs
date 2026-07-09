@@ -53,14 +53,18 @@ namespace PISMO
         public void ToggleMicGlobal()
         {
             VoiceState.MicMuted = !VoiceState.MicMuted;
+            // Включение микрофона из ПОЛНОГО мута снимает и «наушники» (Discord).
+            if (!VoiceState.MicMuted && VoiceState.Deafened) VoiceState.Deafened = false;
             try { ActiveCallForm()?.SetMicMutedPublic(VoiceState.MicMuted); } catch { }
             SyncFooterVoiceButtons();
         }
 
-        /// <summary>«Наушники» (заглушить весь входящий звук) из любого футера.</summary>
+        /// <summary>«Наушники» (полный мут) из любого футера: включение глушит и
+        /// микрофон; выключение возвращает только динамики (микрофон — выкл).</summary>
         public void ToggleDeafenGlobal()
         {
             VoiceState.Deafened = !VoiceState.Deafened;
+            if (VoiceState.Deafened) VoiceState.MicMuted = true;
             try { ActiveCallForm()?.SetAllMutedPublic(VoiceState.Deafened); } catch { }
             SyncFooterVoiceButtons();
         }

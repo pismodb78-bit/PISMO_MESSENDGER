@@ -71,6 +71,7 @@ namespace PISMO
         private Label _lblPing;
         private Label _lblName;
         private Button _btnMute;
+        private Button _btnDeafen;   // 🎧 полный мут: динамики + микрофон
         private Button _btnCamera;
         private Button _btnScreen;
         private Button _btnAudio;
@@ -174,12 +175,12 @@ namespace PISMO
             _lblScreenAudioVolume.Location = new Point(w - 150, 70);
             _tbScreenAudioVolume.Location = new Point(w - 150, 90);
 
-            int btnCount = 5;
+            int btnCount = 6;
             int btnW = 56, btnH = 56, gap = 12;
             int totalW = btnCount * btnW + (btnCount - 1) * gap;
             int startX = (_pnlButtons.Width - totalW) / 2;
             int btnY = (_pnlButtons.Height - btnH) / 2;
-            var btns = new Button[] { _btnMute, _btnCamera, _btnScreen, _btnAudio, _btnHangup };
+            var btns = new Button[] { _btnMute, _btnDeafen, _btnCamera, _btnScreen, _btnAudio, _btnHangup };
             for (int i = 0; i < btns.Length; i++)
                 btns[i].Location = new Point(startX + i * (btnW + gap), btnY);
         }
@@ -691,28 +692,72 @@ namespace PISMO
         //  воспроизведение голоса/звука демки делает сам SDK). Здесь остаётся
         //  только переключение mute.
         // ════════════════════════════════════════════════════════════
-        private void ToggleMute()
+        // Единственная точка смены состояния микрофона: кнопка/хоткей/футер/
+        // полный мут — все идут сюда. Кнопка красится ТОЛЬКО тут, транспорт
+        // дёргается ТОЛЬКО тут — состояние UI не может разойтись со звуком.
+        private void SetMicState(bool muted)
         {
-            _muted = !_muted;
-            _btnMute.Text = _muted ? "🔇" : "🎤";
-            _btnMute.BackColor = _muted
-                ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
+            if (_muted == muted) { PaintMicButton(); return; }
+            _muted = muted;
+            PaintMicButton();
             try { _transport?.SetMicrophoneEnabled(!_muted); } catch { }
             try { if (_muted) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
-            // Синхронизируем глобальное состояние и кнопки футера сайдбара.
             VoiceState.MicMuted = _muted;
             try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
         }
 
-        /// <summary>Заглушить/включить весь входящий звук (наушники) — по хоткею.</summary>
-        private void ToggleDeafen()
+        private void PaintMicButton()
         {
-            _remoteAllMuted = !_remoteAllMuted;
-            try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { }
-            try { if (_remoteAllMuted) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
-            VoiceState.Deafened = _remoteAllMuted;
+            if (_btnMute == null) return;
+            _btnMute.Text = _muted ? "🔇" : "🎤";
+            _btnMute.BackColor = _muted
+                ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
+        }
+
+        private void ToggleMute()
+        {
+            bool willUnmute = _muted;
+            SetMicState(!_muted);
+            // Включение микрофона ИЗ ПОЛНОГО МУТА снимает и «наушники» —
+            // работает микрофон и динамики (как просили / как в Discord).
+            if (willUnmute && _remoteAllMuted) SetDeafenState(false);
+        }
+
+        // Единственная точка смены «наушников» (заглушить весь входящий звук).
+        private void SetDeafenState(bool on)
+        {
+            if (_remoteAllMuted == on) { PaintDeafenButton(); return; }
+            _remoteAllMuted = on;
+            PaintDeafenButton();
+            try { _transport?.SetRemoteMuted(on); } catch { }
+            try { if (on) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
+            VoiceState.Deafened = on;
             try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
         }
+
+        private void PaintDeafenButton()
+        {
+            if (_btnDeafen == null) return;
+            _btnDeafen.Text = _remoteAllMuted ? "🔕" : "🎧";
+            _btnDeafen.BackColor = _remoteAllMuted
+                ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
+        }
+
+        /// <summary>Кнопка 🎧 «полный мут»: первое нажатие глушит динамики И
+        /// микрофон; повторное — возвращает динамики (собеседников слышно),
+        /// микрофон ОСТАЁТСЯ выключенным. Включить всё разом — кнопка 🎤.</summary>
+        private void ToggleDeafenButton()
+        {
+            if (!_remoteAllMuted)
+            {
+                SetDeafenState(true);
+                SetMicState(true);
+            }
+            else SetDeafenState(false);
+        }
+
+        /// <summary>Полный мут по хоткею — та же семантика, что у кнопки 🎧.</summary>
+        private void ToggleDeafen() => ToggleDeafenButton();
 
         // ── Публичное API для голосового дока в MainForm (кнопки в футере) ──
 
@@ -725,17 +770,24 @@ namespace PISMO
         /// <summary>Мьют микрофона включён?</summary>
         public bool MicMuted => _muted;
 
-        /// <summary>Выключить/включить микрофон (из дока).</summary>
+        /// <summary>Выключить/включить микрофон (из дока). Включение микрофона
+        /// из полного мута снимает и «наушники».</summary>
         public void SetMicMutedPublic(bool muted)
         {
-            if (_muted != muted) ToggleMute();
+            SetMicState(muted);
+            if (!muted && _remoteAllMuted) SetDeafenState(false);
         }
 
-        /// <summary>Заглушить/включить весь входящий звук (из дока, «наушники»).</summary>
+        /// <summary>Полный мут из дока: включение глушит и микрофон; выключение
+        /// возвращает только динамики (микрофон остаётся выключенным).</summary>
         public void SetAllMutedPublic(bool muted)
         {
-            _remoteAllMuted = muted;
-            try { _transport?.SetRemoteMuted(muted); } catch { }
+            if (muted)
+            {
+                SetDeafenState(true);
+                SetMicState(true);
+            }
+            else SetDeafenState(false);
         }
 
         /// <summary>Сменить устройство ввода на лету (из дока).</summary>

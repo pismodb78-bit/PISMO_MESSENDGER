@@ -1465,7 +1465,14 @@ namespace PISMO
                 var dt = new DataTable();
                 new MySqlDataAdapter(cmd).Fill(dt);
 
+                // Закреплённые чаты — к верху (ниже групп), как в обычном списке.
+                var ordered = new List<DataRow>();
                 foreach (DataRow row in dt.Rows)
+                    if (ChatPins.IsPinned(Convert.ToInt32(row["id"]))) ordered.Add(row);
+                foreach (DataRow row in dt.Rows)
+                    if (!ChatPins.IsPinned(Convert.ToInt32(row["id"]))) ordered.Add(row);
+
+                foreach (DataRow row in ordered)
                 {
                     int uid = Convert.ToInt32(row["id"]);
                     string name = BuildName(row["Name"], row["Surname"], row["login"]);
@@ -1862,7 +1869,8 @@ namespace PISMO
 
             var lblName = new Label
             {
-                Text = isAdminCard ? $"{name} (Вы)" : name,
+                // 📌 — закреплённый чат (2.1.1): работает и в админском списке.
+                Text = (ChatPins.IsPinned(uid) ? "📌 " : "") + (isAdminCard ? $"{name} (Вы)" : name),
                 Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 Location = new Point(54, 18),  // по центру по вертикали (нет подписи роли)
@@ -1910,6 +1918,17 @@ namespace PISMO
                 ctxMenu.Items.Add(new ToolStripSeparator());
                 ctxMenu.Items.Add($"🚪 Войти за {name}", null,
                     (s, ev) => DoImpersonate(uid, name));
+
+                // Закрепление чата (2.1.1): и в админском списке диалог можно
+                // прижать к верху (ниже групп). Хранится локально.
+                var itemPinChat = new ToolStripMenuItem(
+                    ChatPins.IsPinned(uid) ? "📌 Открепить чат" : "📌 Закрепить чат");
+                itemPinChat.Click += (s, ev) =>
+                {
+                    ChatPins.Toggle(uid);
+                    try { LoadAllUsersForAdmin(); } catch { }
+                };
+                ctxMenu.Items.Add(itemPinChat);
 
                 // Дополнительно: пункты блокировки/очистки переписки в админской таблице
                 ctxMenu.Items.Add(new ToolStripSeparator());
@@ -2299,6 +2318,26 @@ namespace PISMO
                 if (dt == null) return;
                 // Сохраняем в постоянный кеш переписки (текст зашифрован, как в БД).
                 try { MessageCache.Save(MessageCache.DirectKey(myId, partner), dt); } catch { }
+
+                // Чат ОТКРЫТ — входящие, пришедшие пока сидим в нём, помечаем
+                // прочитанными сразу (раньше read ставился только в момент
+                // открытия чата: всё, что писали после, оставалось «непрочитанным»
+                // и продолжало давать уведомления даже после визита в чат).
+                try
+                {
+                    if (_currentChatPartnerId == partner)
+                    {
+                        bool hasUnreadIncoming = false;
+                        if (dt.Columns.Contains("is_read") && dt.Columns.Contains("sender_id"))
+                            foreach (DataRow r in dt.Rows)
+                                if (Convert.ToInt32(r["sender_id"]) == partner
+                                    && r["is_read"] != DBNull.Value && Convert.ToInt32(r["is_read"]) == 0)
+                                { hasUnreadIncoming = true; break; }
+                        if (hasUnreadIncoming) MarkAsRead(partner);
+                    }
+                }
+                catch { }
+
                 if (IsDisposed || !IsHandleCreated) return;
                 try
                 {
@@ -4124,13 +4163,20 @@ namespace PISMO
                 if (affected > 0)
                     try { WebSocketSignalingClient.Instance.SendMessage("read", 0, UserSession.EffectiveId, "direct"); } catch { }
 
-                foreach (var p in _userPanels)
-                    if (p.Tag is int id && id == senderId)
-                    {
-                        foreach (Control c in p.Controls.Cast<Control>().ToList())
-                            if (c is Label lb && lb.BackColor == Color.FromArgb(240, 71, 71))
-                                p.Controls.Remove(c);
-                    }
+                // Бейджи — строго на UI-потоке (MarkAsRead зовётся и из фоновой
+                // подгрузки сообщений, когда чат открыт).
+                void ClearBadge()
+                {
+                    foreach (var p in _userPanels)
+                        if (p.Tag is int id && id == senderId)
+                        {
+                            foreach (Control c in p.Controls.Cast<Control>().ToList())
+                                if (c is Label lb && lb.BackColor == Color.FromArgb(240, 71, 71))
+                                    p.Controls.Remove(c);
+                        }
+                }
+                if (InvokeRequired) { try { BeginInvoke((Action)ClearBadge); } catch { } }
+                else ClearBadge();
             }
             catch { }
         }

@@ -188,16 +188,19 @@ namespace PISMO
             };
 
             _btnMute = MakeBtn("🎤", 0);
-            _btnCamera = MakeBtn("🚫", 1);
+            // 🎧 полный мут (2.1.1): глушит и динамики, и микрофон (см. ToggleDeafenButton).
+            _btnDeafen = MakeBtn("🎧", 1);
+            _btnCamera = MakeBtn("🚫", 2);
             _btnCamera.Visible = true; // камеру можно включить в любом звонке (одна кнопка звонка)
             // Камера выключена при входе — кнопка красная, как в Discord.
             _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
-            _btnScreen = MakeBtn("🖥", 2);
-            _btnAudio = MakeBtn("🔊", 3);
-            _btnHangup = MakeBtn("📵", 4);
+            _btnScreen = MakeBtn("🖥", 3);
+            _btnAudio = MakeBtn("⚙", 4);   // настройки звонка (раньше 🔊 — икону сменили)
+            _btnHangup = MakeBtn("📵", 5);
             _btnHangup.BackColor = Color.FromArgb(240, 71, 71);
 
             _btnMute.Click += (s, e) => ToggleMute();
+            _btnDeafen.Click += (s, e) => ToggleDeafenButton();
             _btnCamera.Click += (s, e) => ToggleCamera();
             _btnScreen.Click += (s, e) => ToggleScreen();
             _btnAudio.Click += (s, e) => ToggleAudioPanel();
@@ -229,7 +232,7 @@ namespace PISMO
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
             };
 
-            _pnlButtons.Controls.AddRange(new Control[] { _btnMute, _btnCamera, _btnScreen, _btnAudio, _btnHangup });
+            _pnlButtons.Controls.AddRange(new Control[] { _btnMute, _btnDeafen, _btnCamera, _btnScreen, _btnAudio, _btnHangup });
 
             _pnlParticipants = new Panel
             {
