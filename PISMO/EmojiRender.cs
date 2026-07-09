@@ -1,45 +1,169 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Globalization;
 using System.IO;
+using System.Linq;
+using System.Net.Http;
 
 namespace PISMO
 {
     /// <summary>
-    /// Растеризатор ЦВЕТНЫХ эмодзи (2.1). GDI+ (WinForms) рисует Segoe UI Emoji
-    /// монохромным контуром — цветные COLR-глифы умеет только DirectWrite.
-    /// Поэтому рендерим через WPF FormattedText (DirectWrite под капотом) в
-    /// RenderTargetBitmap и конвертируем в GDI Bitmap. Результат кешируется —
-    /// каждый эмодзи каждого размера растеризуется один раз за сессию.
-    /// Фолбэк (если WPF-рендер упал) — обычный монохромный GDI-глиф.
+    /// Растеризатор ЦВЕТНЫХ эмодзи (2.1.2). Порядок источников:
+    ///   1) дисковый кеш Twemoji-картинок (%LOCALAPPDATA%\PISMO\emoji72) — как
+    ///      в Discord, гарантированно цветные и одинаковые у всех;
+    ///   2) WPF TextBlock/DirectWrite — если ДАЛ ЦВЕТ (на части машин WPF рисует
+    ///      COLR-глифы силуэтом — такое отбраковываем проверкой HasColor);
+    ///   3) фоновая докачка Twemoji с CDN: пока качается, показывается серый
+    ///      глиф, по готовности поднимается событие Loaded — UI перерисовывает.
+    /// Всё кешируется; повторные запуски работают полностью офлайн (диск).
     /// </summary>
     internal static class EmojiRender
     {
         private static readonly object _lock = new();
-        private static readonly Dictionary<string, Bitmap> _cache = new();
+        private static readonly Dictionary<string, Bitmap> _cache = new();     // "emoji|px" -> готовая картинка
+        private static readonly HashSet<string> _fetching = new();             // эмодзи в докачке
+        private static readonly HashSet<string> _unavailable = new();          // 404 на CDN — не долбим повторно
+        private static HttpClient _http;
 
-        /// <summary>Цветная картинка эмодзи высотой px (кешируется).</summary>
+        /// <summary>Эмодзи докачан с CDN — перерисуйте свои контролы (событие
+        /// приходит с ФОНОВОГО потока: в обработчике нужен BeginInvoke).</summary>
+        public static event Action<string> Loaded;
+
+        private static string CacheDir => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PISMO", "emoji72");
+
+        /// <summary>Картинка эмодзи высотой px. Может вернуть временный серый
+        /// глиф — когда Twemoji докачается, придёт Loaded и Get вернёт цветной.</summary>
         public static Bitmap Get(string emoji, int px)
         {
             if (string.IsNullOrEmpty(emoji) || px <= 0) return null;
             string key = emoji + "|" + px;
             lock (_lock) { if (_cache.TryGetValue(key, out var hit)) return hit; }
 
+            // 1) Twemoji с диска.
             Bitmap bmp = null;
-            try { bmp = RenderWpf(emoji, px); } catch { }
+            try { bmp = LoadTwemojiFromDisk(emoji, px); } catch { }
+
+            // 2) DirectWrite, но только если получился ЦВЕТ.
             if (bmp == null)
-                try { bmp = RenderGdi(emoji, px); } catch { }
+            {
+                Bitmap wpf = null;
+                try { wpf = RenderWpf(emoji, px); } catch { }
+                if (wpf != null && HasColor(wpf)) bmp = wpf;
+                else
+                {
+                    // серый глиф — временно; параллельно тянем Twemoji
+                    bmp = wpf;   // силуэт лучше, чем пусто
+                    if (bmp == null)
+                        try { bmp = RenderGdi(emoji, px); } catch { }
+                    QueueFetch(emoji);
+                }
+            }
 
             lock (_lock) { if (bmp != null) _cache[key] = bmp; }
             return bmp;
         }
 
+        // ── Twemoji ───────────────────────────────────────────────────────
+        /// <summary>Имя файла Twemoji: кодпоинты через '-', без FE0F (вариант
+        /// с FE0F пробуем при докачке как запасной).</summary>
+        private static string TwemojiCode(string emoji, bool keepVs16)
+        {
+            var parts = new List<string>();
+            for (int i = 0; i < emoji.Length;)
+            {
+                int cp = char.ConvertToUtf32(emoji, i);
+                i += char.IsSurrogatePair(emoji, i) ? 2 : 1;
+                if (cp == 0xFE0F && !keepVs16) continue;
+                parts.Add(cp.ToString("x"));
+            }
+            return string.Join("-", parts);
+        }
+
+        private static Bitmap LoadTwemojiFromDisk(string emoji, int px)
+        {
+            string path = Path.Combine(CacheDir, TwemojiCode(emoji, keepVs16: false) + ".png");
+            if (!File.Exists(path)) return null;
+            using var src = new Bitmap(path);
+            return ScaleSquare(src, px);
+        }
+
+        private static Bitmap ScaleSquare(Bitmap src, int px)
+        {
+            var bmp = new Bitmap(px, px);
+            using var g = Graphics.FromImage(bmp);
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.DrawImage(src, 0, 0, px, px);
+            return bmp;
+        }
+
+        private static void QueueFetch(string emoji)
+        {
+            lock (_lock)
+            {
+                if (_fetching.Contains(emoji) || _unavailable.Contains(emoji)) return;
+                _fetching.Add(emoji);
+            }
+            System.Threading.Tasks.Task.Run(async () =>
+            {
+                bool ok = false;
+                try
+                {
+                    _http ??= MakeHttp();
+                    Directory.CreateDirectory(CacheDir);
+                    // Пробуем оба варианта имени (Twemoji непоследователен с FE0F).
+                    foreach (bool keep in new[] { false, true })
+                    {
+                        string code = TwemojiCode(emoji, keep);
+                        if (code.Length == 0) break;
+                        try
+                        {
+                            var bytes = await _http.GetByteArrayAsync(
+                                "https://cdn.jsdelivr.net/gh/jdecked/twemoji@14.1.2/assets/72x72/" + code + ".png");
+                            if (bytes is { Length: > 100 })
+                            {
+                                // Файл всегда под именем БЕЗ fe0f — так его найдёт LoadTwemojiFromDisk.
+                                File.WriteAllBytes(Path.Combine(CacheDir, TwemojiCode(emoji, false) + ".png"), bytes);
+                                ok = true;
+                                break;
+                            }
+                        }
+                        catch { /* 404/сеть — пробуем второй вариант */ }
+                    }
+                }
+                catch { }
+                lock (_lock)
+                {
+                    _fetching.Remove(emoji);
+                    if (!ok) { _unavailable.Add(emoji); return; }
+                    // Сбрасываем серые версии всех размеров этого эмодзи.
+                    foreach (var k in _cache.Keys.Where(k => k.StartsWith(emoji + "|")).ToList())
+                        _cache.Remove(k);
+                }
+                try { Loaded?.Invoke(emoji); } catch { }
+            });
+        }
+
+        private static HttpClient MakeHttp()
+        {
+            var handler = new SocketsHttpHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.All,
+                SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+                {
+                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                                          System.Security.Authentication.SslProtocols.Tls13
+                }
+            };
+            var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("PISMO-Emoji");
+            return http;
+        }
+
+        // ── DirectWrite (быстрый путь, если даёт цвет) ────────────────────
         private static Bitmap RenderWpf(string emoji, int px)
         {
-            // ВАЖНО: не FormattedText/DrawText — этот путь рисует глиф ОДНОЙ
-            // кистью (получались белые силуэты). Цветные COLR-глифы WPF отдаёт
-            // только через текстовые ЭЛЕМЕНТЫ — рендерим TextBlock в битмап.
             var tb = new System.Windows.Controls.TextBlock
             {
                 Text = emoji,
@@ -54,7 +178,6 @@ namespace PISMO
 
             int w = Math.Max(1, (int)Math.Ceiling(tb.DesiredSize.Width));
             int h = Math.Max(1, (int)Math.Ceiling(tb.DesiredSize.Height));
-
             var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
                 w, h, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
             rtb.Render(tb);
@@ -65,11 +188,29 @@ namespace PISMO
             enc.Save(ms);
             ms.Position = 0;
             using var tmp = new Bitmap(ms);
-            var result = new Bitmap(tmp);   // отвязываем Bitmap от потока
-
-            // Сторож: пустой кадр (глифа нет) → null, сработает GDI-фолбэк.
+            var result = new Bitmap(tmp);
             if (IsBlank(result)) { result.Dispose(); return null; }
             return result;
+        }
+
+        /// <summary>Есть ли в картинке ЦВЕТ (а не только серые тона): признак
+        /// того, что DirectWrite реально отдал COLR-глиф, а не силуэт.</summary>
+        private static bool HasColor(Bitmap b)
+        {
+            try
+            {
+                int stepX = Math.Max(1, b.Width / 12), stepY = Math.Max(1, b.Height / 12);
+                for (int y = 0; y < b.Height; y += stepY)
+                    for (int x = 0; x < b.Width; x += stepX)
+                    {
+                        var p = b.GetPixel(x, y);
+                        if (p.A < 24) continue;
+                        if (Math.Abs(p.R - p.G) > 14 || Math.Abs(p.G - p.B) > 14 || Math.Abs(p.R - p.B) > 14)
+                            return true;
+                    }
+            }
+            catch { }
+            return false;
         }
 
         private static bool IsBlank(Bitmap b)
@@ -84,8 +225,8 @@ namespace PISMO
             return true;
         }
 
-        // Монохромный фолбэк — лучше, чем ничего (например, WPF не поднялся).
-        // Средне-серый: читается и на тёмном пикере, и на светлом системном меню.
+        // Монохромный фолбэк (нет сети и WPF не поднялся). Средне-серый —
+        // читается и на тёмном, и на светлом фоне.
         private static Bitmap RenderGdi(string emoji, int px)
         {
             var bmp = new Bitmap(px + 6, px + 6);

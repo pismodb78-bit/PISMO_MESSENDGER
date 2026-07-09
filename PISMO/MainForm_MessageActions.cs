@@ -180,12 +180,9 @@ namespace PISMO
         /// isMine — наше сообщение?
         /// text — текст сообщения (для edit/forward).
         /// </summary>
-        /// <summary>Быстрый набор эмодзи для реакций (как в Discord).</summary>
-        private static readonly string[] QuickReactionEmojis =
-            { "👍", "❤️", "😂", "😮", "😢", "🔥", "🎉", "👀" };
-
-        // (Окно «нажмите Win + .» удалено в 2.1 — весь каталог эмодзи с
-        //  категориями теперь встроен в собственный пикер EmojiPickerForm.)
+        // (Окно «нажмите Win + .» и белое подменю быстрых реакций удалены —
+        //  «Реакция» открывает тёмный пикер EmojiPickerForm, где первая вкладка
+        //  🕒 «часто используемые» и есть быстрые реакции.)
 
         /// <summary>Ставит/снимает реакцию и перерисовывает открытый чат.</summary>
         private void ToggleReactionAndReload(int msgId, ReactionsRepository.Scope scope, string emoji)
@@ -231,32 +228,16 @@ namespace PISMO
             // ── Реакция (эмодзи) ─────────────────────────────────────────
             if (msgId > 0)
             {
-                var itemReact = new ToolStripMenuItem("😀  Реакция");
+                // Белое системное подменю с быстрыми реакциями убрано (2.1.2) —
+                // «Реакция» сразу открывает наш тёмный пикер: первая вкладка 🕒
+                // «часто используемые» и есть быстрые реакции, целой сеткой.
                 var scope = isGroup ? ReactionsRepository.Scope.Group : ReactionsRepository.Scope.Direct;
-                foreach (var em in QuickReactionEmojis)
-                {
-                    string e2 = em;
-                    // ЦВЕТНОЙ эмодзи (2.1): картинка из растеризатора; текст
-                    // остаётся фолбэком, если картинки нет.
-                    var img = EmojiRender.Get(em, 20);
-                    var sub = new ToolStripMenuItem(img == null ? em : "")
-                    {
-                        Image = img,
-                        Font = new Font("Segoe UI Emoji", 12f),
-                        ImageScaling = ToolStripItemImageScaling.None
-                    };
-                    sub.Click += (s, e) => { ToggleReactionAndReload(msgId, scope, e2); };
-                    itemReact.DropDownItems.Add(sub);
-                }
-                itemReact.DropDownItems.Add(new ToolStripSeparator());
-                // Полный каталог с категориями (как Win + ., но встроенный и цветной).
-                var itemOther = new ToolStripMenuItem("➕ Другой эмодзи…");
-                itemOther.Click += (s, e) =>
+                var itemReact = new ToolStripMenuItem("😀  Реакция");
+                itemReact.Click += (s, e) =>
                 {
                     string emo = EmojiPickerForm.Pick(this, Cursor.Position);
                     if (!string.IsNullOrWhiteSpace(emo)) ToggleReactionAndReload(msgId, scope, emo);
                 };
-                itemReact.DropDownItems.Add(itemOther);
                 menu.Items.Add(itemReact);
                 menu.Items.Add(new ToolStripSeparator());
             }

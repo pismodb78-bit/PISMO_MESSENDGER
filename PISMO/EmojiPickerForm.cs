@@ -124,6 +124,25 @@ namespace PISMO
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) Close(); };
             Deactivate += (s, e) => { try { Close(); } catch { } };
 
+            // Twemoji докачивается в фоне: серые кнопки перекрашиваются в
+            // цветные по мере готовности (событие приходит с фонового потока).
+            Action<string> onLoaded = em =>
+            {
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        foreach (Control c in _grid.Controls)
+                            if (c is Button b && Equals(b.Tag, em))
+                                try { b.BackgroundImage = EmojiRender.Get(em, 26); b.Text = ""; } catch { }
+                    }));
+                }
+                catch { }
+            };
+            EmojiRender.Loaded += onLoaded;
+            FormClosed += (s, e) => { try { EmojiRender.Loaded -= onLoaded; } catch { } };
+
             ShowRecent();
         }
 
@@ -156,7 +175,8 @@ namespace PISMO
                         Margin = new Padding(1),
                         Cursor = Cursors.Hand,
                         TabStop = false,
-                        BackgroundImageLayout = ImageLayout.Center
+                        BackgroundImageLayout = ImageLayout.Center,
+                        Tag = em   // для перекраски, когда Twemoji докачается
                     };
                     try { b.BackgroundImage = EmojiRender.Get(em, 26); } catch { }
                     if (b.BackgroundImage == null) { b.Text = em; b.Font = new Font("Segoe UI Emoji", 14f); }

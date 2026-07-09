@@ -32,7 +32,8 @@ namespace PISMO
             MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(47, 49, 54);
-            ClientSize = new Size(CROP + 40, CROP + 130);
+            // Высота: превью (CROP) + ползунок (30) + кнопки (40) + отступы.
+            ClientSize = new Size(CROP + 40, CROP + 148);
 
             _area = new Panel { Location = new Point(20, 20), Size = new Size(CROP, CROP), BackColor = Color.FromArgb(20, 21, 24) };
             _area.Paint += AreaPaint;
@@ -73,11 +74,13 @@ namespace PISMO
                 _area.Invalidate();
             };
 
-            var btnOk = new Button { Text = "Готово", BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold), Location = new Point(20, CROP + 64), Size = new Size(CROP / 2 - 6, 40), Cursor = Cursors.Hand };
+            // Кнопки СТРОГО ПОД ползунком (он занимает CROP+26..CROP+56):
+            // раньше стояли на CROP+64 при высоте окна CROP+130 и наползали.
+            var btnOk = new Button { Text = "Готово", BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold), Location = new Point(20, CROP + 88), Size = new Size(CROP / 2 - 6, 40), Cursor = Cursors.Hand };
             btnOk.FlatAppearance.BorderSize = 0;
             btnOk.Click += (s, e) => { Confirm(); DialogResult = DialogResult.OK; Close(); };
 
-            var btnCancel = new Button { Text = "Отмена", BackColor = Color.FromArgb(80, 82, 88), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold), Location = new Point(20 + CROP / 2 + 6, CROP + 64), Size = new Size(CROP / 2 - 6, 40), Cursor = Cursors.Hand, DialogResult = DialogResult.Cancel };
+            var btnCancel = new Button { Text = "Отмена", BackColor = Color.FromArgb(80, 82, 88), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold), Location = new Point(20 + CROP / 2 + 6, CROP + 88), Size = new Size(CROP / 2 - 6, 40), Cursor = Cursors.Hand, DialogResult = DialogResult.Cancel };
             btnCancel.FlatAppearance.BorderSize = 0;
 
             Controls.AddRange(new Control[] { _area, _zoom, btnOk, btnCancel });

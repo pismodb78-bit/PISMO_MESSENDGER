@@ -2881,21 +2881,37 @@ namespace PISMO
                             Location = new Point(rx, innerY),
                             Cursor = Cursors.Hand
                         };
-                        var capImg = img; var capCnt = cntText; var capImgW = imgW;
+                        var capCnt = cntText; var capImgW = imgW;
+                        string emo = re.Emoji;
+                        // Картинку перечитываем при КАЖДОЙ отрисовке (дешёвый
+                        // словарный кеш): когда Twemoji докачается в фоне, чип
+                        // перерисуется уже цветным.
                         chip.Paint += (s, e) =>
                         {
                             var g = e.Graphics;
-                            if (capImg != null)
-                                g.DrawImage(capImg, 6, (chip.Height - capImg.Height) / 2);
+                            var im = EmojiRender.Get(emo, 16);
+                            if (im != null)
+                                g.DrawImage(im, 6, (chip.Height - im.Height) / 2);
                             else
                                 using (var f0 = new Font("Segoe UI Emoji", 8.5f))
-                                    g.DrawString(re.Emoji, f0, Brushes.White, 4, 3);
+                                    g.DrawString(emo, f0, Brushes.White, 4, 3);
                             TextRenderer.DrawText(g, capCnt, cntFont,
                                 new Point(6 + capImgW + 3, (chip.Height - 15) / 2),
                                 Color.White);
                         };
+                        Action<string> onEmojiLoaded = em =>
+                        {
+                            if (em != emo) return;
+                            try
+                            {
+                                if (chip.IsDisposed || !chip.IsHandleCreated) return;
+                                chip.BeginInvoke(new Action(() => { try { chip.Invalidate(); } catch { } }));
+                            }
+                            catch { }
+                        };
+                        EmojiRender.Loaded += onEmojiLoaded;
+                        chip.Disposed += (s, e) => { try { EmojiRender.Loaded -= onEmojiLoaded; } catch { } };
                         RoundCorners(chip, 8);
-                        string emo = re.Emoji;
                         chip.Click += (s, e) => ToggleReactionAndReload(msgId, scope, emo);
                         bubble.Controls.Add(chip);
                         chip.BringToFront();
