@@ -20,8 +20,20 @@ namespace PISMO
     /// </summary>
     public static class Theme
     {
-        public static bool IsLight =>
-            string.Equals(DeviceSettings.ThemeMode, "light", StringComparison.OrdinalIgnoreCase);
+        // Тема ФИКСИРУЕТСЯ при первом обращении (на старте приложения). Иначе
+        // смена галочки на лету давала «полусветлый» интерфейс: новые окна
+        // открывались светлыми, а уже открытые оставались тёмными. Теперь смена
+        // настройки вступает в силу после перезапуска (UI сам его предлагает).
+        private static bool? _lightAtStartup;
+
+        public static bool IsLight
+        {
+            get
+            {
+                _lightAtStartup ??= string.Equals(DeviceSettings.ThemeMode, "light", StringComparison.OrdinalIgnoreCase);
+                return _lightAtStartup.Value;
+            }
+        }
 
         // Карта «тёмный нейтральный → светлый нейтральный». Ключ — упакованный ARGB.
         private static readonly Dictionary<int, Color> _map = BuildMap();
@@ -41,7 +53,8 @@ namespace PISMO
             Add(54, 57, 63, 228, 229, 232);   Add(56, 58, 64, 228, 229, 232);
             Add(64, 68, 75, 230, 231, 233);   Add(65, 68, 75, 230, 231, 233);
             Add(79, 84, 92, 210, 212, 216);   Add(80, 82, 88, 210, 212, 216);
-            Add(80, 80, 80, 210, 212, 216);   Add(43, 45, 49, 255, 255, 255);
+            Add(80, 80, 80, 210, 212, 216);
+            Add(35, 36, 41, 255, 255, 255);   // карточка футера (плашка профиля)
 
             // ── Текст (светло-серый на тёмном → тёмный на светлом) ──
             Add(220, 221, 222, 46, 48, 53);   Add(230, 231, 232, 46, 48, 53);

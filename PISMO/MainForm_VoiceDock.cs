@@ -195,7 +195,7 @@ namespace PISMO
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 var rect = new Rectangle(6, 4, _voiceDock.Width - 12, _voiceDock.Height - 8);
                 using var path = RoundedRect(rect, 10);
-                using var br = new SolidBrush(CardBack);
+                using var br = new SolidBrush(Theme.Map(CardBack));
                 g.FillPath(br, path);
                 // Индикатор-«радар» — отдельный кликабельный контрол (_voiceRadar).
             };
@@ -360,7 +360,7 @@ namespace PISMO
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     var rect = new Rectangle(4, 4, pnlSidebarFooter.Width - 8, pnlSidebarFooter.Height - 8);
                     using var path = RoundedRect(rect, 10);
-                    using var br = new SolidBrush(CardBack);
+                    using var br = new SolidBrush(Theme.Map(CardBack));
                     g.FillPath(br, path);
                 };
                 lblCurrentUser.BackColor = Color.Transparent;
@@ -426,9 +426,9 @@ namespace PISMO
             void PaintStates()
             {
                 btnMic.Text = VoiceState.MicMuted ? "🔇" : "🎤";
-                btnMic.ForeColor = VoiceState.MicMuted ? Color.FromArgb(237, 66, 69) : Color.FromArgb(185, 187, 190);
+                btnMic.ForeColor = VoiceState.MicMuted ? Color.FromArgb(237, 66, 69) : Theme.Map(Color.FromArgb(185, 187, 190));
                 btnSpk.Text = VoiceState.Deafened ? "🔕" : "🎧";
-                btnSpk.ForeColor = VoiceState.Deafened ? Color.FromArgb(237, 66, 69) : Color.FromArgb(185, 187, 190);
+                btnSpk.ForeColor = VoiceState.Deafened ? Color.FromArgb(237, 66, 69) : Theme.Map(Color.FromArgb(185, 187, 190));
                 _voiceTip.SetToolTip(btnMic, VoiceState.MicMuted ? "Включить микрофон" : "Выключить микрофон");
                 _voiceTip.SetToolTip(btnSpk, VoiceState.Deafened ? "Включить звук" : "Отключить звук");
             }

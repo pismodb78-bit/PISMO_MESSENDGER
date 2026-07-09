@@ -484,11 +484,23 @@ namespace PISMO
             }
 
             DeviceSettings.HardwareAcceleration = _chkHwAccel.Checked;
-            DeviceSettings.ThemeMode = _chkLightTheme.Checked ? "light" : "dark";
+            bool newLight = _chkLightTheme.Checked;
+            DeviceSettings.ThemeMode = newLight ? "light" : "dark";
 
             // TURN-сервер больше не используется (звонки через LiveKit).
 
             DeviceSettings.Save();
+
+            // Тема зафиксирована на старте приложения (Theme.IsLight) — если
+            // выбор изменился, честно предупреждаем и предлагаем перезапуск
+            // (раньше без перезапуска получалось «полусветлое» приложение).
+            if (newLight != Theme.IsLight)
+            {
+                var r = MessageBox.Show(this,
+                    "Тема применится после перезапуска приложения.\n\nПерезапустить сейчас?",
+                    "PISMO — тема", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (r == DialogResult.Yes) { MainForm.RestartApplication(); return; }
+            }
 
             DialogResult = DialogResult.OK;
             Close();

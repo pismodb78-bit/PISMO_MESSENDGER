@@ -4120,6 +4120,10 @@ namespace PISMO
             menu.Items.Add("🎛 Настройки устройств (камера/микрофон)", null, (s, ev) =>
                 new SettingsForm().ShowDialog(this));
 
+            // Тема — прямо в меню, чтобы не искать в настройках устройств.
+            menu.Items.Add(Theme.IsLight ? "🌙 Переключить на тёмную тему" : "☀️ Переключить на светлую тему",
+                null, (s, ev) => SwitchThemeWithRestart(this));
+
             // «Кто может мне писать» — с галочкой на текущем режиме.
             var priv = new ToolStripMenuItem("✉ Кто может мне писать");
             var privAll = new ToolStripMenuItem("Все");
@@ -4162,6 +4166,34 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         //  ВСПОМОГАТЕЛЬНОЕ
         // ════════════════════════════════════════════════════════════════
+
+        /// <summary>Смена темы из меню: сохраняем выбор и предлагаем перезапуск
+        /// (тема зафиксирована на старте — на лету не применяется, чтобы не было
+        /// «полусветлого» приложения).</summary>
+        internal void SwitchThemeWithRestart(IWin32Window owner)
+        {
+            DeviceSettings.ThemeMode = Theme.IsLight ? "dark" : "light";
+            try { DeviceSettings.Save(); } catch { }
+            var r = MessageBox.Show(owner,
+                "Тема применится после перезапуска приложения.\n\nПерезапустить сейчас?",
+                "PISMO — тема", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (r == DialogResult.Yes) RestartApplication();
+        }
+
+        /// <summary>Перезапуск приложения: новый процесс + немедленный выход
+        /// (минуя «сворачивание в трей» и прочие перехваты закрытия).</summary>
+        public static void RestartApplication()
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                    Application.ExecutablePath) { UseShellExecute = true });
+            }
+            catch { }
+            try { if (Current?._trayIcon != null) Current._trayIcon.Visible = false; } catch { }
+            Environment.Exit(0);
+        }
+
         private void MarkAsRead(int senderId)
         {
             try

@@ -186,7 +186,9 @@ namespace PISMO
                 path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
                 path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
                 path.CloseFigure();
-                using var br = new SolidBrush(Color.FromArgb(35, 36, 41));
+                // Кастомный Paint не проходит через Theme.Apply — красим через Map,
+                // чтобы плашка не оставалась тёмной в светлой теме.
+                using var br = new SolidBrush(Theme.Map(Color.FromArgb(35, 36, 41)));
                 g.FillPath(br, path);
             };
 
@@ -255,10 +257,11 @@ namespace PISMO
             void PaintStates()
             {
                 if (footer.IsDisposed) return;
+                var idle = Theme.Map(Color.FromArgb(185, 187, 190));   // серый — под тему
                 btnMic.Text = VoiceState.MicMuted ? "🔇" : "🎤";
-                btnMic.ForeColor = VoiceState.MicMuted ? Color.FromArgb(237, 66, 69) : Color.FromArgb(185, 187, 190);
+                btnMic.ForeColor = VoiceState.MicMuted ? Color.FromArgb(237, 66, 69) : idle;
                 btnSpk.Text = VoiceState.Deafened ? "🔕" : "🎧";
-                btnSpk.ForeColor = VoiceState.Deafened ? Color.FromArgb(237, 66, 69) : Color.FromArgb(185, 187, 190);
+                btnSpk.ForeColor = VoiceState.Deafened ? Color.FromArgb(237, 66, 69) : idle;
                 tip.SetToolTip(btnMic, VoiceState.MicMuted ? "Включить микрофон" : "Выключить микрофон");
                 tip.SetToolTip(btnSpk, VoiceState.Deafened ? "Включить звук" : "Отключить звук");
             }
