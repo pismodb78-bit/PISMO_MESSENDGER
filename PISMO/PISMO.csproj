@@ -5,6 +5,9 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- WPF нужен ТОЛЬКО для растеризации ЦВЕТНЫХ эмодзи (GDI+ не умеет
+         COLR-шрифты; DirectWrite через WPF FormattedText — умеет). -->
+    <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>PISMO</AssemblyName>
     <RootNamespace>PISMO</RootNamespace>

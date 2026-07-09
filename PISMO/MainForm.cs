@@ -2826,25 +2826,41 @@ namespace PISMO
                 if (reacts != null && reacts.Count > 0)
                 {
                     int rx = PAD, rh = 0;
+                    var cntFont = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold);
                     foreach (var re in reacts)
                     {
-                        var chip = new Label
+                        // ЦВЕТНОЙ чип (2.1): эмодзи — картинка из DirectWrite-растеризатора
+                        // (GDI рисовал их монохромными), счётчик — обычный текст рядом.
+                        var img = EmojiRender.Get(re.Emoji, 16);
+                        string cntText = re.Count.ToString();
+                        int txtW = TextRenderer.MeasureText(cntText, cntFont).Width;
+                        int imgW = img?.Width ?? 16;
+                        var chip = new Panel
                         {
-                            Text = $"{re.Emoji} {re.Count}",
-                            Font = new Font("Segoe UI Emoji", 8.5f),
-                            AutoSize = true,
-                            ForeColor = Color.White,
+                            Size = new Size(6 + imgW + 3 + txtW + 5, 22),
                             BackColor = re.Mine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(48, 51, 58),
-                            Padding = new Padding(5, 2, 5, 2),
                             Location = new Point(rx, innerY),
                             Cursor = Cursors.Hand
+                        };
+                        var capImg = img; var capCnt = cntText; var capImgW = imgW;
+                        chip.Paint += (s, e) =>
+                        {
+                            var g = e.Graphics;
+                            if (capImg != null)
+                                g.DrawImage(capImg, 6, (chip.Height - capImg.Height) / 2);
+                            else
+                                using (var f0 = new Font("Segoe UI Emoji", 8.5f))
+                                    g.DrawString(re.Emoji, f0, Brushes.White, 4, 3);
+                            TextRenderer.DrawText(g, capCnt, cntFont,
+                                new Point(6 + capImgW + 3, (chip.Height - 15) / 2),
+                                Color.White);
                         };
                         RoundCorners(chip, 8);
                         string emo = re.Emoji;
                         chip.Click += (s, e) => ToggleReactionAndReload(msgId, scope, emo);
                         bubble.Controls.Add(chip);
                         chip.BringToFront();
-                        rx += chip.PreferredWidth + 10 + 4;
+                        rx += chip.Width + 4;
                         rh = Math.Max(rh, chip.Height);
                     }
                     innerY += rh + 6;

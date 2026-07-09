@@ -53,7 +53,7 @@ namespace PISMO
         public void ToggleMicGlobal()
         {
             VoiceState.MicMuted = !VoiceState.MicMuted;
-            try { (DockCallWindow() as CallForm)?.SetMicMutedPublic(VoiceState.MicMuted); } catch { }
+            try { ActiveCallForm()?.SetMicMutedPublic(VoiceState.MicMuted); } catch { }
             SyncFooterVoiceButtons();
         }
 
@@ -61,7 +61,7 @@ namespace PISMO
         public void ToggleDeafenGlobal()
         {
             VoiceState.Deafened = !VoiceState.Deafened;
-            try { (DockCallWindow() as CallForm)?.SetAllMutedPublic(VoiceState.Deafened); } catch { }
+            try { ActiveCallForm()?.SetAllMutedPublic(VoiceState.Deafened); } catch { }
             SyncFooterVoiceButtons();
         }
 
@@ -82,7 +82,7 @@ namespace PISMO
                         DeviceSettings.MicrophoneIndex = idx;
                         DeviceSettings.MicrophoneName = nm;
                         try { DeviceSettings.Save(); } catch { }
-                        (DockCallWindow() as CallForm)?.SetInputDeviceLive(nm);
+                        ActiveCallForm()?.SetInputDeviceLive(nm);
                     };
                     menu.Items.Add(item);
                 }
@@ -115,7 +115,7 @@ namespace PISMO
                     {
                         DeviceSettings.SpeakerName = nm;
                         try { DeviceSettings.Save(); } catch { }
-                        (DockCallWindow() as CallForm)?.SetOutputDeviceLive(nm);
+                        ActiveCallForm()?.SetOutputDeviceLive(nm);
                     };
                     menu.Items.Add(item);
                 }
@@ -128,10 +128,27 @@ namespace PISMO
         private Form DockCallWindow()
             => (_voiceDockCall != null && !_voiceDockCall.IsDisposed) ? _voiceDockCall : _activeCall;
 
+        /// <summary>Активное окно звонка ДЛЯ КНОПОК ФУТЕРА: сперва привязка дока
+        /// (_voiceDockCall/_activeCall), а если её нет (звонок открыт в обход —
+        /// например голосовой канал без NotifyVoiceStarted) — ищем живой CallForm
+        /// среди открытых окон. Так мьют/наушники/смена устройств из футера
+        /// работают во время ЛЮБОГО звонка.</summary>
+        private CallForm ActiveCallForm()
+        {
+            if (DockCallWindow() is CallForm c && !c.IsDisposed) return c;
+            try
+            {
+                foreach (Form f in Application.OpenForms)
+                    if (f is CallForm cf && !cf.IsDisposed) return cf;
+            }
+            catch { }
+            return null;
+        }
+
         /// <summary>Показывает чип «NN ms» над радаром на 2 секунды.</summary>
         private void ShowPingChip()
         {
-            int ms = (DockCallWindow() as CallForm)?.CurrentPingMs ?? 0;
+            int ms = ActiveCallForm()?.CurrentPingMs ?? 0;
             _pingChip.Text = ms > 0 ? $"{ms} ms" : "…";
             _pingChip.Visible = true;
             _pingChip.BringToFront();
@@ -263,7 +280,7 @@ namespace PISMO
             _voiceRadar.Click += (s, e) => ShowPingChip();
             _voiceRadar.MouseEnter += (s, e) =>
             {
-                int ms = (DockCallWindow() as CallForm)?.CurrentPingMs ?? 0;
+                int ms = ActiveCallForm()?.CurrentPingMs ?? 0;
                 _voiceTip.SetToolTip(_voiceRadar, ms > 0 ? $"{ms} ms" : "Пинг измеряется…");
             };
             _voiceDock.Controls.Add(_voiceRadar);
@@ -306,7 +323,7 @@ namespace PISMO
                 DeviceSettings.NoiseSuppression = !DeviceSettings.NoiseSuppression;
                 try { DeviceSettings.Save(); } catch { }
                 PaintEq();
-                (DockCallWindow() as CallForm)?.SetNoiseSuppressionLive(DeviceSettings.NoiseSuppression);
+                ActiveCallForm()?.SetNoiseSuppressionLive(DeviceSettings.NoiseSuppression);
                 _voiceTip.SetToolTip(_voiceEq, DeviceSettings.NoiseSuppression ? "Шумоподавление: вкл" : "Шумоподавление: выкл");
             };
             _voiceTip.SetToolTip(_voiceEq, "Шумоподавление");
