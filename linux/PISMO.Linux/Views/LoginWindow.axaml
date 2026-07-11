@@ -1,0 +1,47 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PISMO.Linux.Views.LoginWindow"
+        Title="PISMO — Вход"
+        Width="380" Height="440"
+        WindowStartupLocation="CenterScreen"
+        CanResize="False"
+        Background="#2F3136">
+
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="32,28">
+
+    <!-- Заголовок -->
+    <StackPanel Grid.Row="0" Spacing="4" HorizontalAlignment="Center">
+      <TextBlock Text="PISMO" FontSize="30" FontWeight="Bold"
+                 Foreground="#5865F2" HorizontalAlignment="Center"/>
+      <TextBlock Text="Вход в аккаунт" FontSize="13"
+                 Foreground="#B9BBBE" HorizontalAlignment="Center"/>
+    </StackPanel>
+
+    <!-- Форма -->
+    <StackPanel Grid.Row="2" Spacing="14" VerticalAlignment="Center">
+      <StackPanel Spacing="4">
+        <TextBlock Text="ЛОГИН" FontSize="11" FontWeight="Bold" Foreground="#B9BBBE"/>
+        <TextBox x:Name="TxtLogin" Watermark="логин"
+                 Background="#202225" Foreground="White" BorderThickness="0"/>
+      </StackPanel>
+
+      <StackPanel Spacing="4">
+        <TextBlock Text="ПАРОЛЬ" FontSize="11" FontWeight="Bold" Foreground="#B9BBBE"/>
+        <TextBox x:Name="TxtPassword" Watermark="пароль" PasswordChar="●"
+                 Background="#202225" Foreground="White" BorderThickness="0"/>
+      </StackPanel>
+
+      <TextBlock x:Name="LblError" Text="" Foreground="#ED4245"
+                 FontSize="12" TextWrapping="Wrap" IsVisible="False"/>
+
+      <Button x:Name="BtnLogin" Content="Войти"
+              HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+              Height="40" Background="#5865F2" Foreground="White"
+              FontWeight="Bold" CornerRadius="4" Click="OnLoginClick"/>
+    </StackPanel>
+
+    <!-- Низ -->
+    <TextBlock Grid.Row="3" x:Name="LblStatus" Text="PISMO для Linux · сборка 0.1"
+               FontSize="10" Foreground="#72767D" HorizontalAlignment="Center"/>
+  </Grid>
+</Window>
