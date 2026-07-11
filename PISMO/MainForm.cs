@@ -1608,7 +1608,7 @@ namespace PISMO
 
             void SetHover(bool on) =>
                 pnl.BackColor = on || _currentGroupId == gid
-                    ? Color.FromArgb(65, 68, 75) : Color.Transparent;
+                    ? Theme.Map(Color.FromArgb(65, 68, 75)) : Color.Transparent;
 
             pnl.MouseEnter += (s, e) => SetHover(true);
             pnl.MouseLeave += (s, e) => SetHover(false);
@@ -1813,7 +1813,7 @@ namespace PISMO
 
             void SetHover(bool on) =>
                 pnl.BackColor = on || _currentChatPartnerId == uid
-                    ? Color.FromArgb(65, 68, 75) : Color.Transparent;
+                    ? Theme.Map(Color.FromArgb(65, 68, 75)) : Color.Transparent;
 
             pnl.MouseEnter += (s, e) => SetHover(true);
             pnl.MouseLeave += (s, e) => SetHover(false);
@@ -1883,7 +1883,7 @@ namespace PISMO
 
             void SetHover(bool on) =>
                 pnl.BackColor = on || _currentChatPartnerId == uid
-                    ? Color.FromArgb(65, 68, 75) : Color.Transparent;
+                    ? Theme.Map(Color.FromArgb(65, 68, 75)) : Color.Transparent;
 
             pnl.MouseEnter += (s, e) => SetHover(true);
             pnl.MouseLeave += (s, e) => SetHover(false);
@@ -2058,7 +2058,7 @@ namespace PISMO
 
             foreach (var p in _userPanels)
                 p.BackColor = (p.Tag is int id && id == partnerId)
-                    ? Color.FromArgb(65, 68, 75) : Color.Transparent;
+                    ? Theme.Map(Color.FromArgb(65, 68, 75)) : Color.Transparent;
             foreach (var p in _groupPanels)
                 p.BackColor = Color.Transparent;
 
@@ -2081,7 +2081,7 @@ namespace PISMO
 
             foreach (var p in _groupPanels)
                 p.BackColor = (p.Tag is int id && id == groupId)
-                    ? Color.FromArgb(65, 68, 75) : Color.Transparent;
+                    ? Theme.Map(Color.FromArgb(65, 68, 75)) : Color.Transparent;
             foreach (var p in _userPanels)
                 p.BackColor = Color.Transparent;
 

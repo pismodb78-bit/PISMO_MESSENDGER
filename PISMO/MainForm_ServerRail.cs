@@ -182,7 +182,9 @@ namespace PISMO
                 int radius = (selected || hover) ? d : 16;
 
                 // Кнопка «+» при наведении зеленеет целиком (как в Discord).
-                Color drawBack = (isAdd && hover) ? Color.FromArgb(59, 165, 93) : back;
+                // Нейтральный фон кружка — через Theme.Map (кастомный Paint не
+                // проходит авто-перекраску, в светлой теме оставался чёрным).
+                Color drawBack = (isAdd && hover) ? Color.FromArgb(59, 165, 93) : Theme.Map(back);
                 Color drawFore = (isAdd && hover) ? Color.White : fore;
 
                 using (var path = RoundedRect(rect, radius / 2))

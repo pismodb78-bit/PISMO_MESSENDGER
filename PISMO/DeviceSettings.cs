@@ -89,6 +89,12 @@ namespace PISMO
         /// <summary>Тема оформления: "dark" (по умолчанию, как раньше) или "light".</summary>
         public static string ThemeMode { get; set; } = "dark";
 
+        /// <summary>Показывать ВСЕ мониторы в выборе демонстрации (захват WGC).
+        /// По умолчанию выключено: WGC ограничен ~30 fps, зато DXGI-захват (60 fps)
+        /// видит только мониторы «своего» GPU — на мульти-GPU системах часть
+        /// экранов пропадает из списка. Включите, если в диалоге выбора не все экраны.</summary>
+        public static bool ScreenCaptureAllMonitors { get; set; } = false;
+
         /// <summary>Доп. аргументы Chromium для WebView2 с учётом настройки HW-ускорения.
         /// При включённом ускорении ЯВНО разрешаем GPU-растеризацию и, главное,
         /// аппаратное кодирование/декодирование видео (NVENC/Media Foundation) +
@@ -107,10 +113,15 @@ namespace PISMO
             //    Chromium троттлил её таймеры/конвейер кадров;
             //  • IntensiveWakeUpThrottling — то же на длинных демках (таймеры до
             //    1 раза в секунду после нескольких минут «в фоне»).
-            const string disabled =
-                "--disable-features=WebRtcAllowWgcDesktopCapturer," +
-                "WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer," +
-                "WebRtcWgcRequireBorder,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling";
+            //  РЕЖИМ «ВСЕ МОНИТОРЫ» (ScreenCaptureAllMonitors): WGC НЕ отключаем —
+            //  DXGI-захват видит только экраны GPU, на котором живёт Chromium, и
+            //  на мульти-GPU системах часть мониторов пропадает из диалога выбора.
+            //  Цена — потолок ~30 fps у WGC-захвата. Жёлтую рамку WGC всё же гасим.
+            string disabled = ScreenCaptureAllMonitors
+                ? "--disable-features=WebRtcWgcRequireBorder,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling"
+                : "--disable-features=WebRtcAllowWgcDesktopCapturer," +
+                  "WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer," +
+                  "WebRtcWgcRequireBorder,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling";
 
             // Анти-троттлинг скрытой страницы (транспорт живёт в невидимом WebView)
             // enable-features:
@@ -209,6 +220,9 @@ namespace PISMO
                         case "ThemeMode":
                             if (!string.IsNullOrWhiteSpace(val)) ThemeMode = val.Trim().ToLowerInvariant() == "light" ? "light" : "dark";
                             break;
+                        case "ScreenCaptureAllMonitors":
+                            ScreenCaptureAllMonitors = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
+                            break;
                         case "HotkeyMic":
                             if (int.TryParse(val, out int hm)) HotkeyMic = hm;
                             break;
@@ -250,6 +264,7 @@ namespace PISMO
                     $"VoiceThreshold={VoiceThreshold}\n" +
                     $"HardwareAcceleration={(HardwareAcceleration ? 1 : 0)}\n" +
                     $"ThemeMode={ThemeMode}\n" +
+                    $"ScreenCaptureAllMonitors={(ScreenCaptureAllMonitors ? 1 : 0)}\n" +
                     $"HotkeyMic={HotkeyMic}\n" +
                     $"HotkeyCamera={HotkeyCamera}\n" +
                     $"HotkeyScreen={HotkeyScreen}\n" +

@@ -441,12 +441,38 @@ namespace PISMO
                 Location = new Point(16, 158)
             };
 
+            // Все мониторы в выборе демонстрации (WGC): DXGI-захват на мульти-GPU
+            // системах показывает только экраны «своего» GPU — часть мониторов
+            // пропадает из диалога. WGC видит все, но захват ограничен ~30 fps.
+            _chkAllMonitors = new CheckBox
+            {
+                Text = "Показывать все мониторы в выборе демонстрации",
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BackColor = Color.FromArgb(47, 49, 54),
+                AutoSize = true,
+                Location = new Point(14, 180),
+                Cursor = Cursors.Hand
+            };
+            var lblAllMonHint = new Label
+            {
+                Text = "Включите, если видны не все экраны (мульти-GPU). Захват до ~30 fps. Нужен перезапуск.",
+                Font = new Font("Segoe UI", 8f),
+                ForeColor = Color.FromArgb(140, 142, 146),
+                AutoSize = false,
+                Size = new Size(430, 16),
+                Location = new Point(16, 202)
+            };
+            pnlScreen.Height = 230;
+
             pnlScreen.Controls.Add(lblScreenTitle);
             pnlScreen.Controls.Add(tblScreen);
             pnlScreen.Controls.Add(_chkHwAccel);
             pnlScreen.Controls.Add(lblHwHint);
             pnlScreen.Controls.Add(_chkLightTheme);
             pnlScreen.Controls.Add(lblThemeHint);
+            pnlScreen.Controls.Add(_chkAllMonitors);
+            pnlScreen.Controls.Add(lblAllMonHint);
 
             // ── Горячие клавиши в звонке ────────────────────────────────
             var pnlKeys = new Panel

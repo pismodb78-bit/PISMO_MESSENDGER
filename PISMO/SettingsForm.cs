@@ -31,6 +31,7 @@ namespace PISMO
         private CheckBox _chkNoiseSuppress;
         private CheckBox _chkHwAccel;
         private CheckBox _chkLightTheme;
+        private CheckBox _chkAllMonitors;   // все мониторы в выборе демонстрации (WGC)
         private TrackBar _trkVoiceThreshold;
         private Label _lblVoiceThresholdValue;
         private Panel _pnlLevelBar;
@@ -209,6 +210,7 @@ namespace PISMO
 
             // Аппаратное ускорение.
             _chkHwAccel.Checked = DeviceSettings.HardwareAcceleration;
+            _chkAllMonitors.Checked = DeviceSettings.ScreenCaptureAllMonitors;
 
             // Тема оформления.
             _chkLightTheme.Checked = Theme.IsLight;
@@ -484,6 +486,7 @@ namespace PISMO
             }
 
             DeviceSettings.HardwareAcceleration = _chkHwAccel.Checked;
+            DeviceSettings.ScreenCaptureAllMonitors = _chkAllMonitors.Checked;
             bool newLight = _chkLightTheme.Checked;
             DeviceSettings.ThemeMode = newLight ? "light" : "dark";
 
