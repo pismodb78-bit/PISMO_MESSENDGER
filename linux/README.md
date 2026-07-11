@@ -10,14 +10,27 @@ UI), но **вся логика — БД, шифрование, JWT, парол�
 авторизация работают на Linux. Дальше по частям: список чатов → переписка →
 звонки (через CEF) → остальное.
 
-## Что нужно на CachyOS/Arch
+## Что нужно (любой дистрибутив с .NET 8)
+
+Клиент кроссплатформенный — идёт на Arch/CachyOS, Ubuntu/Debian, Fedora и др.
+Нужен только **.NET 8 SDK**; отличаются лишь команды установки:
 
 ```bash
-sudo pacman -S dotnet-sdk        # .NET 8 SDK (проверь: dotnet --version → 8.x)
+# Arch / CachyOS
+sudo pacman -S dotnet-sdk
+
+# Ubuntu 22.04+/24.04, Debian 12+
+sudo apt update && sudo apt install -y dotnet-sdk-8.0
+#   если пакета нет в репозиториях — подключи фид Microsoft:
+#   https://learn.microsoft.com/dotnet/core/install/linux-ubuntu
+
+# Fedora
+sudo dnf install dotnet-sdk-8.0
 ```
 
-Больше для входа ничего не требуется — Avalonia и MySQL-коннектор приедут через
-NuGet при первой сборке (нужен интернет). GUI работает и на X11, и на Wayland.
+Проверь: `dotnet --version` → `8.x`. Больше для входа ничего не требуется —
+Avalonia и MySQL-коннектор приедут через NuGet при первой сборке (нужен
+интернет). GUI работает и на X11, и на Wayland (GNOME/KDE и пр.).
 
 ## Настройка подключения
 
