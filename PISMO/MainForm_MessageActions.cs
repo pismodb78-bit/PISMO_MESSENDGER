@@ -184,6 +184,19 @@ namespace PISMO
         //  «Реакция» открывает тёмный пикер EmojiPickerForm, где первая вкладка
         //  🕒 «часто используемые» и есть быстрые реакции.)
 
+        /// <summary>Кнопка «＋» под сообщением — добавить ещё одну реакцию, когда
+        /// одна уже стоит. Открывает тот же тёмный пикер эмодзи.</summary>
+        private void ShowQuickReactionPicker(Control anchor, int msgId, ReactionsRepository.Scope scope)
+        {
+            try
+            {
+                var pt = anchor != null ? anchor.PointToScreen(new Point(0, anchor.Height)) : Cursor.Position;
+                string emo = EmojiPickerForm.Pick(this, pt);
+                if (!string.IsNullOrWhiteSpace(emo)) ToggleReactionAndReload(msgId, scope, emo);
+            }
+            catch { }
+        }
+
         /// <summary>Ставит/снимает реакцию и перерисовывает открытый чат.</summary>
         private void ToggleReactionAndReload(int msgId, ReactionsRepository.Scope scope, string emoji)
         {

@@ -89,6 +89,28 @@ namespace PISMO
                     "edited_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
                     "PRIMARY KEY (id), KEY idx_edits_msg (message_id, scope)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
             }),
+
+            (7, "message_reactions: PK с эмодзи (несколько реакций от одного юзера)", conn =>
+            {
+                // На «живой» БД таблица могла быть создана раньше — со СТАРЫМ
+                // первичным ключом (message_id, scope, user_id) без emoji. Тогда
+                // один пользователь мог поставить лишь ОДНУ реакцию на сообщение:
+                // вторая реакция другим эмодзи молча отсекалась INSERT IGNORE.
+                // Чиним — добавляем emoji в PK, если его там ещё нет.
+                bool emojiInPk = false;
+                try
+                {
+                    using var q = new MySqlCommand(
+                        "SELECT COUNT(*) FROM information_schema.STATISTICS " +
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'message_reactions' " +
+                        "AND INDEX_NAME = 'PRIMARY' AND COLUMN_NAME = 'emoji'", conn);
+                    emojiInPk = Convert.ToInt32(q.ExecuteScalar()) > 0;
+                }
+                catch { }
+                if (!emojiInPk)
+                    Exec(conn, "ALTER TABLE message_reactions DROP PRIMARY KEY, " +
+                               "ADD PRIMARY KEY (message_id, scope, user_id, emoji)");
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>

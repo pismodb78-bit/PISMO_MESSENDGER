@@ -2982,6 +2982,26 @@ namespace PISMO
                         rx += chip.Width + 4;
                         rh = Math.Max(rh, chip.Height);
                     }
+
+                    // «＋» — добавить ещё одну реакцию (виден, когда уже есть хотя бы одна).
+                    var addChip = new Label
+                    {
+                        Text = "＋",
+                        Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
+                        TextAlign = ContentAlignment.MiddleCenter,
+                        Size = new Size(30, 28),
+                        ForeColor = Color.FromArgb(200, 202, 208),
+                        BackColor = Color.FromArgb(48, 51, 58),
+                        Location = new Point(rx, innerY),
+                        Cursor = Cursors.Hand
+                    };
+                    RoundCorners(addChip, 8);
+                    int mid = msgId; var msc = scope;
+                    addChip.Click += (s, e) => ShowQuickReactionPicker(addChip, mid, msc);
+                    bubble.Controls.Add(addChip);
+                    addChip.BringToFront();
+                    rh = Math.Max(rh, addChip.Height);
+
                     innerY += rh + 6;
                 }
             }
@@ -4054,8 +4074,32 @@ namespace PISMO
             try { parent.Controls.Clear(); } catch { }
         }
 
+        // Единственное окно просмотра — повторные клики по картинкам не плодят
+        // окна, а обновляют изображение в уже открытом окне.
+        private static Form _imageViewer;
+        private static PictureBox _imageViewerBox;
+
         internal static void ShowImageFullscreen(byte[] imgBytes)
         {
+            var ms = new MemoryStream(imgBytes.ToArray());
+            var img = Image.FromStream(ms);
+
+            // Уже открыто — просто меняем картинку и выводим на передний план.
+            if (_imageViewer != null && !_imageViewer.IsDisposed && _imageViewerBox != null)
+            {
+                var oldImg = _imageViewerBox.Image;
+                var oldMs = _imageViewerBox.Tag as IDisposable;
+                _imageViewerBox.Image = img;
+                _imageViewerBox.Tag = ms;   // держим поток живым
+                try { oldImg?.Dispose(); } catch { }
+                try { oldMs?.Dispose(); } catch { }
+                if (_imageViewer.WindowState == FormWindowState.Minimized)
+                    _imageViewer.WindowState = FormWindowState.Normal;
+                _imageViewer.BringToFront();
+                _imageViewer.Activate();
+                return;
+            }
+
             var v = new Form
             {
                 Text = "Просмотр",
@@ -4067,19 +4111,21 @@ namespace PISMO
             {
                 Dock = DockStyle.Fill,
                 SizeMode = PictureBoxSizeMode.Zoom,
-                BackColor = Color.Black
+                BackColor = Color.Black,
+                Image = img,
+                Tag = ms
+            };
+            v.Controls.Add(pb);
+            v.FormClosed += (s, e) =>
+            {
+                try { pb.Image?.Dispose(); } catch { }
+                try { (pb.Tag as IDisposable)?.Dispose(); } catch { }
+                _imageViewer = null;
+                _imageViewerBox = null;
             };
 
-            // БЕЗ using — ms должен жить пока живёт форма
-            var ms = new MemoryStream(imgBytes.ToArray());
-            var img = Image.FromStream(ms);
-            pb.Image = img;
-
-            v.Controls.Add(pb);
-
-            // Освобождаем только при закрытии формы
-            v.FormClosed += (s, e) => { img.Dispose(); ms.Dispose(); };
-
+            _imageViewer = v;
+            _imageViewerBox = pb;
             v.Show();
         }
 
