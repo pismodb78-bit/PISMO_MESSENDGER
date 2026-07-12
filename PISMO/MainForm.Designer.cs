@@ -85,7 +85,7 @@ namespace PISMO
             pnlSidebar.Dock = DockStyle.Left;
             pnlSidebar.Location = new Point(0, 0);
             pnlSidebar.Name = "pnlSidebar";
-            pnlSidebar.Size = new Size(290, 700);
+            pnlSidebar.Size = new Size(240, 700);   // ширина списка DM ≈ Discord
             pnlSidebar.TabIndex = 2;
             // 
             // pnlUserList
@@ -387,7 +387,7 @@ namespace PISMO
             ClientSize = new Size(1060, 700);
             Controls.Add(pnlMain);
             Controls.Add(pnlSidebar);
-            Font = new Font("Segoe UI", 9.5F);
+            Font = new Font("Segoe UI", 10.5F);   // крупнее, ближе к Discord
             MinimumSize = new Size(820, 540);
             Name = "MainForm";
             StartPosition = FormStartPosition.CenterScreen;
