@@ -1102,8 +1102,8 @@ namespace PISMO
                             {
                                 var ms = new MemoryStream(sm.img.ToArray());
                                 var img = Image.FromStream(ms);
-                                int mw = 260, mh = 220;
-                                double rr = Math.Min(1, Math.Min((double)mw / img.Width, (double)mh / img.Height));
+                                int mw = 420, mh = 360;
+                                double rr = Math.Min(2.0, Math.Min((double)mw / img.Width, (double)mh / img.Height));
                                 int dw = Math.Max(1, (int)(img.Width * rr)), dh = Math.Max(1, (int)(img.Height * rr));
                                 var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(0, y), Cursor = Cursors.Hand, Image = img };
                                 var cap = sm.img;

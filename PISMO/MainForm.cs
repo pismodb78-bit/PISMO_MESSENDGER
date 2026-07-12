@@ -130,7 +130,10 @@ namespace PISMO
         {
             try
             {
-                ApplyGradientBackdrop(pnlMessages, Color.FromArgb(54, 57, 63)); // чат
+                // Ровная подложка чата (как в Discord). Градиент на прокручиваемой
+                // панели давал горизонтальные полосы при скролле — убран.
+                EnableDoubleBuffer(pnlMessages);
+                pnlMessages.BackColor = Theme.Map(Color.FromArgb(54, 57, 63));
             }
             catch { }
         }
@@ -2658,7 +2661,7 @@ namespace PISMO
             {
                 try
                 {
-                    const int circleD = 180;
+                    const int circleD = 220;
                     var player = new VideoCirclePlayer(videoBytes, circleD)
                     {
                         Location = new Point(PAD, innerY)
@@ -2684,8 +2687,12 @@ namespace PISMO
                     try { img = Image.FromStream(ms); }
                     catch { ms.Dispose(); throw; }
 
-                    int maxW = 260, maxH = 200;
-                    double ratio = Math.Min((double)maxW / img.Width, (double)maxH / img.Height);
+                    // Рамка вывода больше — фото/GIF читабельнее. Крупные вписываем
+                    // в рамку, мелкие увеличиваем до читаемого размера (но не более 2x,
+                    // чтобы не «замыливать»).
+                    int maxW = 420, maxH = 360;
+                    double fit = Math.Min((double)maxW / img.Width, (double)maxH / img.Height);
+                    double ratio = Math.Min(fit, 2.0);
                     int dw = Math.Max(1, (int)(img.Width * ratio));
                     int dh = Math.Max(1, (int)(img.Height * ratio));
 

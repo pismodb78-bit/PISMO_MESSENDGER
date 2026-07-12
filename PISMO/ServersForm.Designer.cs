@@ -17,7 +17,7 @@ namespace PISMO
         {
             _pnlServers = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(32, 34, 37), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
             _pnlChannels = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
-            _pnlMembers = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 240, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
+            _pnlMembers = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 312, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
             // Растягиваем строки каналов/участников на всю ширину панели (не «короткие»).
             _pnlChannels.Resize += (s, e) => StretchRows(_pnlChannels);
             _pnlChannels.ControlAdded += (s, e) => StretchRow(_pnlChannels, e.Control);
@@ -93,7 +93,7 @@ namespace PISMO
             var btnRefreshSrv = new Button { Dock = DockStyle.Top, Height = 28, Text = "↻ Обновить", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnRefreshSrv.FlatAppearance.BorderSize = 0;
             btnRefreshSrv.Click += (s, e) => RefreshNow();
-            var channelHost = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = Color.FromArgb(47, 49, 54) };
+            var channelHost = new Panel { Dock = DockStyle.Left, Width = 312, BackColor = Color.FromArgb(47, 49, 54) };
             channelHost.Controls.Add(_pnlChannels);
             // Плашка профиля (аватар/имя/🎤/🎧/⚙) внизу колонки каналов — как в ЛС.
             // Порядок добавления важен: докинг идёт с конца списка, футер должен
