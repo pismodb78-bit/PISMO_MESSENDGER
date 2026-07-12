@@ -645,11 +645,11 @@ namespace PISMO
                 var batch = new System.Collections.Generic.List<(string sender, string text)>(_forwardBatch);
                 _forwardBatch.Clear();
                 CancelForward();
-                foreach (var (sender, text) in batch)
+                foreach (var (fSender, fText) in batch)
                 {
-                    string toSend = string.IsNullOrWhiteSpace(sender)
-                        ? $"↪ Переслано:\n{text}"
-                        : $"↪ Переслано от {sender}:\n{text}";
+                    string toSend = string.IsNullOrWhiteSpace(fSender)
+                        ? $"↪ Переслано:\n{fText}"
+                        : $"↪ Переслано от {fSender}:\n{fText}";
                     if (_currentGroupId >= 0) SendGroupMessage(toSend, null);
                     else if (_currentChatPartnerId >= 0) SendMessage(toSend, null);
                 }
