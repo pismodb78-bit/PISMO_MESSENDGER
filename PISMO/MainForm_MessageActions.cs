@@ -47,6 +47,15 @@ namespace PISMO
         // ── Polling входящих звонков ──────────────────────────────────────
         private int _lastCheckedCallId = 0;
 
+        // ── Множественное выделение сообщений (переслать/удалить пачкой) ───
+        private bool _selectMode;
+        private bool _selectIsGroup;
+        private readonly System.Collections.Generic.HashSet<int> _selectedMsgIds = new();
+        private readonly System.Collections.Generic.Dictionary<int, (string sender, string text)> _msgMeta = new();
+        private readonly System.Collections.Generic.List<(string sender, string text)> _forwardBatch = new();
+        private Panel _pnlSelectBar;
+        private Label _lblSelectInfo;
+
         // ════════════════════════════════════════════════════════════════
         //  ИНИЦИАЛИЗАЦИЯ (вызывать из MainForm_Load или конструктора)
         // ════════════════════════════════════════════════════════════════
@@ -54,6 +63,7 @@ namespace PISMO
         {
             BuildReplyBar();
             BuildForwardBar();
+            BuildSelectBar();
             AddCallButtonsToHeader();
             HookCallPolling();
         }
@@ -230,13 +240,184 @@ namespace PISMO
             });
         }
 
+        // ════════════════════════════════════════════════════════════════
+        //  МНОЖЕСТВЕННОЕ ВЫДЕЛЕНИЕ (переслать / удалить несколько сразу)
+        // ════════════════════════════════════════════════════════════════
+        private void BuildSelectBar()
+        {
+            _pnlSelectBar = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 46,
+                BackColor = Color.FromArgb(47, 49, 54),
+                Visible = false
+            };
+
+            _lblSelectInfo = new Label
+            {
+                Dock = DockStyle.Left,
+                Width = 170,
+                TextAlign = System.Drawing.ContentAlignment.MiddleLeft,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+                Padding = new Padding(14, 0, 0, 0),
+                Text = "Выбрано: 0"
+            };
+
+            Button Bar(string t, Color fg)
+            {
+                var b = new Button
+                {
+                    Text = t,
+                    Dock = DockStyle.Right,
+                    Width = 130,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(54, 57, 63),
+                    ForeColor = fg,
+                    Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                    Cursor = Cursors.Hand
+                };
+                b.FlatAppearance.BorderSize = 0;
+                return b;
+            }
+
+            var btnCancel = Bar("Отмена", Color.FromArgb(200, 202, 208));
+            var btnDelete = Bar("🗑  Удалить", Color.FromArgb(240, 71, 71));
+            var btnForward = Bar("↪  Переслать", Color.FromArgb(88, 170, 255));
+            btnCancel.Click += (s, e) => ExitSelectMode();
+            btnDelete.Click += (s, e) => DeleteSelected();
+            btnForward.Click += (s, e) => ForwardSelected();
+
+            _pnlSelectBar.Controls.Add(_lblSelectInfo);
+            _pnlSelectBar.Controls.Add(btnCancel);
+            _pnlSelectBar.Controls.Add(btnDelete);
+            _pnlSelectBar.Controls.Add(btnForward);
+
+            pnlMain.Controls.Add(_pnlSelectBar);
+            _pnlSelectBar.BringToFront();
+        }
+
+        private void EnterSelectMode(bool isGroup)
+        {
+            _selectMode = true;
+            _selectIsGroup = isGroup;
+            _selectedMsgIds.Clear();
+            if (_pnlSelectBar != null) { _pnlSelectBar.Visible = true; _pnlSelectBar.BringToFront(); }
+            UpdateSelectBar();
+        }
+
+        private void ExitSelectMode()
+        {
+            _selectMode = false;
+            _selectedMsgIds.Clear();
+            if (_pnlSelectBar != null) _pnlSelectBar.Visible = false;
+            RerenderCurrentChat();
+        }
+
+        private void ToggleSelect(int msgId)
+        {
+            if (msgId <= 0) return;
+            if (!_selectedMsgIds.Add(msgId)) _selectedMsgIds.Remove(msgId);
+            UpdateSelectBar();
+            RerenderCurrentChat();
+        }
+
+        private void UpdateSelectBar()
+        {
+            if (_lblSelectInfo != null) _lblSelectInfo.Text = $"Выбрано: {_selectedMsgIds.Count}";
+        }
+
+        private void RerenderCurrentChat()
+        {
+            try
+            {
+                ForceMessageRerender();
+                if (_currentGroupId > 0) LoadGroupMessages();
+                else if (_currentChatPartnerId >= 0) LoadMessages();
+            }
+            catch { }
+        }
+
+        private void DeleteSelected()
+        {
+            if (_selectedMsgIds.Count == 0) { ExitSelectMode(); return; }
+            if (MessageBox.Show(
+                $"Удалить выбранные сообщения ({_selectedMsgIds.Count})? Это нельзя отменить.",
+                "PISMO", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+
+            string table = _selectIsGroup ? "group_messages" : "messages";
+            var ids = new System.Collections.Generic.List<int>(_selectedMsgIds);
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                foreach (int id in ids)
+                {
+                    using var cmd = new MySqlCommand(
+                        $"UPDATE {table} SET is_deleted=1, text='[сообщение удалено]', " +
+                        "image_data=NULL, audio_data=NULL, video_data=NULL WHERE id=@id", conn);
+                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Ошибка удаления: " + ex.Message); }
+
+            _selectMode = false;
+            _selectedMsgIds.Clear();
+            if (_pnlSelectBar != null) _pnlSelectBar.Visible = false;
+            RerenderCurrentChat();
+        }
+
+        private void ForwardSelected()
+        {
+            if (_selectedMsgIds.Count == 0) { ExitSelectMode(); return; }
+
+            // Собираем выбранные по возрастанию id (порядок как в чате).
+            var ids = new System.Collections.Generic.List<int>(_selectedMsgIds);
+            ids.Sort();
+            _forwardBatch.Clear();
+            foreach (int id in ids)
+                if (_msgMeta.TryGetValue(id, out var meta))
+                    _forwardBatch.Add(meta);
+
+            int cnt = _forwardBatch.Count;
+            _selectMode = false;
+            _selectedMsgIds.Clear();
+            if (_pnlSelectBar != null) _pnlSelectBar.Visible = false;
+
+            _lblForwardInfo.Text = $"↪ Пересылка {cnt} сообщений(я) — выберите диалог и нажмите «Отправить»";
+            _pnlForwardBar.Visible = true;
+            RerenderCurrentChat();
+
+            MessageBox.Show(
+                "Выберите диалог или группу в сайдбаре и нажмите «Отправить».\n" +
+                $"Будут пересланы выбранные сообщения ({cnt}).",
+                "PISMO — Пересылка", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            txtMessage.Focus();
+        }
+
         public void AttachBubbleContextMenu(Panel bubble, int msgId, bool isGroup,
     bool isMine, string text, string senderName)
         {
+            // Запоминаем текст/отправителя — понадобится для пакетной пересылки.
+            if (msgId > 0) _msgMeta[msgId] = (senderName ?? "", text ?? "");
+
             var menu = new ContextMenuStrip();
             menu.BackColor = Color.FromArgb(24, 25, 28);
             menu.ForeColor = Color.FromArgb(220, 221, 222);
             menu.Font = new Font("Segoe UI", 9.5f);
+
+            // ── Выбрать (множественное выделение) ────────────────────────
+            if (msgId > 0)
+            {
+                var itemSelect = new ToolStripMenuItem("☑  Выбрать");
+                itemSelect.Click += (s, e) =>
+                {
+                    if (!_selectMode) EnterSelectMode(isGroup);
+                    ToggleSelect(msgId);
+                };
+                menu.Items.Add(itemSelect);
+                menu.Items.Add(new ToolStripSeparator());
+            }
 
             // ── Реакция (эмодзи) ─────────────────────────────────────────
             if (msgId > 0)
@@ -332,11 +513,13 @@ namespace PISMO
                 menu.Items.Add(itemDel);
             }
 
-            // Правый клик по пузырю и всем его дочерним контролам
+            // Правый клик — меню; левый клик в режиме выделения — отметить/снять.
             void ShowMenu(object? s, MouseEventArgs e)
             {
                 if (e.Button == MouseButtons.Right)
                     menu.Show(Cursor.Position);
+                else if (e.Button == MouseButtons.Left && _selectMode && msgId > 0)
+                    ToggleSelect(msgId);
             }
 
             bubble.MouseClick += ShowMenu;
@@ -346,6 +529,26 @@ namespace PISMO
                 // подменяем нашим (в нём есть «Копировать» с учётом выделения).
                 if (c is TextBox tb) tb.ContextMenuStrip = menu;
                 else c.MouseClick += ShowMenu;
+            }
+
+            // Индикатор выделения (кружок ○ / галочка ✓) в режиме выбора.
+            if (_selectMode && msgId > 0)
+            {
+                bool sel = _selectedMsgIds.Contains(msgId);
+                var mark = new Label
+                {
+                    Text = sel ? "✓" : "○",
+                    AutoSize = true,
+                    Font = new Font("Segoe UI Semibold", 12f, FontStyle.Bold),
+                    ForeColor = sel ? Color.FromArgb(59, 165, 93) : Color.FromArgb(180, 182, 188),
+                    BackColor = Color.Transparent,
+                    Location = new Point(bubble.Width - 26, 4),
+                    Cursor = Cursors.Hand
+                };
+                mark.MouseClick += ShowMenu;
+                bubble.Controls.Add(mark);
+                mark.BringToFront();
+                if (sel) bubble.BackColor = ControlPaint.Light(bubble.BackColor, 0.15f);
             }
         }
 
@@ -436,6 +639,23 @@ namespace PISMO
 
         public bool TrySendForward()
         {
+            // Пачка (множественное выделение) — пересылаем каждое по порядку.
+            if (_forwardBatch.Count > 0)
+            {
+                var batch = new System.Collections.Generic.List<(string sender, string text)>(_forwardBatch);
+                _forwardBatch.Clear();
+                CancelForward();
+                foreach (var (sender, text) in batch)
+                {
+                    string toSend = string.IsNullOrWhiteSpace(sender)
+                        ? $"↪ Переслано:\n{text}"
+                        : $"↪ Переслано от {sender}:\n{text}";
+                    if (_currentGroupId >= 0) SendGroupMessage(toSend, null);
+                    else if (_currentChatPartnerId >= 0) SendMessage(toSend, null);
+                }
+                return true;
+            }
+
             if (_forwardMsgId < 0) return false;
 
             // Формируем текст с указанием отправителя

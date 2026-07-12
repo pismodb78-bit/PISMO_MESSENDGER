@@ -1045,16 +1045,31 @@ namespace PISMO
                     string text = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString());
                     string time = Convert.ToDateTime(r["created_at"]).ToString("HH:mm");
 
-                    // Меня упомянули (@логин/@роль/@все) — зелёная полупрозрачная плашка.
+                    // Меня упомянули (@логин/@роль/@все) — подсветим бабл зеленоватым.
                     bool mine = MentionsMe(text);
+                    bool isMe = senderId == _me;
+
+                    // Формат сообщений — как в личном чате: скруглённый «пузырёк».
+                    // Своё — фиолетовое, чужое — тёмно-серое, упоминание меня — зелёный оттенок.
+                    const int PAD = 12;
+                    Color bubbleBg = isMe ? Color.FromArgb(88, 101, 242)
+                                   : mine ? Color.FromArgb(47, 68, 55)
+                                          : Color.FromArgb(48, 51, 58);
 
                     var holder = new Panel
                     {
                         AutoSize = true,
                         Margin = new Padding(0, 2, 0, 6),
-                        BackColor = mine ? Color.FromArgb(40, 59, 165, 93) : Color.Transparent
+                        Padding = new Padding(PAD),
+                        BackColor = Color.FromArgb(54, 57, 63)   // цвет фона чата — углы «прозрачны»
                     };
-                    int y = 0;
+                    holder.Paint += (s, e) =>
+                    {
+                        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                        using var br = new SolidBrush(bubbleBg);
+                        e.Graphics.FillRoundedRectangle(br, 0, 0, holder.Width - 1, holder.Height - 1, 10);
+                    };
+                    int y = PAD;
 
                     // Цитата отвечаемого сообщения (если это ответ).
                     int replyToId = _replyColOk && dt.Columns.Contains("reply_to_id") && r["reply_to_id"] != DBNull.Value
@@ -1069,7 +1084,7 @@ namespace PISMO
                         {
                             AutoSize = false,
                             Size = new Size(msgWidth - 14, 16),
-                            Location = new Point(3, y),
+                            Location = new Point(PAD, y),
                             ForeColor = Color.FromArgb(0, 176, 244),
                             Font = new Font("Segoe UI", 8f),
                             Cursor = Cursors.Hand,
@@ -1084,16 +1099,15 @@ namespace PISMO
                     var head = new Label
                     {
                         AutoSize = true,
-                        ForeColor = Color.FromArgb(150, 152, 158),
+                        ForeColor = isMe ? Color.FromArgb(215, 220, 255) : Color.FromArgb(170, 178, 235),
                         Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                        Location = new Point(0, y),
+                        Location = new Point(PAD, y),
                         Text = $"{nm} · {time}"
                     };
                     holder.Controls.Add(head);
                     y += 18;
 
                     // Медиа канала (картинка / голосовое / кружок / видео / файл) — как в обычном чате.
-                    bool isMe = senderId == _me;
                     if (_serverMedia.TryGetValue(id, out var sm))
                     {
                         if (sm.img is { Length: > 0 })
@@ -1105,7 +1119,7 @@ namespace PISMO
                                 int mw = 420, mh = 360;
                                 double rr = Math.Min(2.0, Math.Min((double)mw / img.Width, (double)mh / img.Height));
                                 int dw = Math.Max(1, (int)(img.Width * rr)), dh = Math.Max(1, (int)(img.Height * rr));
-                                var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(0, y), Cursor = Cursors.Hand, Image = img };
+                                var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(PAD, y), Cursor = Cursors.Hand, Image = img };
                                 var cap = sm.img;
                                 pb.Click += (s, e) => MainForm.ShowImageFullscreen(cap);
                                 pb.Disposed += (s, e) => { try { img.Dispose(); ms.Dispose(); } catch { } };
@@ -1115,7 +1129,7 @@ namespace PISMO
                         }
                         if (sm.audio is { Length: > 0 })
                         {
-                            var bp = new Button { Text = "▶  Голосовое", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Size = new Size(170, 34), Location = new Point(0, y), Cursor = Cursors.Hand };
+                            var bp = new Button { Text = "▶  Голосовое", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Size = new Size(170, 34), Location = new Point(PAD, y), Cursor = Cursors.Hand };
                             bp.FlatAppearance.BorderSize = 0;
                             var ca = sm.audio;
                             bp.Click += (s, e) => MainForm.PlayVoiceClip(ca, bp);
@@ -1123,7 +1137,7 @@ namespace PISMO
                         }
                         if (sm.video is { Length: > 0 })
                         {
-                            try { var pl = new VideoCirclePlayer(sm.video, 180) { Location = new Point(0, y) }; holder.Controls.Add(pl); y += 186; }
+                            try { var pl = new VideoCirclePlayer(sm.video, 180) { Location = new Point(PAD, y) }; holder.Controls.Add(pl); y += 186; }
                             catch { }
                         }
                         if (sm.file is { Length: > 0 } && !string.IsNullOrWhiteSpace(sm.fname))
@@ -1134,7 +1148,7 @@ namespace PISMO
                                 try
                                 {
                                     int bw = Math.Min(msgWidth - 10, 280), bh = (int)(bw * 1.2);
-                                    var vp = new InlineVideoPlayer(sm.file, sm.fname, bw, bh) { Location = new Point(0, y) };
+                                    var vp = new InlineVideoPlayer(sm.file, sm.fname, bw, bh) { Location = new Point(PAD, y) };
                                     holder.Controls.Add(vp); y += bh + 6;
                                 }
                                 catch { }
@@ -1142,7 +1156,7 @@ namespace PISMO
                             else
                             {
                                 var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false);
-                                card.Location = new Point(0, y);
+                                card.Location = new Point(PAD, y);
                                 holder.Controls.Add(card); y += card.Height + 6;
                             }
                         }
@@ -1151,17 +1165,16 @@ namespace PISMO
                     // GIF-сообщение: "gif:<url>" — анимированная картинка.
                     if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
                     {
-                        var ph = new Panel { Location = new Point(0, y), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
+                        var ph = new Panel { Location = new Point(PAD, y), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
                         holder.Controls.Add(ph);
                         _ = LoadServerGifAsync(ph, text.Substring(4));
                     }
                     else if (!string.IsNullOrEmpty(text))
                     {
-                        var body = MainForm.MakeSelectableText(text, holder.BackColor == Color.Transparent
-                            ? Color.FromArgb(54, 57, 63) : Color.FromArgb(50, 70, 60),
-                            Color.FromArgb(220, 221, 222), new Font("Segoe UI", 10f),
+                        var body = MainForm.MakeSelectableText(text, bubbleBg,
+                            Color.FromArgb(235, 236, 240), new Font("Segoe UI", 10.5f),
                             msgWidth - 10);
-                        body.Location = new Point(0, y);
+                        body.Location = new Point(PAD, y);
                         holder.Controls.Add(body);
                     }
 
