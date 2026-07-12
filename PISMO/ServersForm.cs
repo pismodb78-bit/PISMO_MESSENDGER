@@ -2000,6 +2000,21 @@ namespace PISMO
             Margin = new Padding(2, 2, 0, 6)
         };
 
+        /// <summary>Ширина строки внутри FlowLayoutPanel = вся доступная ширина панели
+        /// (за вычетом внутренних отступов, полей строки и вертикального скроллбара),
+        /// чтобы кнопки каналов и строки участников не были «короче» границы.</summary>
+        private static void StretchRow(FlowLayoutPanel host, Control c)
+        {
+            if (c == null) return;
+            int avail = host.ClientSize.Width - host.Padding.Horizontal - c.Margin.Horizontal;
+            if (avail > 20 && c.Width != avail) c.Width = avail;
+        }
+
+        private static void StretchRows(FlowLayoutPanel host)
+        {
+            foreach (Control c in host.Controls) StretchRow(host, c);
+        }
+
         private Button MakeSideButton(string text, Color back)
         {
             var b = new Button

@@ -18,6 +18,11 @@ namespace PISMO
             _pnlServers = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(32, 34, 37), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
             _pnlChannels = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
             _pnlMembers = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 240, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
+            // Растягиваем строки каналов/участников на всю ширину панели (не «короткие»).
+            _pnlChannels.Resize += (s, e) => StretchRows(_pnlChannels);
+            _pnlChannels.ControlAdded += (s, e) => StretchRow(_pnlChannels, e.Control);
+            _pnlMembers.Resize += (s, e) => StretchRows(_pnlMembers);
+            _pnlMembers.ControlAdded += (s, e) => StretchRow(_pnlMembers, e.Control);
 
             var center = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(54, 57, 63) };
             _lblTitle = new Label { Dock = DockStyle.Top, Height = 36, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 12f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0), Text = "Выберите канал" };

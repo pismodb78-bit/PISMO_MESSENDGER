@@ -85,7 +85,7 @@ namespace PISMO
             pnlSidebar.Dock = DockStyle.Left;
             pnlSidebar.Location = new Point(0, 0);
             pnlSidebar.Name = "pnlSidebar";
-            pnlSidebar.Size = new Size(240, 700);   // ширина списка DM ≈ Discord
+            pnlSidebar.Size = new Size(264, 700);   // список DM чуть шире
             pnlSidebar.TabIndex = 2;
             // 
             // pnlUserList

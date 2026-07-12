@@ -1799,7 +1799,7 @@ namespace PISMO
                 int w = pnlUserList != null && pnlUserList.ClientSize.Width > 0
                     ? pnlUserList.ClientSize.Width
                     : pnlSidebar.Width;
-                return Math.Max(200, w - 22);
+                return Math.Max(200, w - 12);   // меньше зазор до границы — карточки шире
             }
         }
 
