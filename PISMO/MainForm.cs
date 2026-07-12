@@ -117,7 +117,62 @@ namespace PISMO
             BuildPinsButton();          // 📌 кнопка «Закреплённые» в шапке чата (2.0)
             BuildTypingIndicator();     // «печатает…» (2.0)
             BuildMessageSearch();       // 🔍 поиск по открытому чату (2.0)
+            BuildBackgroundStyling();   // мягкий градиент-подложка списка/чата (2.1.7)
             this.Load += MainForm_Load;
+        }
+
+        // ── Мягкий вертикальный градиент-подложка (2.1.7, как в Discord) ──
+        // Тонкий «перелив» фона в области сообщений и списка чатов. Тема-независим
+        // (через Theme.Map), рисуется поверх ClientRectangle с ResetTransform —
+        // фикс-подложка не «едет» при прокрутке. Пузыри/карточки рисуются сверху.
+        private void BuildBackgroundStyling()
+        {
+            try
+            {
+                ApplyGradientBackdrop(pnlMessages, Color.FromArgb(54, 57, 63)); // чат
+                ApplyGradientBackdrop(pnlUserList, Color.FromArgb(32, 34, 37)); // список ЛС
+            }
+            catch { }
+        }
+
+        private static void EnableDoubleBuffer(Control c)
+        {
+            try
+            {
+                typeof(Control).GetProperty("DoubleBuffered",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?.SetValue(c, true);
+            }
+            catch { }
+        }
+
+        private static Color ShiftColor(Color c, int d) => Color.FromArgb(
+            Math.Max(0, Math.Min(255, c.R + d)),
+            Math.Max(0, Math.Min(255, c.G + d)),
+            Math.Max(0, Math.Min(255, c.B + d)));
+
+        private void ApplyGradientBackdrop(Control panel, Color darkBase)
+        {
+            if (panel == null) return;
+            EnableDoubleBuffer(panel);
+            try { panel.BackColor = Theme.Map(darkBase); } catch { }
+            panel.Paint += (s, e) =>
+            {
+                try
+                {
+                    var rect = panel.ClientRectangle;
+                    if (rect.Width <= 1 || rect.Height <= 1) return;
+                    e.Graphics.ResetTransform();   // фикс-подложка, не зависит от прокрутки
+                    var b = Theme.Map(darkBase);
+                    Color top = ShiftColor(b, +9), bottom = ShiftColor(b, -11);
+                    using var br = new System.Drawing.Drawing2D.LinearGradientBrush(
+                        new Rectangle(0, 0, rect.Width, Math.Max(2, rect.Height)),
+                        top, bottom, System.Drawing.Drawing2D.LinearGradientMode.Vertical);
+                    e.Graphics.FillRectangle(br, 0, 0, rect.Width, rect.Height);
+                }
+                catch { }
+            };
+            try { panel.Invalidate(); } catch { }
         }
 
         private Button _btnMsgSearch;
@@ -2865,18 +2920,20 @@ namespace PISMO
                 if (reacts != null && reacts.Count > 0)
                 {
                     int rx = PAD, rh = 0;
-                    var cntFont = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold);
+                    var cntFont = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
                     foreach (var re in reacts)
                     {
                         // ЦВЕТНОЙ чип (2.1): эмодзи — картинка из DirectWrite-растеризатора
                         // (GDI рисовал их монохромными), счётчик — обычный текст рядом.
-                        var img = EmojiRender.Get(re.Emoji, 16);
+                        // Размер эмодзи 20px (2.1.7) — чтобы не вглядываться.
+                        const int emSz = 20;
+                        var img = EmojiRender.Get(re.Emoji, emSz);
                         string cntText = re.Count.ToString();
                         int txtW = TextRenderer.MeasureText(cntText, cntFont).Width;
-                        int imgW = img?.Width ?? 16;
+                        int imgW = img?.Width ?? emSz;
                         var chip = new Panel
                         {
-                            Size = new Size(6 + imgW + 3 + txtW + 5, 22),
+                            Size = new Size(8 + imgW + 4 + txtW + 7, 28),
                             BackColor = re.Mine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(48, 51, 58),
                             Location = new Point(rx, innerY),
                             Cursor = Cursors.Hand
@@ -2889,14 +2946,14 @@ namespace PISMO
                         chip.Paint += (s, e) =>
                         {
                             var g = e.Graphics;
-                            var im = EmojiRender.Get(emo, 16);
+                            var im = EmojiRender.Get(emo, emSz);
                             if (im != null)
-                                g.DrawImage(im, 6, (chip.Height - im.Height) / 2);
+                                g.DrawImage(im, 8, (chip.Height - im.Height) / 2);
                             else
-                                using (var f0 = new Font("Segoe UI Emoji", 8.5f))
-                                    g.DrawString(emo, f0, Brushes.White, 4, 3);
+                                using (var f0 = new Font("Segoe UI Emoji", 11f))
+                                    g.DrawString(emo, f0, Brushes.White, 6, 4);
                             TextRenderer.DrawText(g, capCnt, cntFont,
-                                new Point(6 + capImgW + 3, (chip.Height - 15) / 2),
+                                new Point(8 + capImgW + 4, (chip.Height - 16) / 2),
                                 Color.White);
                         };
                         Action<string> onEmojiLoaded = em =>

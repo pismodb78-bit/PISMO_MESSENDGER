@@ -190,7 +190,7 @@ namespace PISMO
             _btnMute = MakeBtn("🎤", 0);
             // 🎧 полный мут (2.1.1): глушит и динамики, и микрофон (см. ToggleDeafenButton).
             _btnDeafen = MakeBtn("🎧", 1);
-            _btnCamera = MakeBtn("🚫", 2);
+            _btnCamera = MakeBtn("📷", 2);
             _btnCamera.Visible = true; // камеру можно включить в любом звонке (одна кнопка звонка)
             // Камера выключена при входе — кнопка красная, как в Discord.
             _btnCamera.BackColor = Color.FromArgb(240, 71, 71);

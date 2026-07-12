@@ -675,7 +675,7 @@ namespace PISMO
             System.Diagnostics.Debug.WriteLine($"[CAMERA TRACK ERROR] {error}");
             _cameraStarted = false;
             _cameraOff = true;
-            _btnCamera.Text = "🚫";
+            _btnCamera.Text = "📷";
             _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
             _lblStatus.Text = "Камера недоступна";
 
@@ -1111,7 +1111,7 @@ namespace PISMO
                 // показывала камеру включённой, хотя её отменили.
                 _cameraOff = true;
                 _cameraStarted = false;
-                _btnCamera.Text = "🚫";
+                _btnCamera.Text = "📷";
                 _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
                 var oldc = _pbLocal.Image; _pbLocal.Image = null; oldc?.Dispose();
                 _pbLocal.Visible = false;
@@ -1236,7 +1236,7 @@ namespace PISMO
             {
                 // Выключение — без превью, сразу останавливаем.
                 _cameraOff = true;
-                _btnCamera.Text = "🚫";
+                _btnCamera.Text = "📷";
                 _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
                 _transport.StopCameraTrack();
                 _cameraStarted = false;
