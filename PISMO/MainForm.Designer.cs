@@ -85,7 +85,7 @@ namespace PISMO
             pnlSidebar.Dock = DockStyle.Left;
             pnlSidebar.Location = new Point(0, 0);
             pnlSidebar.Name = "pnlSidebar";
-            pnlSidebar.Size = new Size(250, 700);   // ~как в Discord (240) при 1920×1080; CardWidth масштабируется, не наползает
+            pnlSidebar.Size = new Size(290, 700);
             pnlSidebar.TabIndex = 2;
             // 
             // pnlUserList

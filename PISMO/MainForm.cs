@@ -296,7 +296,7 @@ namespace PISMO
                     // Восстанавливаем исходный фон пузыря с учётом темы (в светлой
                     // теме нейтральный фон собеседника перекрашивается, иначе после
                     // поиска пузыри стали бы тёмными на светлом фоне).
-                    Color orig = Theme.Map(isMine ? Color.FromArgb(88, 101, 242) : Color.FromArgb(64, 68, 75));
+                    Color orig = Theme.Map(isMine ? Color.FromArgb(88, 101, 242) : Color.FromArgb(48, 51, 58));
                     if (query.Length > 0 && b.AccessibleDescription.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
                         _searchMatches.Add(b);
                     else { b.BackColor = orig; b.Invalidate(); }
@@ -2579,7 +2579,7 @@ namespace PISMO
 
             var bubble = new Panel
             {
-                BackColor = isMine ? Color.FromArgb(88, 101, 242) : Color.FromArgb(64, 68, 75),
+                BackColor = isMine ? Color.FromArgb(88, 101, 242) : Color.FromArgb(48, 51, 58),
                 MaximumSize = new Size(MAX_W, 0),
                 MinimumSize = new Size(80, 36),
                 AutoSize = false,

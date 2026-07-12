@@ -17,7 +17,7 @@ namespace PISMO
         {
             _pnlServers = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(32, 34, 37), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
             _pnlChannels = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
-            _pnlMembers = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 240, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
+            _pnlMembers = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 180, BackColor = Color.FromArgb(47, 49, 54), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
 
             var center = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(54, 57, 63) };
             _lblTitle = new Label { Dock = DockStyle.Top, Height = 36, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 12f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0), Text = "Выберите канал" };
@@ -88,7 +88,7 @@ namespace PISMO
             var btnRefreshSrv = new Button { Dock = DockStyle.Top, Height = 28, Text = "↻ Обновить", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnRefreshSrv.FlatAppearance.BorderSize = 0;
             btnRefreshSrv.Click += (s, e) => RefreshNow();
-            var channelHost = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = Color.FromArgb(47, 49, 54) };
+            var channelHost = new Panel { Dock = DockStyle.Left, Width = 200, BackColor = Color.FromArgb(47, 49, 54) };
             channelHost.Controls.Add(_pnlChannels);
             // Плашка профиля (аватар/имя/🎤/🎧/⚙) внизу колонки каналов — как в ЛС.
             // Порядок добавления важен: докинг идёт с конца списка, футер должен
