@@ -1040,6 +1040,7 @@ namespace PISMO
                 MainForm.DisposeAndClear(_pnlMessages);
                 _msgControls.Clear();
                 int msgWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 40);
+                string lastDate = null;
                 foreach (DataRow r in dt.Rows)
                 {
                     int id = Convert.ToInt32(r["id"]);
@@ -1047,7 +1048,16 @@ namespace PISMO
                     string nm = r["nm"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(nm)) nm = r["login"].ToString();
                     string text = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString());
-                    string time = Convert.ToDateTime(r["created_at"]).ToString("HH:mm");
+                    DateTime dtMsg = Convert.ToDateTime(r["created_at"]);
+                    string time = dtMsg.ToString("HH:mm");
+
+                    // Разделитель по датам (как в ЛС): «13 июля 2026» между днями.
+                    string dsep = dtMsg.ToString("d MMMM yyyy", new System.Globalization.CultureInfo("ru-RU"));
+                    if (dsep != lastDate)
+                    {
+                        lastDate = dsep;
+                        _pnlMessages.Controls.Add(MainForm.BuildDateSeparatorW(dsep, msgWidth));
+                    }
 
                     // Меня упомянули (@логин/@роль/@все) — подсветим бабл зеленоватым.
                     bool mine = MentionsMe(text);

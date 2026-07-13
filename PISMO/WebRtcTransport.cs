@@ -83,6 +83,9 @@ namespace PISMO
         // Запрос развернуть/свернуть театр на весь экран (кнопка ⛶).
         public event Action TheaterFullscreenToggle;
 
+        /// <summary>Процесс рендера WebView упал (чёрный экран/нет звука) — звонок мёртв.</summary>
+        public event Action<string> RendererCrashed;
+
         // --- Превью перед включением ---
         public event Action<byte[]> ScreenPreviewFrameReceived;
         public event Action ScreenPreviewReady;
@@ -150,6 +153,13 @@ namespace PISMO
             await _webView.EnsureCoreWebView2Async(env);
 
             _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
+
+            // Краш процесса рендера (GPU/драйвер): без обработчика звонок молча
+            // превращается в чёрный экран без звука, из которого «не выйти».
+            _webView.CoreWebView2.ProcessFailed += (s, e) =>
+            {
+                try { RendererCrashed?.Invoke(e.ProcessFailedKind.ToString()); } catch { }
+            };
 
             // WebView2 не выдаёт доступ к камере/микрофону/экрану автоматически.
             _webView.CoreWebView2.PermissionRequested += (s, e) =>
@@ -1643,6 +1653,12 @@ function theaterShow(pid, source){
         x.onclick = (ev) => { ev.stopPropagation(); post({type:'theaterExitRequested'}); };
         theaterEl.appendChild(x);
         document.body.appendChild(theaterEl);
+        // Esc — тоже выход из театра (раньше выйти можно было только мышью,
+        // а при полноэкранном театре кнопки легко «потерять»).
+        document.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Escape' && theaterEl && theaterEl.style.display !== 'none')
+                post({type:'theaterExitRequested'});
+        });
     }
     const vid = theaterEl.querySelector('#__theaterVideo');
     if (vid.srcObject !== src) vid.srcObject = src;

@@ -294,6 +294,21 @@ namespace PISMO
             _transport.RemoteStreamPublished += (pid, name) => UiInvoke(() => OnStreamPublished(pid, name));
             _transport.RemoteStreamUnpublished += pid => UiInvoke(() => OnStreamUnpublished(pid));
             _transport.WatchFailed += (pid, err) => UiInvoke(() => OnWatchFailed(pid, err));
+            // Краш рендера WebView: раньше — чёрный экран без звука и «не выйти».
+            // Теперь выходим из театра, сообщаем и закрываем мёртвый звонок.
+            _transport.RendererCrashed += kind => UiInvoke(() =>
+            {
+                try { ExitTheaterMode(); } catch { }
+                try
+                {
+                    MessageBox.Show(this,
+                        "Видеодвижок звонка аварийно завершился (" + kind + ").\n" +
+                        "Звонок будет закрыт — перезайдите в него.",
+                        "PISMO — звонок", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                catch { }
+                try { Close(); } catch { }
+            });
             _transport.StreamWatchersChanged += n => UiInvoke(() => OnStreamWatchers(n));
             _transport.ScreenSourceSwitched += (ok, err) => UiInvoke(() => OnScreenSourceSwitched(ok, err));
             _transport.ActiveSpeakers += json => UiInvoke(() => OnActiveSpeakers(json));

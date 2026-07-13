@@ -2549,9 +2549,12 @@ namespace PISMO
         }
 
         private Panel BuildDateSeparator(string dateText)
+            => BuildDateSeparatorW(dateText, pnlMessages.ClientSize.Width - 20);
+
+        /// <summary>Разделитель по дате заданной ширины — общий для ЛС и серверов.</summary>
+        internal static Panel BuildDateSeparatorW(string dateText, int w)
         {
-            int w = pnlMessages.ClientSize.Width - 20;
-            var p = new Panel { Width = w, Height = 28, BackColor = Color.Transparent };
+            var p = new Panel { Width = Math.Max(120, w), Height = 28, BackColor = Color.Transparent };
             p.Paint += (s, e) =>
             {
                 var g = e.Graphics;
