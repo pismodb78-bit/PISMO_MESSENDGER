@@ -134,6 +134,50 @@ namespace PISMO
                 Exec(conn, "ALTER TABLE message_reactions " +
                            "MODIFY emoji VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL");
             }),
+
+            (10, "message_reactions: пересборка PK с emoji ПОСЛЕ бинарной коллации", conn =>
+            {
+                // Недостающее звено: миграция 7 добавляла emoji в PK ещё под _ci —
+                // и на «живой» БД падала (разные эмодзи = «дубликаты»), оставляя PK
+                // (message_id, scope, user_id) → один юзер = ОДНА реакция. Миграция 9
+                // сделала колонку бинарной, но PK не трогала. Здесь — гарантированно
+                // пересобираем PK с emoji (теперь эмодзи байт-различны, коллизий нет).
+                try
+                {
+                    Exec(conn, "ALTER TABLE message_reactions " +
+                               "MODIFY emoji VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL");
+                }
+                catch { }
+
+                bool emojiInPk = false;
+                try
+                {
+                    using var q = new MySqlCommand(
+                        "SELECT COUNT(*) FROM information_schema.STATISTICS " +
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'message_reactions' " +
+                        "AND INDEX_NAME = 'PRIMARY' AND COLUMN_NAME = 'emoji'", conn);
+                    emojiInPk = Convert.ToInt32(q.ExecuteScalar()) > 0;
+                }
+                catch { }
+
+                if (!emojiInPk)
+                {
+                    bool hasPk = false;
+                    try
+                    {
+                        using var q2 = new MySqlCommand(
+                            "SELECT COUNT(*) FROM information_schema.STATISTICS " +
+                            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'message_reactions' " +
+                            "AND INDEX_NAME = 'PRIMARY'", conn);
+                        hasPk = Convert.ToInt32(q2.ExecuteScalar()) > 0;
+                    }
+                    catch { }
+
+                    if (hasPk) { try { Exec(conn, "ALTER TABLE message_reactions DROP PRIMARY KEY"); } catch { } }
+                    Exec(conn, "ALTER TABLE message_reactions " +
+                               "ADD PRIMARY KEY (message_id, scope, user_id, emoji)");
+                }
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>
