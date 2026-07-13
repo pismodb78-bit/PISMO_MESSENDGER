@@ -29,6 +29,21 @@ namespace PISMO
     /// </summary>
     public class WebRtcTransport : IDisposable
     {
+        // ── Защита от захвата экрана (SetWindowDisplayAffinity) ──────────────
+        // WDA_MONITOR/WDA_EXCLUDEFROMCAPTURE на окне-хосте ЛОМАЕТ инициализацию
+        // WebView2 ошибкой 0x8007139F (MicrosoftEdge/WebView2Feedback #841).
+        // Что-то на ПК (инструмент захвата/анти-скриншот, режим демонстрации)
+        // могло выставить этот флаг. Перед стартом WebView2 принудительно снимаем
+        // защиту (WDA_NONE) с окна-хоста и контрола.
+        private const uint WDA_NONE = 0x0;
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+        private static void ClearCaptureProtection(IntPtr hWnd)
+        {
+            try { if (hWnd != IntPtr.Zero) SetWindowDisplayAffinity(hWnd, WDA_NONE); } catch { }
+        }
+
         private WebView2 _webView;
         internal string _lastInitStage = "";   // диагностика 0x8007139F: на какой стадии упало
         private bool _disposed = false;
@@ -167,7 +182,14 @@ namespace PISMO
                     host.Controls.Add(wv);
                     wv.SendToBack();
 
-                    _lastInitStage = $"attempt={attempt}, host={host?.GetType().Name}, CreationProps, Ensure()";
+                    // КЛЮЧЕВОЕ (WebView2Feedback #841): снимаем защиту от захвата
+                    // экрана с окна-хоста и контрола — WDA_MONITOR валит WebView2
+                    // ошибкой 0x8007139F. Флаг мог остаться после демонстрации экрана.
+                    try { ClearCaptureProtection(host.Handle); } catch { }
+                    try { ClearCaptureProtection(wv.Handle); } catch { }
+                    try { if (MainForm.Current != null && MainForm.Current.IsHandleCreated) ClearCaptureProtection(MainForm.Current.Handle); } catch { }
+
+                    _lastInitStage = $"attempt={attempt}, host={host?.GetType().Name}, WDA_NONE, CreationProps, Ensure()";
                     await wv.EnsureCoreWebView2Async();   // env берётся из CreationProperties
                     _lastInitStage += "=OK";
 
