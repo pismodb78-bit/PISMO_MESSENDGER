@@ -1295,15 +1295,50 @@ namespace PISMO
             }
             else if (!_screenPreviewPending)
             {
-                // Системный диалог Windows ("Выберите, чем поделиться") уже
-                // сам показывает превью миниатюр окон/экрана — отдельное
-                // окно-подтверждение поверх него было избыточным и выглядело
-                // как два конфликтующих диалога. Просто запускаем захват;
-                // после того, как пользователь выбрал источник в системном
-                // диалоге, демка включается автоматически.
-                _screenPreviewPending = true;
-                _transport.PreviewScreen(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps);
+                ShowScreenSourceChooser();
             }
+        }
+
+        /// <summary>Выбор источника демонстрации: свой список ВСЕХ мониторов
+        /// (в т.ч. виртуальных VR-дисплеев) или системный диалог для окон.</summary>
+        private void ShowScreenSourceChooser()
+        {
+            var menu = new ContextMenuStrip
+            {
+                BackColor = Color.FromArgb(24, 25, 28),
+                ForeColor = Color.FromArgb(220, 221, 222)
+            };
+            menu.Items.Add("🖥  Выбрать экран (все мониторы)…", null, (s, e) => PickMonitorAndShare());
+            menu.Items.Add("🪟  Окно или другой источник (системный выбор)…", null, (s, e) => StartSystemScreenShare());
+            menu.Show(_btnScreen, new Point(0, -8), ToolStripDropDownDirection.AboveRight);
+        }
+
+        /// <summary>Свой список мониторов → захват выбранного (canvas-путь).</summary>
+        private void PickMonitorAndShare()
+        {
+            try
+            {
+                using var picker = new ScreenPickerForm();
+                if (picker.ShowDialog(this) != DialogResult.OK) return;
+                if (picker.UseSystemPicker) { StartSystemScreenShare(); return; }
+                if (picker.SelectedBounds is Rectangle b)
+                {
+                    _screenPreviewPending = true;
+                    _transport.StartMonitorShare(b, DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps);
+                }
+            }
+            catch (Exception ex)
+            {
+                _lblStatus.Text = "Не удалось открыть выбор экрана: " + ex.Message;
+            }
+        }
+
+        /// <summary>Системный диалог Windows («Выберите, чем поделиться») — удобная
+        /// плитка окон/вкладок и обычных экранов.</summary>
+        private void StartSystemScreenShare()
+        {
+            _screenPreviewPending = true;
+            _transport.PreviewScreen(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps);
         }
 
         /// <summary>Немедленно отправляет состояние «в эфире» (камера/демка) для

@@ -32,6 +32,12 @@ namespace PISMO
         private WebView2 _webView;
         private bool _disposed = false;
 
+        // Захват выбранного монитора (режим «список экранов»): фоновый поток
+        // снимает монитор через GDI и шлёт JPEG-кадры в canvas WebView.
+        private System.Threading.Thread _monThread;
+        private volatile bool _monRun;
+        private int _monPending;   // кадры «в полёте» на UI-поток (защита от backlog)
+
         public event Action Disconnected;
         public event Action Connected;
         public event Action RemoteParticipantLeft;
@@ -283,6 +289,10 @@ let localCameraVideoEl = null;
 let remoteCameraVideoEl = null;
 let remoteScreenVideoEl = null;
 let screenPreviewVideoEl = null;
+
+// Демонстрация ВЫБРАННОГО монитора: кадры приходят из C# (свой захват), рисуем
+// их в этот canvas и публикуем его поток как обычную демку.
+let canvasScreenEl = null, canvasScreenCtx = null, canvasScreenStream = null;
 
 let localCameraLoop = null, remoteCameraLoop = null, remoteScreenLoop = null, screenPreviewLoop = null;
 
@@ -1188,6 +1198,53 @@ async function stopCameraTrack(){
     post({type:'localCameraStopped'});
 }
 
+// ── Демонстрация ВЫБРАННОГО монитора (свой захват на C#) ─────────────
+// Так работает выбор «1 из N экранов» (включая виртуальные VR-дисплеи,
+// которые системный диалог getDisplayMedia не перечисляет). Кадры монитора
+// приходят из C# (cmd 'canvasFrame'), рисуются в canvas, а его captureStream
+// публикуется тем же путём, что и обычная демка (confirmScreenShare).
+async function startCanvasScreen(w, h, fps){
+    try {
+        stopCanvasScreen();
+        canvasScreenEl = document.createElement('canvas');
+        canvasScreenEl.width = w; canvasScreenEl.height = h;
+        canvasScreenCtx = canvasScreenEl.getContext('2d');
+        canvasScreenCtx.fillStyle = '#000';
+        canvasScreenCtx.fillRect(0, 0, w, h);
+        canvasScreenStream = canvasScreenEl.captureStream(fps);
+        const vt = canvasScreenStream.getVideoTracks()[0];
+        if (!vt){ post({type:'localScreenError', error:'canvas capture failed'}); return; }
+        try { vt.contentHint = 'motion'; } catch(e){}
+        screenVideoTrack = new LK.LocalVideoTrack(vt);
+        screenAudioTrack = null;        // системный звук в этом режиме не захватываем
+        screenQualityH = h; screenQualityF = fps;
+        if (!screenPreviewVideoEl){ screenPreviewVideoEl = makeHiddenVideo(); }
+        screenVideoTrack.attach(screenPreviewVideoEl);
+        startScreenPreviewExtraction();
+        post({type:'screenPreviewReady'});
+    } catch(err){ post({type:'localScreenError', error:String(err)}); }
+}
+
+let _canvasBusy = false;
+function drawCanvasFrame(d){
+    if (!canvasScreenCtx || _canvasBusy) return;   // busy → кадр пропускаем (без backlog)
+    _canvasBusy = true;
+    try {
+        const bin = atob(d), len = bin.length, bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+        createImageBitmap(new Blob([bytes], { type: 'image/jpeg' })).then(bmp => {
+            try { if (canvasScreenCtx) canvasScreenCtx.drawImage(bmp, 0, 0, canvasScreenEl.width, canvasScreenEl.height); } catch(e){}
+            try { bmp.close(); } catch(e){}
+            _canvasBusy = false;
+        }).catch(() => { _canvasBusy = false; });
+    } catch(e){ _canvasBusy = false; }
+}
+
+function stopCanvasScreen(){
+    try { if (canvasScreenStream) canvasScreenStream.getTracks().forEach(t => { try{ t.stop(); }catch(e){} }); } catch(e){}
+    canvasScreenStream = null; canvasScreenCtx = null; canvasScreenEl = null;
+}
+
 // ── Демонстрация экрана ──────────────────────────────────────────────
 async function previewScreen(resHeight, fps){
     try {
@@ -1416,6 +1473,7 @@ function cancelScreenPreview(){
     stopScreenPreviewExtraction();
     if (screenVideoTrack && !screenPublished){ try{ screenVideoTrack.stop(); }catch(e){} screenVideoTrack = null; }
     if (screenAudioTrack && !screenPublished){ try{ screenAudioTrack.stop(); }catch(e){} screenAudioTrack = null; }
+    stopCanvasScreen();
     post({type:'localScreenStopped'});
 }
 
@@ -1430,6 +1488,7 @@ async function stopScreenShareTrack(){
             try{ screenAudioTrack.stop(); }catch(e){}
         }
         screenVideoTrack = null; screenAudioTrack = null; screenPublished = false;
+        stopCanvasScreen();
         stopScreenSendStats();
         stopScreenPreviewExtraction();
         previewFps = 10; previewMaxW = 480;
@@ -1877,6 +1936,8 @@ window.chrome.webview.addEventListener('message', (e) => {
         case 'stopCameraTrack': stopCameraTrack(); break;
         case 'switchCameraDevice': switchCameraDevice(msg.deviceLabel); break;
         case 'previewScreen': previewScreen(msg.resHeight, msg.fps); break;
+        case 'startCanvasScreen': startCanvasScreen(msg.w, msg.h, msg.fps); break;
+        case 'canvasFrame': drawCanvasFrame(msg.d); break;
         case 'switchScreenSource': switchScreenSource(); break;
         case 'watchScreen': watchScreen(msg.pid); break;
         case 'unwatchScreen': unwatchScreen(msg.pid); break;
@@ -2133,6 +2194,116 @@ window.chrome.webview.addEventListener('message', (e) => {
             SendToJs(JsonSerializer.Serialize(new { cmd = "previewScreen", resHeight, fps }));
         }
 
+        /// <summary>Демонстрация ВЫБРАННОГО монитора (в т.ч. виртуального VR-дисплея,
+        /// который системный диалог не показывает): свой захват на C# → canvas в
+        /// WebView → публикация как обычной демки. height&lt;=0 — исходная высота.
+        /// Системный диалог не открывается — монитор уже выбран в нашем списке.</summary>
+        public void StartMonitorShare(System.Drawing.Rectangle bounds, int height, int fps)
+        {
+            StopMonitorCapture();
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+            { LocalScreenError?.Invoke("некорректный монитор"); return; }
+
+            _switchingSource = false;
+            int f = fps > 0 ? fps : 30;
+            int th = height > 0 ? height : bounds.Height;
+            if (th > 2160) th = 2160;                       // разумный потолок
+            int tw = (int)Math.Round(bounds.Width * (double)th / bounds.Height);
+            tw -= tw % 2; th -= th % 2;                     // чётные размеры для энкодера
+            if (tw < 2) tw = 2;
+            if (th < 2) th = 2;
+
+            SendToJs(JsonSerializer.Serialize(new { cmd = "startCanvasScreen", w = tw, h = th, fps = f }));
+
+            _monRun = true;
+            _monPending = 0;
+            var b = bounds; int ftw = tw, fth = th, ffps = f;
+            _monThread = new System.Threading.Thread(() => MonitorCaptureLoop(b, ftw, fth, ffps))
+            { IsBackground = true, Name = "PISMO-monitor-capture" };
+            _monThread.Start();
+        }
+
+        private void MonitorCaptureLoop(System.Drawing.Rectangle src, int tw, int th, int fps)
+        {
+            System.Drawing.Imaging.ImageCodecInfo jpeg = null;
+            foreach (var c in System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders())
+                if (c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid) { jpeg = c; break; }
+            using var pars = new System.Drawing.Imaging.EncoderParameters(1);
+            pars.Param[0] = new System.Drawing.Imaging.EncoderParameter(
+                System.Drawing.Imaging.Encoder.Quality, 72L);
+
+            using var cap = new System.Drawing.Bitmap(src.Width, src.Height,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using var capG = System.Drawing.Graphics.FromImage(cap);
+            using var small = new System.Drawing.Bitmap(tw, th,
+                System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using var smallG = System.Drawing.Graphics.FromImage(small);
+            smallG.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+            smallG.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+
+            double interval = 1000.0 / fps;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (_monRun)
+            {
+                long t0 = sw.ElapsedMilliseconds;
+                try
+                {
+                    // GDI BitBlt — самый совместимый путь: снимает почти любой
+                    // HMONITOR, включая виртуальные VR-дисплеи, где WGC/DXGI пасуют.
+                    capG.CopyFromScreen(src.Location, System.Drawing.Point.Empty, src.Size,
+                        System.Drawing.CopyPixelOperation.SourceCopy);
+                    if (tw == src.Width && th == src.Height)
+                        smallG.DrawImageUnscaled(cap, 0, 0);
+                    else
+                        smallG.DrawImage(cap, 0, 0, tw, th);
+
+                    // Не заваливаем UI-поток: если предыдущие кадры ещё не ушли — пропуск.
+                    if (System.Threading.Interlocked.CompareExchange(ref _monPending, 0, 0) < 3)
+                    {
+                        byte[] bytes;
+                        using (var ms = new MemoryStream())
+                        {
+                            small.Save(ms, jpeg, pars);
+                            bytes = ms.ToArray();
+                        }
+                        System.Threading.Interlocked.Increment(ref _monPending);
+                        SendCanvasFrame(Convert.ToBase64String(bytes));
+                    }
+                }
+                catch { }
+
+                int sleep = (int)(interval - (sw.ElapsedMilliseconds - t0));
+                System.Threading.Thread.Sleep(sleep > 0 ? sleep : 1);
+            }
+        }
+
+        private void SendCanvasFrame(string b64)
+        {
+            if (_webView == null || _disposed)
+            { System.Threading.Interlocked.Decrement(ref _monPending); return; }
+            try
+            {
+                string json = JsonSerializer.Serialize(new { cmd = "canvasFrame", d = b64 });
+                // BeginInvoke — не блокирует фоновый поток; счётчик _monPending
+                // гасим после реальной отправки в WebView.
+                _webView.BeginInvoke(() =>
+                {
+                    try { _webView.CoreWebView2?.PostWebMessageAsString(json); } catch { }
+                    System.Threading.Interlocked.Decrement(ref _monPending);
+                });
+            }
+            catch { System.Threading.Interlocked.Decrement(ref _monPending); }
+        }
+
+        private void StopMonitorCapture()
+        {
+            if (!_monRun && _monThread == null) return;
+            _monRun = false;
+            var t = _monThread; _monThread = null;
+            try { if (t != null && t.IsAlive) t.Join(600); } catch { }
+            _monPending = 0;
+        }
+
         /// <summary>Сменить ИСТОЧНИК идущей демонстрации (игра ↔ весь экран) без
         /// остановки стрима: системный диалог + replaceTrack на живой публикации.
         /// Итог придёт событием ScreenSourceSwitched (при отмене стрим продолжается).</summary>
@@ -2140,6 +2311,9 @@ window.chrome.webview.addEventListener('message', (e) => {
         {
             if (_switchingSource) return;
             _switchingSource = true;
+            // Если шёл захват конкретного монитора (canvas-путь) — гасим наш поток
+            // захвата: switchScreenSource переключит публикацию на getDisplayMedia.
+            StopMonitorCapture();
             try { ShowPickerWindow("Смена источника демонстрации"); }
             catch { }
             SendToJs(JsonSerializer.Serialize(new { cmd = "switchScreenSource" }));
@@ -2259,10 +2433,16 @@ window.chrome.webview.addEventListener('message', (e) => {
             => SendToJs(JsonSerializer.Serialize(new { cmd = "confirmScreenShare" }));
 
         public void CancelScreenPreview()
-            => SendToJs(JsonSerializer.Serialize(new { cmd = "cancelScreenPreview" }));
+        {
+            StopMonitorCapture();
+            SendToJs(JsonSerializer.Serialize(new { cmd = "cancelScreenPreview" }));
+        }
 
         public void StopScreenShareTrack()
-            => SendToJs(JsonSerializer.Serialize(new { cmd = "stopScreenTrack" }));
+        {
+            StopMonitorCapture();
+            SendToJs(JsonSerializer.Serialize(new { cmd = "stopScreenTrack" }));
+        }
 
         // --- Камера ---
 
@@ -2358,6 +2538,7 @@ window.chrome.webview.addEventListener('message', (e) => {
         {
             if (_disposed) return;
             _disposed = true;
+            try { StopMonitorCapture(); } catch { }
             try { SendToJs(JsonSerializer.Serialize(new { cmd = "disconnect" })); } catch { }
             try { _webView?.Dispose(); } catch { }
             try
