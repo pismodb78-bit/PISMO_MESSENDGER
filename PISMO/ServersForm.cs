@@ -96,6 +96,9 @@ namespace PISMO
         public ServersForm()
         {
             this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
+            // Плашка «Пересылка…» появляется, когда переключаешься в это окно
+            // с активной пересылкой из ЛС/группы.
+            this.Activated += (s, e) => { try { UpdateForwardNotice(); } catch { } };
             Text = "PISMO — Серверы";
             ClientSize = new Size(1000, 640);
             MinimumSize = new Size(820, 520);
@@ -786,6 +789,7 @@ namespace PISMO
             MainForm.DisposeAndClear(_pnlMessages);
             _renderedKey = null; _renderedSig = null; // панель очищена — не пропускать отрисовку
             CancelServerReply();
+            try { UpdateForwardNotice(); } catch { }
 
             if (type == "voice")
             {
@@ -1460,6 +1464,47 @@ namespace PISMO
         private Panel _srvSelectBar;
         private Label _srvSelectInfo;
 
+        // ── Плашка «Пересылка N сообщений» (как в ЛС) над полем ввода ─────
+        private Panel _srvFwdBar;
+        private Label _srvFwdInfo;
+
+        /// <summary>Показывает/прячет плашку пересылки в зависимости от того,
+        /// есть ли в главном окне ожидающая пересылка.</summary>
+        private void UpdateForwardNotice()
+        {
+            var mf = MainForm.Current;
+            bool pending = mf != null && !mf.IsDisposed && mf.HasPendingForward;
+            if (!pending) { if (_srvFwdBar != null) _srvFwdBar.Visible = false; return; }
+
+            if (_srvFwdBar == null || _srvFwdBar.IsDisposed)
+            {
+                _srvFwdBar = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = Color.FromArgb(47, 49, 54), Visible = false };
+                _srvFwdInfo = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    ForeColor = Color.FromArgb(250, 166, 26),
+                    Font = new Font("Segoe UI", 9f),
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Padding = new Padding(10, 0, 0, 0)
+                };
+                var bx = new Button { Dock = DockStyle.Right, Width = 34, Text = "✕", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.White, Cursor = Cursors.Hand };
+                bx.FlatAppearance.BorderSize = 0;
+                bx.Click += (s2, e2) =>
+                {
+                    try { MainForm.Current?.ConsumePendingForwards(); } catch { }   // сброс буфера
+                    _srvFwdBar.Visible = false;
+                };
+                _srvFwdBar.Controls.Add(_srvFwdInfo);
+                _srvFwdBar.Controls.Add(bx);
+                var host = _pnlMessages.Parent;
+                host.Controls.Add(_srvFwdBar);
+                _srvFwdBar.BringToFront();
+            }
+            _srvFwdInfo.Text = "↪ Пересылка: нажмите «Отправить», чтобы переслать сообщения в этот канал";
+            _srvFwdBar.Visible = _channelType == "text" && _channelId > 0;
+            _srvFwdBar.BringToFront();
+        }
+
         private void EnsureSrvSelectBar()
         {
             if (_srvSelectBar != null && !_srvSelectBar.IsDisposed) return;
@@ -1625,6 +1670,7 @@ namespace PISMO
                     catch (Exception ex) { ShowDbError(ex); return; }
                 }
                 try { WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server"); } catch { }
+                if (_srvFwdBar != null) _srvFwdBar.Visible = false;
                 _renderedKey = null; _renderedSig = null;
                 LoadMessages();
                 return;
