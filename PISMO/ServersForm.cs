@@ -1503,6 +1503,8 @@ namespace PISMO
             _srvSelected.Clear();
             _srvSelectBar.Visible = true;
             UpdateSrvSelectBar();
+            _renderedKey = null; _renderedSig = null;   // форсим перерисовку с кружками
+            LoadMessages();
         }
 
         private void ExitSrvSelect()
@@ -1510,6 +1512,7 @@ namespace PISMO
             _srvSelectMode = false;
             _srvSelected.Clear();
             if (_srvSelectBar != null) _srvSelectBar.Visible = false;
+            _renderedKey = null; _renderedSig = null;
             LoadMessages();
         }
 
@@ -1518,6 +1521,7 @@ namespace PISMO
             if (id <= 0) return;
             if (!_srvSelected.Add(id)) _srvSelected.Remove(id);
             UpdateSrvSelectBar();
+            _renderedKey = null; _renderedSig = null;
             LoadMessages();
         }
 
@@ -1563,6 +1567,7 @@ namespace PISMO
             _srvSelectMode = false;
             _srvSelected.Clear();
             if (_srvSelectBar != null) _srvSelectBar.Visible = false;
+            _renderedKey = null; _renderedSig = null;
             LoadMessages();
             if (batch.Count == 0) return;
 
