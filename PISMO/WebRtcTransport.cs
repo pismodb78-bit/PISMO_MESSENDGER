@@ -1243,11 +1243,11 @@ let screenCurCodec = 'h264';
 let screenFellBack = false;
 
 // Публикация видео-трека демки заданным кодеком + применение параметров энкодера.
-// Приоритет деградации: выбрал 45+ fps — держим ЧАСТОТУ (энкодер под
-// нагрузкой снижает разрешение), иначе держим ЧЁТКОСТЬ (жертвует fps).
-// Раньше стояло жёсткое maintain-resolution — из-за него на тяжёлых сценах
-// fps проседал заметно ниже выбранного.
-function screenDegradationPref(){ return screenQualityF >= 45 ? 'maintain-framerate' : 'maintain-resolution'; }
+// Приоритет деградации: 'balanced' — держим И fps, И разрешение. Деградация
+// вообще включается только когда энкодер/сеть не тянут, и тогда WebRTC
+// снижает то и другое МАЛЕНЬКИМИ шагами попеременно (и возвращает обратно,
+// как только нагрузка спадает) — вместо того чтобы сильно ронять что-то одно.
+function screenDegradationPref(){ return 'balanced'; }
 
 async function publishScreenWithCodec(codec){
     const p = screenParams || { effH: 1080, maxBitrate: 15000000 };
