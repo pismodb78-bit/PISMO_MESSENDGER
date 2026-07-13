@@ -135,9 +135,9 @@ namespace PISMO
             // дефолтное окружение, а транспорт — своё с флагами → конфликт, и звонок
             // не стартовал, если до него смотрели медиа. Теперь и плееры, и транспорт
             // берут ОДНО общее окружение отсюда.
-            string rtcBase = System.IO.Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "PISMO", "webview-rtc");
+            // ВНЕ профиля пользователя (C:\PISMO_wv) — чтобы исключить повреждённые
+            // ACL/папки учётки scent как причину 0x8007139F. См. WebViewShared.RootDir.
+            string rtcBase = System.IO.Path.Combine(WebViewShared.RootDir, "webview-rtc");
 
             // ПРАВИЛЬНЫЙ способ (по гайдам WebView2): окружение задаём через
             // CreationProperties ДО инициализации контрола, а не отдельным

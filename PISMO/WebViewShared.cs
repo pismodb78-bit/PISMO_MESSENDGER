@@ -19,6 +19,42 @@ namespace PISMO
         private static Task<CoreWebView2Environment> _envTask;
         private static readonly object _lock = new object();
 
+        /// <summary>
+        /// Корень папок данных WebView2 ВНЕ профиля пользователя. Диагностировали
+        /// 0x8007139F (ERROR_INVALID_STATE) на конкретной учётке scent, при том что
+        /// на свежей учётке и на другом ПК звонки поднимаются. icacls нашёл
+        /// недоступный файл в %LOCALAPPDATA%\Temp этой учётки. Чтобы полностью
+        /// исключить повреждённые ACL/папки в профиле, держим данные WebView2 на
+        /// корне диска (C:\PISMO_wv). Если корень недоступен (нет прав/сети) —
+        /// фолбэк обратно в LOCALAPPDATA.
+        /// </summary>
+        public static string RootDir
+        {
+            get
+            {
+                try
+                {
+                    string sysRoot = Environment.GetFolderPath(Environment.SpecialFolder.System); // C:\Windows\System32
+                    string drive = Path.GetPathRoot(string.IsNullOrEmpty(sysRoot) ? "C:\\" : sysRoot); // C:\
+                    string root = Path.Combine(drive, "PISMO_wv");
+                    Directory.CreateDirectory(root);
+                    // Проверяем, что реально можем писать.
+                    string probe = Path.Combine(root, ".w");
+                    File.WriteAllText(probe, "1");
+                    File.Delete(probe);
+                    return root;
+                }
+                catch
+                {
+                    string fb = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "PISMO");
+                    try { Directory.CreateDirectory(fb); } catch { }
+                    return fb;
+                }
+            }
+        }
+
         /// <summary>Общее окружение (создаётся один раз, лениво). Флаги — те же, что
         /// нужны звонку: --allow-running-insecure-content (ws:// LiveKit) + GPU/feature
         /// из настроек. Для плееров эти флаги безвредны.</summary>
@@ -34,9 +70,7 @@ namespace PISMO
 
         private static async Task<CoreWebView2Environment> CreateAsync()
         {
-            string udf = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "PISMO", "webview-shared");
+            string udf = Path.Combine(RootDir, "webview-shared");
             const string baseArgs =
                 "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required";
 
