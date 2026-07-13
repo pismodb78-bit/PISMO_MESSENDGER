@@ -158,7 +158,6 @@ namespace PISMO
                         return;
                     // Вспомогательные/подкадровые процессы — не фатально для звонка.
                     case CoreWebView2ProcessFailedKind.FrameRenderProcessExited:
-                    case CoreWebView2ProcessFailedKind.UtilitySubprocessExited:
                     case CoreWebView2ProcessFailedKind.SandboxHelperProcessExited:
                     case CoreWebView2ProcessFailedKind.RenderProcessUnresponsive:
                         System.Diagnostics.Debug.WriteLine($"[WebView2] несмертельный сбой процесса: {kind}");
