@@ -988,36 +988,37 @@ function cleanupParticipant(pid){
 
 // Извлечение кадров плитки: постит remoteTileFrame с pid+source.
 function makeExtractorTile(getVideoEl, pid, source, fps, maxW){
-    let handle = null;
+    // Таймер вместо requestAnimationFrame — rAF замирает в скрытом WebView
+    // (см. makeExtractor), из-за чего плитки участников «застывали» со временем.
+    let timer = null, running = false;
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    let lastSent = 0;
-    const interval = 1000 / fps;
-    function loop(){
-        const v = getVideoEl();
-        if (!v || v.readyState < 2){ handle = requestAnimationFrame(loop); return; }
-        const now = performance.now();
-        if (now - lastSent >= interval){
-            let vw = v.videoWidth, vh = v.videoHeight;
-            if (vw > 0 && vh > 0){
-                let tw = vw, th = vh;
-                if (maxW && vw > maxW){ tw = maxW; th = Math.round(vh * (maxW/vw)); }
-                if (canvas.width !== tw || canvas.height !== th){ canvas.width = tw; canvas.height = th; }
-                ctx.drawImage(v, 0, 0, tw, th);
-                canvas.toBlob((blob) => {
-                    if (!blob) return;
-                    const reader = new FileReader();
-                    reader.onload = () => post({type:'remoteTileFrame', pid: pid, source: source, data: reader.result.split(',')[1]});
-                    reader.readAsDataURL(blob);
-                }, 'image/jpeg', 0.8);
-                lastSent = now;
+    const interval = Math.max(15, 1000 / fps);
+    function tick(){
+        if (!running) return;
+        try {
+            const v = getVideoEl();
+            if (v && v.readyState >= 2){
+                let vw = v.videoWidth, vh = v.videoHeight;
+                if (vw > 0 && vh > 0){
+                    let tw = vw, th = vh;
+                    if (maxW && vw > maxW){ tw = maxW; th = Math.round(vh * (maxW/vw)); }
+                    if (canvas.width !== tw || canvas.height !== th){ canvas.width = tw; canvas.height = th; }
+                    ctx.drawImage(v, 0, 0, tw, th);
+                    canvas.toBlob((blob) => {
+                        if (!blob) return;
+                        const reader = new FileReader();
+                        reader.onload = () => post({type:'remoteTileFrame', pid: pid, source: source, data: reader.result.split(',')[1]});
+                        reader.readAsDataURL(blob);
+                    }, 'image/jpeg', 0.8);
+                }
             }
-        }
-        handle = requestAnimationFrame(loop);
+        } catch(e){}
+        timer = setTimeout(tick, interval);
     }
     return {
-        start(){ if (!handle) handle = requestAnimationFrame(loop); },
-        stop(){ if (handle){ cancelAnimationFrame(handle); handle = null; } }
+        start(){ if (!running){ running = true; tick(); } },
+        stop(){ running = false; if (timer){ clearTimeout(timer); timer = null; } }
     };
 }
 
@@ -1036,39 +1037,41 @@ function makeHiddenVideo(){
 // fps и maxW могут быть функциями — тогда темп/размер меняются «на лету»
 // (превью своей демки следует за РЕАЛЬНЫМ исходящим потоком).
 function makeExtractor(getVideoEl, postType, fps, maxW){
-    let handle = null;
+    // ТАЙМЕР, а не requestAnimationFrame: rAF в скрытом/перекрытом WebView
+    // останавливается вместе с композитором (окно транспорта — невидимое 1×1),
+    // из-за чего кадры переставали идти спустя время («демка тухнет»).
+    // setTimeout продолжает тикать (троттлинг таймеров отключён флагами).
+    let timer = null, running = false;
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    let lastSent = 0;
     const fpsOf  = () => Math.max(1, (typeof fps  === 'function' ? fps()  : fps) || 1);
     const maxWOf = () => (typeof maxW === 'function' ? maxW() : maxW);
-    function loop(){
-        const v = getVideoEl();
-        if (!v || v.readyState < 2){ handle = requestAnimationFrame(loop); return; }
-        const now = performance.now();
-        const interval = 1000 / fpsOf();
-        if (now - lastSent >= interval){
-            let vw = v.videoWidth, vh = v.videoHeight;
-            if (vw > 0 && vh > 0){
-                let tw = vw, th = vh;
-                const mW = maxWOf();
-                if (mW && vw > mW){ tw = mW; th = Math.round(vh * (mW/vw)); }
-                if (canvas.width !== tw || canvas.height !== th){ canvas.width = tw; canvas.height = th; }
-                ctx.drawImage(v, 0, 0, tw, th);
-                canvas.toBlob((blob) => {
-                    if (!blob) return;
-                    const reader = new FileReader();
-                    reader.onload = () => post({type: postType, data: reader.result.split(',')[1]});
-                    reader.readAsDataURL(blob);
-                }, 'image/jpeg', 0.8);
-                lastSent = now;
+    function tick(){
+        if (!running) return;
+        try {
+            const v = getVideoEl();
+            if (v && v.readyState >= 2){
+                let vw = v.videoWidth, vh = v.videoHeight;
+                if (vw > 0 && vh > 0){
+                    let tw = vw, th = vh;
+                    const mW = maxWOf();
+                    if (mW && vw > mW){ tw = mW; th = Math.round(vh * (mW/vw)); }
+                    if (canvas.width !== tw || canvas.height !== th){ canvas.width = tw; canvas.height = th; }
+                    ctx.drawImage(v, 0, 0, tw, th);
+                    canvas.toBlob((blob) => {
+                        if (!blob) return;
+                        const reader = new FileReader();
+                        reader.onload = () => post({type: postType, data: reader.result.split(',')[1]});
+                        reader.readAsDataURL(blob);
+                    }, 'image/jpeg', 0.8);
+                }
             }
-        }
-        handle = requestAnimationFrame(loop);
+        } catch(e){}
+        timer = setTimeout(tick, Math.max(15, 1000 / fpsOf()));
     }
     return {
-        start(){ if (!handle) handle = requestAnimationFrame(loop); },
-        stop(){ if (handle){ cancelAnimationFrame(handle); handle = null; } }
+        start(){ if (!running){ running = true; tick(); } },
+        stop(){ running = false; if (timer){ clearTimeout(timer); timer = null; } }
     };
 }
 
@@ -1219,7 +1222,13 @@ async function previewScreen(resHeight, fps){
 
         // Остановка через системный диалог Chrome ('Stop sharing').
         const mst = vt;
-        if (mst){ mst.onended = () => { if (screenPublished) stopScreenShareTrack(); else cancelScreenPreview(); }; }
+        if (mst){
+            mst.onended = () => { if (screenPublished) stopScreenShareTrack(); else cancelScreenPreview(); };
+            // Диагностика «тихого» замирания: захват может уйти в mute (сон монитора,
+            // переключение fullscreen-режима игры, пересоздание GPU-устройства).
+            mst.onmute   = () => post({type:'jsLog', text:'ДЕМКА: трек захвата muted (источник перестал отдавать кадры)'});
+            mst.onunmute = () => post({type:'jsLog', text:'ДЕМКА: трек захвата снова отдаёт кадры'});
+        }
 
         if (!screenPreviewVideoEl){ screenPreviewVideoEl = makeHiddenVideo(); }
         screenVideoTrack.attach(screenPreviewVideoEl);
@@ -1234,24 +1243,28 @@ let screenCurCodec = 'h264';
 let screenFellBack = false;
 
 // Публикация видео-трека демки заданным кодеком + применение параметров энкодера.
+// Приоритет деградации: выбрал 45+ fps — держим ЧАСТОТУ (энкодер под
+// нагрузкой снижает разрешение), иначе держим ЧЁТКОСТЬ (жертвует fps).
+// Раньше стояло жёсткое maintain-resolution — из-за него на тяжёлых сценах
+// fps проседал заметно ниже выбранного.
+function screenDegradationPref(){ return screenQualityF >= 45 ? 'maintain-framerate' : 'maintain-resolution'; }
+
 async function publishScreenWithCodec(codec){
     const p = screenParams || { effH: 1080, maxBitrate: 15000000 };
     await room.localParticipant.publishTrack(screenVideoTrack, {
         source: LK.Track.Source.ScreenShare,
         simulcast: false,
         videoCodec: codec,
-        degradationPreference: 'maintain-resolution',
+        degradationPreference: screenDegradationPref(),
         videoEncoding: { maxBitrate: p.maxBitrate, maxFramerate: screenQualityF }
     });
     screenCurCodec = codec;
     post({type:'jsLog', text:'Демка опубликована кодеком: ' + codec});
-    // Приоритет ЧЁТКОСТИ: при нехватке ресурсов WebRTC жертвует FPS, а не
-    // разрешением — иначе 1080 «плыл» в 480-720.
     try {
         const sender = screenVideoTrack.sender;
         if (sender && sender.getParameters){
             const sp = sender.getParameters();
-            sp.degradationPreference = 'maintain-resolution';
+            sp.degradationPreference = screenDegradationPref();
             if (!sp.encodings || !sp.encodings.length) sp.encodings = [{}];
             sp.encodings[0].maxFramerate = screenQualityF;
             sp.encodings[0].maxBitrate = p.maxBitrate;
@@ -1814,6 +1827,7 @@ async function setScreenQuality(resHeight, fps){
             if (p.encodings && p.encodings.length){
                 p.encodings[0].maxBitrate = maxBitrate;
                 p.encodings[0].maxFramerate = f;
+                p.degradationPreference = screenDegradationPref();
                 await sender.setParameters(p);
             }
         }
