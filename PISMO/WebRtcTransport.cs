@@ -126,6 +126,9 @@ namespace PISMO
             };
             parentForm.Controls.Add(_webView);
             _webView.SendToBack();
+            // Хэндл окна должен существовать до инициализации WebView2 (иначе
+            // возможен ERROR_INVALID_STATE 0x8007139F при создании окружения).
+            try { var _ = _webView.Handle; } catch { }
 
             // КРИТИЧНО: страница грузится с https-origin (виртуальный хост) —
             // это нужно для secure context (getUserMedia/getDisplayMedia). Но
@@ -149,8 +152,32 @@ namespace PISMO
             string rtcUdf = System.IO.Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "PISMO", "webview-rtc");
-            var env = await CoreWebView2Environment.CreateAsync(null, rtcUdf, envOptions);
-            await _webView.EnsureCoreWebView2Async(env);
+
+            // РЕТРАЙ инициализации. 0x8007139F (ERROR_INVALID_STATE) при создании
+            // окружения обычно значит, что браузерный процесс WebView2 для этой
+            // папки данных из прошлого звонка ещё не освободил её. Даём ему выйти
+            // и пробуем снова; последняя попытка — на ОТДЕЛЬНОЙ папке, чтобы блок
+            // старого процесса не мешал вовсе.
+            CoreWebView2Environment env = null;
+            Exception lastEx = null;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                try
+                {
+                    string udf = attempt < 3 ? rtcUdf : rtcUdf + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                    env = await CoreWebView2Environment.CreateAsync(null, udf, envOptions);
+                    await _webView.EnsureCoreWebView2Async(env);
+                    lastEx = null;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    lastEx = ex;
+                    System.Diagnostics.Debug.WriteLine($"[WebView2 init retry {attempt}] {ex.Message}");
+                    try { await Task.Delay(400 * (attempt + 1)); } catch { }
+                }
+            }
+            if (lastEx != null) throw lastEx;
 
             _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
 
