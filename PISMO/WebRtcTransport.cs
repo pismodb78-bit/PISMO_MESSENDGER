@@ -154,18 +154,24 @@ namespace PISMO
                 "PISMO", "webview-rtc");
 
             // РЕТРАЙ инициализации. 0x8007139F (ERROR_INVALID_STATE) при создании
-            // окружения обычно значит, что браузерный процесс WebView2 для этой
-            // папки данных из прошлого звонка ещё не освободил её. Даём ему выйти
-            // и пробуем снова; последняя попытка — на ОТДЕЛЬНОЙ папке, чтобы блок
-            // старого процесса не мешал вовсе.
+            // окружения = КОНФЛИКТ ОПЦИЙ: WebView2 запрещает в ОДНОМ процессе
+            // окружения с разными параметрами. Если уже запущен плеер GIF/видео
+            // (в канале сервера они активны!) с ДЕФОЛТНЫМИ опциями, наш env с
+            // GPU-флагами не создаётся. Стратегия попыток:
+            //   0-1: полные опции на своей папке (с паузой — вдруг старый процесс
+            //        ещё выходит);
+            //   2:   полные опции на СВЕЖЕЙ папке;
+            //   3:   ДЕФОЛТНЫЕ опции (пустые) — совпадут с плеерами, конфликта нет
+            //        (ценой GPU-флагов, но звонок поднимется).
             CoreWebView2Environment env = null;
             Exception lastEx = null;
             for (int attempt = 0; attempt < 4; attempt++)
             {
                 try
                 {
-                    string udf = attempt < 3 ? rtcUdf : rtcUdf + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
-                    env = await CoreWebView2Environment.CreateAsync(null, udf, envOptions);
+                    string udf = attempt == 2 ? rtcUdf + "-" + Guid.NewGuid().ToString("N").Substring(0, 8) : rtcUdf;
+                    var opts = attempt == 3 ? new CoreWebView2EnvironmentOptions() : envOptions;
+                    env = await CoreWebView2Environment.CreateAsync(null, udf, opts);
                     await _webView.EnsureCoreWebView2Async(env);
                     lastEx = null;
                     break;
