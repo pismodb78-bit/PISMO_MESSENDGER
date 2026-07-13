@@ -2,12 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- Версия Windows зафиксирована НАМЕРЕННО. На «голом» net8.0-windows новые
-         .NET SDK при пакете WebView2 добавляют прямую ссылку на
-         Microsoft.Web.WebView2.Core.winmd -> ошибка NETSDK1130 (в VS падает, на
-         CI со старым 8.0.x SDK — нет). С зафиксированной версией WebView2 идёт
-         через WinRT-проекции, а не прямой winmd, и ошибка исчезает на любом SDK. -->
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <!-- WPF нужен ТОЛЬКО для растеризации ЦВЕТНЫХ эмодзи (GDI+ не умеет
@@ -18,9 +13,9 @@
     <RootNamespace>PISMO</RootNamespace>
     <ApplicationIcon>pismo.ico</ApplicationIcon>
     <StartupObject>PISMO.Program</StartupObject>
-    <Version>2.5.1</Version>
-    <AssemblyVersion>2.5.1.0</AssemblyVersion>
-    <FileVersion>2.5.1.0</FileVersion>
+    <Version>2.5.2</Version>
+    <AssemblyVersion>2.5.2.0</AssemblyVersion>
+    <FileVersion>2.5.2.0</FileVersion>
     <Company>PISMO</Company>
     <Product>PISMO Messenger</Product>
   </PropertyGroup>
@@ -40,7 +35,11 @@
     <!-- WebView2 подключается ТОЛЬКО пакетом. НИКОГДА не добавлять прямую
          <Reference> / <COMReference> на Microsoft.Web.WebView2.Core.winmd —
          .NET это запрещает (ошибка NETSDK1130), и ломается вся сборка. -->
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
+    <!-- WebView2 держим на 1.0.4022.49: версия, на которой проект собирался
+         месяцами. Подъём до 1.0.4078.44 на новых .NET SDK тянул прямую ссылку на
+         Microsoft.Web.WebView2.Core.winmd -> NETSDK1130. WebView2 подключаем
+         ТОЛЬКО пакетом, без прямых <Reference>/<COMReference> на .winmd. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
     <PackageReference Include="MySql.Data" Version="9.7.0" />
 
     <PackageReference Include="NAudio" Version="2.3.0" />
