@@ -122,6 +122,18 @@ namespace PISMO
                     "read_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, " +
                     "PRIMARY KEY (user_id, channel_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
             }),
+
+            (9, "message_reactions.emoji: бинарная коллация (разные эмодзи ≠ равны)", conn =>
+            {
+                // КОВАРНЫЙ баг MySQL: в коллациях utf8mb4_general_ci/unicode_ci
+                // РАЗНЫЕ эмодзи сравниваются как РАВНЫЕ строки. Из-за этого:
+                //  • WHERE emoji=@e находил «ту же» реакцию для любого эмодзи —
+                //    тумблер УДАЛЯЛ первую реакцию при попытке поставить вторую;
+                //  • PK с emoji тоже считал две разные реакции дубликатом.
+                // utf8mb4_bin сравнивает по кодпоинтам — каждый эмодзи уникален.
+                Exec(conn, "ALTER TABLE message_reactions " +
+                           "MODIFY emoji VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL");
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>

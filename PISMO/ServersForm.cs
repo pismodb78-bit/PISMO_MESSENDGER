@@ -1287,7 +1287,7 @@ namespace PISMO
                                     {
                                         try { ReactionsRepository.Toggle(midC, ReactionsRepository.Scope.Server, _me, emoC); } catch { }
                                         if (IsDisposed || !IsHandleCreated) return;
-                                        try { BeginInvoke(new Action(LoadMessages)); } catch { }
+                                        try { BeginInvoke(new Action(() => { _renderedKey = null; _renderedSig = null; LoadMessages(); })); } catch { }
                                     });
                                 };
                                 holder.Controls.Add(chipR);
@@ -1314,7 +1314,7 @@ namespace PISMO
                                 {
                                     try { ReactionsRepository.Toggle(midA, ReactionsRepository.Scope.Server, _me, emo); } catch { }
                                     if (IsDisposed || !IsHandleCreated) return;
-                                    try { BeginInvoke(new Action(LoadMessages)); } catch { }
+                                    try { BeginInvoke(new Action(() => { _renderedKey = null; _renderedSig = null; LoadMessages(); })); } catch { }
                                 });
                             };
                             holder.Controls.Add(addR);
@@ -1379,7 +1379,7 @@ namespace PISMO
                 {
                     try { ReactionsRepository.Toggle(id, ReactionsRepository.Scope.Server, _me, emo); } catch { }
                     if (IsDisposed || !IsHandleCreated) return;
-                    try { BeginInvoke(new Action(LoadMessages)); } catch { }
+                    try { BeginInvoke(new Action(() => { _renderedKey = null; _renderedSig = null; LoadMessages(); })); } catch { }
                 });
             });
             menu.Items.Add(new ToolStripSeparator());
