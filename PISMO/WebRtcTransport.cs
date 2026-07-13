@@ -151,11 +151,17 @@ namespace PISMO
                     //   1: базовая папка + полные флаги (после паузы)
                     //   2: СВЕЖАЯ папка + полные флаги
                     //   3: СВЕЖАЯ папка + МИНИМАЛЬНЫЕ флаги (без GPU/feature)
-                    const string minArgs =
+                    const string baseArgs =
                         "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required";
+                    // Последняя попытка — ПРИНУДИТЕЛЬНО программный рендер
+                    // (--disable-gpu): если видеодрайвер валит инициализацию
+                    // WebView2 на аппаратном GPU (частая причина 0x8007139F,
+                    // особенно после краша демонстрации/захвата экрана), софтовый
+                    // рендер её обходит. Демонстрация будет тяжелее для CPU, но
+                    // звонок поднимется.
                     string args = attempt >= 3
-                        ? minArgs
-                        : DeviceSettings.WebViewArgs(minArgs);
+                        ? baseArgs + " --disable-gpu --disable-gpu-compositing --disable-software-rasterizer=false"
+                        : DeviceSettings.WebViewArgs(baseArgs);
                     var opts = new CoreWebView2EnvironmentOptions(args);
                     string udf = attempt >= 2
                         ? rtcUdf + "-" + Guid.NewGuid().ToString("N").Substring(0, 8)
