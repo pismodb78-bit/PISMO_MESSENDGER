@@ -79,10 +79,10 @@ namespace PISMO
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT message_id, emoji, COUNT(*) AS cnt, " +
+                    "SELECT message_id, emoji COLLATE utf8mb4_bin AS emoji, COUNT(*) AS cnt, " +
                     "MAX(CASE WHEN user_id=@me THEN 1 ELSE 0 END) AS mine " +
                     "FROM message_reactions WHERE scope=@s AND message_id IN (" + string.Join(",", list) + ") " +
-                    "GROUP BY message_id, emoji ORDER BY MIN(created_at)", conn);
+                    "GROUP BY message_id, emoji COLLATE utf8mb4_bin ORDER BY MIN(created_at)", conn);
                 cmd.Parameters.AddWithValue("@s", (int)scope);
                 cmd.Parameters.AddWithValue("@me", myId);
                 using var r = cmd.ExecuteReader();
@@ -111,10 +111,10 @@ namespace PISMO
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT emoji, COUNT(*) AS cnt, " +
+                    "SELECT emoji COLLATE utf8mb4_bin AS emoji, COUNT(*) AS cnt, " +
                     "MAX(CASE WHEN user_id=@me THEN 1 ELSE 0 END) AS mine " +
                     "FROM message_reactions WHERE message_id=@m AND scope=@s " +
-                    "GROUP BY emoji ORDER BY MIN(created_at)", conn);
+                    "GROUP BY emoji COLLATE utf8mb4_bin ORDER BY MIN(created_at)", conn);
                 cmd.Parameters.AddWithValue("@m", messageId);
                 cmd.Parameters.AddWithValue("@s", (int)scope);
                 cmd.Parameters.AddWithValue("@me", myId);
