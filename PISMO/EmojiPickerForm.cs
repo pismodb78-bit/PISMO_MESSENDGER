@@ -104,6 +104,25 @@ namespace PISMO
                 return b;
             }
 
+            // ✕ в левом верхнем углу — закрыть пикер без выбора.
+            var closeBtn = new Button
+            {
+                Text = "✕",
+                Size = new Size(38, 30),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.Transparent,
+                ForeColor = Color.FromArgb(185, 187, 190),
+                Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+                Margin = new Padding(0, 0, 0, 6),
+                Cursor = Cursors.Hand,
+                TabStop = false
+            };
+            closeBtn.FlatAppearance.BorderSize = 0;
+            closeBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(90, 40, 44);
+            closeBtn.Click += (s, e) => Close();
+            new ToolTip().SetToolTip(closeBtn, "Закрыть (Esc)");
+            rail.Controls.Add(closeBtn);
+
             var recentBtn = RailBtn("🕒", "Часто используемые");
             recentBtn.Click += (s, e) => ShowRecent();
             rail.Controls.Add(recentBtn);
@@ -123,6 +142,28 @@ namespace PISMO
 
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) Close(); };
             Deactivate += (s, e) => { try { Close(); } catch { } };
+
+            // Клик МИМО пикера закрывает его. Пикер модальный (владелец отключён),
+            // поэтому клики по окну-владельцу «съедаются» — ловим их низкоуровневым
+            // мышиным хуком, пока пикер открыт.
+            IntPtr hook = IntPtr.Zero;
+            HookProc proc = null;
+            proc = (code, wParam, lParam) =>
+            {
+                try
+                {
+                    if (code >= 0)
+                    {
+                        int msg = wParam.ToInt32();
+                        if ((msg == 0x0201 || msg == 0x0204) && !Bounds.Contains(Cursor.Position)) // WM_LBUTTONDOWN/WM_RBUTTONDOWN
+                            try { BeginInvoke(new Action(Close)); } catch { }
+                    }
+                }
+                catch { }
+                return CallNextHookEx(hook, code, wParam, lParam);
+            };
+            Shown += (s, e) => { try { hook = SetWindowsHookEx(14 /*WH_MOUSE_LL*/, proc, IntPtr.Zero, 0); } catch { } };
+            FormClosed += (s, e) => { try { if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook); } catch { } GC.KeepAlive(proc); };
 
             // Twemoji докачивается в фоне: серые кнопки перекрашиваются в
             // цветные по мере готовности (событие приходит с фонового потока).
@@ -196,5 +237,17 @@ namespace PISMO
             catch { }
             finally { _grid.ResumeLayout(); }
         }
+
+        // ── Низкоуровневый мышиный хук (закрытие по клику мимо пикера) ──
+        private delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
     }
 }
