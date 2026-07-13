@@ -113,77 +113,60 @@ namespace PISMO
             _pendingUrl = livekitUrl;
             _pendingToken = token;
 
-            // WebView2 — транспортный движок, держим невидимым и за пределами
-            // экрана. Visible=true обязателен: requestAnimationFrame останавливается
-            // для невидимых элементов, что заморозило бы извлечение кадров видео.
-            _webView = new WebView2
-            {
-                Visible = true,
-                Size = new System.Drawing.Size(1, 1),
-                MinimumSize = new System.Drawing.Size(1, 1),
-                Location = new System.Drawing.Point(-3000, -3000),
-                Anchor = AnchorStyles.None
-            };
-            parentForm.Controls.Add(_webView);
-            _webView.SendToBack();
-            // Хэндл окна должен существовать до инициализации WebView2 (иначе
-            // возможен ERROR_INVALID_STATE 0x8007139F при создании окружения).
-            try { var _ = _webView.Handle; } catch { }
-
-            // КРИТИЧНО: страница грузится с https-origin (виртуальный хост) —
-            // это нужно для secure context (getUserMedia/getDisplayMedia). Но
-            // LiveKit-сервер работает по ws:// без TLS (без домена/сертификата),
-            // а https-страница по умолчанию блокирует ws:// как mixed content.
-            // --allow-running-insecure-content снимает эту блокировку, позволяя
-            // подключиться к ws:// LiveKit, сохранив при этом secure context для
-            // доступа к камере/микрофону/экрану.
-            // Аппаратное ускорение (GPU) — управляется настройкой (для демонстрации
-            // экрана/видео; на проблемных драйверах его можно выключить).
-            // Отключение WGC-захвата, анти-троттлинг и GPU-флаги собираются в
-            // DeviceSettings.WebViewArgs ЕДИНЫМ списком (двойной --disable-features
-            // Chromium игнорирует — берёт только последний).
-            var envOptions = new CoreWebView2EnvironmentOptions(
-                DeviceSettings.WebViewArgs(
-                    "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required"));
-            // ОТДЕЛЬНАЯ папка данных: WebView2 держит ОДИН браузерный процесс на
-            // папку, и если первым стартовал другой WebView приложения (плеер
-            // видео/GIF) БЕЗ наших флагов — транспорт подцеплялся к нему и все
-            // аргументы (GPU, отключение WGC-захвата) молча игнорировались.
             string rtcUdf = System.IO.Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "PISMO", "webview-rtc");
 
-            // РЕТРАЙ инициализации. 0x8007139F (ERROR_INVALID_STATE) при создании
-            // окружения = КОНФЛИКТ ОПЦИЙ: WebView2 запрещает в ОДНОМ процессе
-            // окружения с разными параметрами. Если уже запущен плеер GIF/видео
-            // (в канале сервера они активны!) с ДЕФОЛТНЫМИ опциями, наш env с
-            // GPU-флагами не создаётся. Стратегия попыток:
-            //   0-1: полные опции на своей папке (с паузой — вдруг старый процесс
-            //        ещё выходит);
-            //   2:   полные опции на СВЕЖЕЙ папке;
-            //   3:   ДЕФОЛТНЫЕ опции (пустые) — совпадут с плеерами, конфликта нет
-            //        (ценой GPU-флагов, но звонок поднимется).
-            CoreWebView2Environment env = null;
+            // РЕТРАЙ инициализации WebView2. 0x8007139F (ERROR_INVALID_STATE) при
+            // создании окружения = либо конфликт опций в процессе, либо драйвер
+            // не переваривает GPU-флаги, либо старый процесс держит папку. КРИТИЧНО:
+            // после падения EnsureCoreWebView2Async сам КОНТРОЛ остаётся мёртвым,
+            // поэтому на КАЖДОЙ попытке пересоздаём и контрол, и окружение.
+            // Стратегия аргументов по попыткам:
+            //   0-1: полные опции (GPU-флаги) — своя папка;
+            //   2:   полные опции — СВЕЖАЯ папка (старый процесс не мешает);
+            //   3:   МИНИМАЛЬНЫЕ опции без GPU/feature-флагов — если драйвер их
+            //        отвергал, звонок всё равно поднимется (программный рендер).
             Exception lastEx = null;
-            for (int attempt = 0; attempt < 4; attempt++)
+            for (int attempt = 0; attempt < 4 && _webView == null; )
             {
+                var wv = new WebView2
+                {
+                    Visible = true,
+                    Size = new System.Drawing.Size(1, 1),
+                    MinimumSize = new System.Drawing.Size(1, 1),
+                    Location = new System.Drawing.Point(-3000, -3000),
+                    Anchor = AnchorStyles.None
+                };
                 try
                 {
+                    parentForm.Controls.Add(wv);
+                    wv.SendToBack();
+                    try { var _ = wv.Handle; } catch { }   // хэндл до инициализации
+
+                    string args = attempt == 3
+                        ? "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required"
+                        : DeviceSettings.WebViewArgs(
+                            "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required");
+                    var opts = new CoreWebView2EnvironmentOptions(args);
                     string udf = attempt == 2 ? rtcUdf + "-" + Guid.NewGuid().ToString("N").Substring(0, 8) : rtcUdf;
-                    var opts = attempt == 3 ? new CoreWebView2EnvironmentOptions() : envOptions;
-                    env = await CoreWebView2Environment.CreateAsync(null, udf, opts);
-                    await _webView.EnsureCoreWebView2Async(env);
+
+                    var env = await CoreWebView2Environment.CreateAsync(null, udf, opts);
+                    await wv.EnsureCoreWebView2Async(env);
+
+                    _webView = wv;   // успех
                     lastEx = null;
-                    break;
                 }
                 catch (Exception ex)
                 {
                     lastEx = ex;
                     System.Diagnostics.Debug.WriteLine($"[WebView2 init retry {attempt}] {ex.Message}");
-                    try { await Task.Delay(400 * (attempt + 1)); } catch { }
+                    try { parentForm.Controls.Remove(wv); wv.Dispose(); } catch { }   // мёртвый контрол — выбрасываем
+                    attempt++;
+                    try { await Task.Delay(400 * attempt); } catch { }
                 }
             }
-            if (lastEx != null) throw lastEx;
+            if (_webView == null) throw lastEx ?? new Exception("WebView2 init failed");
 
             _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
 
