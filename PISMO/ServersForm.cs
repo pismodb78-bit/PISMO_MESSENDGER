@@ -1303,7 +1303,18 @@ namespace PISMO
             bool isMine = senderId == _me;
             bool isGif = text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase);
 
+            // Метаданные для пакетных операций (пересылка/удаление выбранных).
+            _srvMsgMeta[id] = (senderName ?? "", text ?? "", senderId);
+
             var menu = new ContextMenuStrip { BackColor = Color.FromArgb(24, 25, 28), ForeColor = Color.FromArgb(220, 221, 222) };
+
+            // ── Выбрать (множественное выделение) ────────────────────────
+            menu.Items.Add("☑  Выбрать", null, (s, e) =>
+            {
+                if (!_srvSelectMode) EnterSrvSelect();
+                ToggleSrvSelect(id);
+            });
+            menu.Items.Add(new ToolStripSeparator());
 
             // ── Реакция (как в ЛС) ───────────────────────────────────────
             menu.Items.Add("😀  Реакция", null, (s, e) =>
@@ -1367,13 +1378,46 @@ namespace PISMO
                 menu.Items.Add(del);
             }
 
-            void Show(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Right) menu.Show(Cursor.Position); }
+            void Show(object s, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Right) menu.Show(Cursor.Position);
+                else if (e.Button == MouseButtons.Left && _srvSelectMode) ToggleSrvSelect(id);
+            }
             holder.MouseClick += Show;
             header.MouseClick += Show;
             // У выделяемого текста — наше меню вместо родного.
             foreach (Control c in holder.Controls)
                 if (c is TextBox tb) tb.ContextMenuStrip = menu;
                 else c.MouseClick += Show;
+
+            // Кружок выделения у правого края (как в Telegram).
+            if (_srvSelectMode)
+            {
+                bool sel = _srvSelected.Contains(id);
+                var mark = new Label
+                {
+                    Text = sel ? "✔" : "○",
+                    AutoSize = false,
+                    Size = new Size(30, 30),
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold),
+                    ForeColor = sel ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158),
+                    BackColor = Color.Transparent,
+                    Cursor = Cursors.Hand
+                };
+                mark.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ToggleSrvSelect(id); };
+                holder.Controls.Add(mark);
+                mark.BringToFront();
+                // Ставим кружок к правому краю чата (бабл авторазмерный — ждём layout).
+                void Place(object s, EventArgs e)
+                {
+                    int w = Math.Max(holder.Width, _pnlMessages.ClientSize.Width - 40);
+                    mark.Location = new Point(w - 36, Math.Max(6, (holder.Height - 30) / 2));
+                }
+                holder.Resize += Place;
+                Place(null, null);
+                if (sel) holder.BackColor = Color.FromArgb(58, 62, 70);
+            }
         }
 
         private void ForwardServerMessage(int channelId, string text)
@@ -1409,6 +1453,123 @@ namespace PISMO
                 LoadMessages();
             }
             catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        //  МНОЖЕСТВЕННОЕ ВЫДЕЛЕНИЕ В КАНАЛЕ (как в ЛС)
+        // ════════════════════════════════════════════════════════════════
+        private bool _srvSelectMode;
+        private readonly HashSet<int> _srvSelected = new HashSet<int>();
+        private readonly Dictionary<int, (string sender, string text, int senderId)> _srvMsgMeta
+            = new Dictionary<int, (string, string, int)>();
+        private Panel _srvSelectBar;
+        private Label _srvSelectInfo;
+
+        private void EnsureSrvSelectBar()
+        {
+            if (_srvSelectBar != null && !_srvSelectBar.IsDisposed) return;
+            _srvSelectBar = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.FromArgb(47, 49, 54), Visible = false };
+            _srvSelectInfo = new Label
+            {
+                Dock = DockStyle.Left, Width = 160, TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+                Padding = new Padding(12, 0, 0, 0), Text = "Выбрано: 0"
+            };
+            Button Mk(string t, Color fg)
+            {
+                var b = new Button { Text = t, Dock = DockStyle.Right, Width = 150, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(54, 57, 63), ForeColor = fg, Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Cursor = Cursors.Hand };
+                b.FlatAppearance.BorderSize = 0;
+                return b;
+            }
+            var bCancel = Mk("Отмена", Color.FromArgb(200, 202, 208));
+            var bDel = Mk("🗑  Удалить свои", Color.FromArgb(240, 71, 71));
+            var bFwd = Mk("↪  Переслать", Color.FromArgb(88, 170, 255));
+            bCancel.Click += (s, e) => ExitSrvSelect();
+            bDel.Click += (s, e) => DeleteSrvSelected();
+            bFwd.Click += (s, e) => ForwardSrvSelected();
+            _srvSelectBar.Controls.Add(_srvSelectInfo);
+            _srvSelectBar.Controls.Add(bCancel);
+            _srvSelectBar.Controls.Add(bDel);
+            _srvSelectBar.Controls.Add(bFwd);
+            var host = _pnlMessages.Parent;
+            host.Controls.Add(_srvSelectBar);
+            _srvSelectBar.BringToFront();
+        }
+
+        private void EnterSrvSelect()
+        {
+            EnsureSrvSelectBar();
+            _srvSelectMode = true;
+            _srvSelected.Clear();
+            _srvSelectBar.Visible = true;
+            UpdateSrvSelectBar();
+        }
+
+        private void ExitSrvSelect()
+        {
+            _srvSelectMode = false;
+            _srvSelected.Clear();
+            if (_srvSelectBar != null) _srvSelectBar.Visible = false;
+            LoadMessages();
+        }
+
+        private void ToggleSrvSelect(int id)
+        {
+            if (id <= 0) return;
+            if (!_srvSelected.Add(id)) _srvSelected.Remove(id);
+            UpdateSrvSelectBar();
+            LoadMessages();
+        }
+
+        private void UpdateSrvSelectBar()
+        {
+            if (_srvSelectInfo != null) _srvSelectInfo.Text = $"Выбрано: {_srvSelected.Count}";
+        }
+
+        private void DeleteSrvSelected()
+        {
+            // Удаляем ТОЛЬКО свои сообщения из выбранных.
+            var mineIds = new List<int>();
+            foreach (int id in _srvSelected)
+                if (_srvMsgMeta.TryGetValue(id, out var m) && m.senderId == _me) mineIds.Add(id);
+            if (mineIds.Count == 0) { MessageBox.Show("Среди выбранных нет ваших сообщений — чужие удалять нельзя."); return; }
+            if (MessageBox.Show($"Удалить свои сообщения ({mineIds.Count})? Это нельзя отменить.",
+                "PISMO", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                foreach (int id in mineIds)
+                {
+                    using var cmd = new MySqlCommand("DELETE FROM server_messages WHERE id=@id AND sender_id=@me", conn);
+                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.Parameters.AddWithValue("@me", _me);
+                    cmd.ExecuteNonQuery();
+                }
+                WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
+            }
+            catch (Exception ex) { ShowDbError(ex); }
+            ExitSrvSelect();
+        }
+
+        private void ForwardSrvSelected()
+        {
+            if (_srvSelected.Count == 0) { ExitSrvSelect(); return; }
+            var ids = new List<int>(_srvSelected);
+            ids.Sort();
+            var batch = new List<(string sender, string text)>();
+            foreach (int id in ids)
+                if (_srvMsgMeta.TryGetValue(id, out var m) && !m.text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
+                    batch.Add((m.sender, m.text));
+            _srvSelectMode = false;
+            _srvSelected.Clear();
+            if (_srvSelectBar != null) _srvSelectBar.Visible = false;
+            LoadMessages();
+            if (batch.Count == 0) return;
+
+            var mf = MainForm.Current;
+            if (mf == null || mf.IsDisposed) { MessageBox.Show("Главное окно закрыто."); return; }
+            mf.BeginForwardExternalBatch(batch);
+            try { mf.Activate(); mf.BringToFront(); } catch { }
         }
 
         private void DeleteServerMessage(int id)

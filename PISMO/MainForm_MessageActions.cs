@@ -680,6 +680,20 @@ namespace PISMO
         public void BeginForwardExternal(string senderName, string text)
             => BeginForward(0, text, false, senderName);
 
+        /// <summary>Пачка сообщений из сервера (множественное выделение) — в общий
+        /// буфер пересылки. Отправка: диалог/группа («Отправить» в ЛС) или канал.</summary>
+        public void BeginForwardExternalBatch(System.Collections.Generic.List<(string sender, string text)> batch)
+        {
+            if (batch == null || batch.Count == 0) return;
+            CancelReply();
+            CancelEdit();
+            _forwardMsgId = -1;
+            _forwardBatch.Clear();
+            _forwardBatch.AddRange(batch);
+            _lblForwardInfo.Text = $"↪ Пересылка {batch.Count} сообщений(я) — выберите диалог/группу/канал и нажмите «Отправить»";
+            _pnlForwardBar.Visible = true;
+        }
+
         public bool TrySendForward()
         {
             var pending = ConsumePendingForwards();
