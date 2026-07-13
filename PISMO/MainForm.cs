@@ -4274,6 +4274,11 @@ namespace PISMO
         }
 
         private void btnSettings_Click(object sender, EventArgs e)
+            => ShowSettingsMenu(btnSettings);
+
+        /// <summary>Общее меню настроек (профиль/пароль/устройства/тема/…). Можно
+        /// вызвать из другого окна (напр. футера серверов), передав свой якорь.</summary>
+        public void ShowSettingsMenu(Control anchor)
         {
             var menu = new ContextMenuStrip();
 
@@ -4335,7 +4340,8 @@ namespace PISMO
                 this.Close();
             });
 
-            menu.Show(btnSettings, new Point(0, -menu.Items.Count * 28));
+            var a = anchor ?? btnSettings;
+            menu.Show(a, new Point(0, -menu.Items.Count * 28));
         }
 
         // ════════════════════════════════════════════════════════════════

@@ -285,7 +285,18 @@ namespace PISMO
                 var m = MainForm.Current?.BuildSpeakerDeviceMenu();
                 if (m != null) m.Show(btnSpkArrow, new Point(0, -m.Items.Count * 24));
             };
-            btnSet.Click += (s, e) => { try { new SettingsForm().ShowDialog(this); } catch { } };
+            // То же меню, что и ⚙ в мессенджере (профиль/пароль/устройства/тема/…),
+            // а не сразу «Настройки устройств».
+            btnSet.Click += (s, e) =>
+            {
+                try
+                {
+                    var mf = MainForm.Current;
+                    if (mf != null && !mf.IsDisposed) mf.ShowSettingsMenu(btnSet);
+                    else new SettingsForm().ShowDialog(this);
+                }
+                catch { }
+            };
 
             // Синхронизация с футером ЛС: мьют по хоткею/в звонке/в другом окне
             // сразу перекрашивает и эти кнопки.
