@@ -120,46 +120,56 @@ namespace PISMO
             // дефолтное окружение, а транспорт — своё с флагами → конфликт, и звонок
             // не стартовал, если до него смотрели медиа. Теперь и плееры, и транспорт
             // берут ОДНО общее окружение отсюда.
+            string rtcBase = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "PISMO", "webview-rtc");
+
+            // ПРАВИЛЬНЫЙ способ (по гайдам WebView2): окружение задаём через
+            // CreationProperties ДО инициализации контрола, а не отдельным
+            // CreateAsync + EnsureCoreWebView2Async(env). Иначе контрол успевает
+            // начать НЕЯВНУЮ инициализацию с другими параметрами → 0x8007139F
+            // (ERROR_INVALID_STATE) — это подтверждённый баг WebView2. УНИКАЛЬНАЯ
+            // папка данных на каждый запуск (+ пауза) убирает конфликт «та же папка,
+            // другие параметры» с залипшим процессом прошлого звонка.
             Exception lastEx = null;
-            for (int attempt = 0; attempt < 2 && _webView == null; attempt++)
+            for (int attempt = 0; attempt < 3 && _webView == null; attempt++)
             {
-                var wv = new WebView2
-                {
-                    Visible = true,
-                    Size = new System.Drawing.Size(1, 1),
-                    MinimumSize = new System.Drawing.Size(1, 1),
-                    Location = new System.Drawing.Point(-3000, -3000),
-                    Anchor = AnchorStyles.None
-                };
+                var wv = new WebView2();
                 try
                 {
-                    // ХОСТ контрола — окно с ГАРАНТИРОВАННЫМ хэндлом. CallForm ещё не
-                    // показан (InitAsync зовётся из конструктора ДО .Show()), поэтому
-                    // хэндла у него нет → EnsureCoreWebView2Async падает 0x8007139F.
-                    // Главное окно (MainForm.Current) всегда показано и с хэндлом;
-                    // контрол всё равно невидимый за экраном, так что хост не важен.
-                    Form host = parentForm;
-                    try
+                    string args = attempt >= 2
+                        ? "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required --disable-gpu"
+                        : DeviceSettings.WebViewArgs(
+                            "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required");
+                    string udf = rtcBase + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+
+                    // КЛЮЧЕВОЕ: CreationProperties ставим СРАЗУ после new, ДО того как
+                    // контрол куда-либо добавлен или показан.
+                    wv.CreationProperties = new CoreWebView2CreationProperties
                     {
-                        if (host == null || host.IsDisposed || !host.IsHandleCreated)
-                        {
-                            var mf = MainForm.Current;
-                            if (mf != null && !mf.IsDisposed && mf.IsHandleCreated) host = mf;
-                        }
+                        UserDataFolder = udf,
+                        AdditionalBrowserArguments = args
+                    };
+                    wv.Visible = true;
+                    wv.Size = new System.Drawing.Size(1, 1);
+                    wv.MinimumSize = new System.Drawing.Size(1, 1);
+                    wv.Location = new System.Drawing.Point(-3000, -3000);
+                    wv.Anchor = AnchorStyles.None;
+
+                    Form host = parentForm;
+                    if (host == null || host.IsDisposed || !host.IsHandleCreated)
+                    {
+                        var mf = MainForm.Current;
+                        if (mf != null && !mf.IsDisposed && mf.IsHandleCreated) host = mf;
                     }
-                    catch { }
                     if (host == null) host = parentForm;
 
                     host.Controls.Add(wv);
                     wv.SendToBack();
-                    try { var _ = wv.Handle; } catch { }   // хэндл до инициализации
 
-                    _lastInitStage = $"host={host?.GetType().Name}, handle={host?.IsHandleCreated}";
-                    _lastInitStage += " | GetAsync";
-                    var env = await WebViewShared.GetAsync();
-                    _lastInitStage = _lastInitStage.Replace("GetAsync", "GetAsync=OK, Ensure");
-                    await wv.EnsureCoreWebView2Async(env);
-                    _lastInitStage = _lastInitStage.Replace("Ensure", "Ensure=OK");
+                    _lastInitStage = $"attempt={attempt}, host={host?.GetType().Name}, CreationProps, Ensure()";
+                    await wv.EnsureCoreWebView2Async();   // env берётся из CreationProperties
+                    _lastInitStage += "=OK";
 
                     _webView = wv;   // успех
                     lastEx = null;
@@ -169,7 +179,7 @@ namespace PISMO
                     lastEx = ex;
                     System.Diagnostics.Debug.WriteLine($"[WebView2 init retry {attempt}] стадия={_lastInitStage}: {ex.Message}");
                     try { wv.Parent?.Controls.Remove(wv); wv.Dispose(); } catch { }
-                    try { await Task.Delay(400 * (attempt + 1)); } catch { }
+                    try { await Task.Delay(300 + 300 * attempt); } catch { }
                 }
             }
             if (_webView == null) throw lastEx ?? new Exception("WebView2 init failed");
