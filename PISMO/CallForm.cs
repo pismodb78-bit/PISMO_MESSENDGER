@@ -392,6 +392,26 @@ namespace PISMO
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[LIVEKIT SETUP ERROR] {ex.Message}");
+                // Тихий лог в %LOCALAPPDATA%\PISMO\call-error.log — чтобы при
+                // повторе 0x8007139F видеть ТИП/HRESULT/стек. Ничего не показывает,
+                // окна не плодит; только строка статуса + запись в файл.
+                string logPath = "";
+                try
+                {
+                    logPath = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "PISMO", "call-error.log");
+                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(logPath));
+                    int hr = System.Runtime.InteropServices.Marshal.GetHRForException(ex);
+                    System.IO.File.AppendAllText(logPath,
+                        $"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====\r\n" +
+                        $"Type   : {ex.GetType().FullName}\r\n" +
+                        $"HRESULT: 0x{hr:X8}\r\n" +
+                        $"Message: {ex.Message}\r\n" +
+                        $"Inner  : {ex.InnerException?.GetType().FullName} / {ex.InnerException?.Message}\r\n" +
+                        $"Stack  :\r\n{ex}\r\n\r\n");
+                }
+                catch { }
                 UiInvoke(() => _lblStatus.Text = $"Ошибка звонка: {ex.Message}");
             }
 

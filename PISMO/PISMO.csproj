@@ -13,9 +13,9 @@
     <RootNamespace>PISMO</RootNamespace>
     <ApplicationIcon>pismo.ico</ApplicationIcon>
     <StartupObject>PISMO.Program</StartupObject>
-    <Version>2.4.8</Version>
-    <AssemblyVersion>2.4.8.0</AssemblyVersion>
-    <FileVersion>2.4.8.0</FileVersion>
+    <Version>2.4.9</Version>
+    <AssemblyVersion>2.4.9.0</AssemblyVersion>
+    <FileVersion>2.4.9.0</FileVersion>
     <Company>PISMO</Company>
     <Product>PISMO Messenger</Product>
   </PropertyGroup>
@@ -35,7 +35,7 @@
     <!-- WebView2 подключается ТОЛЬКО пакетом. НИКОГДА не добавлять прямую
          <Reference> / <COMReference> на Microsoft.Web.WebView2.Core.winmd —
          .NET это запрещает (ошибка NETSDK1130), и ломается вся сборка. -->
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
     <PackageReference Include="MySql.Data" Version="9.7.0" />
 
     <PackageReference Include="NAudio" Version="2.3.0" />
