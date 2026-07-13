@@ -29,23 +29,7 @@ namespace PISMO
     /// </summary>
     public class WebRtcTransport : IDisposable
     {
-        // ── Защита от захвата экрана (SetWindowDisplayAffinity) ──────────────
-        // WDA_MONITOR/WDA_EXCLUDEFROMCAPTURE на окне-хосте ЛОМАЕТ инициализацию
-        // WebView2 ошибкой 0x8007139F (MicrosoftEdge/WebView2Feedback #841).
-        // Что-то на ПК (инструмент захвата/анти-скриншот, режим демонстрации)
-        // могло выставить этот флаг. Перед стартом WebView2 принудительно снимаем
-        // защиту (WDA_NONE) с окна-хоста и контрола.
-        private const uint WDA_NONE = 0x0;
-        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
-
-        private static void ClearCaptureProtection(IntPtr hWnd)
-        {
-            try { if (hWnd != IntPtr.Zero) SetWindowDisplayAffinity(hWnd, WDA_NONE); } catch { }
-        }
-
         private WebView2 _webView;
-        internal string _lastInitStage = "";   // диагностика 0x8007139F: на какой стадии упало
         private bool _disposed = false;
 
         public event Action Disconnected;
@@ -102,6 +86,10 @@ namespace PISMO
         /// <summary>Процесс рендера WebView упал (чёрный экран/нет звука) — звонок мёртв.</summary>
         public event Action<string> RendererCrashed;
 
+        /// <summary>GPU-процесс Chromium упал и восстановлен — звонок продолжается,
+        /// но идущая демонстрация экрана прервалась (её надо откатить в UI).</summary>
+        public event Action ScreenEngineRecovered;
+
         // --- Превью перед включением ---
         public event Action<byte[]> ScreenPreviewFrameReceived;
         public event Action ScreenPreviewReady;
@@ -129,90 +117,57 @@ namespace PISMO
             _pendingUrl = livekitUrl;
             _pendingToken = token;
 
-            // ЕДИНОЕ окружение WebView2 на весь процесс (WebViewShared). КРИТИЧНО:
-            // WebView2 не даёт создать в одном процессе второе окружение с ДРУГИМИ
-            // опциями — падает 0x8007139F. Раньше плееры GIF/видео поднимали
-            // дефолтное окружение, а транспорт — своё с флагами → конфликт, и звонок
-            // не стартовал, если до него смотрели медиа. Теперь и плееры, и транспорт
-            // берут ОДНО общее окружение отсюда.
-            // ВНЕ профиля пользователя (C:\PISMO_wv) — чтобы исключить повреждённые
-            // ACL/папки учётки scent как причину 0x8007139F. См. WebViewShared.RootDir.
-            string rtcBase = System.IO.Path.Combine(WebViewShared.RootDir, "webview-rtc");
-
-            // ПРАВИЛЬНЫЙ способ (по гайдам WebView2): окружение задаём через
-            // CreationProperties ДО инициализации контрола, а не отдельным
-            // CreateAsync + EnsureCoreWebView2Async(env). Иначе контрол успевает
-            // начать НЕЯВНУЮ инициализацию с другими параметрами → 0x8007139F
-            // (ERROR_INVALID_STATE) — это подтверждённый баг WebView2. УНИКАЛЬНАЯ
-            // папка данных на каждый запуск (+ пауза) убирает конфликт «та же папка,
-            // другие параметры» с залипшим процессом прошлого звонка.
-            Exception lastEx = null;
-            for (int attempt = 0; attempt < 3 && _webView == null; attempt++)
+            // WebView2 — транспортный движок, держим невидимым и за пределами
+            // экрана. Visible=true обязателен: requestAnimationFrame останавливается
+            // для невидимых элементов, что заморозило бы извлечение кадров видео.
+            _webView = new WebView2
             {
-                var wv = new WebView2();
-                try
-                {
-                    string args = attempt >= 2
-                        ? "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required --disable-gpu"
-                        : DeviceSettings.WebViewArgs(
-                            "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required");
-                    string udf = rtcBase + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                Visible = true,
+                Size = new System.Drawing.Size(1, 1),
+                MinimumSize = new System.Drawing.Size(1, 1),
+                Location = new System.Drawing.Point(-3000, -3000),
+                Anchor = AnchorStyles.None
+            };
+            parentForm.Controls.Add(_webView);
+            _webView.SendToBack();
 
-                    // КЛЮЧЕВОЕ: CreationProperties ставим СРАЗУ после new, ДО того как
-                    // контрол куда-либо добавлен или показан.
-                    wv.CreationProperties = new CoreWebView2CreationProperties
-                    {
-                        UserDataFolder = udf,
-                        AdditionalBrowserArguments = args
-                    };
-                    wv.Visible = true;
-                    wv.Size = new System.Drawing.Size(1, 1);
-                    wv.MinimumSize = new System.Drawing.Size(1, 1);
-                    wv.Location = new System.Drawing.Point(-3000, -3000);
-                    wv.Anchor = AnchorStyles.None;
-
-                    Form host = parentForm;
-                    if (host == null || host.IsDisposed || !host.IsHandleCreated)
-                    {
-                        var mf = MainForm.Current;
-                        if (mf != null && !mf.IsDisposed && mf.IsHandleCreated) host = mf;
-                    }
-                    if (host == null) host = parentForm;
-
-                    host.Controls.Add(wv);
-                    wv.SendToBack();
-
-                    // КЛЮЧЕВОЕ (WebView2Feedback #841): снимаем защиту от захвата
-                    // экрана с окна-хоста и контрола — WDA_MONITOR валит WebView2
-                    // ошибкой 0x8007139F. Флаг мог остаться после демонстрации экрана.
-                    try { ClearCaptureProtection(host.Handle); } catch { }
-                    try { ClearCaptureProtection(wv.Handle); } catch { }
-                    try { if (MainForm.Current != null && MainForm.Current.IsHandleCreated) ClearCaptureProtection(MainForm.Current.Handle); } catch { }
-
-                    _lastInitStage = $"attempt={attempt}, host={host?.GetType().Name}, WDA_NONE, CreationProps, Ensure()";
-                    await wv.EnsureCoreWebView2Async();   // env берётся из CreationProperties
-                    _lastInitStage += "=OK";
-
-                    _webView = wv;   // успех
-                    lastEx = null;
-                }
-                catch (Exception ex)
-                {
-                    lastEx = ex;
-                    System.Diagnostics.Debug.WriteLine($"[WebView2 init retry {attempt}] стадия={_lastInitStage}: {ex.Message}");
-                    try { wv.Parent?.Controls.Remove(wv); wv.Dispose(); } catch { }
-                    try { await Task.Delay(300 + 300 * attempt); } catch { }
-                }
-            }
-            if (_webView == null) throw lastEx ?? new Exception("WebView2 init failed");
+            // ЕДИНОЕ окружение WebView2 на весь процесс (WebViewShared): и плееры
+            // GIF/видео, и транспорт берут ОДНО окружение с нужными звонку флагами
+            // (--allow-running-insecure-content для ws:// LiveKit + GPU/feature из
+            // настроек). WebView2 не даёт создать в одном процессе второе окружение
+            // с другими опциями — общий env убирает этот конфликт.
+            var env = await WebViewShared.GetAsync();
+            await _webView.EnsureCoreWebView2Async(env);
 
             _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
 
-            // Краш процесса рендера (GPU/драйвер): без обработчика звонок молча
-            // превращается в чёрный экран без звука, из которого «не выйти».
+            // Сбой процесса WebView. КРИТИЧНО различать вид: раньше ЛЮБОЙ сбой
+            // (в т.ч. падение GPU-процесса) закрывал весь звонок — «всё умирало».
+            // Но GPU-процесс Chromium восстанавливает сам, и звонок (аудио, комната
+            // LiveKit, рендер-процесс) продолжает жить. GPU часто валится именно при
+            // захвате экрана на нестандартных дисплеях (VR/виртуальные рабочие столы
+            // Virtual Desktop): демонстрация обрывается, но звонок должен остаться.
             _webView.CoreWebView2.ProcessFailed += (s, e) =>
             {
-                try { RendererCrashed?.Invoke(e.ProcessFailedKind.ToString()); } catch { }
+                var kind = e.ProcessFailedKind;
+                switch (kind)
+                {
+                    // GPU восстановится сам — звонок жив, откатываем только демку.
+                    case CoreWebView2ProcessFailedKind.GpuProcessExited:
+                        try { ScreenEngineRecovered?.Invoke(); } catch { }
+                        return;
+                    // Вспомогательные/подкадровые процессы — не фатально для звонка.
+                    case CoreWebView2ProcessFailedKind.FrameRenderProcessExited:
+                    case CoreWebView2ProcessFailedKind.UtilitySubprocessExited:
+                    case CoreWebView2ProcessFailedKind.SandboxHelperProcessExited:
+                    case CoreWebView2ProcessFailedKind.RenderProcessUnresponsive:
+                        System.Diagnostics.Debug.WriteLine($"[WebView2] несмертельный сбой процесса: {kind}");
+                        return;
+                    // Умер сам рендер-процесс страницы или браузер — звонок мёртв.
+                    default:
+                        try { RendererCrashed?.Invoke(kind.ToString()); } catch { }
+                        return;
+                }
             };
 
             // WebView2 не выдаёт доступ к камере/микрофону/экрану автоматически.

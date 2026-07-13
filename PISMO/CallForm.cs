@@ -309,6 +309,14 @@ namespace PISMO
                 catch { }
                 try { Close(); } catch { }
             });
+            // GPU-процесс упал и восстановился (частый случай при захвате VR/
+            // виртуальных рабочих столов): звонок ЖИВ, обрывается только демка —
+            // откатываем её кнопку/бейдж, звонок не трогаем.
+            _transport.ScreenEngineRecovered += () => UiInvoke(() =>
+            {
+                if (_screenSharing || _screenPreviewPending)
+                    OnLocalScreenError("демонстрация прервалась (перезапуск видеодвижка). Звонок продолжается — включите демонстрацию заново");
+            });
             _transport.StreamWatchersChanged += n => UiInvoke(() => OnStreamWatchers(n));
             _transport.ScreenSourceSwitched += (ok, err) => UiInvoke(() => OnScreenSourceSwitched(ok, err));
             _transport.ActiveSpeakers += json => UiInvoke(() => OnActiveSpeakers(json));
@@ -384,32 +392,7 @@ namespace PISMO
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[LIVEKIT SETUP ERROR] {ex.Message}");
-                // Полный дамп ошибки в файл — чтобы видеть ТИП, HRESULT и стек,
-                // а не только код 0x8007139F. Путь: %LOCALAPPDATA%\PISMO\call-error.log
-                string logPath = "";
-                try
-                {
-                    logPath = System.IO.Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "PISMO", "call-error.log");
-                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(logPath));
-                    int hr = System.Runtime.InteropServices.Marshal.GetHRForException(ex);
-                    string dump =
-                        $"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====\r\n" +
-                        $"Type   : {ex.GetType().FullName}\r\n" +
-                        $"HRESULT: 0x{hr:X8}\r\n" +
-                        $"URL    : {LiveKitSettings.Url}\r\n" +
-                        $"Message: {ex.Message}\r\n" +
-                        $"Stage  : {(_transport != null ? _transport._lastInitStage : "n/a")}\r\n" +
-                        $"Inner  : {ex.InnerException?.GetType().FullName} / {ex.InnerException?.Message}\r\n" +
-                        $"Stack  :\r\n{ex}\r\n\r\n";
-                    System.IO.File.AppendAllText(logPath, dump);
-                }
-                catch { }
-                string shown = string.IsNullOrEmpty(logPath)
-                    ? $"Ошибка: {ex.Message}"
-                    : $"Ошибка звонка: {ex.Message}\nПодробности записаны в: {logPath}";
-                UiInvoke(() => _lblStatus.Text = shown);
+                UiInvoke(() => _lblStatus.Text = $"Ошибка звонка: {ex.Message}");
             }
 
             WebSocketSignalingClient.Instance.OnMessageReceived += OnWebSocketMessage;
