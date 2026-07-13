@@ -32,6 +32,9 @@
     <PackageReference Include="AForge" Version="2.2.5" />
     <PackageReference Include="AForge.Video" Version="2.2.5" />
     <PackageReference Include="AForge.Video.DirectShow" Version="2.2.5" />
+    <!-- WebView2 подключается ТОЛЬКО пакетом. НИКОГДА не добавлять прямую
+         <Reference> / <COMReference> на Microsoft.Web.WebView2.Core.winmd —
+         .NET это запрещает (ошибка NETSDK1130), и ломается вся сборка. -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
     <PackageReference Include="MySql.Data" Version="9.7.0" />
 
