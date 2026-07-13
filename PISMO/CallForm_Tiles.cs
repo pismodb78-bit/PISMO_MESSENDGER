@@ -26,9 +26,13 @@ namespace PISMO
             public PictureBox Pb;
             public Label Lbl;
             public Button WatchBtn;    // «▶ Смотреть стрим» (пока стрим не смотрим)
+            public Button MenuBtn;     // «⋮» — полный экран / мини-окно / прекратить
             public bool Speaking;
             public bool HasVideo;
         }
+
+        // Открыть театр сразу в полный экран после подключения к стриму.
+        private bool _wantTheaterFullscreen;
 
         // ── «Смотреть стрим» (2.0): стрим не открывается сам — к нему подключаются ──
         private readonly Dictionary<string, string> _publishedStreams = new(); // pid -> имя стримера
@@ -311,14 +315,23 @@ namespace PISMO
                     Text = "▶  Смотреть стрим",
                     Size = new Size(180, 42),
                     FlatStyle = FlatStyle.Flat,
-                    BackColor = Color.FromArgb(56, 58, 64),
+                    BackColor = Color.FromArgb(88, 101, 242),   // фирменный blurple, как в Discord
                     ForeColor = Color.White,
                     Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
                     Cursor = Cursors.Hand,
                     TabStop = false
                 };
                 btn.FlatAppearance.BorderSize = 0;
-                btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(71, 74, 82);
+                btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(108, 120, 248);
+                btn.Resize += (s, e) =>
+                {
+                    try
+                    {
+                        btn.Region = System.Drawing.Region.FromHrgn(
+                            NativeMethods.CreateRoundRectRgn(0, 0, btn.Width, btn.Height, 12, 12));
+                    }
+                    catch { }
+                };
                 string capPid = pid;
                 btn.Click += (s, e) => WatchStream(capPid, "theater");
                 btn.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowScreenTileMenu(capPid); };
@@ -328,6 +341,36 @@ namespace PISMO
                 var capTile = tile;
                 tile.Panel.Resize += (s, e) => CenterWatchBtn(capTile);
                 CenterWatchBtn(tile);
+            }
+            if (tile.MenuBtn == null)
+            {
+                // «⋮» в правом верхнем углу плитки: полный экран / мини-окно / прекратить.
+                var mb = new Button
+                {
+                    Text = "⋮",
+                    Size = new Size(28, 28),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(120, 32, 34, 38),
+                    ForeColor = Color.White,
+                    Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
+                    Cursor = Cursors.Hand,
+                    TabStop = false
+                };
+                mb.FlatAppearance.BorderSize = 0;
+                mb.FlatAppearance.MouseOverBackColor = Color.FromArgb(64, 68, 75);
+                string capPid2 = pid;
+                mb.Click += (s, e) => ShowWatchOptionsMenu(capPid2, mb);
+                tile.MenuBtn = mb;
+                tile.Panel.Controls.Add(mb);
+                mb.BringToFront();
+                var capTile2 = tile;
+                void PlaceMenuBtn(object s, EventArgs e)
+                {
+                    try { capTile2.MenuBtn.Location = new Point(capTile2.Panel.Width - capTile2.MenuBtn.Width - 6, 6); }
+                    catch { }
+                }
+                tile.Panel.Resize += PlaceMenuBtn;
+                PlaceMenuBtn(null, null);
             }
             if (!tile.HasVideo)
             {
@@ -730,6 +773,59 @@ namespace PISMO
             return palette[h % palette.Length];
         }
 
+        /// <summary>Меню «⋮» на плитке стрима: полный экран / мини-окно / прекратить.</summary>
+        private void ShowWatchOptionsMenu(string pid, Control anchor)
+        {
+            try
+            {
+                bool watching = _tiles.TryGetValue(TileKey(pid, "screen"), out var t) && t.HasVideo;
+                var menu = new ContextMenuStrip
+                {
+                    BackColor = Color.FromArgb(24, 25, 28),
+                    ForeColor = Color.FromArgb(220, 221, 222)
+                };
+                if (!watching)
+                    menu.Items.Add("▶  Смотреть стрим", null, (s, e) => WatchStream(pid, "theater"));
+                menu.Items.Add("⛶  Полный экран", null, (s, e) => WatchFullscreen(pid));
+                menu.Items.Add("🗔  Мини-окно (отдельное окно)", null, (s, e) =>
+                {
+                    if (_tiles.TryGetValue(TileKey(pid, "screen"), out var t2) && t2.HasVideo)
+                        OpenStreamPopout(pid);
+                    else
+                        WatchStream(pid, "popout");
+                });
+                if (watching)
+                {
+                    menu.Items.Add(new ToolStripSeparator());
+                    var stop = new ToolStripMenuItem("⏹  Прекратить просмотр")
+                    { ForeColor = Color.FromArgb(240, 71, 71) };
+                    stop.Click += (s, e) => StopWatching(pid);
+                    menu.Items.Add(stop);
+                }
+                if (anchor != null) menu.Show(anchor, new Point(0, anchor.Height));
+                else menu.Show(Cursor.Position);
+            }
+            catch { }
+        }
+
+        /// <summary>Открыть стрим сразу на весь экран (или развернуть текущий театр).</summary>
+        private void WatchFullscreen(string pid)
+        {
+            string key = TileKey(pid, "screen");
+            if (_theaterKey == key)
+            {
+                if (!_theaterFullscreen) ToggleTheaterFullscreen();
+                return;
+            }
+            _wantTheaterFullscreen = true;
+            if (_tiles.TryGetValue(key, out var t) && t.HasVideo)
+            {
+                if (_theaterKey != null) ExitTheaterMode();
+                EnterTheaterMode(key);
+            }
+            else WatchStream(pid, "theater");
+        }
+
         // ── Контекстное меню плитки стрима (ПКМ) ────────────────────────
         private void ShowScreenTileMenu(string pid)
         {
@@ -791,6 +887,12 @@ namespace PISMO
             UpdateStripToggleText();
             LayoutTheaterChrome();
             try { _transport?.EnterTheater(pid, "screen", TheaterBounds()); } catch { }
+            // Запрошен «полный экран» из меню «⋮» — разворачиваем сразу.
+            if (_wantTheaterFullscreen)
+            {
+                _wantTheaterFullscreen = false;
+                if (!_theaterFullscreen) ToggleTheaterFullscreen();
+            }
         }
 
         /// <summary>Полоса с шевроном + подписка на ресайз формы (создаётся один раз).</summary>
