@@ -144,12 +144,22 @@ namespace PISMO
                     wv.SendToBack();
                     try { var _ = wv.Handle; } catch { }   // хэндл до инициализации
 
-                    string args = attempt == 3
-                        ? "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required"
-                        : DeviceSettings.WebViewArgs(
-                            "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required");
+                    // Матрица попыток (важно: последняя = свежая папка + минимальные
+                    // флаги — именно эта комбинация лечит 0x8007139F, когда драйвер
+                    // отвергает GPU-флаги, а базовая папка уже конфликтная):
+                    //   0: базовая папка + полные флаги (GPU и пр.)
+                    //   1: базовая папка + полные флаги (после паузы)
+                    //   2: СВЕЖАЯ папка + полные флаги
+                    //   3: СВЕЖАЯ папка + МИНИМАЛЬНЫЕ флаги (без GPU/feature)
+                    const string minArgs =
+                        "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required";
+                    string args = attempt >= 3
+                        ? minArgs
+                        : DeviceSettings.WebViewArgs(minArgs);
                     var opts = new CoreWebView2EnvironmentOptions(args);
-                    string udf = attempt == 2 ? rtcUdf + "-" + Guid.NewGuid().ToString("N").Substring(0, 8) : rtcUdf;
+                    string udf = attempt >= 2
+                        ? rtcUdf + "-" + Guid.NewGuid().ToString("N").Substring(0, 8)
+                        : rtcUdf;
 
                     var env = await CoreWebView2Environment.CreateAsync(null, udf, opts);
                     await wv.EnsureCoreWebView2Async(env);
