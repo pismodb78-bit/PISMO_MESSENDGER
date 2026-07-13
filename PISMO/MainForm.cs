@@ -2256,6 +2256,7 @@ namespace PISMO
                     bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
 
                     pnlMessages.Controls.Add(bubble);
+                    AddSelectMark(bubble, msgId);
                     yOffset += bubble.Height + 8;
                 }
 
@@ -2530,6 +2531,7 @@ namespace PISMO
                     bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
 
                     pnlMessages.Controls.Add(bubble);
+                    AddSelectMark(bubble, msgId);
                     yOffset += bubble.Height + 8;
                 }
 
@@ -3263,8 +3265,8 @@ namespace PISMO
 
             string text = txtMessage.Text.Trim();
 
-            // Режим пересылки — пересылаем введённый текст (или исходный текст сообщения)
-            if (_forwardMsgId >= 0)
+            // Режим пересылки — одиночная или пачка из множественного выделения
+            if (_forwardMsgId >= 0 || _forwardBatch.Count > 0)
             {
                 if (TrySendForward()) return;
             }

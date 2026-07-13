@@ -1049,18 +1049,18 @@ namespace PISMO
                     bool mine = MentionsMe(text);
                     bool isMe = senderId == _me;
 
-                    // Формат сообщений — как в личном чате: скруглённый «пузырёк».
-                    // Своё — фиолетовое, чужое — тёмно-серое, упоминание меня — зелёный оттенок.
+                    // Формат — как в Discord: аватар слева, цветной ник, серый бабл
+                    // (одинаковый для всех, как входящие в ЛС); упоминание — зеленоватый.
                     const int PAD = 12;
-                    Color bubbleBg = isMe ? Color.FromArgb(88, 101, 242)
-                                   : mine ? Color.FromArgb(47, 68, 55)
-                                          : Color.FromArgb(48, 51, 58);
+                    const int AVA = 36;                 // диаметр аватарки
+                    const int LEFT = PAD + AVA + 10;    // отступ контента правее аватара
+                    Color bubbleBg = mine ? Color.FromArgb(47, 68, 55) : Color.FromArgb(48, 51, 58);
 
                     var holder = new Panel
                     {
                         AutoSize = true,
                         Margin = new Padding(0, 2, 0, 6),
-                        Padding = new Padding(PAD),
+                        Padding = new Padding(LEFT, PAD, PAD, PAD),
                         BackColor = Color.FromArgb(54, 57, 63)   // цвет фона чата — углы «прозрачны»
                     };
                     holder.Paint += (s, e) =>
@@ -1068,7 +1068,21 @@ namespace PISMO
                         e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                         using var br = new SolidBrush(bubbleBg);
                         e.Graphics.FillRoundedRectangle(br, 0, 0, holder.Width - 1, holder.Height - 1, 10);
+                        // Аватар отправителя (кружок) в левом верхнем углу бабла.
+                        if (!AvatarStore.DrawAvatar(e.Graphics, senderId, PAD, PAD, AVA - 1))
+                        {
+                            int h = 0; foreach (char ch in nm) h = (h * 31 + ch) & 0x7fffffff;
+                            Color[] pal = { Color.FromArgb(88,101,242), Color.FromArgb(235,69,158),
+                                Color.FromArgb(59,165,93), Color.FromArgb(250,166,26), Color.FromArgb(0,176,244) };
+                            using var ab = new SolidBrush(pal[h % pal.Length]);
+                            e.Graphics.FillEllipse(ab, PAD, PAD, AVA - 1, AVA - 1);
+                            string letter = nm.Length > 0 ? nm.Substring(0, 1).ToUpper() : "?";
+                            using var f = new Font("Segoe UI Black", 12f, FontStyle.Bold);
+                            using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                            e.Graphics.DrawString(letter, f, Brushes.White, new RectangleF(PAD, PAD, AVA, AVA), sf);
+                        }
                     };
+                    AvatarStore.EnsureLoaded(senderId);
                     int y = PAD;
 
                     // Цитата отвечаемого сообщения (если это ответ).
@@ -1084,7 +1098,7 @@ namespace PISMO
                         {
                             AutoSize = false,
                             Size = new Size(msgWidth - 14, 16),
-                            Location = new Point(PAD, y),
+                            Location = new Point(LEFT, y),
                             ForeColor = Color.FromArgb(0, 176, 244),
                             Font = new Font("Segoe UI", 8f),
                             Cursor = Cursors.Hand,
@@ -1096,16 +1110,27 @@ namespace PISMO
                         y += 18;
                     }
 
+                    // Ник цветной (стабильный цвет по имени, как в Discord), фон прозрачный —
+                    // без тёмного прямоугольника вокруг имени.
+                    Color nmColor;
+                    {
+                        int nh = 0; foreach (char ch in nm) nh = (nh * 31 + ch) & 0x7fffffff;
+                        Color[] npal = { Color.FromArgb(129,140,248), Color.FromArgb(240,113,170),
+                            Color.FromArgb(87,197,126), Color.FromArgb(250,180,80), Color.FromArgb(84,196,244),
+                            Color.FromArgb(196,151,255) };
+                        nmColor = npal[nh % npal.Length];
+                    }
                     var head = new Label
                     {
                         AutoSize = true,
-                        ForeColor = isMe ? Color.FromArgb(215, 220, 255) : Color.FromArgb(170, 178, 235),
-                        Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                        Location = new Point(PAD, y),
+                        BackColor = Color.Transparent,
+                        ForeColor = nmColor,
+                        Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                        Location = new Point(LEFT, y),
                         Text = $"{nm} · {time}"
                     };
                     holder.Controls.Add(head);
-                    y += 18;
+                    y += 22;
 
                     // Медиа канала (картинка / голосовое / кружок / видео / файл) — как в обычном чате.
                     if (_serverMedia.TryGetValue(id, out var sm))
@@ -1119,7 +1144,7 @@ namespace PISMO
                                 int mw = 420, mh = 360;
                                 double rr = Math.Min(2.0, Math.Min((double)mw / img.Width, (double)mh / img.Height));
                                 int dw = Math.Max(1, (int)(img.Width * rr)), dh = Math.Max(1, (int)(img.Height * rr));
-                                var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(PAD, y), Cursor = Cursors.Hand, Image = img };
+                                var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(LEFT, y), Cursor = Cursors.Hand, Image = img };
                                 var cap = sm.img;
                                 pb.Click += (s, e) => MainForm.ShowImageFullscreen(cap);
                                 pb.Disposed += (s, e) => { try { img.Dispose(); ms.Dispose(); } catch { } };
@@ -1129,7 +1154,7 @@ namespace PISMO
                         }
                         if (sm.audio is { Length: > 0 })
                         {
-                            var bp = new Button { Text = "▶  Голосовое", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Size = new Size(170, 34), Location = new Point(PAD, y), Cursor = Cursors.Hand };
+                            var bp = new Button { Text = "▶  Голосовое", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Size = new Size(170, 34), Location = new Point(LEFT, y), Cursor = Cursors.Hand };
                             bp.FlatAppearance.BorderSize = 0;
                             var ca = sm.audio;
                             bp.Click += (s, e) => MainForm.PlayVoiceClip(ca, bp);
@@ -1137,7 +1162,7 @@ namespace PISMO
                         }
                         if (sm.video is { Length: > 0 })
                         {
-                            try { var pl = new VideoCirclePlayer(sm.video, 180) { Location = new Point(PAD, y) }; holder.Controls.Add(pl); y += 186; }
+                            try { var pl = new VideoCirclePlayer(sm.video, 180) { Location = new Point(LEFT, y) }; holder.Controls.Add(pl); y += 186; }
                             catch { }
                         }
                         if (sm.file is { Length: > 0 } && !string.IsNullOrWhiteSpace(sm.fname))
@@ -1148,7 +1173,7 @@ namespace PISMO
                                 try
                                 {
                                     int bw = Math.Min(msgWidth - 10, 280), bh = (int)(bw * 1.2);
-                                    var vp = new InlineVideoPlayer(sm.file, sm.fname, bw, bh) { Location = new Point(PAD, y) };
+                                    var vp = new InlineVideoPlayer(sm.file, sm.fname, bw, bh) { Location = new Point(LEFT, y) };
                                     holder.Controls.Add(vp); y += bh + 6;
                                 }
                                 catch { }
@@ -1156,7 +1181,7 @@ namespace PISMO
                             else
                             {
                                 var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false);
-                                card.Location = new Point(PAD, y);
+                                card.Location = new Point(LEFT, y);
                                 holder.Controls.Add(card); y += card.Height + 6;
                             }
                         }
@@ -1165,20 +1190,86 @@ namespace PISMO
                     // GIF-сообщение: "gif:<url>" — анимированная картинка.
                     if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
                     {
-                        var ph = new Panel { Location = new Point(PAD, y), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
+                        var ph = new Panel { Location = new Point(LEFT, y), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
                         holder.Controls.Add(ph);
                         _ = LoadServerGifAsync(ph, text.Substring(4));
+                        y += 166;
                     }
                     else if (!string.IsNullOrEmpty(text))
                     {
                         var body = MainForm.MakeSelectableText(text, bubbleBg,
                             Color.FromArgb(235, 236, 240), new Font("Segoe UI", 10.5f),
                             msgWidth - 10);
-                        body.Location = new Point(PAD, y);
+                        body.Location = new Point(LEFT, y);
                         holder.Controls.Add(body);
+                        y += body.Height + 6;
                     }
 
-                    AttachServerMsgMenu(holder, head, id, senderId, text);
+                    // ── Реакции (как в ЛС): чипы «эмодзи N», клик — поставить/снять,
+                    // «＋» — добавить новую через пикер. ─────────────────────────
+                    try
+                    {
+                        var reacts = ReactionsRepository.ForMessage(id, ReactionsRepository.Scope.Server, _me);
+                        if (reacts.Count > 0)
+                        {
+                            int rx = LEFT;
+                            foreach (var re in reacts)
+                            {
+                                var chipR = new Label
+                                {
+                                    Text = $"{re.Emoji} {re.Count}",
+                                    Font = new Font("Segoe UI Emoji", 9.5f),
+                                    AutoSize = true,
+                                    ForeColor = Color.White,
+                                    BackColor = re.Mine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(64, 68, 75),
+                                    Padding = new Padding(6, 3, 6, 3),
+                                    Location = new Point(rx, y),
+                                    Cursor = Cursors.Hand
+                                };
+                                string emoC = re.Emoji; int midC = id;
+                                chipR.Click += (s, e) =>
+                                {
+                                    System.Threading.Tasks.Task.Run(() =>
+                                    {
+                                        try { ReactionsRepository.Toggle(midC, ReactionsRepository.Scope.Server, _me, emoC); } catch { }
+                                        if (IsDisposed || !IsHandleCreated) return;
+                                        try { BeginInvoke(new Action(LoadMessages)); } catch { }
+                                    });
+                                };
+                                holder.Controls.Add(chipR);
+                                chipR.BringToFront();
+                                rx += chipR.PreferredWidth + 16;
+                            }
+                            var addR = new Label
+                            {
+                                Text = "＋",
+                                Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+                                AutoSize = true,
+                                ForeColor = Color.FromArgb(200, 202, 208),
+                                BackColor = Color.FromArgb(64, 68, 75),
+                                Padding = new Padding(7, 3, 7, 3),
+                                Location = new Point(rx, y),
+                                Cursor = Cursors.Hand
+                            };
+                            int midA = id;
+                            addR.Click += (s, e) =>
+                            {
+                                string emo = EmojiPickerForm.Pick(this, Cursor.Position);
+                                if (string.IsNullOrWhiteSpace(emo)) return;
+                                System.Threading.Tasks.Task.Run(() =>
+                                {
+                                    try { ReactionsRepository.Toggle(midA, ReactionsRepository.Scope.Server, _me, emo); } catch { }
+                                    if (IsDisposed || !IsHandleCreated) return;
+                                    try { BeginInvoke(new Action(LoadMessages)); } catch { }
+                                });
+                            };
+                            holder.Controls.Add(addR);
+                            addR.BringToFront();
+                        }
+                    }
+                    catch { }
+
+                    AttachServerMsgMenu(holder, head, id, senderId, text, nm);
                     _msgControls[id] = holder;
                     _pnlMessages.Controls.Add(holder);
                 }
@@ -1207,14 +1298,39 @@ namespace PISMO
 
         /// <summary>Контекстное меню сообщения канала: ответить/переслать/копировать/
         /// редактировать/удалить.</summary>
-        private void AttachServerMsgMenu(Panel holder, Control header, int id, int senderId, string text)
+        private void AttachServerMsgMenu(Panel holder, Control header, int id, int senderId, string text, string senderName = "")
         {
             bool isMine = senderId == _me;
             bool isGif = text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase);
 
             var menu = new ContextMenuStrip { BackColor = Color.FromArgb(24, 25, 28), ForeColor = Color.FromArgb(220, 221, 222) };
 
+            // ── Реакция (как в ЛС) ───────────────────────────────────────
+            menu.Items.Add("😀  Реакция", null, (s, e) =>
+            {
+                string emo = EmojiPickerForm.Pick(this, Cursor.Position);
+                if (string.IsNullOrWhiteSpace(emo)) return;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try { ReactionsRepository.Toggle(id, ReactionsRepository.Scope.Server, _me, emo); } catch { }
+                    if (IsDisposed || !IsHandleCreated) return;
+                    try { BeginInvoke(new Action(LoadMessages)); } catch { }
+                });
+            });
+            menu.Items.Add(new ToolStripSeparator());
+
             menu.Items.Add("↩  Ответить", null, (s, e) => BeginServerReply(id, text));
+
+            // Переслать в личку/группу: кладём текст в буфер главного окна —
+            // дальше выбираешь диалог в ЛС и жмёшь «Отправить».
+            if (!isGif)
+                menu.Items.Add("↪  Переслать в ЛС/группу…", null, (s, e) =>
+                {
+                    var mf = MainForm.Current;
+                    if (mf == null || mf.IsDisposed) { MessageBox.Show("Главное окно закрыто."); return; }
+                    mf.BeginForwardExternal(senderName, text);
+                    try { mf.Activate(); mf.BringToFront(); } catch { }
+                });
 
             // Переслать в другой текстовый канал этого сервера.
             var fwd = new ToolStripMenuItem("↪  Переслать в…");
@@ -1243,7 +1359,8 @@ namespace PISMO
                 menu.Items.Add("✏  Редактировать", null, (s, e) => EditServerMessage(id, text));
             }
 
-            if (isMine || _canManage)
+            // Удалить — ТОЛЬКО своё (чужие не удаляем даже с правами управления).
+            if (isMine)
             {
                 var del = new ToolStripMenuItem("🗑  Удалить") { ForeColor = Color.FromArgb(240, 71, 71) };
                 del.Click += (s, e) => DeleteServerMessage(id);
@@ -1334,8 +1451,20 @@ namespace PISMO
 
         private void SendChannelMessage()
         {
+            if (_channelId <= 0) return;
+
+            // Пересылка из ЛС/группы В КАНАЛ СЕРВЕРА: если в главном окне начата
+            // пересылка — «Отправить» здесь шлёт пересылаемые сообщения в канал.
+            var mf = MainForm.Current;
+            if (mf != null && !mf.IsDisposed && mf.HasPendingForward)
+            {
+                foreach (var t in mf.ConsumePendingForwards())
+                    SendChannelRaw(t);
+                return;
+            }
+
             string text = _txtInput.Text.Trim();
-            if (string.IsNullOrEmpty(text) || _channelId <= 0) return;
+            if (string.IsNullOrEmpty(text)) return;
             _txtInput.Clear();
             SendChannelRaw(text);
         }

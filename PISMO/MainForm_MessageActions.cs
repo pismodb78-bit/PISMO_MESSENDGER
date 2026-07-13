@@ -389,7 +389,7 @@ namespace PISMO
             RerenderCurrentChat();
 
             MessageBox.Show(
-                "Выберите диалог или группу в сайдбаре и нажмите «Отправить».\n" +
+                "Выберите диалог, группу или канал сервера и нажмите «Отправить».\n" +
                 $"Будут пересланы выбранные сообщения ({cnt}).",
                 "PISMO — Пересылка", MessageBoxButtons.OK, MessageBoxIcon.Information);
             txtMessage.Focus();
@@ -531,25 +531,35 @@ namespace PISMO
                 else c.MouseClick += ShowMenu;
             }
 
-            // Индикатор выделения (кружок ○ / галочка ✓) в режиме выбора.
-            if (_selectMode && msgId > 0)
+            // Подсветка выбранного сообщения в режиме выделения.
+            if (_selectMode && msgId > 0 && _selectedMsgIds.Contains(msgId))
+                bubble.BackColor = ControlPaint.Light(bubble.BackColor, 0.15f);
+        }
+
+        /// <summary>Кружок выделения СПРАВА от сообщения (как в Telegram) — сосед
+        /// пузыря в pnlMessages, у правого края чата. ✔ если выбрано.</summary>
+        private void AddSelectMark(Control bubble, int msgId)
+        {
+            if (!_selectMode || msgId <= 0) return;
+            bool sel = _selectedMsgIds.Contains(msgId);
+            var mark = new Label
             {
-                bool sel = _selectedMsgIds.Contains(msgId);
-                var mark = new Label
-                {
-                    Text = sel ? "✓" : "○",
-                    AutoSize = true,
-                    Font = new Font("Segoe UI Semibold", 12f, FontStyle.Bold),
-                    ForeColor = sel ? Color.FromArgb(59, 165, 93) : Color.FromArgb(180, 182, 188),
-                    BackColor = Color.Transparent,
-                    Location = new Point(bubble.Width - 26, 4),
-                    Cursor = Cursors.Hand
-                };
-                mark.MouseClick += ShowMenu;
-                bubble.Controls.Add(mark);
-                mark.BringToFront();
-                if (sel) bubble.BackColor = ControlPaint.Light(bubble.BackColor, 0.15f);
-            }
+                Text = sel ? "✔" : "○",
+                AutoSize = false,
+                Size = new Size(30, 30),
+                TextAlign = System.Drawing.ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold),
+                ForeColor = sel ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158),
+                BackColor = Color.Transparent,
+                Cursor = Cursors.Hand,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Location = new Point(Math.Max(0, pnlMessages.ClientSize.Width - 46),
+                    bubble.Top + Math.Max(0, (bubble.Height - 30) / 2))
+            };
+            int mid = msgId;
+            mark.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ToggleSelect(mid); };
+            pnlMessages.Controls.Add(mark);
+            mark.BringToFront();
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -621,7 +631,7 @@ namespace PISMO
             _pnlForwardBar.Visible = true;
 
             MessageBox.Show(
-                "Выберите диалог или группу в сайдбаре и нажмите «Отправить».\n" +
+                "Выберите диалог, группу или канал сервера и нажмите «Отправить».\n" +
                 "Сообщение будет переслано туда.",
                 "PISMO — Пересылка",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -637,40 +647,48 @@ namespace PISMO
             _pnlForwardBar.Visible = false;
         }
 
-        public bool TrySendForward()
+        /// <summary>Есть ли что пересылать (одиночное или пачка выделенных).</summary>
+        public bool HasPendingForward => _forwardMsgId >= 0 || _forwardBatch.Count > 0;
+
+        /// <summary>Забирает ожидающие пересылки тексты (с пометкой «Переслано от …»)
+        /// и сбрасывает режим пересылки. Общая точка для ЛС, групп И серверов.</summary>
+        public System.Collections.Generic.List<string> ConsumePendingForwards()
         {
-            // Пачка (множественное выделение) — пересылаем каждое по порядку.
+            var list = new System.Collections.Generic.List<string>();
             if (_forwardBatch.Count > 0)
             {
-                var batch = new System.Collections.Generic.List<(string sender, string text)>(_forwardBatch);
+                foreach (var (fSender, fText) in _forwardBatch)
+                    list.Add(string.IsNullOrWhiteSpace(fSender)
+                        ? $"↪ Переслано:\n{fText}"
+                        : $"↪ Переслано от {fSender}:\n{fText}");
                 _forwardBatch.Clear();
                 CancelForward();
-                foreach (var (fSender, fText) in batch)
-                {
-                    string toSend = string.IsNullOrWhiteSpace(fSender)
-                        ? $"↪ Переслано:\n{fText}"
-                        : $"↪ Переслано от {fSender}:\n{fText}";
-                    if (_currentGroupId >= 0) SendGroupMessage(toSend, null);
-                    else if (_currentChatPartnerId >= 0) SendMessage(toSend, null);
-                }
-                return true;
             }
+            else if (_forwardMsgId >= 0)
+            {
+                string sender = _forwardSenderName;
+                list.Add(string.IsNullOrWhiteSpace(sender)
+                    ? $"↪ Переслано:\n{_forwardText}"
+                    : $"↪ Переслано от {sender}:\n{_forwardText}");
+                CancelForward();
+            }
+            return list;
+        }
 
-            if (_forwardMsgId < 0) return false;
+        /// <summary>Пересылка, начатая ИЗ СЕРВЕРА (или другого окна): кладём текст в
+        /// буфер пересылки — дальше юзер выбирает диалог/группу/канал и жмёт «Отправить».</summary>
+        public void BeginForwardExternal(string senderName, string text)
+            => BeginForward(0, text, false, senderName);
 
-            // Формируем текст с указанием отправителя
-            string sender = _forwardSenderName;
-            string textToSend = string.IsNullOrWhiteSpace(sender)
-                ? $"↪ Переслано:\n{_forwardText}"
-                : $"↪ Переслано от {sender}:\n{_forwardText}";
-
-            CancelForward();
-
-            if (_currentGroupId >= 0)
-                SendGroupMessage(textToSend, null);
-            else if (_currentChatPartnerId >= 0)
-                SendMessage(textToSend, null);
-
+        public bool TrySendForward()
+        {
+            var pending = ConsumePendingForwards();
+            if (pending.Count == 0) return false;
+            foreach (var toSend in pending)
+            {
+                if (_currentGroupId >= 0) SendGroupMessage(toSend, null);
+                else if (_currentChatPartnerId >= 0) SendMessage(toSend, null);
+            }
             return true;
         }
 
