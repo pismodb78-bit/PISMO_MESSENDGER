@@ -1267,20 +1267,43 @@ namespace PISMO
                         if (reacts.Count > 0)
                         {
                             int rx = LEFT;
+                            var cntFontR = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
                             foreach (var re in reacts)
                             {
-                                var chipR = new Label
+                                // ЦВЕТНОЙ чип, как в ЛС: эмодзи — картинка Twemoji
+                                // (GDI рисует эмодзи монохромными «контурами»), счётчик — текст.
+                                const int emSz = 20;
+                                var reImg = EmojiRender.Get(re.Emoji, emSz);
+                                string cntTxt = re.Count.ToString();
+                                int txtW = TextRenderer.MeasureText(cntTxt, cntFontR).Width;
+                                int imgW = reImg?.Width ?? emSz;
+                                var chipR = new Panel
                                 {
-                                    Text = $"{re.Emoji} {re.Count}",
-                                    Font = new Font("Segoe UI Emoji", 9.5f),
-                                    AutoSize = true,
-                                    ForeColor = Color.White,
+                                    Size = new Size(8 + imgW + 4 + txtW + 7, 28),
                                     BackColor = re.Mine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(64, 68, 75),
-                                    Padding = new Padding(6, 3, 6, 3),
                                     Location = new Point(rx, y),
                                     Cursor = Cursors.Hand
                                 };
                                 string emoC = re.Emoji; int midC = id;
+                                var capCnt = cntTxt; var capImgW = imgW;
+                                chipR.Paint += (s, e) =>
+                                {
+                                    var g = e.Graphics;
+                                    var im = EmojiRender.Get(emoC, emSz);
+                                    if (im != null) g.DrawImage(im, 8, (chipR.Height - im.Height) / 2);
+                                    else using (var f0 = new Font("Segoe UI Emoji", 11f))
+                                        g.DrawString(emoC, f0, Brushes.White, 6, 4);
+                                    TextRenderer.DrawText(g, capCnt, cntFontR,
+                                        new Point(8 + capImgW + 4, (chipR.Height - 16) / 2), Color.White);
+                                };
+                                Action<string> onLoad = em =>
+                                {
+                                    if (em != emoC || chipR.IsDisposed) return;
+                                    try { chipR.BeginInvoke(new Action(() => { try { chipR.Invalidate(); } catch { } })); } catch { }
+                                };
+                                EmojiRender.Loaded += onLoad;
+                                chipR.Disposed += (s, e) => { try { EmojiRender.Loaded -= onLoad; } catch { } };
+                                MainForm.RoundCorners(chipR, 8);
                                 chipR.Click += (s, e) =>
                                 {
                                     System.Threading.Tasks.Task.Run(() =>
@@ -1292,7 +1315,7 @@ namespace PISMO
                                 };
                                 holder.Controls.Add(chipR);
                                 chipR.BringToFront();
-                                rx += chipR.PreferredWidth + 16;
+                                rx += chipR.Width + 6;
                             }
                             var addR = new Label
                             {

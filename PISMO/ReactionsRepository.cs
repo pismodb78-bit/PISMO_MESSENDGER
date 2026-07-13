@@ -26,12 +26,17 @@ namespace PISMO
         public static bool Toggle(int messageId, Scope scope, int userId, string emoji)
         {
             if (messageId <= 0 || string.IsNullOrWhiteSpace(emoji)) return false;
+            // КРИТИЧНО: сравниваем emoji ПОБАЙТОВО (COLLATE utf8mb4_bin). Иначе в
+            // _ci-коллациях MySQL разные эмодзи считаются равными строками, и
+            // тумблер удаляет чужой эмодзи при попытке поставить новый. Явный
+            // COLLATE работает даже если миграция коллации ещё не применилась.
+            const string EQ = " AND emoji = @e COLLATE utf8mb4_bin";
             try
             {
                 using var conn = DBHelper.OpenConnection();
                 // Уже стоит?
                 using (var chk = new MySqlCommand(
-                    "SELECT 1 FROM message_reactions WHERE message_id=@m AND scope=@s AND user_id=@u AND emoji=@e", conn))
+                    "SELECT 1 FROM message_reactions WHERE message_id=@m AND scope=@s AND user_id=@u" + EQ, conn))
                 {
                     chk.Parameters.AddWithValue("@m", messageId);
                     chk.Parameters.AddWithValue("@s", (int)scope);
@@ -40,7 +45,7 @@ namespace PISMO
                     if (chk.ExecuteScalar() != null)
                     {
                         using var del = new MySqlCommand(
-                            "DELETE FROM message_reactions WHERE message_id=@m AND scope=@s AND user_id=@u AND emoji=@e", conn);
+                            "DELETE FROM message_reactions WHERE message_id=@m AND scope=@s AND user_id=@u" + EQ, conn);
                         del.Parameters.AddWithValue("@m", messageId);
                         del.Parameters.AddWithValue("@s", (int)scope);
                         del.Parameters.AddWithValue("@u", userId);
@@ -77,7 +82,7 @@ namespace PISMO
                     "SELECT message_id, emoji, COUNT(*) AS cnt, " +
                     "MAX(CASE WHEN user_id=@me THEN 1 ELSE 0 END) AS mine " +
                     "FROM message_reactions WHERE scope=@s AND message_id IN (" + string.Join(",", list) + ") " +
-                    "GROUP BY message_id, emoji ORDER BY MIN(created_at)", conn);
+                    "GROUP BY message_id, emoji COLLATE utf8mb4_bin ORDER BY MIN(created_at)", conn);
                 cmd.Parameters.AddWithValue("@s", (int)scope);
                 cmd.Parameters.AddWithValue("@me", myId);
                 using var r = cmd.ExecuteReader();
@@ -109,7 +114,7 @@ namespace PISMO
                     "SELECT emoji, COUNT(*) AS cnt, " +
                     "MAX(CASE WHEN user_id=@me THEN 1 ELSE 0 END) AS mine " +
                     "FROM message_reactions WHERE message_id=@m AND scope=@s " +
-                    "GROUP BY emoji ORDER BY MIN(created_at)", conn);
+                    "GROUP BY emoji COLLATE utf8mb4_bin ORDER BY MIN(created_at)", conn);
                 cmd.Parameters.AddWithValue("@m", messageId);
                 cmd.Parameters.AddWithValue("@s", (int)scope);
                 cmd.Parameters.AddWithValue("@me", myId);
