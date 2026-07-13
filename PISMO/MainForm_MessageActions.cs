@@ -51,8 +51,10 @@ namespace PISMO
         private bool _selectMode;
         private bool _selectIsGroup;
         private readonly System.Collections.Generic.HashSet<int> _selectedMsgIds = new();
-        private readonly System.Collections.Generic.Dictionary<int, (string sender, string text)> _msgMeta = new();
-        private readonly System.Collections.Generic.List<(string sender, string text)> _forwardBatch = new();
+        private readonly System.Collections.Generic.Dictionary<int, (string sender, string text, int scope)> _msgMeta = new();
+        private readonly System.Collections.Generic.List<(string sender, string text, int scope, int id)> _forwardBatch = new();
+        private int _forwardSrcScope;      // 0=ЛС, 1=группа, 2=сервер — откуда пересылаем
+        private int _forwardSrcId;         // id исходного сообщения (для копии медиа)
         private Panel _pnlSelectBar;
         private Label _lblSelectInfo;
 
@@ -377,7 +379,7 @@ namespace PISMO
             _forwardBatch.Clear();
             foreach (int id in ids)
                 if (_msgMeta.TryGetValue(id, out var meta))
-                    _forwardBatch.Add(meta);
+                    _forwardBatch.Add((meta.sender, meta.text, meta.scope, id));
 
             int cnt = _forwardBatch.Count;
             _selectMode = false;
@@ -399,7 +401,7 @@ namespace PISMO
     bool isMine, string text, string senderName)
         {
             // Запоминаем текст/отправителя — понадобится для пакетной пересылки.
-            if (msgId > 0) _msgMeta[msgId] = (senderName ?? "", text ?? "");
+            if (msgId > 0) _msgMeta[msgId] = (senderName ?? "", text ?? "", isGroup ? 1 : 0);
 
             var menu = new ContextMenuStrip();
             menu.BackColor = Color.FromArgb(24, 25, 28);
@@ -625,6 +627,8 @@ namespace PISMO
             _forwardText = text ?? "";
             _forwardSenderName = senderName ?? "";
             _forwardIsGroup = isGroup;
+            _forwardSrcScope = isGroup ? 1 : 0;
+            _forwardSrcId = msgId;         // для копии медиа SQL-ом
 
             string preview = text?.Length > 50 ? text[..50] + "…" : (text ?? "[медиа]");
             _lblForwardInfo.Text = $"↪ Пересылка от {senderName}: {preview}";
@@ -644,52 +648,54 @@ namespace PISMO
             _forwardMsgId = -1;
             _forwardText = "";
             _forwardSenderName = "";
+            _forwardSrcScope = 0;
+            _forwardSrcId = 0;
             _pnlForwardBar.Visible = false;
         }
 
         /// <summary>Есть ли что пересылать (одиночное или пачка выделенных).</summary>
         public bool HasPendingForward => _forwardMsgId >= 0 || _forwardBatch.Count > 0;
 
-        /// <summary>Забирает ожидающие пересылки тексты (с пометкой «Переслано от …»)
-        /// и сбрасывает режим пересылки. Общая точка для ЛС, групп И серверов.</summary>
-        public System.Collections.Generic.List<string> ConsumePendingForwards()
+        /// <summary>Забирает ожидающие пересылки (отправитель, текст, откуда, id) и
+        /// сбрасывает режим. Общая точка для ЛС, групп И серверов — получатель
+        /// шлёт каждый элемент через ForwardHelper.Forward (медиа копируется SQL-ом).</summary>
+        public System.Collections.Generic.List<(string sender, string text, int scope, int id)> ConsumePendingForwards()
         {
-            var list = new System.Collections.Generic.List<string>();
+            var list = new System.Collections.Generic.List<(string sender, string text, int scope, int id)>();
             if (_forwardBatch.Count > 0)
             {
-                foreach (var (fSender, fText) in _forwardBatch)
-                    list.Add(string.IsNullOrWhiteSpace(fSender)
-                        ? $"↪ Переслано:\n{fText}"
-                        : $"↪ Переслано от {fSender}:\n{fText}");
+                list.AddRange(_forwardBatch);
                 _forwardBatch.Clear();
                 CancelForward();
             }
             else if (_forwardMsgId >= 0)
             {
-                string sender = _forwardSenderName;
-                list.Add(string.IsNullOrWhiteSpace(sender)
-                    ? $"↪ Переслано:\n{_forwardText}"
-                    : $"↪ Переслано от {sender}:\n{_forwardText}");
+                list.Add((_forwardSenderName, _forwardText, _forwardSrcScope, _forwardSrcId));
                 CancelForward();
             }
             return list;
         }
 
-        /// <summary>Пересылка, начатая ИЗ СЕРВЕРА (или другого окна): кладём текст в
-        /// буфер пересылки — дальше юзер выбирает диалог/группу/канал и жмёт «Отправить».</summary>
-        public void BeginForwardExternal(string senderName, string text)
-            => BeginForward(0, text, false, senderName);
+        /// <summary>Пересылка, начатая ИЗ СЕРВЕРА: кладём в буфер (с id исходника —
+        /// медиа тоже уедет). Дальше юзер выбирает диалог/группу/канал и жмёт «Отправить».</summary>
+        public void BeginForwardExternal(string senderName, string text, int srcServerMsgId = 0)
+        {
+            BeginForward(0, text, false, senderName);
+            _forwardSrcScope = 2;
+            _forwardSrcId = srcServerMsgId;
+        }
 
         /// <summary>Пачка сообщений из сервера (множественное выделение) — в общий
         /// буфер пересылки. Отправка: диалог/группа («Отправить» в ЛС) или канал.</summary>
-        public void BeginForwardExternalBatch(System.Collections.Generic.List<(string sender, string text)> batch)
+        public void BeginForwardExternalBatch(System.Collections.Generic.List<(string sender, string text, int id)> batch)
         {
             if (batch == null || batch.Count == 0) return;
             CancelReply();
             CancelEdit();
             _forwardMsgId = -1;
             _forwardBatch.Clear();
-            _forwardBatch.AddRange(batch);
+            foreach (var (sndr, txt, id) in batch)
+                _forwardBatch.Add((sndr, txt, 2, id));
             _lblForwardInfo.Text = $"↪ Пересылка {batch.Count} сообщений(я) — выберите диалог/группу/канал и нажмите «Отправить»";
             _pnlForwardBar.Visible = true;
         }
@@ -698,11 +704,27 @@ namespace PISMO
         {
             var pending = ConsumePendingForwards();
             if (pending.Count == 0) return false;
-            foreach (var toSend in pending)
+
+            bool toGroup = _currentGroupId >= 0;
+            int target = toGroup ? _currentGroupId : _currentChatPartnerId;
+            if (target < 0) return false;
+            int me = UserSession.EffectiveId;
+
+            foreach (var (sndr, txt, srcScope, srcId) in pending)
             {
-                if (_currentGroupId >= 0) SendGroupMessage(toSend, null);
-                else if (_currentChatPartnerId >= 0) SendMessage(toSend, null);
+                try { ForwardHelper.Forward(srcScope, srcId, sndr, txt, toGroup ? 1 : 0, me, target); }
+                catch (Exception ex) { MessageBox.Show("Ошибка пересылки: " + ex.Message); return true; }
             }
+
+            // Уведомляем получателя по WS и перерисовываем чат.
+            try
+            {
+                if (toGroup) WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _currentGroupId, "group");
+                else WebSocketSignalingClient.Instance.SendMessage("new_message", _currentChatPartnerId, me, "direct");
+            }
+            catch { }
+            ForceMessageRerender();
+            if (toGroup) LoadGroupMessages(); else LoadMessages();
             return true;
         }
 

@@ -1339,7 +1339,7 @@ namespace PISMO
                 {
                     var mf = MainForm.Current;
                     if (mf == null || mf.IsDisposed) { MessageBox.Show("Главное окно закрыто."); return; }
-                    mf.BeginForwardExternal(senderName, text);
+                    mf.BeginForwardExternal(senderName, text, id);
                     try { mf.Activate(); mf.BringToFront(); } catch { }
                 });
 
@@ -1355,7 +1355,7 @@ namespace PISMO
                 {
                     int chId = Convert.ToInt32(r["id"]);
                     string chName = r["name"].ToString();
-                    fwd.DropDownItems.Add("# " + chName, null, (s, e) => ForwardServerMessage(chId, text));
+                    fwd.DropDownItems.Add("# " + chName, null, (s, e) => ForwardServerMessage(chId, id, senderName, text));
                 }
             }
             catch { }
@@ -1420,18 +1420,13 @@ namespace PISMO
             }
         }
 
-        private void ForwardServerMessage(int channelId, string text)
+        private void ForwardServerMessage(int channelId, int srcMsgId, string senderName, string text)
         {
             try
             {
-                using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand("INSERT INTO server_messages (channel_id, sender_id, text) VALUES (@c,@s,@t)", conn);
-                cmd.Parameters.AddWithValue("@c", channelId);
-                cmd.Parameters.AddWithValue("@s", _me);
-                cmd.Parameters.AddWithValue("@t", Crypto.Enc(text));
-                cmd.ExecuteNonQuery();
+                ForwardHelper.Forward(2, srcMsgId, senderName, text, 2, _me, channelId);
                 WebSocketSignalingClient.Instance.SendMessage("new_message", 0, channelId, "server");
-                if (channelId == _channelId) LoadMessages();
+                if (channelId == _channelId) { _renderedKey = null; _renderedSig = null; LoadMessages(); }
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
@@ -1560,10 +1555,10 @@ namespace PISMO
             if (_srvSelected.Count == 0) { ExitSrvSelect(); return; }
             var ids = new List<int>(_srvSelected);
             ids.Sort();
-            var batch = new List<(string sender, string text)>();
+            var batch = new List<(string sender, string text, int id)>();
             foreach (int id in ids)
-                if (_srvMsgMeta.TryGetValue(id, out var m) && !m.text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
-                    batch.Add((m.sender, m.text));
+                if (_srvMsgMeta.TryGetValue(id, out var m))
+                    batch.Add((m.sender, m.text, id));
             _srvSelectMode = false;
             _srvSelected.Clear();
             if (_srvSelectBar != null) _srvSelectBar.Visible = false;
@@ -1624,8 +1619,14 @@ namespace PISMO
             var mf = MainForm.Current;
             if (mf != null && !mf.IsDisposed && mf.HasPendingForward)
             {
-                foreach (var t in mf.ConsumePendingForwards())
-                    SendChannelRaw(t);
+                foreach (var (sndr, txt, srcScope, srcId) in mf.ConsumePendingForwards())
+                {
+                    try { ForwardHelper.Forward(srcScope, srcId, sndr, txt, 2, _me, _channelId); }
+                    catch (Exception ex) { ShowDbError(ex); return; }
+                }
+                try { WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server"); } catch { }
+                _renderedKey = null; _renderedSig = null;
+                LoadMessages();
                 return;
             }
 
