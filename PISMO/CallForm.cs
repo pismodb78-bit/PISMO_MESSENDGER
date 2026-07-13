@@ -1295,32 +1295,29 @@ namespace PISMO
             }
             else if (!_screenPreviewPending)
             {
-                ShowScreenSourceChooser();
+                // Сразу свой список ВСЕХ мониторов (Screen.AllScreens ловит все 3,
+                // в т.ч. виртуальный VR-дисплей, который системный диалог Chromium
+                // не перечисляет). Без промежуточного меню. Окна/другой источник —
+                // кнопка внутри списка (там открывается системный диалог).
+                PickMonitorAndShare();
             }
         }
 
-        /// <summary>Выбор источника демонстрации: свой список ВСЕХ мониторов
-        /// (в т.ч. виртуальных VR-дисплеев) или системный диалог для окон.</summary>
-        private void ShowScreenSourceChooser()
-        {
-            var menu = new ContextMenuStrip
-            {
-                BackColor = Color.FromArgb(24, 25, 28),
-                ForeColor = Color.FromArgb(220, 221, 222)
-            };
-            menu.Items.Add("🖥  Выбрать экран (все мониторы)…", null, (s, e) => PickMonitorAndShare());
-            menu.Items.Add("🪟  Окно или другой источник (системный выбор)…", null, (s, e) => StartSystemScreenShare());
-            menu.Show(_btnScreen, new Point(0, -8), ToolStripDropDownDirection.AboveRight);
-        }
-
-        /// <summary>Свой список мониторов → захват выбранного (canvas-путь).</summary>
+        /// <summary>Свой список мониторов (все 3, прокручиваемый) → захват выбранного
+        /// (canvas-путь). Кнопка «Окно или другой источник» открывает системный
+        /// диалог (там прокручиваемая плитка окон).</summary>
         private void PickMonitorAndShare()
         {
             try
             {
                 using var picker = new ScreenPickerForm();
                 if (picker.ShowDialog(this) != DialogResult.OK) return;
-                if (picker.UseSystemPicker) { StartSystemScreenShare(); return; }
+                if (picker.UseSystemPicker)
+                {
+                    _screenPreviewPending = true;
+                    _transport.PreviewScreen(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps);
+                    return;
+                }
                 if (picker.SelectedBounds is Rectangle b)
                 {
                     _screenPreviewPending = true;
@@ -1331,14 +1328,6 @@ namespace PISMO
             {
                 _lblStatus.Text = "Не удалось открыть выбор экрана: " + ex.Message;
             }
-        }
-
-        /// <summary>Системный диалог Windows («Выберите, чем поделиться») — удобная
-        /// плитка окон/вкладок и обычных экранов.</summary>
-        private void StartSystemScreenShare()
-        {
-            _screenPreviewPending = true;
-            _transport.PreviewScreen(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps);
         }
 
         /// <summary>Немедленно отправляет состояние «в эфире» (камера/демка) для
