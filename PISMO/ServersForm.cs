@@ -133,7 +133,7 @@ namespace PISMO
                 if (!Visible) return;
                 // Сообщения канала — по WS (broadcast); опрос только при обрыве WS.
                 if (!WebSocketSignalingClient.Instance.IsConnected
-                    && _channelId > 0 && _channelType == "text") MaybeReloadMessages();
+                    && _channelId > 0) MaybeReloadMessages();
                 RefreshVoicePresence(); // presence нет в WS — обновляем (диффом, дёшево)
             };
             _refresh.Start();
@@ -601,8 +601,32 @@ namespace PISMO
         {
             var b = MakeSideButton((ctype == "voice" ? "🔊 " : "# ") + cname, Color.FromArgb(54, 57, 63));
             b.AccessibleName = cname;
+            // ЛКМ: текстовый — чат; голосовой — сразу подключение к звонку (+чат).
             b.Click += (s, e) => SelectChannel(cid, ctype, cname);
+            // ПКМ: меню действий канала.
+            b.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowChannelMenu(cid, ctype, cname); };
             _pnlChannels.Controls.Add(b);
+
+            if (ctype == "voice")
+            {
+                // Значок 💬 справа (как в Discord): открыть чат канала БЕЗ входа в звонок.
+                var bubble = new Label
+                {
+                    Text = "💬",
+                    AutoSize = false,
+                    Size = new Size(26, 26),
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    BackColor = Color.Transparent,
+                    ForeColor = Color.FromArgb(185, 187, 190),
+                    Cursor = Cursors.Hand
+                };
+                bubble.Click += (s, e) => SelectChannel(cid, ctype, cname, joinVoice: false);
+                b.Controls.Add(bubble);
+                void PlaceBubble(object s, EventArgs e)
+                { try { bubble.Location = new Point(b.Width - bubble.Width - 4, (b.Height - bubble.Height) / 2); } catch { } }
+                b.Resize += PlaceBubble;
+                PlaceBubble(null, null);
+            }
 
             if (ctype == "voice")
             {
@@ -629,7 +653,7 @@ namespace PISMO
             if (_serverId <= 0) return;
             LoadChannels();
             LoadMembers();
-            if (_channelId > 0 && _channelType == "text") LoadMessages();
+            if (_channelId > 0) LoadMessages();
             RefreshVoicePresence();
         }
 
@@ -782,7 +806,7 @@ namespace PISMO
             catch (Exception ex) { ShowDbError(ex); }
         }
 
-        private void SelectChannel(int cid, string type, string name)
+        private void SelectChannel(int cid, string type, string name, bool joinVoice = true)
         {
             _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1;
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
@@ -791,39 +815,55 @@ namespace PISMO
             CancelServerReply();
             try { UpdateForwardNotice(); } catch { }
 
-            if (type == "voice")
+            // И у текстового, И у голосового канала — полноценный чат (как в Discord):
+            // в голосовом можно писать, находясь в звонке или без него.
+            if (_bottomDock != null) _bottomDock.Visible = true;
+            _pnlInput.Visible = true;
+            LoadMessages();
+
+            // ЛКМ по голосовому каналу = сразу подключение к звонку (кнопки
+            // «Подключиться» больше нет). Открыть чат БЕЗ звонка — ПКМ → «Открыть чат».
+            if (type == "voice" && joinVoice)
+                JoinVoiceChannel(cid, name);
+
+            // Открыл чат — канал прочитан.
+            int capC = cid;
+            System.Threading.Tasks.Task.Run(() => ServerReads.MarkChannelRead(_me, capC));
+        }
+
+        /// <summary>ПКМ по каналу: открыть чат / присоединиться / заглушить / прочитано.</summary>
+        private void ShowChannelMenu(int cid, string ctype, string cname)
+        {
+            var menu = new ContextMenuStrip
             {
-                if (_bottomDock != null) _bottomDock.Visible = false;
-                _pnlInput.Visible = false;
-                var join = new Button
-                {
-                    Text = "🔊 Подключиться к голосовому каналу",
-                    Size = new Size(320, 44),
-                    FlatStyle = FlatStyle.Flat,
-                    BackColor = Color.FromArgb(59, 165, 93),
-                    ForeColor = Color.White,
-                    Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
-                    Margin = new Padding(10, 20, 0, 0),
-                    Cursor = Cursors.Hand
-                };
-                join.FlatAppearance.BorderSize = 0;
-                join.Click += (s, e) =>
-                {
-                    var call = new CallForm("vch_" + cid, name);
-                    // Показ «Голосовая связь подключена» в сайдбаре главного окна
-                    // (как в Discord: канал / сервер) и скрытие при выходе.
-                    call.FormClosed += (a, b) => MainForm.Current?.NotifyVoiceEnded();
-                    call.Show();
-                    MainForm.Current?.NotifyVoiceStarted($"{name} / {_serverName}", call);
-                };
-                _pnlMessages.Controls.Add(join);
-            }
-            else
-            {
-                if (_bottomDock != null) _bottomDock.Visible = true;
-                _pnlInput.Visible = true;
-                LoadMessages();
-            }
+                BackColor = Color.FromArgb(24, 25, 28),
+                ForeColor = Color.FromArgb(220, 221, 222)
+            };
+            menu.Items.Add("💬  Открыть чат", null, (s, e) => SelectChannel(cid, ctype, cname, joinVoice: false));
+            if (ctype == "voice")
+                menu.Items.Add("🔊  Присоединиться к звонку", null, (s, e) => SelectChannel(cid, ctype, cname));
+            menu.Items.Add("🔕  Заглушить уведомления сервера", null, (s, e) => ToggleServerMute());
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("✓  Пометить прочитанным", null, (s, e) =>
+                System.Threading.Tasks.Task.Run(() => ServerReads.MarkChannelRead(_me, cid)));
+            menu.Items.Add("✓✓  Пометить ВЕСЬ сервер прочитанным", null, (s, e) =>
+                System.Threading.Tasks.Task.Run(() => ServerReads.MarkServerRead(_me, _serverId)));
+            menu.Show(Cursor.Position);
+        }
+
+        // Уже подключённые голосовые каналы (не заходим в один звонок дважды).
+        private readonly HashSet<int> _joinedVoice = new HashSet<int>();
+
+        private void JoinVoiceChannel(int cid, string name)
+        {
+            if (_joinedVoice.Contains(cid)) return;
+            _joinedVoice.Add(cid);
+            var call = new CallForm("vch_" + cid, name);
+            // Показ «Голосовая связь подключена» в сайдбаре главного окна
+            // (как в Discord: канал / сервер) и скрытие при выходе.
+            call.FormClosed += (a, b) => { _joinedVoice.Remove(cid); MainForm.Current?.NotifyVoiceEnded(); };
+            call.Show();
+            MainForm.Current?.NotifyVoiceStarted($"{name} / {_serverName}", call);
         }
 
         // ── Ответы (reply) ──────────────────────────────────────────────
@@ -878,7 +918,7 @@ namespace PISMO
 
         private void LoadMessages()
         {
-            if (_channelId <= 0 || _channelType != "text") return;
+            if (_channelId <= 0) return;
             int channel = _channelId;
 
             // 1) Мгновенно рисуем из кеша (память → диск), чтобы канал открывался без задержек.
@@ -1511,7 +1551,7 @@ namespace PISMO
                 _srvFwdBar.BringToFront();
             }
             _srvFwdInfo.Text = "↪ Пересылка: нажмите «Отправить», чтобы переслать сообщения в этот канал";
-            _srvFwdBar.Visible = _channelType == "text" && _channelId > 0;
+            _srvFwdBar.Visible = _channelId > 0;
             _srvFwdBar.BringToFront();
         }
 
@@ -1916,6 +1956,21 @@ namespace PISMO
                 CancelServerReply();
                 WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
                 NotifyMentions(rawText);
+                // Ответ через «Ответить» — уведомляем автора исходного сообщения.
+                if (replyId > 0)
+                {
+                    try
+                    {
+                        using var q = new MySqlCommand("SELECT sender_id FROM server_messages WHERE id=@id", conn);
+                        q.Parameters.AddWithValue("@id", replyId);
+                        var o = q.ExecuteScalar();
+                        int author = o == null || o == DBNull.Value ? 0 : Convert.ToInt32(o);
+                        if (author > 0 && author != _me)
+                            WebSocketSignalingClient.Instance.SendMessage(
+                                "reply", author, _channelId, $"{_serverId}|{_serverName}|{_channelName}");
+                    }
+                    catch { }
+                }
                 LoadMessages();
             }
             catch (MySqlException mex) when (mex.Number == 1054)
@@ -1936,7 +1991,7 @@ namespace PISMO
         /// <summary>Отправляет медиа-сообщение в канал (картинка/голос/видео/файл).</summary>
         private void SendChannelMedia(byte[] image, byte[] audio, byte[] video, byte[] file, string fileName)
         {
-            if (_channelId <= 0 || _channelType != "text") return;
+            if (_channelId <= 0) return;
             if (!MediaColumnsExist())
             {
                 MessageBox.Show("Медиа в каналах недоступно: на сервере не выполнена миграция\n(scripts/server_media_migration.sql).", "PISMO");
@@ -2026,7 +2081,7 @@ namespace PISMO
         /// <summary>Прикрепить файл (или картинку) в канал.</summary>
         private void AttachChannelFile(bool imageOnly)
         {
-            if (_channelId <= 0 || _channelType != "text") return;
+            if (_channelId <= 0) return;
             using var ofd = new OpenFileDialog
             {
                 Title = imageOnly ? "Выберите изображение" : "Выберите файл",
@@ -2051,7 +2106,7 @@ namespace PISMO
 
         private void ChVoice_MouseDown(object sender, MouseEventArgs e)
         {
-            if (_channelId <= 0 || _channelType != "text") return;
+            if (_channelId <= 0) return;
             try
             {
                 _chAudioStream = new MemoryStream();
@@ -2085,7 +2140,7 @@ namespace PISMO
 
         private void RecordChannelCircle()
         {
-            if (_channelId <= 0 || _channelType != "text") return;
+            if (_channelId <= 0) return;
             using var dlg = new VideoCircleRecordForm();
             if (dlg.ShowDialog(this) == DialogResult.OK && dlg.ResultVideoData != null)
                 SendChannelMedia(null, null, dlg.ResultVideoData, null, null);
@@ -2094,7 +2149,7 @@ namespace PISMO
         /// <summary>Открывает поиск GIF и отправляет выбранную как "gif:&lt;url&gt;".</summary>
         private void OpenServerGifPicker()
         {
-            if (_channelId <= 0 || _channelType != "text") return;
+            if (_channelId <= 0) return;
             var picker = new GifPickerForm();
             picker.GifSelected += url => { if (!string.IsNullOrWhiteSpace(url)) SendChannelRaw("gif:" + url); };
             picker.Show(this);

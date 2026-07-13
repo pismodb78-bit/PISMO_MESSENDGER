@@ -131,6 +131,21 @@ namespace PISMO
                     var c = MakeRailCircle(ServerInitials(name), ServerColor(sid), Color.White);
                     c.Tag = sid;
                     c.Click += (s, e) => OpenServerFromRail(sid);
+                    // ПКМ: «прочитать всё» на сервере — без захода в каналы.
+                    int capSid = sid; string capName = name;
+                    c.MouseUp += (s, e) =>
+                    {
+                        if (e.Button != MouseButtons.Right) return;
+                        var menu = new ContextMenuStrip
+                        {
+                            BackColor = Color.FromArgb(24, 25, 28),
+                            ForeColor = Color.FromArgb(220, 221, 222)
+                        };
+                        menu.Items.Add($"✓✓  Прочитать все на «{capName}»", null, (s2, e2) =>
+                            System.Threading.Tasks.Task.Run(() =>
+                                ServerReads.MarkServerRead(UserSession.EffectiveId, capSid)));
+                        menu.Show(Cursor.Position);
+                    };
                     _tooltip.SetToolTip(c, name);
                     _serverRail.Controls.Add(c);
                 }

@@ -118,7 +118,60 @@ namespace PISMO
             BuildTypingIndicator();     // «печатает…» (2.0)
             BuildMessageSearch();       // 🔍 поиск по открытому чату (2.0)
             BuildBackgroundStyling();   // мягкий градиент-подложка списка/чата (2.1.7)
+            BuildReadAllButton();       // ✓✓ «прочитать все ЛС» в шапке сайдбара
             this.Load += MainForm_Load;
+        }
+
+        /// <summary>Кнопка «✓✓» в шапке списка чатов: помечает ВСЕ входящие ЛС
+        /// прочитанными без захода в чаты — бейджи и уведомления гаснут.</summary>
+        private void BuildReadAllButton()
+        {
+            try
+            {
+                var btn = new Button
+                {
+                    Text = "✓✓",
+                    Dock = DockStyle.Right,
+                    Width = 36,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.Transparent,
+                    ForeColor = Color.FromArgb(185, 187, 190),
+                    Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+                    Cursor = Cursors.Hand,
+                    TabStop = false
+                };
+                btn.FlatAppearance.BorderSize = 0;
+                new ToolTip().SetToolTip(btn, "Прочитать все личные сообщения");
+                btn.Click += (s, e) =>
+                {
+                    int me = UserSession.EffectiveId;
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try
+                        {
+                            using var conn = DBHelper.OpenConnection();
+                            using var cmd = new MySqlCommand(
+                                "UPDATE messages SET is_read=1 WHERE receiver_id=@me AND is_read=0", conn);
+                            cmd.Parameters.AddWithValue("@me", me);
+                            cmd.ExecuteNonQuery();
+                        }
+                        catch { }
+                        if (IsDisposed || !IsHandleCreated) return;
+                        try
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                LoadConversations();      // бейджи непрочитанных гаснут
+                                PollTick(null, null);
+                            }));
+                        }
+                        catch { }
+                    });
+                };
+                pnlSidebarHeader.Controls.Add(btn);
+                btn.BringToFront();
+            }
+            catch { }
         }
 
         // ── Мягкий вертикальный градиент-подложка (2.1.7, как в Discord) ──
@@ -816,6 +869,11 @@ namespace PISMO
                             // payload: serverId|serverName|channelName
                             HandleMentionNotification(payload);
                         }
+                        else if (type == "reply")
+                        {
+                            // Кто-то ответил на моё сообщение в канале сервера.
+                            HandleMentionNotification(payload, isReply: true);
+                        }
                         else if (type == "profile_updated")
                         {
                             // sessionId = uid пользователя, обновившего профиль.
@@ -842,7 +900,7 @@ namespace PISMO
 
         /// <summary>Трей-уведомление об упоминании на сервере (если сервер не
         /// заглушён). payload: "serverId|serverName|channelName".</summary>
-        private void HandleMentionNotification(string payload)
+        private void HandleMentionNotification(string payload, bool isReply = false)
         {
             try
             {
@@ -873,8 +931,10 @@ namespace PISMO
                         {
                             try { Sounds.Message(); } catch { }
                             if (_trayIcon != null && _trayIcon.Icon != null)
-                                _trayIcon.ShowBalloonTip(4000, "PISMO — упоминание",
-                                    $"Вас упомянули: {parts[1]} · #{parts[2]}", ToolTipIcon.Info);
+                                _trayIcon.ShowBalloonTip(4000,
+                                    isReply ? "PISMO — ответ" : "PISMO — упоминание",
+                                    isReply ? $"Ответ на ваше сообщение: {parts[1]} · #{parts[2]}"
+                                            : $"Вас упомянули: {parts[1]} · #{parts[2]}", ToolTipIcon.Info);
                             try { FlashWindow(this.Handle, true); } catch { }
                         }));
                     }

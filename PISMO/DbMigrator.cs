@@ -111,6 +111,17 @@ namespace PISMO
                     Exec(conn, "ALTER TABLE message_reactions DROP PRIMARY KEY, " +
                                "ADD PRIMARY KEY (message_id, scope, user_id, emoji)");
             }),
+
+            (8, "server_reads: метки прочитанного в каналах серверов", conn =>
+            {
+                Exec(conn,
+                    "CREATE TABLE IF NOT EXISTS server_reads (" +
+                    "user_id INT NOT NULL, " +
+                    "channel_id INT NOT NULL, " +
+                    "last_read_id INT NOT NULL DEFAULT 0, " +
+                    "read_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, " +
+                    "PRIMARY KEY (user_id, channel_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>
