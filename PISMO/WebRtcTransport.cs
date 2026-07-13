@@ -132,7 +132,24 @@ namespace PISMO
                 };
                 try
                 {
-                    parentForm.Controls.Add(wv);
+                    // ХОСТ контрола — окно с ГАРАНТИРОВАННЫМ хэндлом. CallForm ещё не
+                    // показан (InitAsync зовётся из конструктора ДО .Show()), поэтому
+                    // хэндла у него нет → EnsureCoreWebView2Async падает 0x8007139F.
+                    // Главное окно (MainForm.Current) всегда показано и с хэндлом;
+                    // контрол всё равно невидимый за экраном, так что хост не важен.
+                    Form host = parentForm;
+                    try
+                    {
+                        if (host == null || host.IsDisposed || !host.IsHandleCreated)
+                        {
+                            var mf = MainForm.Current;
+                            if (mf != null && !mf.IsDisposed && mf.IsHandleCreated) host = mf;
+                        }
+                    }
+                    catch { }
+                    if (host == null) host = parentForm;
+
+                    host.Controls.Add(wv);
                     wv.SendToBack();
                     try { var _ = wv.Handle; } catch { }   // хэндл до инициализации
 
@@ -146,7 +163,7 @@ namespace PISMO
                 {
                     lastEx = ex;
                     System.Diagnostics.Debug.WriteLine($"[WebView2 init retry {attempt}] {ex.Message}");
-                    try { parentForm.Controls.Remove(wv); wv.Dispose(); } catch { }
+                    try { wv.Parent?.Controls.Remove(wv); wv.Dispose(); } catch { }
                     try { await Task.Delay(400 * (attempt + 1)); } catch { }
                 }
             }
