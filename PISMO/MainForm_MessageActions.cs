@@ -1366,6 +1366,45 @@ namespace PISMO
                 }
                 catch { }
 
+                // Пометить прочитанным ИМЕННО этот диалог — без захода в чат.
+                var itemRead = new ToolStripMenuItem("✓ Пометить прочитанным");
+                itemRead.Click += (s2, e2) =>
+                {
+                    int me = UserSession.EffectiveId;
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try
+                        {
+                            using var conn = DBHelper.OpenConnection();
+                            using var cmd = new MySqlCommand(
+                                "UPDATE messages SET is_read=1 WHERE sender_id=@p AND receiver_id=@me AND is_read=0", conn);
+                            cmd.Parameters.AddWithValue("@p", partnerId);
+                            cmd.Parameters.AddWithValue("@me", me);
+                            int n = cmd.ExecuteNonQuery();
+                            // Отправителю — событие «read», чтобы его галочки посинели сразу.
+                            if (n > 0)
+                                try { WebSocketSignalingClient.Instance.SendMessage("read", partnerId, me, "direct"); } catch { }
+                        }
+                        catch { }
+                        if (IsDisposed || !IsHandleCreated) return;
+                        try
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                try
+                                {
+                                    if (UserSession.Role == "admin" && !UserSession.IsImpersonating) LoadAllUsersForAdmin();
+                                    else LoadConversations();
+                                    PollTick(null, null);
+                                }
+                                catch { }
+                            }));
+                        }
+                        catch { }
+                    });
+                };
+                menu.Items.Add(itemRead);
+
                 // Блок/разблок пользователя
                 try
                 {

@@ -1915,7 +1915,14 @@ namespace PISMO
 
         private void AcceptMention()
         {
-            if (_mentionList == null || _mentionList.SelectedIndex < 0 || _mentionAtPos < 0) return;
+            if (_mentionList == null || _mentionList.SelectedIndex < 0) return;
+            // Позиция «@» могла сброситься (гонка с LostFocus) — восстановим по тексту.
+            if (_mentionAtPos < 0)
+            {
+                int caret0 = Math.Min(_txtInput.SelectionStart, _txtInput.Text.Length);
+                _mentionAtPos = _txtInput.Text.LastIndexOf('@', Math.Max(0, caret0 - 1));
+                if (_mentionAtPos < 0) return;
+            }
             var it = _mentionItems[_mentionList.SelectedIndex];
             int caret = _txtInput.SelectionStart;
             string text = _txtInput.Text;

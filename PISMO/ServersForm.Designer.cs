@@ -32,7 +32,14 @@ namespace PISMO
             _txtInput = new TextBox { Dock = DockStyle.Fill, Multiline = false, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, Font = new Font("Segoe UI", 11f) };
             _txtInput.KeyDown += TxtInput_KeyDown;
             _txtInput.TextChanged += (s, e) => UpdateMentionPopup();
-            _txtInput.LostFocus += (s, e) => { if (_mentionPopup != null && !_mentionPopup.Focused) HideMentionPopup(); };
+            _txtInput.LostFocus += (s, e) =>
+            {
+                // Не прячем подсказку, если курсор НАД ней: клик по пункту должен
+                // успеть подставить упоминание (иначе гонка LostFocus → Hide).
+                if (_mentionPopup != null && !_mentionPopup.Focused
+                    && !(_mentionPopup.Visible && _mentionPopup.Bounds.Contains(Cursor.Position)))
+                    HideMentionPopup();
+            };
             var btnSend = new Button { Dock = DockStyle.Right, Width = 90, Text = "Отправить", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White };
             btnSend.FlatAppearance.BorderSize = 0;
             btnSend.Click += (s, e) => SendChannelMessage();
