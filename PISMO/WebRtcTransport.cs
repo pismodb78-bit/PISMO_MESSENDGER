@@ -30,6 +30,7 @@ namespace PISMO
     public class WebRtcTransport : IDisposable
     {
         private WebView2 _webView;
+        internal string _lastInitStage = "";   // диагностика 0x8007139F: на какой стадии упало
         private bool _disposed = false;
 
         public event Action Disconnected;
@@ -153,8 +154,12 @@ namespace PISMO
                     wv.SendToBack();
                     try { var _ = wv.Handle; } catch { }   // хэндл до инициализации
 
+                    _lastInitStage = $"host={host?.GetType().Name}, handle={host?.IsHandleCreated}";
+                    _lastInitStage += " | GetAsync";
                     var env = await WebViewShared.GetAsync();
+                    _lastInitStage = _lastInitStage.Replace("GetAsync", "GetAsync=OK, Ensure");
                     await wv.EnsureCoreWebView2Async(env);
+                    _lastInitStage = _lastInitStage.Replace("Ensure", "Ensure=OK");
 
                     _webView = wv;   // успех
                     lastEx = null;
@@ -162,7 +167,7 @@ namespace PISMO
                 catch (Exception ex)
                 {
                     lastEx = ex;
-                    System.Diagnostics.Debug.WriteLine($"[WebView2 init retry {attempt}] {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[WebView2 init retry {attempt}] стадия={_lastInitStage}: {ex.Message}");
                     try { wv.Parent?.Controls.Remove(wv); wv.Dispose(); } catch { }
                     try { await Task.Delay(400 * (attempt + 1)); } catch { }
                 }

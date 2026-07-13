@@ -400,6 +400,7 @@ namespace PISMO
                         $"HRESULT: 0x{hr:X8}\r\n" +
                         $"URL    : {LiveKitSettings.Url}\r\n" +
                         $"Message: {ex.Message}\r\n" +
+                        $"Stage  : {(_transport != null ? _transport._lastInitStage : "n/a")}\r\n" +
                         $"Inner  : {ex.InnerException?.GetType().FullName} / {ex.InnerException?.Message}\r\n" +
                         $"Stack  :\r\n{ex}\r\n\r\n";
                     System.IO.File.AppendAllText(logPath, dump);
