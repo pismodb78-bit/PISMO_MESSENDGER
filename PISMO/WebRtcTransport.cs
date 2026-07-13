@@ -113,22 +113,14 @@ namespace PISMO
             _pendingUrl = livekitUrl;
             _pendingToken = token;
 
-            string rtcUdf = System.IO.Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "PISMO", "webview-rtc");
-
-            // РЕТРАЙ инициализации WebView2. 0x8007139F (ERROR_INVALID_STATE) при
-            // создании окружения = либо конфликт опций в процессе, либо драйвер
-            // не переваривает GPU-флаги, либо старый процесс держит папку. КРИТИЧНО:
-            // после падения EnsureCoreWebView2Async сам КОНТРОЛ остаётся мёртвым,
-            // поэтому на КАЖДОЙ попытке пересоздаём и контрол, и окружение.
-            // Стратегия аргументов по попыткам:
-            //   0-1: полные опции (GPU-флаги) — своя папка;
-            //   2:   полные опции — СВЕЖАЯ папка (старый процесс не мешает);
-            //   3:   МИНИМАЛЬНЫЕ опции без GPU/feature-флагов — если драйвер их
-            //        отвергал, звонок всё равно поднимется (программный рендер).
+            // ЕДИНОЕ окружение WebView2 на весь процесс (WebViewShared). КРИТИЧНО:
+            // WebView2 не даёт создать в одном процессе второе окружение с ДРУГИМИ
+            // опциями — падает 0x8007139F. Раньше плееры GIF/видео поднимали
+            // дефолтное окружение, а транспорт — своё с флагами → конфликт, и звонок
+            // не стартовал, если до него смотрели медиа. Теперь и плееры, и транспорт
+            // берут ОДНО общее окружение отсюда.
             Exception lastEx = null;
-            for (int attempt = 0; attempt < 4 && _webView == null; )
+            for (int attempt = 0; attempt < 2 && _webView == null; attempt++)
             {
                 var wv = new WebView2
                 {
@@ -144,30 +136,7 @@ namespace PISMO
                     wv.SendToBack();
                     try { var _ = wv.Handle; } catch { }   // хэндл до инициализации
 
-                    // Матрица попыток (важно: последняя = свежая папка + минимальные
-                    // флаги — именно эта комбинация лечит 0x8007139F, когда драйвер
-                    // отвергает GPU-флаги, а базовая папка уже конфликтная):
-                    //   0: базовая папка + полные флаги (GPU и пр.)
-                    //   1: базовая папка + полные флаги (после паузы)
-                    //   2: СВЕЖАЯ папка + полные флаги
-                    //   3: СВЕЖАЯ папка + МИНИМАЛЬНЫЕ флаги (без GPU/feature)
-                    const string baseArgs =
-                        "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required";
-                    // Последняя попытка — ПРИНУДИТЕЛЬНО программный рендер
-                    // (--disable-gpu): если видеодрайвер валит инициализацию
-                    // WebView2 на аппаратном GPU (частая причина 0x8007139F,
-                    // особенно после краша демонстрации/захвата экрана), софтовый
-                    // рендер её обходит. Демонстрация будет тяжелее для CPU, но
-                    // звонок поднимется.
-                    string args = attempt >= 3
-                        ? baseArgs + " --disable-gpu --disable-gpu-compositing --disable-software-rasterizer=false"
-                        : DeviceSettings.WebViewArgs(baseArgs);
-                    var opts = new CoreWebView2EnvironmentOptions(args);
-                    string udf = attempt >= 2
-                        ? rtcUdf + "-" + Guid.NewGuid().ToString("N").Substring(0, 8)
-                        : rtcUdf;
-
-                    var env = await CoreWebView2Environment.CreateAsync(null, udf, opts);
+                    var env = await WebViewShared.GetAsync();
                     await wv.EnsureCoreWebView2Async(env);
 
                     _webView = wv;   // успех
@@ -177,9 +146,8 @@ namespace PISMO
                 {
                     lastEx = ex;
                     System.Diagnostics.Debug.WriteLine($"[WebView2 init retry {attempt}] {ex.Message}");
-                    try { parentForm.Controls.Remove(wv); wv.Dispose(); } catch { }   // мёртвый контрол — выбрасываем
-                    attempt++;
-                    try { await Task.Delay(400 * attempt); } catch { }
+                    try { parentForm.Controls.Remove(wv); wv.Dispose(); } catch { }
+                    try { await Task.Delay(400 * (attempt + 1)); } catch { }
                 }
             }
             if (_webView == null) throw lastEx ?? new Exception("WebView2 init failed");

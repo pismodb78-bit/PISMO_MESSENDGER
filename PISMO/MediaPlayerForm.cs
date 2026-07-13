@@ -54,7 +54,7 @@ namespace PISMO
         {
             try
             {
-                await _web.EnsureCoreWebView2Async(null);
+                await _web.EnsureCoreWebView2Async(await WebViewShared.GetAsync());
                 _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
                     Host, _tempDir, CoreWebView2HostResourceAccessKind.Allow);
                 _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;

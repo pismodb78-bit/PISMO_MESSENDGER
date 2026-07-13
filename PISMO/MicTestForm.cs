@@ -43,14 +43,9 @@ namespace PISMO
         {
             try
             {
-                var envOptions = new CoreWebView2EnvironmentOptions(
-                    DeviceSettings.WebViewArgs(
-                        "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required"));
-                // Отдельная папка данных, чтобы не конфликтовать с WebView2 звонка
-                // (две среды с одной папкой и разными опциями → пустое окно).
-                string udf = Path.Combine(Path.GetTempPath(), "pismo_wv_mictest");
-                var env = await CoreWebView2Environment.CreateAsync(null, udf, envOptions);
-                await _web.EnsureCoreWebView2Async(env);
+                // ЕДИНОЕ окружение процесса (WebViewShared) — иначе второе окружение
+                // с другими опциями падает 0x8007139F и потом ломает звонок.
+                await _web.EnsureCoreWebView2Async(await WebViewShared.GetAsync());
 
                 _web.CoreWebView2.NavigationCompleted += (s, e) =>
                 {

@@ -89,7 +89,7 @@ namespace PISMO
 
                 _web = new WebView2 { Dock = DockStyle.Fill };
                 Controls.Add(_web);
-                await _web.EnsureCoreWebView2Async(null);
+                await _web.EnsureCoreWebView2Async(await WebViewShared.GetAsync());
                 _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
                     Host, _tempDir, CoreWebView2HostResourceAccessKind.Allow);
                 _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
