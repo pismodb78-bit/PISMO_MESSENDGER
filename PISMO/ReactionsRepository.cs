@@ -30,7 +30,7 @@ namespace PISMO
             // _ci-коллациях MySQL разные эмодзи считаются равными строками, и
             // тумблер удаляет чужой эмодзи при попытке поставить новый. Явный
             // COLLATE работает даже если миграция коллации ещё не применилась.
-            const string EQ = " AND emoji = @e COLLATE utf8mb4_bin";
+            const string EQ = " AND emoji = CONVERT(@e USING utf8mb4) COLLATE utf8mb4_bin";
             try
             {
                 using var conn = DBHelper.OpenConnection();
@@ -82,7 +82,7 @@ namespace PISMO
                     "SELECT message_id, emoji, COUNT(*) AS cnt, " +
                     "MAX(CASE WHEN user_id=@me THEN 1 ELSE 0 END) AS mine " +
                     "FROM message_reactions WHERE scope=@s AND message_id IN (" + string.Join(",", list) + ") " +
-                    "GROUP BY message_id, emoji COLLATE utf8mb4_bin ORDER BY MIN(created_at)", conn);
+                    "GROUP BY message_id, emoji ORDER BY MIN(created_at)", conn);
                 cmd.Parameters.AddWithValue("@s", (int)scope);
                 cmd.Parameters.AddWithValue("@me", myId);
                 using var r = cmd.ExecuteReader();
@@ -114,7 +114,7 @@ namespace PISMO
                     "SELECT emoji, COUNT(*) AS cnt, " +
                     "MAX(CASE WHEN user_id=@me THEN 1 ELSE 0 END) AS mine " +
                     "FROM message_reactions WHERE message_id=@m AND scope=@s " +
-                    "GROUP BY emoji COLLATE utf8mb4_bin ORDER BY MIN(created_at)", conn);
+                    "GROUP BY emoji ORDER BY MIN(created_at)", conn);
                 cmd.Parameters.AddWithValue("@m", messageId);
                 cmd.Parameters.AddWithValue("@s", (int)scope);
                 cmd.Parameters.AddWithValue("@me", myId);
