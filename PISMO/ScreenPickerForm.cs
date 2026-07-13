@@ -32,7 +32,9 @@ namespace PISMO
             ShowInTaskbar = false;
             BackColor = Color.FromArgb(24, 25, 28);
             ForeColor = Color.FromArgb(220, 221, 222);
-            ClientSize = new Size(760, 560);
+            // Ширина рассчитана на 2 крупные плитки в ряд + вертикальный скроллбар;
+            // 3-й монитор переносится на второй ряд и достигается прокруткой вниз.
+            ClientSize = new Size(784, 540);
 
             var title = new Label
             {
@@ -99,9 +101,12 @@ namespace PISMO
                 var scr = screens[i];
                 var bounds = scr.Bounds;
 
+                // Крупные плитки как в системном «Весь экран»: по 2 в ряд, при
+                // большем числе мониторов переносятся вниз (вертикальная прокрутка
+                // FlowLayoutPanel), а не жмутся мелкими в одну строку.
                 var tile = new Panel
                 {
-                    Size = new Size(224, 168),
+                    Size = new Size(348, 250),
                     Margin = new Padding(8),
                     BackColor = Color.FromArgb(32, 34, 37),
                     Cursor = Cursors.Hand
@@ -110,12 +115,12 @@ namespace PISMO
                 var pb = new PictureBox
                 {
                     Dock = DockStyle.Top,
-                    Height = 126,
+                    Height = 196,
                     SizeMode = PictureBoxSizeMode.Zoom,
                     BackColor = Color.FromArgb(15, 16, 18),
                     Cursor = Cursors.Hand
                 };
-                try { pb.Image = GrabThumbnail(bounds, 220, 124); } catch { }
+                try { pb.Image = GrabThumbnail(bounds, 344, 194); } catch { }
 
                 string tag = scr.Primary ? "  (основной)" : "";
                 var cap = new Label
@@ -124,7 +129,7 @@ namespace PISMO
                     Dock = DockStyle.Fill,
                     TextAlign = ContentAlignment.MiddleCenter,
                     ForeColor = Color.FromArgb(210, 212, 216),
-                    Font = new Font("Segoe UI", 9f),
+                    Font = new Font("Segoe UI", 9.5f),
                     Cursor = Cursors.Hand
                 };
 
