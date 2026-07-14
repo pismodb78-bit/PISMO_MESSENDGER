@@ -1,5 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
+using Google.Protobuf;
+using LiveKit.Proto;
 
 namespace PISMO.Native
 {
@@ -35,8 +37,9 @@ namespace PISMO.Native
     {
         private const string Dll = "livekit_ffi";   // livekit_ffi.dll рядом с exe
 
-        /// <summary>Асинхронное событие FfiEvent (protobuf-байты). Разбор — слоем выше.</summary>
-        public static event Action<byte[]> Event;
+        /// <summary>Типизированное асинхронное событие LiveKit FFI (комната/участник/
+        /// трек/кадр и т.д.). Приходит из нативного колбэка, разобран из protobuf.</summary>
+        public static event Action<FfiEvent> FfiEventReceived;
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate void FfiCallback(IntPtr data, UIntPtr len);
@@ -75,8 +78,16 @@ namespace PISMO.Native
             }
         }
 
-        /// <summary>Синхронный запрос: сериализованный FfiRequest → сериализованный
-        /// FfiResponse. (protobuf-обёртки навешиваем слоем выше.)</summary>
+        /// <summary>Типизированный синхронный запрос к FFI (FfiRequest → FfiResponse).</summary>
+        public static FfiResponse Request(FfiRequest request)
+        {
+            if (request == null) throw new ArgumentNullException(nameof(request));
+            byte[] resp = Request(request.ToByteArray());
+            return FfiResponse.Parser.ParseFrom(resp);
+        }
+
+        /// <summary>Синхронный запрос на «сырых» байтах: сериализованный FfiRequest →
+        /// сериализованный FfiResponse.</summary>
         public static byte[] Request(byte[] ffiRequest)
         {
             if (ffiRequest == null) throw new ArgumentNullException(nameof(ffiRequest));
@@ -117,7 +128,8 @@ namespace PISMO.Native
                 if (n <= 0 || data == IntPtr.Zero) return;
                 var buf = new byte[n];
                 Marshal.Copy(data, buf, 0, n);
-                Event?.Invoke(buf);
+                var ev = FfiEvent.Parser.ParseFrom(buf);
+                FfiEventReceived?.Invoke(ev);
             }
             catch { /* колбэк из натива — не даём исключению пересечь границу */ }
         }

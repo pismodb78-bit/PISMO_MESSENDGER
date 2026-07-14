@@ -43,6 +43,16 @@
     <PackageReference Include="MySql.Data" Version="9.7.0" />
 
     <PackageReference Include="NAudio" Version="2.3.0" />
+
+    <!-- Нативный клиент звонков (замена WebView2): protobuf-протокол LiveKit FFI.
+         Grpc.Tools генерирует C#-классы из .proto на сборке (только messages). -->
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <PackageReference Include="Grpc.Tools" Version="2.68.1" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="Native\protocol\*.proto" GrpcServices="None"
+              ProtoRoot="Native\protocol" CompileOutputs="true" />
   </ItemGroup>
 
   <!-- ip.txt копируется в output directory -->
