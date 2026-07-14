@@ -40,6 +40,8 @@ namespace PISMO
             // Полный набор флагов (GPU/feature/WGC) — аппаратный кодек демонстрации.
             // Диагностика 2.5.4/2.5.6 показала: 0x8007139F от флагов/GPU НЕ зависит —
             // среду корёжит активный VR (виртуальный дисплей-драйвер), а не WebView2.
+            const string baseArgs =
+                "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required";
             var opts = new CoreWebView2EnvironmentOptions(DeviceSettings.WebViewArgs(baseArgs));
             return await CoreWebView2Environment.CreateAsync(null, udf, opts);
         }
