@@ -37,13 +37,20 @@ namespace PISMO
             string udf = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "PISMO", "webview-shared");
-            const string baseArgs =
-                "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required";
-            // Полный набор флагов (GPU/feature/WGC) — нужен демонстрации экрана
-            // (аппаратный кодек). Диагностика 2.5.4 показала, что 0x8007139F от них
-            // НЕ зависит — падение в профиле пользователя, а не во флагах.
-            var opts = new CoreWebView2EnvironmentOptions(DeviceSettings.WebViewArgs(baseArgs));
-            return await CoreWebView2Environment.CreateAsync(null, udf, opts);
+            // 2.5.6: ЖЁСТКИЙ софт-рендер (мимо настройки «аппаратное ускорение»).
+            // Причина 0x8007139F — активный VR поднимает виртуальный видео-адаптер,
+            // и WebView2 при создании контроллера падает на GPU-инициализации в этой
+            // конфигурации. --disable-gpu уводит рендер в софт, мимо GPU-процесса, —
+            // виртуальный VR-адаптер становится безразличен. Аппаратный кодек демки
+            // при этом недоступен (CPU-энкод), но звонок поднимается. Свежая папка
+            // данных (-soft), чтобы не тянуть залежавшееся GPU-состояние.
+            const string softArgs =
+                "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required " +
+                "--disable-gpu --disable-gpu-compositing " +
+                "--disable-background-timer-throttling --disable-renderer-backgrounding " +
+                "--disable-backgrounding-occluded-windows";
+            var opts = new CoreWebView2EnvironmentOptions(softArgs);
+            return await CoreWebView2Environment.CreateAsync(null, udf + "-soft", opts);
         }
     }
 }
