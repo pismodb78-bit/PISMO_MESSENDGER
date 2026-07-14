@@ -39,13 +39,11 @@ namespace PISMO
                 "PISMO", "webview-shared");
             const string baseArgs =
                 "--allow-running-insecure-content --autoplay-policy=no-user-gesture-required";
-            // ДИАГНОСТИКА 2.5.4: голый минимум флагов, без GPU/feature/WGC-набора из
-            // DeviceSettings.WebViewArgs. Один из тех флагов может валить создание
-            // контроллера WebView2 (0x8007139F) на конкретном драйвере/состоянии
-            // машины. Если так — заведётся, и мы вернём флаги точечно. Свежая папка
-            // данных (-min), чтобы не тянуть залежавшееся состояние старого набора.
-            var opts = new CoreWebView2EnvironmentOptions(baseArgs);
-            return await CoreWebView2Environment.CreateAsync(null, udf + "-min", opts);
+            // Полный набор флагов (GPU/feature/WGC) — нужен демонстрации экрана
+            // (аппаратный кодек). Диагностика 2.5.4 показала, что 0x8007139F от них
+            // НЕ зависит — падение в профиле пользователя, а не во флагах.
+            var opts = new CoreWebView2EnvironmentOptions(DeviceSettings.WebViewArgs(baseArgs));
+            return await CoreWebView2Environment.CreateAsync(null, udf, opts);
         }
     }
 }
