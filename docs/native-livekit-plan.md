@@ -66,6 +66,38 @@ mic/cam/screen capture (NAudio/WASAPI, MediaFoundation/AForge, наш BitBlt/DXG
 - Качество эхоподавления (libwebrtc APM vs браузерный).
 - Объём: реалистично несколько недель и много итераций сборки на твоей стороне.
 
+## ✅ Ф0 (частично сделано в этой сессии)
+- **Артефакт найден и подтверждён.** Нативная `livekit_ffi.dll` (win-x64, C-ABI, ~24 МБ)
+  + заголовок `livekit_ffi.h` лежат внутри Python-колеса LiveKit:
+  ```
+  pip download livekit --only-binary=:all: --platform win_amd64 --python-version 3.11 -d wheels
+  # затем из livekit-*.whl: livekit/rtc/resources/livekit_ffi.dll  ->  положить рядом с PISMO.exe
+  ```
+  (Node-пакет `@livekit/rtc-node` даёт napi `.node` — для C# НЕ годится; нужен именно этот C-ABI.)
+- **C-ABI (весь!) — 4 функции:**
+  ```c
+  FfiHandleId livekit_ffi_request(const uint8_t* data, size_t len,
+                                  const uint8_t** res_ptr, size_t* res_len);
+  bool        livekit_ffi_drop_handle(FfiHandleId handle);
+  void        livekit_ffi_initialize(FfiCallback cb, bool captureLogs,
+                                     const char* sdk, const char* version);
+  void        livekit_ffi_dispose();
+  // FfiCallback = void(*)(const uint8_t* data, size_t len)  // async FfiEvent (protobuf)
+  ```
+  Протокол — protobuf: request→FfiRequest, ответ→FfiResponse, колбэк→FfiEvent.
+- **C#-скелет биндинга написан:** `PISMO/Native/LiveKitFfi.cs` (P/Invoke 4 функций +
+  поток request/response + колбэк событий, пока на сырых байтах). Компилируется.
+
+## Следующие шаги
+1. **Protobuf-слой:** взять `.proto` LiveKit FFI (livekit-ffi/protocol/*.proto из
+   github.com/livekit/rust-sdks), сгенерить C# (`Google.Protobuf` + protoc или
+   `Grpc.Tools`), обернуть `LiveKitFfi.Request`/`Event` в типизированные FfiRequest/
+   FfiResponse/FfiEvent.
+2. **`NativeCallTransport`:** connect(url, token) → InitializeRequest + ConnectRequest,
+   обработка RoomEvent (participant/track). Минимальный тест — зайти в комнату с одним
+   аудио, проверить ПРИ АКТИВНОМ VR (главная цель).
+3. Дальше по фазам Ф1–Ф5 (см. выше).
+
 ## Первый шаг (Ф0)
 1. Определяемся, откуда берём `livekit_ffi.dll` (прибилд vs cargo build) — нужен Rust toolchain
    у тебя, если собирать.
