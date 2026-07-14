@@ -143,7 +143,30 @@ namespace PISMO
             // настроек). WebView2 не даёт создать в одном процессе второе окружение
             // с другими опциями — общий env убирает этот конфликт.
             var env = await WebViewShared.GetAsync();
-            await _webView.EnsureCoreWebView2Async(env);
+
+            // 0x8007139F (ERROR_INVALID_STATE) на CreateCoreWebView2ControllerAsync:
+            // контроллер WebView2 привязывается к HWND контрола, а звонок стартует
+            // из КОНСТРУКТОРА формы — до её показа валидного хэндла ещё нет, и
+            // создание контроллера падает. Принудительно материализуем HWND
+            // формы-хоста и самого контрола, затем ретраим на транзиентный сбой
+            // (между попытками message-loop успевает показать форму).
+            try { var hf = _webView.FindForm(); if (hf != null && !hf.IsHandleCreated) { _ = hf.Handle; } } catch { }
+            try { if (!_webView.IsHandleCreated) { _ = _webView.Handle; } } catch { }
+            Exception ctrlEx = null;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                try { await _webView.EnsureCoreWebView2Async(env); ctrlEx = null; break; }
+                catch (Exception ex)
+                {
+                    ctrlEx = ex;
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[WebView2 controller retry {attempt}] " +
+                        $"0x{System.Runtime.InteropServices.Marshal.GetHRForException(ex):X8} {ex.Message}");
+                    try { await Task.Delay(300 * (attempt + 1)); } catch { }
+                    try { if (!_webView.IsHandleCreated) { _ = _webView.Handle; } } catch { }
+                }
+            }
+            if (ctrlEx != null) throw ctrlEx;
 
             _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
 
