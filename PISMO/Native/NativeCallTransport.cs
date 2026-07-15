@@ -1,6 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Threading;
+using AForge.Video;
+using AForge.Video.DirectShow;
 using LiveKit.Proto;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -12,8 +18,11 @@ namespace PISMO.Native
     /// БЕЗ WebView2/Chromium. Обходит 0x8007139F, который активный VR вызывает у
     /// любого Chromium. Подключается к тому же LiveKit-серверу теми же JWT-токенами.
     ///
-    /// Готово: подключение к комнате + голос (микрофон → LiveKit, приём голоса
-    /// собеседников → колонки через NAudio-микшер). Дальше — камера/демка.
+    /// Готово: подключение к комнате, голос (микрофон → LiveKit, приём голоса →
+    /// колонки через NAudio-микшер), КАМЕРА и ДЕМОНСТРАЦИЯ экрана/окна (публикация
+    /// BGRA-кадров) + приём удалённого видео (камера/демка собеседников) кадрами BGRA.
+    /// Один и тот же движок используется и в звонках серверных голосовых каналов, и в
+    /// личных/групповых звонках мессенджера.
     /// </summary>
     public sealed class NativeCallTransport : IDisposable
     {
@@ -23,6 +32,12 @@ namespace PISMO.Native
         public event Action<string> ParticipantLeftById;          // (identity)
         public event Action<string> ConnectError;
 
+        // Видео: кадры BGRA (packed, stride = width*4). CallForm рисует плитки.
+        public event Action<string, bool, byte[], int, int> RemoteVideoFrame; // (identity, isScreen, bgra, w, h)
+        public event Action<string, bool> RemoteVideoRemoved;                 // (identity, isScreen)
+        public event Action<byte[], int, int> LocalCameraFrame;               // локальное превью камеры
+        public event Action<byte[], int, int> LocalScreenFrame;               // локальное превью демки
+
         private ulong _connectAsyncId;
         private ulong _roomHandle;
         private ulong _localHandle;      // OwnedParticipant локального участника
@@ -31,6 +46,10 @@ namespace PISMO.Native
         // Аудио 48 кГц моно — общий формат FFI-источника/стрима.
         private const int SR = 48000;
         private const int CH = 1;
+
+        // Монотонные микросекундные метки для кадров.
+        private static readonly Stopwatch _clock = Stopwatch.StartNew();
+        private static long NowUs() => _clock.ElapsedTicks * 1_000_000L / Stopwatch.Frequency;
 
         // Приём: микшер всех входящих голосов → один WaveOut.
         private WaveOutEvent _out;
@@ -43,6 +62,27 @@ namespace PISMO.Native
         private ulong _micSource, _micTrack;
         private ulong _publishAsyncId;
         private bool _micStarted;
+
+        // ── Видео (камера/демка) ──────────────────────────────────────────
+        private ulong _camSource, _camTrack, _camPublishAsyncId;
+        private VideoCaptureDevice _camDevice;
+        private string _camTrackSid;
+        private bool _camStarted;
+
+        private ulong _scrSource, _scrTrack, _scrPublishAsyncId;
+        private Thread _scrThread;
+        private volatile bool _scrRun;
+        private Rectangle _scrBounds;
+        private IntPtr _scrWindow;
+        private int _scrFps = 15;
+        private string _scrTrackSid;
+        private bool _scrStarted;
+
+        // sid трека → источник (камера/демка), чтобы различать входящее видео.
+        private readonly Dictionary<string, TrackSource> _sourceBySid = new();
+        // handle видеострима → (участник, это ли демка).
+        private readonly Dictionary<ulong, (string identity, bool isScreen)> _videoStreamMeta = new();
+        private readonly object _videoLock = new();
 
         public void Connect(string url, string token)
         {
@@ -155,6 +195,278 @@ namespace PISMO.Native
             finally { Marshal.FreeHGlobal(buf); }
         }
 
+        // ── Камера ────────────────────────────────────────────────────────
+        // moniker — DirectShow-идентификатор устройства; null/пусто → первая камера.
+        public void StartCamera(string moniker = null, int width = 1280, int height = 720)
+        {
+            if (_camStarted || _localHandle == 0) return;
+            _camStarted = true;
+            try
+            {
+                if (string.IsNullOrEmpty(moniker)) moniker = FirstCameraMoniker();
+                if (string.IsNullOrEmpty(moniker)) { _camStarted = false; ConnectError?.Invoke("камера: устройство не найдено"); return; }
+
+                var srcResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    NewVideoSource = new NewVideoSourceRequest
+                    {
+                        Type = VideoSourceType.VideoSourceNative,
+                        Resolution = new VideoSourceResolution { Width = (uint)width, Height = (uint)height },
+                        IsScreencast = false
+                    }
+                });
+                _camSource = srcResp.NewVideoSource.Source.Handle.Id;
+
+                var trkResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    CreateVideoTrack = new CreateVideoTrackRequest { Name = "camera", SourceHandle = _camSource }
+                });
+                _camTrack = trkResp.CreateVideoTrack.Track.Handle.Id;
+
+                var pubResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    PublishTrack = new PublishTrackRequest
+                    {
+                        LocalParticipantHandle = _localHandle,
+                        TrackHandle = _camTrack,
+                        Options = new TrackPublishOptions { Source = TrackSource.SourceCamera }
+                    }
+                });
+                _camPublishAsyncId = pubResp.PublishTrack.AsyncId;
+
+                _camDevice = new VideoCaptureDevice(moniker);
+                _camDevice.NewFrame += OnCameraFrame;
+                _camDevice.Start();
+            }
+            catch (Exception ex) { ConnectError?.Invoke("камера: " + ex.Message); _camStarted = false; }
+        }
+
+        public void StopCamera()
+        {
+            try
+            {
+                if (_camDevice != null)
+                {
+                    _camDevice.NewFrame -= OnCameraFrame;
+                    _camDevice.SignalToStop();
+                }
+            }
+            catch { }
+            _camDevice = null;
+
+            try
+            {
+                if (!string.IsNullOrEmpty(_camTrackSid) && _localHandle != 0)
+                    LiveKitFfi.Request(new FfiRequest
+                    {
+                        UnpublishTrack = new UnpublishTrackRequest
+                        {
+                            LocalParticipantHandle = _localHandle,
+                            TrackSid = _camTrackSid,
+                            StopOnUnpublish = true
+                        }
+                    });
+            }
+            catch { }
+
+            _camSource = 0; _camTrack = 0; _camTrackSid = null; _camStarted = false;
+        }
+
+        private void OnCameraFrame(object sender, NewFrameEventArgs e)
+        {
+            if (_camSource == 0) return;
+            try { PushBitmap(_camSource, e.Frame, LocalCameraFrame != null ? EmitLocalCam : null); }
+            catch { }
+        }
+
+        private void EmitLocalCam(byte[] bgra, int w, int h) => LocalCameraFrame?.Invoke(bgra, w, h);
+
+        private static string FirstCameraMoniker()
+        {
+            try
+            {
+                var devices = new FilterInfoCollection(FilterCategory.VideoInputDevice);
+                if (devices.Count > 0) return devices[0].MonikerString;
+            }
+            catch { }
+            return null;
+        }
+
+        // ── Демонстрация экрана / окна ────────────────────────────────────
+        public void StartScreenShare(Rectangle bounds, int fps = 15)
+            => StartScreenInternal(bounds, IntPtr.Zero, fps);
+
+        public void StartScreenShareWindow(IntPtr window, int fps = 15)
+        {
+            if (!GetWindowRect(window, out RECT r)) return;
+            StartScreenInternal(new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top), window, fps);
+        }
+
+        private void StartScreenInternal(Rectangle bounds, IntPtr window, int fps)
+        {
+            if (_scrStarted || _localHandle == 0) return;
+            if (bounds.Width <= 0 || bounds.Height <= 0) return;
+            _scrStarted = true;
+            _scrBounds = bounds;
+            _scrWindow = window;
+            _scrFps = Math.Max(1, Math.Min(60, fps));
+            try
+            {
+                var srcResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    NewVideoSource = new NewVideoSourceRequest
+                    {
+                        Type = VideoSourceType.VideoSourceNative,
+                        Resolution = new VideoSourceResolution
+                        {
+                            Width = (uint)(bounds.Width & ~1),
+                            Height = (uint)(bounds.Height & ~1)
+                        },
+                        IsScreencast = true
+                    }
+                });
+                _scrSource = srcResp.NewVideoSource.Source.Handle.Id;
+
+                var trkResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    CreateVideoTrack = new CreateVideoTrackRequest { Name = "screen", SourceHandle = _scrSource }
+                });
+                _scrTrack = trkResp.CreateVideoTrack.Track.Handle.Id;
+
+                var pubResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    PublishTrack = new PublishTrackRequest
+                    {
+                        LocalParticipantHandle = _localHandle,
+                        TrackHandle = _scrTrack,
+                        Options = new TrackPublishOptions { Source = TrackSource.SourceScreenshare }
+                    }
+                });
+                _scrPublishAsyncId = pubResp.PublishTrack.AsyncId;
+
+                _scrRun = true;
+                _scrThread = new Thread(ScreenLoop) { IsBackground = true, Name = "pismo-screen-capture" };
+                _scrThread.Start();
+            }
+            catch (Exception ex) { ConnectError?.Invoke("демонстрация: " + ex.Message); _scrStarted = false; }
+        }
+
+        public void StopScreenShare()
+        {
+            _scrRun = false;
+            try { _scrThread?.Join(500); } catch { }
+            _scrThread = null;
+
+            try
+            {
+                if (!string.IsNullOrEmpty(_scrTrackSid) && _localHandle != 0)
+                    LiveKitFfi.Request(new FfiRequest
+                    {
+                        UnpublishTrack = new UnpublishTrackRequest
+                        {
+                            LocalParticipantHandle = _localHandle,
+                            TrackSid = _scrTrackSid,
+                            StopOnUnpublish = true
+                        }
+                    });
+            }
+            catch { }
+
+            _scrSource = 0; _scrTrack = 0; _scrTrackSid = null; _scrWindow = IntPtr.Zero; _scrStarted = false;
+        }
+
+        private void ScreenLoop()
+        {
+            int delayMs = Math.Max(1, 1000 / _scrFps);
+            while (_scrRun)
+            {
+                long start = _clock.ElapsedMilliseconds;
+                try
+                {
+                    using Bitmap bmp = CaptureScreen();
+                    if (bmp != null) PushBitmap(_scrSource, bmp, LocalScreenFrame != null ? EmitLocalScreen : null);
+                }
+                catch { }
+                int sleep = delayMs - (int)(_clock.ElapsedMilliseconds - start);
+                if (sleep > 0) Thread.Sleep(sleep);
+            }
+        }
+
+        private void EmitLocalScreen(byte[] bgra, int w, int h) => LocalScreenFrame?.Invoke(bgra, w, h);
+
+        private Bitmap CaptureScreen()
+        {
+            if (_scrWindow != IntPtr.Zero)
+            {
+                if (!GetWindowRect(_scrWindow, out RECT r)) return null;
+                int w = r.Right - r.Left, h = r.Bottom - r.Top;
+                if (w <= 0 || h <= 0) return null;
+                var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+                using var g = Graphics.FromImage(bmp);
+                IntPtr hdc = g.GetHdc();
+                try { PrintWindow(_scrWindow, hdc, PW_RENDERFULLCONTENT); }
+                finally { g.ReleaseHdc(hdc); }
+                return bmp;
+            }
+            else
+            {
+                Rectangle b = _scrBounds;
+                var bmp = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppArgb);
+                using var g = Graphics.FromImage(bmp);
+                g.CopyFromScreen(b.Location, Point.Empty, b.Size, CopyPixelOperation.SourceCopy);
+                return bmp;
+            }
+        }
+
+        // Кадр Bitmap → CaptureVideoFrame (BGRA packed). Кадр читается синхронно во
+        // время Request, поэтому передаём Scan0 напрямую (без лишней копии), а
+        // локальное превью копируем отдельно только при наличии подписчиков.
+        private void PushBitmap(ulong source, Bitmap bmp, Action<byte[], int, int> preview)
+        {
+            if (source == 0 || bmp == null) return;
+            int fullW = bmp.Width, fullH = bmp.Height;
+            int w = fullW & ~1, h = fullH & ~1;   // libwebrtc требует чётные размеры
+            if (w <= 0 || h <= 0) return;
+
+            byte[] previewBuf = null;
+            BitmapData data = bmp.LockBits(new Rectangle(0, 0, fullW, fullH),
+                ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                LiveKitFfi.Request(new FfiRequest
+                {
+                    CaptureVideoFrame = new CaptureVideoFrameRequest
+                    {
+                        SourceHandle = source,
+                        TimestampUs = NowUs(),
+                        Rotation = VideoRotation.VideoRotation0,
+                        Buffer = new VideoBufferInfo
+                        {
+                            Type = VideoBufferType.Bgra,
+                            Width = (uint)w,
+                            Height = (uint)h,
+                            DataPtr = (ulong)data.Scan0.ToInt64(),
+                            Stride = (uint)data.Stride
+                        }
+                    }
+                });
+
+                if (preview != null)
+                {
+                    int stride = data.Stride;
+                    previewBuf = new byte[w * h * 4];
+                    if (stride == w * 4)
+                        Marshal.Copy(data.Scan0, previewBuf, 0, previewBuf.Length);
+                    else
+                        for (int y = 0; y < h; y++)
+                            Marshal.Copy(IntPtr.Add(data.Scan0, y * stride), previewBuf, y * w * 4, w * 4);
+                }
+            }
+            finally { bmp.UnlockBits(data); }
+
+            if (previewBuf != null) preview(previewBuf, w, h);
+        }
+
         // ── События FFI ───────────────────────────────────────────────────
         private void OnFfiEvent(FfiEvent ev)
         {
@@ -165,6 +477,8 @@ namespace PISMO.Native
                     case FfiEvent.MessageOneofCase.Connect: HandleConnect(ev.Connect); break;
                     case FfiEvent.MessageOneofCase.RoomEvent: HandleRoomEvent(ev.RoomEvent); break;
                     case FfiEvent.MessageOneofCase.AudioStreamEvent: HandleAudioStream(ev.AudioStreamEvent); break;
+                    case FfiEvent.MessageOneofCase.VideoStreamEvent: HandleVideoStream(ev.VideoStreamEvent); break;
+                    case FfiEvent.MessageOneofCase.PublishTrack: HandlePublishTrack(ev.PublishTrack); break;
                 }
             }
             catch { }
@@ -183,6 +497,8 @@ namespace PISMO.Native
             {
                 var info = pwt.Participant.Info;
                 ParticipantJoined?.Invoke(info.Identity, info.Name);
+                foreach (var pub in pwt.Publications)   // запоминаем источник по sid
+                    RememberSource(pub.Info.Sid, pub.Info.Source);
             }
         }
 
@@ -200,8 +516,14 @@ namespace PISMO.Native
                 case RoomEvent.MessageOneofCase.ParticipantDisconnected:
                     ParticipantLeftById?.Invoke(re.ParticipantDisconnected.ParticipantIdentity);
                     break;
+                case RoomEvent.MessageOneofCase.TrackPublished:
+                    RememberSource(re.TrackPublished.Publication.Info.Sid, re.TrackPublished.Publication.Info.Source);
+                    break;
                 case RoomEvent.MessageOneofCase.TrackSubscribed:
-                    OnTrackSubscribed(re.TrackSubscribed.Track);
+                    OnTrackSubscribed(re.TrackSubscribed.ParticipantIdentity, re.TrackSubscribed.Track);
+                    break;
+                case RoomEvent.MessageOneofCase.TrackUnsubscribed:
+                    OnTrackUnsubscribed(re.TrackUnsubscribed.ParticipantIdentity, re.TrackUnsubscribed.TrackSid);
                     break;
                 case RoomEvent.MessageOneofCase.Disconnected:
                     Disconnected?.Invoke();
@@ -209,29 +531,72 @@ namespace PISMO.Native
             }
         }
 
-        // Подписались на удалённый трек: аудио → открываем стрим и играем.
-        private void OnTrackSubscribed(OwnedTrack track)
+        private void RememberSource(string sid, TrackSource source)
         {
-            if (track.Info.Kind != TrackKind.KindAudio) return;   // видео/демка — отдельно
-            var resp = LiveKitFfi.Request(new FfiRequest
+            if (string.IsNullOrEmpty(sid)) return;
+            lock (_videoLock) _sourceBySid[sid] = source;
+        }
+
+        private bool IsScreenSid(string sid)
+        {
+            lock (_videoLock)
+                return _sourceBySid.TryGetValue(sid, out var s) && s == TrackSource.SourceScreenshare;
+        }
+
+        private void HandlePublishTrack(PublishTrackCallback cb)
+        {
+            if (cb.MessageCase == PublishTrackCallback.MessageOneofCase.Error) return;
+            string sid = cb.Publication.Info.Sid;
+            if (cb.AsyncId == _camPublishAsyncId) _camTrackSid = sid;
+            else if (cb.AsyncId == _scrPublishAsyncId) _scrTrackSid = sid;
+        }
+
+        // Подписались на удалённый трек: аудио → микшер; видео → открываем видеострим.
+        private void OnTrackSubscribed(string identity, OwnedTrack track)
+        {
+            if (track.Info.Kind == TrackKind.KindAudio)
             {
-                NewAudioStream = new NewAudioStreamRequest
+                var resp = LiveKitFfi.Request(new FfiRequest
                 {
-                    TrackHandle = track.Handle.Id,
-                    Type = AudioStreamType.AudioStreamNative,
-                    SampleRate = SR,
-                    NumChannels = CH
+                    NewAudioStream = new NewAudioStreamRequest
+                    {
+                        TrackHandle = track.Handle.Id,
+                        Type = AudioStreamType.AudioStreamNative,
+                        SampleRate = SR,
+                        NumChannels = CH
+                    }
+                });
+                ulong streamHandle = resp.NewAudioStream.Stream.Handle.Id;
+                lock (_audioLock)
+                {
+                    EnsurePlayback();
+                    var prov = new BufferedWaveProvider(new WaveFormat(SR, 16, CH))
+                    { BufferDuration = TimeSpan.FromSeconds(2), DiscardOnBufferOverflow = true };
+                    _remoteByStream[streamHandle] = prov;
+                    _mixer.AddMixerInput(prov.ToSampleProvider());
                 }
-            });
-            ulong streamHandle = resp.NewAudioStream.Stream.Handle.Id;
-            lock (_audioLock)
-            {
-                EnsurePlayback();
-                var prov = new BufferedWaveProvider(new WaveFormat(SR, 16, CH))
-                { BufferDuration = TimeSpan.FromSeconds(2), DiscardOnBufferOverflow = true };
-                _remoteByStream[streamHandle] = prov;
-                _mixer.AddMixerInput(prov.ToSampleProvider());
             }
+            else if (track.Info.Kind == TrackKind.KindVideo)
+            {
+                bool isScreen = IsScreenSid(track.Info.Sid);
+                var resp = LiveKitFfi.Request(new FfiRequest
+                {
+                    NewVideoStream = new NewVideoStreamRequest
+                    {
+                        TrackHandle = track.Handle.Id,
+                        Type = VideoStreamType.VideoStreamNative,
+                        Format = VideoBufferType.Bgra,
+                        NormalizeStride = true
+                    }
+                });
+                ulong streamHandle = resp.NewVideoStream.Stream.Handle.Id;
+                lock (_videoLock) _videoStreamMeta[streamHandle] = (identity, isScreen);
+            }
+        }
+
+        private void OnTrackUnsubscribed(string identity, string sid)
+        {
+            RemoteVideoRemoved?.Invoke(identity, IsScreenSid(sid));
         }
 
         private void HandleAudioStream(AudioStreamEvent ase)
@@ -254,6 +619,36 @@ namespace PISMO.Native
             LiveKitFfi.DropHandle(frame.Handle.Id);
         }
 
+        private void HandleVideoStream(VideoStreamEvent vse)
+        {
+            if (vse.MessageCase == VideoStreamEvent.MessageOneofCase.Eos)
+            {
+                lock (_videoLock) _videoStreamMeta.Remove(vse.StreamHandle);
+                return;
+            }
+            if (vse.MessageCase != VideoStreamEvent.MessageOneofCase.FrameReceived) return;
+
+            (string identity, bool isScreen) meta;
+            lock (_videoLock) { if (!_videoStreamMeta.TryGetValue(vse.StreamHandle, out meta)) meta = (null, false); }
+
+            var buffer = vse.FrameReceived.Buffer;
+            var info = buffer.Info;
+            int w = (int)info.Width, h = (int)info.Height;
+            if (info.DataPtr != 0 && w > 0 && h > 0)
+            {
+                int stride = info.HasStride && info.Stride > 0 ? (int)info.Stride : w * 4;
+                var bgra = new byte[w * h * 4];
+                IntPtr src = new IntPtr((long)info.DataPtr);
+                if (stride == w * 4)
+                    Marshal.Copy(src, bgra, 0, bgra.Length);
+                else
+                    for (int y = 0; y < h; y++)
+                        Marshal.Copy(IntPtr.Add(src, y * stride), bgra, y * w * 4, w * 4);
+                RemoteVideoFrame?.Invoke(meta.identity, meta.isScreen, bgra, w, h);
+            }
+            LiveKitFfi.DropHandle(buffer.Handle.Id);
+        }
+
         private void EnsurePlayback()
         {
             if (_out != null) return;
@@ -268,10 +663,24 @@ namespace PISMO.Native
             if (_disposed) return;
             _disposed = true;
             try { LiveKitFfi.FfiEventReceived -= OnFfiEvent; } catch { }
+            try { StopScreenShare(); } catch { }
+            try { StopCamera(); } catch { }
             try { StopMicrophone(); } catch { }
             try { DisconnectCall(); } catch { }
             try { _out?.Stop(); _out?.Dispose(); } catch { }
             _out = null;
         }
+
+        // ── Win32 (захват экрана/окна) ────────────────────────────────────
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT { public int Left, Top, Right, Bottom; }
+
+        private const uint PW_RENDERFULLCONTENT = 0x00000002;
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll")]
+        private static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
     }
 }
