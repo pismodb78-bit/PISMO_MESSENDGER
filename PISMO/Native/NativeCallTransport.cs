@@ -689,14 +689,15 @@ namespace PISMO.Native
             _ => 0,               // auto
         };
 
-        // Разумный потолок битрейта под высоту (демка = много деталей/текста).
+        // Потолок битрейта под высоту (демка = много деталей/текста, не жалеем канал).
         private static ulong BitrateFor(int height)
         {
-            if (height >= 1080) return 6_000_000;
-            if (height >= 720) return 3_500_000;
-            if (height >= 480) return 1_800_000;
-            if (height >= 360) return 1_000_000;
-            return 2_500_000;   // неизвестно/маленькое — умеренно
+            if (height >= 1440) return 25_000_000;
+            if (height >= 1080) return 15_000_000;
+            if (height >= 720) return 8_000_000;
+            if (height >= 480) return 4_000_000;
+            if (height >= 360) return 2_500_000;
+            return 10_000_000;   // неизвестно/родное большое — щедро
         }
 
         private void EmitLocalScreen(byte[] bgra, int w, int h) => LocalScreenFrame?.Invoke(bgra, w, h);
