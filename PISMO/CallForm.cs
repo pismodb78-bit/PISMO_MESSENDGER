@@ -1323,21 +1323,15 @@ namespace PISMO
             }
         }
 
-        /// <summary>Свой список мониторов (все 3, прокручиваемый) → захват выбранного
-        /// (canvas-путь). Кнопка «Окно или другой источник» открывает системный
-        /// диалог (там прокручиваемая плитка окон).</summary>
+        /// <summary>Свой выборщик (вкладки «Окно»/«Весь экран», все мониторы и окна) →
+        /// захват выбранного источника. Без системного диалога Chromium — работает и
+        /// при активном VR (путь к нативному захвату).</summary>
         private void PickMonitorAndShare()
         {
             try
             {
                 using var picker = new ScreenPickerForm();
                 if (picker.ShowDialog(this) != DialogResult.OK) return;
-                if (picker.UseSystemPicker)
-                {
-                    _screenPreviewPending = true;
-                    _transport.PreviewScreen(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps);
-                    return;
-                }
                 if (picker.SelectedBounds is Rectangle b)
                 {
                     _screenPreviewPending = true;
