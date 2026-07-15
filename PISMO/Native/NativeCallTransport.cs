@@ -74,6 +74,7 @@ namespace PISMO.Native
         private string _camTrackSid;
         private bool _camStarted;
         private bool _camPublished;
+        private int _camW = 1280, _camH = 720;   // реальное разрешение захвата камеры
 
         private ulong _scrSource, _scrTrack, _scrPublishAsyncId;
         private Thread _scrThread;
@@ -249,12 +250,18 @@ namespace PISMO.Native
                 if (string.IsNullOrEmpty(moniker)) moniker = FirstCameraMoniker();
                 if (string.IsNullOrEmpty(moniker)) { _camStarted = false; ConnectError?.Invoke("камера: устройство не найдено"); return; }
 
+                // Создаём устройство и выбираем лучшее разрешение захвата (до 720p),
+                // иначе камера часто отдаёт дефолтные 640×480.
+                _camDevice = new VideoCaptureDevice(moniker);
+                _camW = width; _camH = height;
+                PickCameraResolution(_camDevice);
+
                 var srcResp = LiveKitFfi.Request(new FfiRequest
                 {
                     NewVideoSource = new NewVideoSourceRequest
                     {
                         Type = VideoSourceType.VideoSourceNative,
-                        Resolution = new VideoSourceResolution { Width = (uint)width, Height = (uint)height },
+                        Resolution = new VideoSourceResolution { Width = (uint)_camW, Height = (uint)_camH },
                         IsScreencast = false
                     }
                 });
@@ -266,11 +273,39 @@ namespace PISMO.Native
                 });
                 _camTrack = trkResp.CreateVideoTrack.Track.Handle.Id;
 
-                _camDevice = new VideoCaptureDevice(moniker);
                 _camDevice.NewFrame += OnCameraFrame;
                 _camDevice.Start();
             }
             catch (Exception ex) { ConnectError?.Invoke("камера: " + ex.Message); _camStarted = false; }
+        }
+
+        // Ставит устройству наилучшее разрешение с высотой ≤ 720 (баланс качество/
+        // нагрузка); если таких нет — наименьшее. Обновляет _camW/_camH.
+        private void PickCameraResolution(VideoCaptureDevice dev)
+        {
+            try
+            {
+                var caps = dev.VideoCapabilities;
+                if (caps == null || caps.Length == 0) return;
+                AForge.Video.DirectShow.VideoCapabilities best = null;
+                foreach (var c in caps)
+                    if (c.FrameSize.Height <= 720 &&
+                        (best == null || (long)c.FrameSize.Width * c.FrameSize.Height >
+                                          (long)best.FrameSize.Width * best.FrameSize.Height))
+                        best = c;
+                if (best == null)
+                    foreach (var c in caps)
+                        if (best == null || (long)c.FrameSize.Width * c.FrameSize.Height <
+                                             (long)best.FrameSize.Width * best.FrameSize.Height)
+                            best = c;
+                if (best != null)
+                {
+                    dev.VideoResolution = best;
+                    _camW = best.FrameSize.Width;
+                    _camH = best.FrameSize.Height;
+                }
+            }
+            catch { }
         }
 
         /// <summary>Публикация уже захватываемой камеры (после подтверждения превью).</summary>
@@ -285,7 +320,17 @@ namespace PISMO.Native
                     {
                         LocalParticipantHandle = _localHandle,
                         TrackHandle = _camTrack,
-                        Options = new TrackPublishOptions { Source = TrackSource.SourceCamera }
+                        Options = new TrackPublishOptions
+                        {
+                            Source = TrackSource.SourceCamera,
+                            VideoCodec = (VideoCodec)1,                              // H264
+                            DegradationPreference = (LiveKit.Proto.DegradationPreference)1, // MAINTAIN_FRAMERATE (лицо: плавность важнее)
+                            VideoEncoding = new VideoEncoding
+                            {
+                                MaxBitrate = CamBitrateFor(_camH),
+                                MaxFramerate = 30
+                            }
+                        }
                     }
                 });
                 _camPublishAsyncId = pubResp.PublishTrack.AsyncId;
@@ -312,6 +357,7 @@ namespace PISMO.Native
                 if (string.IsNullOrEmpty(moniker)) moniker = FirstCameraMoniker();
                 if (string.IsNullOrEmpty(moniker)) return;
                 _camDevice = new VideoCaptureDevice(moniker);
+                PickCameraResolution(_camDevice);
                 _camDevice.NewFrame += OnCameraFrame;
                 _camDevice.Start();
             }
@@ -688,6 +734,15 @@ namespace PISMO.Native
             "integrated" => 2,    // встроенная → HARDWARE (обобщённо)
             _ => 0,               // auto
         };
+
+        // Битрейт камеры под высоту (лицо/движение — умереннее, чем демка-текст).
+        private static ulong CamBitrateFor(int height)
+        {
+            if (height >= 1080) return 4_000_000;
+            if (height >= 720) return 2_500_000;
+            if (height >= 480) return 1_200_000;
+            return 1_500_000;
+        }
 
         // Потолок битрейта под высоту (демка = много деталей/текста, не жалеем канал).
         private static ulong BitrateFor(int height)
