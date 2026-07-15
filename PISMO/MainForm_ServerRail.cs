@@ -293,6 +293,8 @@ namespace PISMO
             _railSelectedServerId = -1;
             try { if (_serverEmbedHost != null) _serverEmbedHost.Visible = false; } catch { }
             try { pnlSidebar.Visible = true; pnlMain.Visible = true; } catch { }
+            // Возвращаем голосовой док обратно в сайдбар ЛС.
+            try { RestoreVoiceDockToSidebar(); } catch { }
             try { foreach (Control c in _serverRail.Controls) c.Invalidate(); } catch { }
         }
 
@@ -324,6 +326,9 @@ namespace PISMO
                     _serverEmbedHost.Visible = true;
                     _serverEmbedHost.BringToFront();
                     foreach (Control c in _serverRail.Controls) c.Invalidate();
+                    // Тот же голосовой док показываем в колонке каналов сервера
+                    // (сайдбар ЛС с ним скрыт) — 1-в-1, без копий.
+                    try { _serversForm.MountDock(_voiceDock); } catch { }
                 }
                 else
                 {

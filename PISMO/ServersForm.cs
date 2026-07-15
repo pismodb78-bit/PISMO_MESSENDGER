@@ -317,212 +317,28 @@ namespace PISMO
             return footer;
         }
 
-        // ── Плашка «Голосовая связь подключена» над футером колонки каналов ──
-        // (в серверном виде основной сайдбар MainForm с плашкой скрыт, поэтому
-        //  показываем свою — иначе индикатора подключения к голосу нет).
-        private Panel _voicePlaque;
-        private Label _voicePlaqueSub;
-        private Form _voicePlaqueCall;
-        private Button _plaqueEq;               // кнопка шумоподавления (как в доке MainForm)
-        private Label _plaquePingChip;          // чип «NN ms» по клику на радар
-        private System.Windows.Forms.Timer _plaquePingTimer;
+        // ── Голосовой док в серверном виде ──────────────────────────────
+        // В серверном виде основной сайдбар MainForm (с доком «Голосовая связь
+        // подключена») скрыт, поэтому переносим ТОТ ЖЕ САМЫЙ док в колонку каналов
+        // (1-в-1, без копий). Ссылку на контейнер задаёт Designer.
+        internal Panel ChannelHost;
 
-        // Точная копия дока «Голосовая связь подключена» из сайдбара MainForm:
-        // зелёный радар (клик → пинг), заголовок, «канал / сервер», кнопка
-        // ШУМОПОДАВЛЕНИЯ 🎚 (зелёная = вкл) и повесить трубку ☎.
-        internal Panel BuildVoicePlaque()
+        /// <summary>Вставить голосовой док MainForm в колонку каналов (над футером).</summary>
+        public void MountDock(Control dock)
         {
-            Color card = Color.FromArgb(32, 34, 37);
-            var p = new Panel
+            try
             {
-                Dock = DockStyle.Bottom,
-                Height = 64,
-                BackColor = Color.FromArgb(47, 49, 54),
-                Visible = false,
-                Cursor = Cursors.Hand
-            };
-            p.Paint += (s, e) =>
-            {
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                var rect = new Rectangle(6, 4, p.Width - 12, p.Height - 8);
-                using var path = RoundRect(rect, 10);
-                using var br = new SolidBrush(card);
-                e.Graphics.FillPath(br, path);
-            };
-
-            // Радар — зелёный индикатор; клик показывает пинг.
-            var radar = new Panel { Size = new Size(16, 16), Location = new Point(16, 24), BackColor = card, Cursor = Cursors.Hand };
-            radar.Paint += (s, e) =>
-            {
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                using var dot = new SolidBrush(Color.FromArgb(59, 165, 93));
-                e.Graphics.FillEllipse(dot, 4, 4, 8, 8);
-                using var arc = new Pen(Color.FromArgb(59, 165, 93), 1.6f);
-                e.Graphics.DrawArc(arc, 1, 1, 14, 14, -60, 120);
-            };
-            radar.Click += (s, e) => ShowPlaquePing();
-
-            var title = new Label
-            {
-                Text = "Голосовая связь подключена",
-                ForeColor = Color.FromArgb(59, 165, 93),
-                BackColor = card,
-                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
-                AutoSize = false,
-                Location = new Point(38, 13),
-                Size = new Size(172, 18),
-                AutoEllipsis = true,
-                Cursor = Cursors.Hand
-            };
-            _voicePlaqueSub = new Label
-            {
-                Text = "",
-                ForeColor = Color.FromArgb(150, 152, 158),
-                BackColor = card,
-                Font = new Font("Segoe UI", 8f),
-                AutoSize = false,
-                Location = new Point(38, 32),
-                Size = new Size(172, 16),
-                AutoEllipsis = true,
-                Cursor = Cursors.Hand
-            };
-
-            // Кнопки справа — в правом док-контейнере (всегда видны при любой
-            // ширине колонки). Крупные (по просьбе): 40×40.
-            var actions = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Right,
-                FlowDirection = FlowDirection.RightToLeft,
-                WrapContents = false,
-                AutoSize = false,
-                Width = 96,
-                BackColor = card,
-                Padding = new Padding(0, 12, 8, 0)
-            };
-
-            // Кнопка ШУМОПОДАВЛЕНИЯ (та самая с фото 1, зелёная = вкл).
-            _plaqueEq = new Button
-            {
-                Text = "🎚",
-                Font = new Font("Segoe UI", 14f),
-                Size = new Size(40, 40),
-                Margin = new Padding(4, 0, 0, 0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = card,
-                Cursor = Cursors.Hand,
-                TabStop = false
-            };
-            _plaqueEq.FlatAppearance.BorderSize = 0;
-            PaintPlaqueEq();
-            _plaqueEq.Click += (s, e) =>
-            {
-                DeviceSettings.NoiseSuppression = !DeviceSettings.NoiseSuppression;
-                try { DeviceSettings.Save(); } catch { }
-                PaintPlaqueEq();
-                try { (_voicePlaqueCall as CallForm)?.SetNoiseSuppressionLive(DeviceSettings.NoiseSuppression); } catch { }
-            };
-            new ToolTip().SetToolTip(_plaqueEq, "Шумоподавление");
-
-            // Повесить трубку.
-            var hangup = new Button
-            {
-                Text = "☎",
-                Font = new Font("Segoe UI", 14f, FontStyle.Bold),
-                Size = new Size(40, 40),
-                Margin = new Padding(4, 0, 0, 0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(237, 66, 69),
-                ForeColor = Color.White,
-                Cursor = Cursors.Hand,
-                TabStop = false
-            };
-            hangup.FlatAppearance.BorderSize = 0;
-            new ToolTip().SetToolTip(hangup, "Выйти из голосового");
-            hangup.Click += (s, e) => { try { if (_voicePlaqueCall != null && !_voicePlaqueCall.IsDisposed) _voicePlaqueCall.Close(); } catch { } };
-
-            actions.Controls.Add(hangup);     // первый в RightToLeft = самый правый
-            actions.Controls.Add(_plaqueEq);  // левее трубки
-
-            // Чип пинга.
-            _plaquePingChip = new Label
-            {
-                AutoSize = true,
-                BackColor = Color.FromArgb(17, 18, 20),
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                Padding = new Padding(8, 3, 8, 3),
-                Location = new Point(8, 2),
-                Visible = false
-            };
-            _plaquePingTimer = new System.Windows.Forms.Timer { Interval = 2000 };
-            _plaquePingTimer.Tick += (s, e) => { _plaquePingTimer.Stop(); if (_plaquePingChip != null) _plaquePingChip.Visible = false; };
-
-            void FocusCall(object s, EventArgs e)
-            {
-                try
+                if (ChannelHost == null || dock == null) return;
+                if (dock.Parent != ChannelHost)
                 {
-                    var c = _voicePlaqueCall;
-                    if (c == null || c.IsDisposed) return;
-                    if (!c.Visible) c.Show();
-                    if (c.WindowState == FormWindowState.Minimized) c.WindowState = FormWindowState.Normal;
-                    c.BringToFront(); c.Activate();
+                    dock.Parent?.Controls.Remove(dock);
+                    ChannelHost.Controls.Add(dock);
                 }
-                catch { }
+                dock.Dock = DockStyle.Bottom;
+                // Индекс 1 → док над футером (футер уходит в самый низ).
+                ChannelHost.Controls.SetChildIndex(dock, 1);
             }
-            p.Click += FocusCall; title.Click += FocusCall; _voicePlaqueSub.Click += FocusCall;
-
-            p.Controls.Add(radar);
-            p.Controls.Add(title);
-            p.Controls.Add(_voicePlaqueSub);
-            p.Controls.Add(actions);
-            p.Controls.Add(_plaquePingChip);
-            actions.BringToFront();
-            _plaquePingChip.BringToFront();
-            _voicePlaque = p;
-            return p;
-        }
-
-        private void PaintPlaqueEq()
-        {
-            if (_plaqueEq != null)
-                _plaqueEq.ForeColor = DeviceSettings.NoiseSuppression
-                    ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158);
-        }
-
-        private void ShowPlaquePing()
-        {
-            if (_plaquePingChip == null) return;
-            int ms = (_voicePlaqueCall as CallForm)?.CurrentPingMs ?? 0;
-            _plaquePingChip.Text = ms > 0 ? $"📶 {ms} ms" : "Пинг…";
-            _plaquePingChip.Visible = true;
-            _plaquePingChip.BringToFront();
-            _plaquePingTimer?.Stop(); _plaquePingTimer?.Start();
-        }
-
-        private static System.Drawing.Drawing2D.GraphicsPath RoundRect(Rectangle r, int radius)
-        {
-            int d = radius * 2;
-            var path = new System.Drawing.Drawing2D.GraphicsPath();
-            path.AddArc(r.X, r.Y, d, d, 180, 90);
-            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-            path.CloseFigure();
-            return path;
-        }
-
-        private void ShowVoicePlaque(string subtitle, Form call)
-        {
-            _voicePlaqueCall = call;
-            if (_voicePlaqueSub != null) _voicePlaqueSub.Text = subtitle ?? "";
-            PaintPlaqueEq();
-            if (_voicePlaque != null) { _voicePlaque.Visible = true; _voicePlaque.Invalidate(); }
-        }
-
-        private void HideVoicePlaque()
-        {
-            _voicePlaqueCall = null;
-            if (_voicePlaque != null) _voicePlaque.Visible = false;
+            catch { }
         }
 
         private void OnWs(string type, int senderId, int sessionId, string payload)
@@ -1078,17 +894,15 @@ namespace PISMO
             if (_joinedVoice.Contains(cid)) return;
             _joinedVoice.Add(cid);
             var call = new CallForm("vch_" + cid, name);
-            // Показ «Голосовая связь подключена»: и в сайдбаре MainForm (для вида ЛС),
-            // и своя плашка в колонке каналов (в серверном виде сайдбар скрыт).
+            // Показ «Голосовая связь подключена» — тот же док MainForm (в серверном
+            // виде он уже перенесён в колонку каналов). Видимостью рулит Notify*.
             call.FormClosed += (a, b) =>
             {
                 _joinedVoice.Remove(cid);
                 MainForm.Current?.NotifyVoiceEnded();
-                HideVoicePlaque();
             };
             call.Show();
             MainForm.Current?.NotifyVoiceStarted($"{name} / {_serverName}", call);
-            ShowVoicePlaque($"{name} / {_serverName}", call);
         }
 
         // ── Ответы (reply) ──────────────────────────────────────────────
