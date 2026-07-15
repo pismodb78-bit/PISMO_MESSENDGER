@@ -35,24 +35,40 @@ namespace PISMO
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.Sizable;
             MinimizeBox = false;
+            MaximizeBox = false;
             ShowInTaskbar = false;
             BackColor = Color.FromArgb(24, 25, 28);
             ForeColor = Color.FromArgb(220, 221, 222);
             ClientSize = new Size(900, 640);
-            MinimumSize = new Size(560, 420);
+            MinimumSize = new Size(560, 460);
+
+            // Детерминированная раскладка: 4 строки (заголовок / вкладки / сетка /
+            // нижняя панель с кнопками). Раньше docking + Anchor на больших/DPI-
+            // масштабированных экранах прятал кнопки «Поделиться»/«Отмена» — здесь
+            // нижняя строка фиксированной высоты, кнопки видны всегда.
+            var root = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 4,
+                BackColor = Color.FromArgb(24, 25, 28)
+            };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); // заголовок
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); // вкладки
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // сетка
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 60)); // кнопки
 
             var title = new Label
             {
                 Text = "Выберите, чем поделиться",
-                Dock = DockStyle.Top,
-                Height = 40,
+                Dock = DockStyle.Fill,
                 Padding = new Padding(16, 12, 0, 0),
                 Font = new Font("Segoe UI", 11f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(235, 236, 238)
             };
 
             // Вкладки «Окно» / «Весь экран».
-            var tabs = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.FromArgb(24, 25, 28) };
+            var tabs = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(24, 25, 28) };
             _btnWindows = MakeTab("Окно", 16);
             _btnScreens = MakeTab("Весь экран", 140);
             _btnWindows.Click += (s, e) => SetTab(false);
@@ -70,45 +86,72 @@ namespace PISMO
                 BackColor = Color.FromArgb(24, 25, 28)
             };
 
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 56, BackColor = Color.FromArgb(30, 31, 34) };
+            var bottom = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 31, 34) };
+            // Кнопки справа налево — всегда прижаты к правому краю и видимы.
+            var actions = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft,
+                WrapContents = false,
+                Padding = new Padding(0, 13, 16, 0),
+                BackColor = Color.FromArgb(30, 31, 34)
+            };
             _btnShare = new Button
             {
                 Text = "Поделиться",
-                Size = new Size(130, 34),
-                Anchor = AnchorStyles.Right | AnchorStyles.Top,
+                Size = new Size(140, 34),
+                Margin = new Padding(6, 0, 0, 0),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(88, 101, 242),
                 ForeColor = Color.White,
-                Font = new Font("Segoe UI", 9.5f),
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
                 Enabled = false
             };
             _btnShare.FlatAppearance.BorderSize = 0;
-            _btnShare.Location = new Point(ClientSize.Width - 270, 11);
-            _btnShare.Click += (s, e) => { if (SelectedBounds != null) { DialogResult = DialogResult.OK; Close(); } };
+            _btnShare.Click += (s, e) => Share();
 
             _btnCancel = new Button
             {
                 Text = "Отмена",
                 Size = new Size(120, 34),
-                Anchor = AnchorStyles.Right | AnchorStyles.Top,
+                Margin = new Padding(6, 0, 0, 0),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(45, 47, 51),
                 ForeColor = Color.White,
                 Font = new Font("Segoe UI", 9.5f)
             };
             _btnCancel.FlatAppearance.BorderSize = 0;
-            _btnCancel.Location = new Point(ClientSize.Width - 132, 11);
             _btnCancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
 
-            bottom.Controls.Add(_btnShare);
-            bottom.Controls.Add(_btnCancel);
+            actions.Controls.Add(_btnShare);   // первый в RightToLeft = самый правый
+            actions.Controls.Add(_btnCancel);
+            bottom.Controls.Add(actions);
 
-            Controls.Add(_grid);
-            Controls.Add(tabs);
-            Controls.Add(title);
-            Controls.Add(bottom);
+            root.Controls.Add(title, 0, 0);
+            root.Controls.Add(tabs, 0, 1);
+            root.Controls.Add(_grid, 0, 2);
+            root.Controls.Add(bottom, 0, 3);
+            Controls.Add(root);
 
             SetTab(false);   // старт с вкладки «Окно», как в системном
+        }
+
+        /// <summary>Подтвердить выбор источника и закрыть окно (кнопка / двойной клик).</summary>
+        private void Share()
+        {
+            if (SelectedBounds != null) { DialogResult = DialogResult.OK; Close(); }
+        }
+
+        // Гарантируем, что окно помещается в рабочую область (на больших/DPI-
+        // масштабированных экранах оно раньше раздувалось, и кнопки уходили вниз).
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            var wa = Screen.FromControl(this).WorkingArea;
+            int w = Math.Min(Width, wa.Width - 40);
+            int h = Math.Min(Height, wa.Height - 40);
+            Size = new Size(w, h);
+            Location = new Point(wa.X + (wa.Width - w) / 2, wa.Y + (wa.Height - h) / 2);
         }
 
         private Button MakeTab(string text, int x)
@@ -212,6 +255,10 @@ namespace PISMO
                 _btnShare.Enabled = true;
             }
             tile.Click += Select; pb.Click += Select; cap.Click += Select;
+            // Двойной клик по источнику = сразу «Поделиться» (запуск демки),
+            // даже если кнопку внизу почему-то не видно.
+            void ShareNow(object s, EventArgs e) { Select(s, e); Share(); }
+            tile.DoubleClick += ShareNow; pb.DoubleClick += ShareNow; cap.DoubleClick += ShareNow;
 
             tile.Controls.Add(cap);
             tile.Controls.Add(pb);
