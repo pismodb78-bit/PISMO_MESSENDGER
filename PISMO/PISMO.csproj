@@ -62,6 +62,15 @@
     </None>
   </ItemGroup>
 
+  <!-- Нативная библиотека LiveKit (Rust/libwebrtc, win-x64) кладётся рядом с
+       PISMO.exe: без неё нативный звонок падает с DllNotFoundException.
+       Достаётся из колеса livekit (livekit/rtc/resources/livekit_ffi.dll). -->
+  <ItemGroup>
+    <None Update="livekit_ffi.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
   <!-- Локальный RNNoise (офлайн): папка noise рядом с exe, отдаётся через
        virtual host pismo-noise.local. Решает блокировку CDN и несовместимость
        версий esm/wasm/worklet. -->
