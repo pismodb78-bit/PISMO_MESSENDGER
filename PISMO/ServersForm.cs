@@ -317,6 +317,101 @@ namespace PISMO
             return footer;
         }
 
+        // ── Плашка «Голосовая связь подключена» над футером колонки каналов ──
+        // (в серверном виде основной сайдбар MainForm с плашкой скрыт, поэтому
+        //  показываем свою — иначе индикатора подключения к голосу нет).
+        private Panel _voicePlaque;
+        private Label _voicePlaqueSub;
+        private Form _voicePlaqueCall;
+
+        internal Panel BuildVoicePlaque()
+        {
+            var p = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 46,
+                BackColor = Color.FromArgb(32, 34, 37),
+                Visible = false,
+                Cursor = Cursors.Hand
+            };
+            p.Paint += (s, e) =>
+            {
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using var dot = new SolidBrush(Color.FromArgb(59, 165, 93));
+                e.Graphics.FillEllipse(dot, 14, p.Height / 2 - 5, 10, 10);
+            };
+            var title = new Label
+            {
+                Text = "Голосовая связь подключена",
+                ForeColor = Color.FromArgb(59, 165, 93),
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+                AutoSize = false,
+                Location = new Point(34, 6),
+                Size = new Size(230, 17),
+                AutoEllipsis = true,
+                Cursor = Cursors.Hand
+            };
+            _voicePlaqueSub = new Label
+            {
+                Text = "",
+                ForeColor = Color.FromArgb(150, 152, 158),
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 8f),
+                AutoSize = false,
+                Location = new Point(34, 24),
+                Size = new Size(230, 15),
+                AutoEllipsis = true,
+                Cursor = Cursors.Hand
+            };
+            var hangup = new Button
+            {
+                Text = "☎",
+                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+                Size = new Size(30, 30),
+                Dock = DockStyle.Right,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(237, 66, 69),
+                ForeColor = Color.White,
+                Cursor = Cursors.Hand
+            };
+            hangup.FlatAppearance.BorderSize = 0;
+            hangup.Click += (s, e) => { try { if (_voicePlaqueCall != null && !_voicePlaqueCall.IsDisposed) _voicePlaqueCall.Close(); } catch { } };
+
+            void FocusCall(object s, EventArgs e)
+            {
+                try
+                {
+                    var c = _voicePlaqueCall;
+                    if (c == null || c.IsDisposed) return;
+                    if (!c.Visible) c.Show();
+                    if (c.WindowState == FormWindowState.Minimized) c.WindowState = FormWindowState.Normal;
+                    c.BringToFront(); c.Activate();
+                }
+                catch { }
+            }
+            p.Click += FocusCall; title.Click += FocusCall; _voicePlaqueSub.Click += FocusCall;
+
+            p.Controls.Add(title);
+            p.Controls.Add(_voicePlaqueSub);
+            p.Controls.Add(hangup);
+            _voicePlaque = p;
+            return p;
+        }
+
+        private void ShowVoicePlaque(string subtitle, Form call)
+        {
+            _voicePlaqueCall = call;
+            if (_voicePlaqueSub != null) _voicePlaqueSub.Text = subtitle ?? "";
+            if (_voicePlaque != null) { _voicePlaque.Visible = true; _voicePlaque.Invalidate(); }
+        }
+
+        private void HideVoicePlaque()
+        {
+            _voicePlaqueCall = null;
+            if (_voicePlaque != null) _voicePlaque.Visible = false;
+        }
+
         private void OnWs(string type, int senderId, int sessionId, string payload)
         {
             if (type == "new_message" && payload == "server" && sessionId == _channelId)
@@ -870,11 +965,17 @@ namespace PISMO
             if (_joinedVoice.Contains(cid)) return;
             _joinedVoice.Add(cid);
             var call = new CallForm("vch_" + cid, name);
-            // Показ «Голосовая связь подключена» в сайдбаре главного окна
-            // (как в Discord: канал / сервер) и скрытие при выходе.
-            call.FormClosed += (a, b) => { _joinedVoice.Remove(cid); MainForm.Current?.NotifyVoiceEnded(); };
+            // Показ «Голосовая связь подключена»: и в сайдбаре MainForm (для вида ЛС),
+            // и своя плашка в колонке каналов (в серверном виде сайдбар скрыт).
+            call.FormClosed += (a, b) =>
+            {
+                _joinedVoice.Remove(cid);
+                MainForm.Current?.NotifyVoiceEnded();
+                HideVoicePlaque();
+            };
             call.Show();
             MainForm.Current?.NotifyVoiceStarted($"{name} / {_serverName}", call);
+            ShowVoicePlaque($"{name} / {_serverName}", call);
         }
 
         // ── Ответы (reply) ──────────────────────────────────────────────

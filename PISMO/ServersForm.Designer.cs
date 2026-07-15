@@ -102,6 +102,9 @@ namespace PISMO
             btnRefreshSrv.Click += (s, e) => RefreshNow();
             var channelHost = new Panel { Dock = DockStyle.Left, Width = 312, BackColor = Color.FromArgb(47, 49, 54) };
             channelHost.Controls.Add(_pnlChannels);
+            // Плашка «Голосовая связь подключена» — НАД футером (добавляем раньше
+            // футера, чтобы футер докнулся в самый низ, а плашка — над ним).
+            channelHost.Controls.Add(BuildVoicePlaque());
             // Плашка профиля (аватар/имя/🎤/🎧/⚙) внизу колонки каналов — как в ЛС.
             // Порядок добавления важен: докинг идёт с конца списка, футер должен
             // занять низ ДО _pnlChannels (Fill).
