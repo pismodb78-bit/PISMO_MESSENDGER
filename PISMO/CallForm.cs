@@ -543,6 +543,16 @@ namespace PISMO
         private void OnPeerDisconnected()
         {
             if (_ended) return;
+
+            // Серверный голосовой канал НЕ закрываем на разрыве (как в Discord):
+            // остаёмся в канале, показываем «переподключение», плашка «Голосовая
+            // связь подключена» в доке не исчезает. Закрытие — только вручную.
+            if (_isChannel)
+            {
+                _lblStatus.Text = "Переподключение…";
+                return;
+            }
+
             _lblStatus.Text = "Соединение разорвано";
 
             MarkCallEnded();
