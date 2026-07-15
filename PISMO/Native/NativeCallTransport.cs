@@ -84,6 +84,15 @@ namespace PISMO.Native
         private string _scrTrackSid;
         private bool _scrStarted;
 
+        // Звук демонстрации (системный звук через WASAPI-loopback). Публикуется
+        // ОТДЕЛЬНЫМ треком source=SCREENSHARE_AUDIO, с ВЫКЛЮЧЕННЫМИ EC/NS/AGC —
+        // чтобы шумодав/эхоподавление не гасили звуки игры/музыки в демке.
+        private NAudio.Wave.WasapiLoopbackCapture _loopback;
+        private ulong _scrAudioSource, _scrAudioTrack;
+        private ulong _scrAudioPublishAsyncId;
+        private string _scrAudioTrackSid;
+        private int _scrAudioRate = 48000, _scrAudioCh = 2;
+
         // sid трека → источник (камера/демка), чтобы различать входящее видео.
         private readonly Dictionary<string, TrackSource> _sourceBySid = new();
         // handle видеострима → (участник, это ли демка).
@@ -356,16 +365,16 @@ namespace PISMO.Native
         }
 
         // ── Демонстрация экрана / окна ────────────────────────────────────
-        public void StartScreenShare(Rectangle bounds, int fps = 15)
-            => StartScreenInternal(bounds, IntPtr.Zero, fps);
+        public void StartScreenShare(Rectangle bounds, int fps = 15, bool withAudio = false)
+            => StartScreenInternal(bounds, IntPtr.Zero, fps, withAudio);
 
-        public void StartScreenShareWindow(IntPtr window, int fps = 15)
+        public void StartScreenShareWindow(IntPtr window, int fps = 15, bool withAudio = false)
         {
             if (!GetWindowRect(window, out RECT r)) return;
-            StartScreenInternal(new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top), window, fps);
+            StartScreenInternal(new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top), window, fps, withAudio);
         }
 
-        private void StartScreenInternal(Rectangle bounds, IntPtr window, int fps)
+        private void StartScreenInternal(Rectangle bounds, IntPtr window, int fps, bool withAudio)
         {
             if (_scrStarted || _localHandle == 0) return;
             if (bounds.Width <= 0 || bounds.Height <= 0) return;
@@ -410,12 +419,126 @@ namespace PISMO.Native
                 _scrRun = true;
                 _scrThread = new Thread(ScreenLoop) { IsBackground = true, Name = "pismo-screen-capture" };
                 _scrThread.Start();
+
+                if (withAudio) StartScreenAudio();
             }
             catch (Exception ex) { ConnectError?.Invoke("демонстрация: " + ex.Message); _scrStarted = false; }
         }
 
+        // Захват системного звука (WASAPI-loopback устройства воспроизведения) и
+        // публикация отдельным треком демки. EC/NS/AGC = OFF: звук игры/музыки
+        // идёт как есть, шумодав его не режет. Голос микрофона в loopback НЕ
+        // попадает (микрофон не выводится на колонки) — сам себя не задублируешь.
+        private void StartScreenAudio()
+        {
+            try
+            {
+                _loopback = new NAudio.Wave.WasapiLoopbackCapture();
+                var wf = _loopback.WaveFormat;
+                _scrAudioRate = wf.SampleRate;
+                _scrAudioCh = Math.Max(1, wf.Channels);
+
+                var srcResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    NewAudioSource = new NewAudioSourceRequest
+                    {
+                        Type = AudioSourceType.AudioSourceNative,
+                        SampleRate = (uint)_scrAudioRate,
+                        NumChannels = (uint)_scrAudioCh,
+                        QueueSizeMs = 100,
+                        Options = new AudioSourceOptions
+                        {
+                            EchoCancellation = false,
+                            NoiseSuppression = false,
+                            AutoGainControl = false
+                        }
+                    }
+                });
+                _scrAudioSource = srcResp.NewAudioSource.Source.Handle.Id;
+
+                var trkResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    CreateAudioTrack = new CreateAudioTrackRequest { Name = "screen_audio", SourceHandle = _scrAudioSource }
+                });
+                _scrAudioTrack = trkResp.CreateAudioTrack.Track.Handle.Id;
+
+                var pubResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    PublishTrack = new PublishTrackRequest
+                    {
+                        LocalParticipantHandle = _localHandle,
+                        TrackHandle = _scrAudioTrack,
+                        Options = new TrackPublishOptions { Source = TrackSource.SourceScreenshareAudio }
+                    }
+                });
+                _scrAudioPublishAsyncId = pubResp.PublishTrack.AsyncId;
+
+                _loopback.DataAvailable += OnLoopbackData;
+                _loopback.StartRecording();
+            }
+            catch (Exception ex) { ConnectError?.Invoke("звук демки: " + ex.Message); }
+        }
+
+        // WASAPI отдаёт 32-бит float; LiveKit-источнику нужен i16 PCM.
+        private void OnLoopbackData(object sender, WaveInEventArgs e)
+        {
+            if (_scrAudioSource == 0 || e.BytesRecorded <= 0) return;
+            int n = e.BytesRecorded / 4;                 // 32-бит float сэмплы
+            if (n <= 0) return;
+            IntPtr buf = Marshal.AllocHGlobal(n * 2);     // i16
+            try
+            {
+                var pcm = new short[n];
+                for (int i = 0; i < n; i++)
+                {
+                    float f = BitConverter.ToSingle(e.Buffer, i * 4);
+                    if (f > 1f) f = 1f; else if (f < -1f) f = -1f;
+                    pcm[i] = (short)(f * 32767f);
+                }
+                Marshal.Copy(pcm, 0, buf, n);
+                LiveKitFfi.Request(new FfiRequest
+                {
+                    CaptureAudioFrame = new CaptureAudioFrameRequest
+                    {
+                        SourceHandle = _scrAudioSource,
+                        Buffer = new AudioFrameBufferInfo
+                        {
+                            DataPtr = (ulong)buf.ToInt64(),
+                            NumChannels = (uint)_scrAudioCh,
+                            SampleRate = (uint)_scrAudioRate,
+                            SamplesPerChannel = (uint)(n / _scrAudioCh)
+                        }
+                    }
+                });
+            }
+            catch { }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+
+        private void StopScreenAudio()
+        {
+            try { if (_loopback != null) { _loopback.DataAvailable -= OnLoopbackData; _loopback.StopRecording(); _loopback.Dispose(); } } catch { }
+            _loopback = null;
+            try
+            {
+                if (!string.IsNullOrEmpty(_scrAudioTrackSid) && _localHandle != 0)
+                    LiveKitFfi.Request(new FfiRequest
+                    {
+                        UnpublishTrack = new UnpublishTrackRequest
+                        {
+                            LocalParticipantHandle = _localHandle,
+                            TrackSid = _scrAudioTrackSid,
+                            StopOnUnpublish = true
+                        }
+                    });
+            }
+            catch { }
+            _scrAudioSource = 0; _scrAudioTrack = 0; _scrAudioTrackSid = null;
+        }
+
         public void StopScreenShare()
         {
+            StopScreenAudio();
             _scrRun = false;
             try { _scrThread?.Join(500); } catch { }
             _scrThread = null;
@@ -612,6 +735,7 @@ namespace PISMO.Native
             string sid = cb.Publication.Info.Sid;
             if (cb.AsyncId == _camPublishAsyncId) _camTrackSid = sid;
             else if (cb.AsyncId == _scrPublishAsyncId) _scrTrackSid = sid;
+            else if (cb.AsyncId == _scrAudioPublishAsyncId) _scrAudioTrackSid = sid;
         }
 
         // Подписались на удалённый трек: аудио → микшер; видео → открываем видеострим.

@@ -24,6 +24,9 @@ namespace PISMO
         /// <summary>Выбран монитор (а не окно).</summary>
         public bool SelectedIsScreen { get; private set; }
 
+        /// <summary>Транслировать системный звук вместе с демонстрацией.</summary>
+        public bool ShareAudio { get; private set; } = true;
+
         private readonly FlowLayoutPanel _grid;
         private readonly Button _btnWindows, _btnScreens, _btnShare, _btnCancel;
         private Panel _selectedTile;
@@ -123,8 +126,20 @@ namespace PISMO
             _btnCancel.FlatAppearance.BorderSize = 0;
             _btnCancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
 
+            var chkAudio = new CheckBox
+            {
+                Text = "🔊 Со звуком",
+                Checked = true,
+                ForeColor = Color.FromArgb(220, 221, 222),
+                AutoSize = true,
+                Margin = new Padding(16, 8, 0, 0),
+                Font = new Font("Segoe UI", 9.5f)
+            };
+            chkAudio.CheckedChanged += (s, e) => ShareAudio = chkAudio.Checked;
+
             actions.Controls.Add(_btnShare);   // первый в RightToLeft = самый правый
             actions.Controls.Add(_btnCancel);
+            actions.Controls.Add(chkAudio);    // слева от кнопок
             bottom.Controls.Add(actions);
 
             root.Controls.Add(title, 0, 0);

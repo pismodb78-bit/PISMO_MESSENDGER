@@ -256,24 +256,24 @@ namespace PISMO
         public void SwitchCameraDevice(string deviceLabel) { try { _t.SwitchCameraDevice(ResolveCam(deviceLabel)); } catch { } }
 
         // ── Демонстрация экрана / окна ───────────────────────────────────
-        public void StartMonitorShare(Rectangle bounds, int height, int fps)
+        public void StartMonitorShare(Rectangle bounds, int height, int fps, bool withAudio = false)
         {
             try
             {
                 _screenPreviewActive = true;
-                _t.StartScreenShare(bounds, fps > 0 ? fps : 15);
+                _t.StartScreenShare(bounds, fps > 0 ? fps : 15, withAudio);
                 LocalScreenStarted?.Invoke();
                 ScreenPreviewReady?.Invoke();
             }
             catch (Exception ex) { LocalScreenError?.Invoke(ex.Message); }
         }
 
-        public void StartWindowShare(IntPtr window, int fps)
+        public void StartWindowShare(IntPtr window, int fps, bool withAudio = false)
         {
             try
             {
                 _screenPreviewActive = true;
-                _t.StartScreenShareWindow(window, fps > 0 ? fps : 15);
+                _t.StartScreenShareWindow(window, fps > 0 ? fps : 15, withAudio);
                 LocalScreenStarted?.Invoke();
                 ScreenPreviewReady?.Invoke();
             }

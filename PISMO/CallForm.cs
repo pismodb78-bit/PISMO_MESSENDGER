@@ -1337,15 +1337,16 @@ namespace PISMO
                 if (picker.ShowDialog(this) != DialogResult.OK) return;
                 // Окно — точный захват через PrintWindow (берёт даже перекрытое);
                 // монитор/область — BitBlt по экранным координатам.
+                bool withAudio = picker.ShareAudio;
                 if (!picker.SelectedIsScreen && picker.SelectedWindow != IntPtr.Zero)
                 {
                     _screenPreviewPending = true;
-                    _transport.StartWindowShare(picker.SelectedWindow, DeviceSettings.ScreenShareFps);
+                    _transport.StartWindowShare(picker.SelectedWindow, DeviceSettings.ScreenShareFps, withAudio);
                 }
                 else if (picker.SelectedBounds is Rectangle b)
                 {
                     _screenPreviewPending = true;
-                    _transport.StartMonitorShare(b, DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps);
+                    _transport.StartMonitorShare(b, DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps, withAudio);
                 }
             }
             catch (Exception ex)
