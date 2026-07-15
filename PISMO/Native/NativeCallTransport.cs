@@ -439,7 +439,7 @@ namespace PISMO.Native
                     {
                         SourceHandle = source,
                         TimestampUs = NowUs(),
-                        Rotation = VideoRotation.VideoRotation0,
+                        Rotation = (VideoRotation)0,   // VIDEO_ROTATION_0 (имя члена protobuf мангли́т цифру)
                         Buffer = new VideoBufferInfo
                         {
                             Type = VideoBufferType.Bgra,
