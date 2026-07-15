@@ -88,6 +88,8 @@ namespace PISMO.Native
         // ОТДЕЛЬНЫМ треком source=SCREENSHARE_AUDIO, с ВЫКЛЮЧЕННЫМИ EC/NS/AGC —
         // чтобы шумодав/эхоподавление не гасили звуки игры/музыки в демке.
         private NAudio.Wave.WasapiLoopbackCapture _loopback;
+        private ProcessLoopbackCapture _procLoop;   // захват без своего процесса (без эха)
+        private bool _scrAudioFloat;                // true = float (device loopback), false = i16 PCM
         private ulong _scrAudioSource, _scrAudioTrack;
         private ulong _scrAudioPublishAsyncId;
         private string _scrAudioTrackSid;
@@ -433,10 +435,28 @@ namespace PISMO.Native
         {
             try
             {
-                _loopback = new NAudio.Wave.WasapiLoopbackCapture();
-                var wf = _loopback.WaveFormat;
-                _scrAudioRate = wf.SampleRate;
-                _scrAudioCh = Math.Max(1, wf.Channels);
+                // Сначала пытаемся захватить звук БЕЗ своего процесса (process
+                // loopback, exclude-self) — тогда голоса собеседников, которые
+                // играет сам PISMO, в демку не попадут → у друзей нет эха. Если
+                // ОС не поддержит — откат на обычный loopback устройства.
+                try
+                {
+                    _procLoop = new ProcessLoopbackCapture(
+                        System.Diagnostics.Process.GetCurrentProcess().Id, excludeTargetTree: true);
+                    _procLoop.Start();
+                    _scrAudioRate = _procLoop.WaveFormat.SampleRate;
+                    _scrAudioCh = _procLoop.WaveFormat.Channels;
+                    _scrAudioFloat = false;
+                }
+                catch
+                {
+                    try { _procLoop?.Dispose(); } catch { }
+                    _procLoop = null;
+                    _loopback = new NAudio.Wave.WasapiLoopbackCapture();
+                    _scrAudioRate = _loopback.WaveFormat.SampleRate;
+                    _scrAudioCh = Math.Max(1, _loopback.WaveFormat.Channels);
+                    _scrAudioFloat = true;
+                }
 
                 var srcResp = LiveKitFfi.Request(new FfiRequest
                 {
@@ -473,28 +493,42 @@ namespace PISMO.Native
                 });
                 _scrAudioPublishAsyncId = pubResp.PublishTrack.AsyncId;
 
-                _loopback.DataAvailable += OnLoopbackData;
-                _loopback.StartRecording();
+                if (_procLoop != null) _procLoop.DataAvailable += OnScreenAudioData;
+                else { _loopback.DataAvailable += OnScreenAudioData; _loopback.StartRecording(); }
             }
             catch (Exception ex) { ConnectError?.Invoke("звук демки: " + ex.Message); }
         }
 
-        // WASAPI отдаёт 32-бит float; LiveKit-источнику нужен i16 PCM.
-        private void OnLoopbackData(object sender, WaveInEventArgs e)
+        // Кадр системного звука → i16 PCM → CaptureAudioFrame. Источник даёт либо
+        // 32-бит float (device loopback), либо уже i16 (process loopback).
+        private void OnScreenAudioData(object sender, WaveInEventArgs e)
         {
             if (_scrAudioSource == 0 || e.BytesRecorded <= 0) return;
-            int n = e.BytesRecorded / 4;                 // 32-бит float сэмплы
-            if (n <= 0) return;
-            IntPtr buf = Marshal.AllocHGlobal(n * 2);     // i16
-            try
+            int n;
+            short[] pcm;
+            if (_scrAudioFloat)
             {
-                var pcm = new short[n];
+                n = e.BytesRecorded / 4;
+                if (n <= 0) return;
+                pcm = new short[n];
                 for (int i = 0; i < n; i++)
                 {
                     float f = BitConverter.ToSingle(e.Buffer, i * 4);
                     if (f > 1f) f = 1f; else if (f < -1f) f = -1f;
                     pcm[i] = (short)(f * 32767f);
                 }
+            }
+            else
+            {
+                n = e.BytesRecorded / 2;
+                if (n <= 0) return;
+                pcm = new short[n];
+                Buffer.BlockCopy(e.Buffer, 0, pcm, 0, n * 2);
+            }
+
+            IntPtr buf = Marshal.AllocHGlobal(n * 2);
+            try
+            {
                 Marshal.Copy(pcm, 0, buf, n);
                 LiveKitFfi.Request(new FfiRequest
                 {
@@ -517,7 +551,9 @@ namespace PISMO.Native
 
         private void StopScreenAudio()
         {
-            try { if (_loopback != null) { _loopback.DataAvailable -= OnLoopbackData; _loopback.StopRecording(); _loopback.Dispose(); } } catch { }
+            try { if (_procLoop != null) { _procLoop.DataAvailable -= OnScreenAudioData; _procLoop.Dispose(); } } catch { }
+            _procLoop = null;
+            try { if (_loopback != null) { _loopback.DataAvailable -= OnScreenAudioData; _loopback.StopRecording(); _loopback.Dispose(); } } catch { }
             _loopback = null;
             try
             {
