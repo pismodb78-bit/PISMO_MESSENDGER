@@ -370,7 +370,7 @@ namespace PISMO
                 Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
                 AutoSize = false,
                 Location = new Point(38, 13),
-                Size = new Size(190, 18),
+                Size = new Size(172, 18),
                 AutoEllipsis = true,
                 Cursor = Cursors.Hand
             };
@@ -382,19 +382,31 @@ namespace PISMO
                 Font = new Font("Segoe UI", 8f),
                 AutoSize = false,
                 Location = new Point(38, 32),
-                Size = new Size(190, 16),
+                Size = new Size(172, 16),
                 AutoEllipsis = true,
                 Cursor = Cursors.Hand
             };
 
-            // Кнопка ШУМОПОДАВЛЕНИЯ (та самая «маленькая кнопка» с фото 1).
+            // Кнопки справа — в правом док-контейнере (всегда видны при любой
+            // ширине колонки). Крупные (по просьбе): 40×40.
+            var actions = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Right,
+                FlowDirection = FlowDirection.RightToLeft,
+                WrapContents = false,
+                AutoSize = false,
+                Width = 96,
+                BackColor = card,
+                Padding = new Padding(0, 12, 8, 0)
+            };
+
+            // Кнопка ШУМОПОДАВЛЕНИЯ (та самая с фото 1, зелёная = вкл).
             _plaqueEq = new Button
             {
                 Text = "🎚",
-                Font = new Font("Segoe UI", 11f),
-                Size = new Size(30, 32),
-                Location = new Point(240, 15),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Font = new Font("Segoe UI", 14f),
+                Size = new Size(40, 40),
+                Margin = new Padding(4, 0, 0, 0),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = card,
                 Cursor = Cursors.Hand,
@@ -415,10 +427,9 @@ namespace PISMO
             var hangup = new Button
             {
                 Text = "☎",
-                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
-                Size = new Size(32, 32),
-                Location = new Point(274, 15),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Font = new Font("Segoe UI", 14f, FontStyle.Bold),
+                Size = new Size(40, 40),
+                Margin = new Padding(4, 0, 0, 0),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(237, 66, 69),
                 ForeColor = Color.White,
@@ -428,6 +439,9 @@ namespace PISMO
             hangup.FlatAppearance.BorderSize = 0;
             new ToolTip().SetToolTip(hangup, "Выйти из голосового");
             hangup.Click += (s, e) => { try { if (_voicePlaqueCall != null && !_voicePlaqueCall.IsDisposed) _voicePlaqueCall.Close(); } catch { } };
+
+            actions.Controls.Add(hangup);     // первый в RightToLeft = самый правый
+            actions.Controls.Add(_plaqueEq);  // левее трубки
 
             // Чип пинга.
             _plaquePingChip = new Label
@@ -460,9 +474,9 @@ namespace PISMO
             p.Controls.Add(radar);
             p.Controls.Add(title);
             p.Controls.Add(_voicePlaqueSub);
-            p.Controls.Add(_plaqueEq);
-            p.Controls.Add(hangup);
+            p.Controls.Add(actions);
             p.Controls.Add(_plaquePingChip);
+            actions.BringToFront();
             _plaquePingChip.BringToFront();
             _voicePlaque = p;
             return p;

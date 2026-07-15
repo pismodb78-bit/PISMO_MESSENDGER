@@ -228,9 +228,9 @@ namespace PISMO
             _voiceHangup = new Button
             {
                 Text = "☎",
-                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
-                Size = new Size(32, 32),
-                Location = new Point(206, 15),
+                Font = new Font("Segoe UI", 14f, FontStyle.Bold),
+                Size = new Size(40, 40),
+                Location = new Point(200, 12),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(237, 66, 69),
                 ForeColor = Color.White,
@@ -238,7 +238,7 @@ namespace PISMO
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
             };
             _voiceHangup.FlatAppearance.BorderSize = 0;
-            RoundCorners(_voiceHangup, 16);
+            RoundCorners(_voiceHangup, 20);
             new ToolTip().SetToolTip(_voiceHangup, "Завершить звонок");
 
             // Клик по панели/подписям — развернуть текущее окно звонка.
@@ -310,9 +310,9 @@ namespace PISMO
             _voiceEq = new Button
             {
                 Text = "🎚",
-                Font = new Font("Segoe UI", 11f),
-                Size = new Size(30, 32),
-                Location = new Point(172, 15),
+                Font = new Font("Segoe UI", 14f),
+                Size = new Size(40, 40),
+                Location = new Point(154, 12),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = CardBack,
                 Cursor = Cursors.Hand,
