@@ -29,7 +29,10 @@ namespace PISMO
         private int _vchTick = 0;    // троттлинг heartbeat в секундном таймере
         private int _partsTick = 0;  // троттлинг опроса участников (раз в 3 c)
         private bool _partsBusy;     // опрос участников уже идёт (не наслаиваем)
-        private WebRtcTransport _transport = null;
+        // НАТИВНЫЙ транспорт LiveKit (livekit_ffi.dll) вместо WebView2 —
+        // тот же контракт, что был у WebRtcTransport, но без Chromium (обход
+        // 0x8007139F от VR). Мост переводит BGRA-кадры LiveKit в картинки-байты.
+        private NativeCallBridge _transport = null;
         private System.Windows.Forms.Timer _signalTimer = null;  // ← явная инициализация
         private System.Windows.Forms.Timer _durationTimer = null;  // ← явная инициализация
         private DateTime _startTime;
@@ -273,7 +276,7 @@ namespace PISMO
             // Плиточная сетка участников (Discord-style).
             BuildTilesHost();
 
-            _transport = new WebRtcTransport();
+            _transport = new NativeCallBridge();
             _transport.Disconnected += OnPeerDisconnected;
             _transport.Connected += OnConnected;
             // В личном звонке уход единственного собеседника = конец звонка.
@@ -1332,7 +1335,14 @@ namespace PISMO
             {
                 using var picker = new ScreenPickerForm();
                 if (picker.ShowDialog(this) != DialogResult.OK) return;
-                if (picker.SelectedBounds is Rectangle b)
+                // Окно — точный захват через PrintWindow (берёт даже перекрытое);
+                // монитор/область — BitBlt по экранным координатам.
+                if (!picker.SelectedIsScreen && picker.SelectedWindow != IntPtr.Zero)
+                {
+                    _screenPreviewPending = true;
+                    _transport.StartWindowShare(picker.SelectedWindow, DeviceSettings.ScreenShareFps);
+                }
+                else if (picker.SelectedBounds is Rectangle b)
                 {
                     _screenPreviewPending = true;
                     _transport.StartMonitorShare(b, DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps);

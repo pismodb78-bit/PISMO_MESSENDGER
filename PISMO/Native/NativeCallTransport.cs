@@ -56,18 +56,24 @@ namespace PISMO.Native
         private MixingSampleProvider _mixer;
         private readonly Dictionary<ulong, BufferedWaveProvider> _remoteByStream = new();
         private readonly object _audioLock = new();
+        private int _outputDeviceIndex = -1;      // -1 = устройство по умолчанию
+        private float _playbackVolume = 1.0f;
+        private bool _playbackMuted;
 
         // Отправка: микрофон → FFI audio source.
         private WaveInEvent _micIn;
         private ulong _micSource, _micTrack;
         private ulong _publishAsyncId;
         private bool _micStarted;
+        private volatile bool _micMuted;          // мьют = не отправляем кадры
+        private int _inputDeviceIndex = -1;       // -1 = устройство по умолчанию
 
         // ── Видео (камера/демка) ──────────────────────────────────────────
         private ulong _camSource, _camTrack, _camPublishAsyncId;
         private VideoCaptureDevice _camDevice;
         private string _camTrackSid;
         private bool _camStarted;
+        private bool _camPublished;
 
         private ulong _scrSource, _scrTrack, _scrPublishAsyncId;
         private Thread _scrThread;
@@ -154,23 +160,44 @@ namespace PISMO.Native
                 _publishAsyncId = pubResp.PublishTrack.AsyncId;
 
                 // 4) Захват микрофона: 48 кГц / 16 бит / моно → CaptureAudioFrame.
-                _micIn = new WaveInEvent { WaveFormat = new WaveFormat(SR, 16, CH), BufferMilliseconds = 20 };
-                _micIn.DataAvailable += OnMicData;
-                _micIn.StartRecording();
+                StartMicCapture();
             }
             catch (Exception ex) { ConnectError?.Invoke("микрофон: " + ex.Message); }
         }
 
+        private void StartMicCapture()
+        {
+            _micIn = new WaveInEvent { WaveFormat = new WaveFormat(SR, 16, CH), BufferMilliseconds = 20 };
+            if (_inputDeviceIndex >= 0 && _inputDeviceIndex < WaveInEvent.DeviceCount)
+                _micIn.DeviceNumber = _inputDeviceIndex;
+            _micIn.DataAvailable += OnMicData;
+            _micIn.StartRecording();
+        }
+
         public void StopMicrophone()
         {
+            try { if (_micIn != null) _micIn.DataAvailable -= OnMicData; } catch { }
             try { _micIn?.StopRecording(); _micIn?.Dispose(); } catch { }
             _micIn = null;
             _micStarted = false;
         }
 
+        /// <summary>Мьют микрофона: трек остаётся опубликованным, кадры не шлём.</summary>
+        public void SetMicMuted(bool muted) => _micMuted = muted;
+
+        /// <summary>Сменить устройство ввода на лету (перезапуск захвата).</summary>
+        public void SetInputDeviceIndex(int index)
+        {
+            _inputDeviceIndex = index;
+            if (!_micStarted || _micIn == null) return;
+            try { _micIn.DataAvailable -= OnMicData; _micIn.StopRecording(); _micIn.Dispose(); } catch { }
+            _micIn = null;
+            try { StartMicCapture(); } catch (Exception ex) { ConnectError?.Invoke("микрофон: " + ex.Message); }
+        }
+
         private void OnMicData(object sender, WaveInEventArgs e)
         {
-            if (_micSource == 0 || e.BytesRecorded <= 0) return;
+            if (_micSource == 0 || _micMuted || e.BytesRecorded <= 0) return;
             int samples = e.BytesRecorded / 2;   // 16-бит моно
             IntPtr buf = Marshal.AllocHGlobal(e.BytesRecorded);
             try
@@ -196,8 +223,10 @@ namespace PISMO.Native
         }
 
         // ── Камера ────────────────────────────────────────────────────────
+        // Разделено на превью (захват без публикации) и публикацию — чтобы окно
+        // «Включить камеру» показывало картинку до того, как собеседники увидят трек.
         // moniker — DirectShow-идентификатор устройства; null/пусто → первая камера.
-        public void StartCamera(string moniker = null, int width = 1280, int height = 720)
+        public void StartCameraPreview(string moniker = null, int width = 1280, int height = 720)
         {
             if (_camStarted || _localHandle == 0) return;
             _camStarted = true;
@@ -223,6 +252,19 @@ namespace PISMO.Native
                 });
                 _camTrack = trkResp.CreateVideoTrack.Track.Handle.Id;
 
+                _camDevice = new VideoCaptureDevice(moniker);
+                _camDevice.NewFrame += OnCameraFrame;
+                _camDevice.Start();
+            }
+            catch (Exception ex) { ConnectError?.Invoke("камера: " + ex.Message); _camStarted = false; }
+        }
+
+        /// <summary>Публикация уже захватываемой камеры (после подтверждения превью).</summary>
+        public void PublishCamera()
+        {
+            if (_camTrack == 0 || _camPublished || _localHandle == 0) return;
+            try
+            {
                 var pubResp = LiveKitFfi.Request(new FfiRequest
                 {
                     PublishTrack = new PublishTrackRequest
@@ -233,12 +275,33 @@ namespace PISMO.Native
                     }
                 });
                 _camPublishAsyncId = pubResp.PublishTrack.AsyncId;
+                _camPublished = true;
+            }
+            catch (Exception ex) { ConnectError?.Invoke("камера: " + ex.Message); }
+        }
 
+        /// <summary>Захват + публикация одним вызовом (когда превью не нужно).</summary>
+        public void StartCamera(string moniker = null, int width = 1280, int height = 720)
+        {
+            StartCameraPreview(moniker, width, height);
+            PublishCamera();
+        }
+
+        /// <summary>Сменить устройство камеры на лету, не пересоздавая трек.</summary>
+        public void SwitchCameraDevice(string moniker)
+        {
+            if (!_camStarted) { StartCameraPreview(moniker); return; }
+            try { if (_camDevice != null) { _camDevice.NewFrame -= OnCameraFrame; _camDevice.SignalToStop(); } } catch { }
+            _camDevice = null;
+            try
+            {
+                if (string.IsNullOrEmpty(moniker)) moniker = FirstCameraMoniker();
+                if (string.IsNullOrEmpty(moniker)) return;
                 _camDevice = new VideoCaptureDevice(moniker);
                 _camDevice.NewFrame += OnCameraFrame;
                 _camDevice.Start();
             }
-            catch (Exception ex) { ConnectError?.Invoke("камера: " + ex.Message); _camStarted = false; }
+            catch (Exception ex) { ConnectError?.Invoke("камера: " + ex.Message); }
         }
 
         public void StopCamera()
@@ -256,7 +319,7 @@ namespace PISMO.Native
 
             try
             {
-                if (!string.IsNullOrEmpty(_camTrackSid) && _localHandle != 0)
+                if (_camPublished && !string.IsNullOrEmpty(_camTrackSid) && _localHandle != 0)
                     LiveKitFfi.Request(new FfiRequest
                     {
                         UnpublishTrack = new UnpublishTrackRequest
@@ -269,7 +332,7 @@ namespace PISMO.Native
             }
             catch { }
 
-            _camSource = 0; _camTrack = 0; _camTrackSid = null; _camStarted = false;
+            _camSource = 0; _camTrack = 0; _camTrackSid = null; _camStarted = false; _camPublished = false;
         }
 
         private void OnCameraFrame(object sender, NewFrameEventArgs e)
@@ -651,11 +714,45 @@ namespace PISMO.Native
 
         private void EnsurePlayback()
         {
+            if (_mixer == null)
+                _mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(SR, CH)) { ReadFully = true };
             if (_out != null) return;
-            _mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(SR, CH)) { ReadFully = true };
             _out = new WaveOutEvent { DesiredLatency = 120 };
+            if (_outputDeviceIndex >= 0 && _outputDeviceIndex < WaveOut.DeviceCount)
+                _out.DeviceNumber = _outputDeviceIndex;
             _out.Init(_mixer);
+            ApplyPlaybackVolume();
             _out.Play();
+        }
+
+        private void ApplyPlaybackVolume()
+        {
+            try { if (_out != null) _out.Volume = _playbackMuted ? 0f : Math.Clamp(_playbackVolume, 0f, 1f); } catch { }
+        }
+
+        /// <summary>Заглушить весь входящий звук («наушники»).</summary>
+        public void SetPlaybackMuted(bool muted) { _playbackMuted = muted; ApplyPlaybackVolume(); }
+
+        /// <summary>Громкость входящего голоса (0..1; NAudio WaveOut).</summary>
+        public void SetPlaybackVolume(float volume) { _playbackVolume = volume; ApplyPlaybackVolume(); }
+
+        /// <summary>Сменить устройство вывода на лету (пересоздаём WaveOut на общем микшере).</summary>
+        public void SetOutputDeviceIndex(int index)
+        {
+            _outputDeviceIndex = index;
+            lock (_audioLock)
+            {
+                try { _out?.Stop(); _out?.Dispose(); } catch { }
+                _out = null;
+                if (_mixer != null)
+                {
+                    _out = new WaveOutEvent { DesiredLatency = 120 };
+                    if (index >= 0 && index < WaveOut.DeviceCount) _out.DeviceNumber = index;
+                    _out.Init(_mixer);
+                    ApplyPlaybackVolume();
+                    _out.Play();
+                }
+            }
         }
 
         public void Dispose()

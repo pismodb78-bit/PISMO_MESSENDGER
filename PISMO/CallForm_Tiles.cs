@@ -490,17 +490,9 @@ namespace PISMO
                 CancelWatchTimeout(pid);
                 if (tile?.WatchBtn != null) tile.WatchBtn.Visible = false;
                 RefreshScreenPresence();
-
-                // Театр открываем только когда зритель подключился сам («Смотреть
-                // стрим»/двойной клик). Для поп-аута театр не трогаем. Если уже
-                // смотрели другой стрим — переключаемся на новый.
-                _watchIntent.TryGetValue(pid, out var intent);
-                if (pid != SelfPid && intent != "popout")
-                {
-                    string key = TileKey(pid, source);
-                    if (_theaterKey != null && _theaterKey != key) ExitTheaterMode();
-                    if (_theaterKey == null) EnterTheaterMode(key);
-                }
+                // Нативный путь (без WebView): демка показывается обычной плиткой
+                // в сетке; на весь экран — двойным кликом (PictureBox-фуллскрин).
+                // Прежний нативный «театр» 60fps через WebView здесь недоступен.
             }
         }
 
@@ -808,22 +800,16 @@ namespace PISMO
             catch { }
         }
 
-        /// <summary>Открыть стрим сразу на весь экран (или развернуть текущий театр).</summary>
+        /// <summary>Развернуть демку участника на весь видео-участок окна звонка.
+        /// Нативный путь: обычный PictureBox-фуллскрин (без WebView-«театра»).</summary>
         private void WatchFullscreen(string pid)
         {
             string key = TileKey(pid, "screen");
-            if (_theaterKey == key)
+            if (_tiles.ContainsKey(key))
             {
-                if (!_theaterFullscreen) ToggleTheaterFullscreen();
-                return;
+                _fullscreenKey = key;
+                LayoutTiles();
             }
-            _wantTheaterFullscreen = true;
-            if (_tiles.TryGetValue(key, out var t) && t.HasVideo)
-            {
-                if (_theaterKey != null) ExitTheaterMode();
-                EnterTheaterMode(key);
-            }
-            else WatchStream(pid, "theater");
         }
 
         // ── Контекстное меню плитки стрима (ПКМ) ────────────────────────
@@ -851,22 +837,8 @@ namespace PISMO
             // Уже в «театре» по этому ключу — выходим.
             if (_theaterKey == key) { ExitTheaterMode(); return; }
 
-            int bar = key?.IndexOf('|') ?? -1;
-            string src = bar >= 0 ? key.Substring(bar + 1) : "";
-            string pid = bar >= 0 ? key.Substring(0, bar) : key;
-
-            // Демонстрация экрана — нативный «театр» (плавные 60fps через WebView).
-            if (src == "screen" && _tiles.ContainsKey(key))
-            {
-                // Стрим ещё не смотрим — сперва подключаемся (двойной клик по
-                // плитке-приглашению = «Смотреть стрим»), театр откроется сам.
-                if (!_tiles[key].HasVideo) { WatchStream(pid, "theater"); return; }
-                _fullscreenKey = null;
-                EnterTheaterMode(key);
-                return;
-            }
-
-            // Прочее (камера) — прежний PictureBox-фуллскрин.
+            // Нативный путь (без WebView): и демка, и камера разворачиваются
+            // обычным PictureBox-фуллскрином внутри сетки плиток.
             if (_fullscreenKey == key) _fullscreenKey = null;
             else if (_tiles.ContainsKey(key)) _fullscreenKey = key;
             LayoutTiles();
