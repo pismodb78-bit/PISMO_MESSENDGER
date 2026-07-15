@@ -261,7 +261,9 @@ namespace PISMO
             try
             {
                 _screenPreviewActive = true;
-                _t.StartScreenShare(bounds, fps > 0 ? fps : 15, withAudio);
+                _t.SetScreenCodec(DeviceSettings.ScreenShareCodec);
+                _t.SetScreenEncoderPref(DeviceSettings.GpuEncodePref);
+                _t.StartScreenShare(bounds, fps > 0 ? fps : 15, height, withAudio);
                 LocalScreenStarted?.Invoke();
                 ScreenPreviewReady?.Invoke();
             }
@@ -273,7 +275,9 @@ namespace PISMO
             try
             {
                 _screenPreviewActive = true;
-                _t.StartScreenShareWindow(window, fps > 0 ? fps : 15, withAudio);
+                _t.SetScreenCodec(DeviceSettings.ScreenShareCodec);
+                _t.SetScreenEncoderPref(DeviceSettings.GpuEncodePref);
+                _t.StartScreenShareWindow(window, fps > 0 ? fps : 15, DeviceSettings.ScreenShareResolutionHeight, withAudio);
                 LocalScreenStarted?.Invoke();
                 ScreenPreviewReady?.Invoke();
             }
@@ -315,8 +319,8 @@ namespace PISMO
         public void ExitTheater() { }
         public void SwitchScreenSource() { }
         public void SetScreenShareVolume(string pid, float volume) { }
-        public void SetScreenCodec(string codec) { }
-        public void SetScreenQualityLive(int resHeight, int fps) { }
+        public void SetScreenCodec(string codec) { try { _t?.SetScreenCodec(codec); } catch { } }
+        public void SetScreenQualityLive(int resHeight, int fps) { try { _t?.SetScreenQualityLive(resHeight, fps); } catch { } }
         public void SetRemoteScreenAudioVolume(float volume) { }
         public void SetParticipantVolume(string pid, float volume) { }
         public void SetParticipantMuted(string pid, bool muted) { }

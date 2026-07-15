@@ -81,6 +81,9 @@ namespace PISMO.Native
         private Rectangle _scrBounds;
         private IntPtr _scrWindow;
         private int _scrFps = 15;
+        private volatile int _scrTargetHeight;   // 0 = родное разрешение, иначе даунскейл до этой высоты
+        private string _scrCodec = "h264";       // предпочтительный кодек демки
+        private string _scrGpuPref = "auto";     // hint энкодера (auto/high/integrated)
         private string _scrTrackSid;
         private bool _scrStarted;
 
@@ -367,16 +370,27 @@ namespace PISMO.Native
         }
 
         // ── Демонстрация экрана / окна ────────────────────────────────────
-        public void StartScreenShare(Rectangle bounds, int fps = 15, bool withAudio = false)
-            => StartScreenInternal(bounds, IntPtr.Zero, fps, withAudio);
+        // Настройки качества/кодека/энкодера — до старта демки.
+        public void SetScreenCodec(string codec) { if (!string.IsNullOrWhiteSpace(codec)) _scrCodec = codec; }
+        public void SetScreenEncoderPref(string gpu) { if (!string.IsNullOrWhiteSpace(gpu)) _scrGpuPref = gpu; }
 
-        public void StartScreenShareWindow(IntPtr window, int fps = 15, bool withAudio = false)
+        /// <summary>Сменить разрешение/FPS демки «на лету» (петля захвата подхватит).</summary>
+        public void SetScreenQualityLive(int resHeight, int fps)
         {
-            if (!GetWindowRect(window, out RECT r)) return;
-            StartScreenInternal(new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top), window, fps, withAudio);
+            _scrTargetHeight = Math.Max(0, resHeight);
+            if (fps > 0) _scrFps = Math.Max(1, Math.Min(60, fps));
         }
 
-        private void StartScreenInternal(Rectangle bounds, IntPtr window, int fps, bool withAudio)
+        public void StartScreenShare(Rectangle bounds, int fps = 15, int resHeight = 0, bool withAudio = false)
+            => StartScreenInternal(bounds, IntPtr.Zero, fps, resHeight, withAudio);
+
+        public void StartScreenShareWindow(IntPtr window, int fps = 15, int resHeight = 0, bool withAudio = false)
+        {
+            if (!GetWindowRect(window, out RECT r)) return;
+            StartScreenInternal(new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top), window, fps, resHeight, withAudio);
+        }
+
+        private void StartScreenInternal(Rectangle bounds, IntPtr window, int fps, int resHeight, bool withAudio)
         {
             if (_scrStarted || _localHandle == 0) return;
             if (bounds.Width <= 0 || bounds.Height <= 0) return;
@@ -384,6 +398,15 @@ namespace PISMO.Native
             _scrBounds = bounds;
             _scrWindow = window;
             _scrFps = Math.Max(1, Math.Min(60, fps));
+            _scrTargetHeight = Math.Max(0, resHeight);
+
+            // Публикуемое разрешение: даунскейл до целевой высоты (сохраняя пропорции),
+            // иначе — родное. Чётные размеры (требование кодеков).
+            int pubH = (_scrTargetHeight > 0 && _scrTargetHeight < bounds.Height) ? _scrTargetHeight : bounds.Height;
+            int pubW = (int)Math.Round(bounds.Width * (pubH / (double)bounds.Height));
+            pubW &= ~1; pubH &= ~1;
+            if (pubW <= 0) pubW = 2; if (pubH <= 0) pubH = 2;
+
             try
             {
                 var srcResp = LiveKitFfi.Request(new FfiRequest
@@ -391,11 +414,7 @@ namespace PISMO.Native
                     NewVideoSource = new NewVideoSourceRequest
                     {
                         Type = VideoSourceType.VideoSourceNative,
-                        Resolution = new VideoSourceResolution
-                        {
-                            Width = (uint)(bounds.Width & ~1),
-                            Height = (uint)(bounds.Height & ~1)
-                        },
+                        Resolution = new VideoSourceResolution { Width = (uint)pubW, Height = (uint)pubH },
                         IsScreencast = true
                     }
                 });
@@ -407,13 +426,29 @@ namespace PISMO.Native
                 });
                 _scrTrack = trkResp.CreateVideoTrack.Track.Handle.Id;
 
+                // Опции публикации: кодек, hint энкодера (аппаратный), битрейт под
+                // разрешение, и «держать разрешение» — для демки важнее чёткость
+                // текста, чем плавность (при нехватке канала падает FPS, а не резкость).
+                var opts = new TrackPublishOptions
+                {
+                    Source = TrackSource.SourceScreenshare,
+                    VideoCodec = (VideoCodec)MapCodec(_scrCodec),
+                    VideoEncoder = (VideoEncoderBackend)MapGpu(_scrGpuPref),
+                    DegradationPreference = (LiveKit.Proto.DegradationPreference)2, // MAINTAIN_RESOLUTION
+                    VideoEncoding = new VideoEncoding
+                    {
+                        MaxBitrate = BitrateFor(pubH),
+                        MaxFramerate = _scrFps
+                    }
+                };
+
                 var pubResp = LiveKitFfi.Request(new FfiRequest
                 {
                     PublishTrack = new PublishTrackRequest
                     {
                         LocalParticipantHandle = _localHandle,
                         TrackHandle = _scrTrack,
-                        Options = new TrackPublishOptions { Source = TrackSource.SourceScreenshare }
+                        Options = opts
                     }
                 });
                 _scrPublishAsyncId = pubResp.PublishTrack.AsyncId;
@@ -599,19 +634,69 @@ namespace PISMO.Native
 
         private void ScreenLoop()
         {
-            int delayMs = Math.Max(1, 1000 / _scrFps);
             while (_scrRun)
             {
+                int delayMs = Math.Max(1, 1000 / Math.Max(1, _scrFps));   // FPS можно менять на лету
                 long start = _clock.ElapsedMilliseconds;
                 try
                 {
-                    using Bitmap bmp = CaptureScreen();
-                    if (bmp != null) PushBitmap(_scrSource, bmp, LocalScreenFrame != null ? EmitLocalScreen : null);
+                    using Bitmap raw = CaptureScreen();
+                    if (raw != null)
+                    {
+                        int th = _scrTargetHeight;   // даунскейл до целевой высоты (0 = как есть)
+                        if (th > 0 && raw.Height > th)
+                        {
+                            int tw = (int)Math.Round(raw.Width * (th / (double)raw.Height));
+                            using var scaled = new Bitmap(Math.Max(2, tw), Math.Max(2, th), PixelFormat.Format32bppArgb);
+                            using (var g = Graphics.FromImage(scaled))
+                            {
+                                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                                g.DrawImage(raw, 0, 0, scaled.Width, scaled.Height);
+                            }
+                            PushBitmap(_scrSource, scaled, LocalScreenFrame != null ? EmitLocalScreen : null);
+                        }
+                        else
+                        {
+                            PushBitmap(_scrSource, raw, LocalScreenFrame != null ? EmitLocalScreen : null);
+                        }
+                    }
                 }
                 catch { }
                 int sleep = delayMs - (int)(_clock.ElapsedMilliseconds - start);
                 if (sleep > 0) Thread.Sleep(sleep);
             }
+        }
+
+        // ── Качество/кодек/энкодер демки ──────────────────────────────────
+        // Кодек демки → LiveKit VideoCodec (VP8=0, H264=1, AV1=2, VP9=3, H265=4).
+        // HEVC-энкодера в FFI-libwebrtc обычно нет → h265 отдаём как H264.
+        private static int MapCodec(string codec) => (codec ?? "").ToLowerInvariant() switch
+        {
+            "vp8" => 0,
+            "vp9" => 3,
+            "av1" => 2,
+            "h265" or "hevc" => 1,   // HEVC-энкодер недоступен → безопасный откат на H264
+            _ => 1,                  // h264 по умолчанию
+        };
+
+        // Предпочтение GPU → VideoEncoderBackend (AUTO=0, SOFTWARE=1, HARDWARE=2,
+        // NVENC=3, VAAPI=4, VIDEOTOOLBOX=5). Это ХИНТ: реально задействуется только
+        // если в этой сборке libwebrtc есть соответствующий аппаратный энкодер.
+        private static int MapGpu(string gpu) => (gpu ?? "").ToLowerInvariant() switch
+        {
+            "high" => 3,          // дискретная NVIDIA → NVENC
+            "integrated" => 2,    // встроенная → HARDWARE (обобщённо)
+            _ => 0,               // auto
+        };
+
+        // Разумный потолок битрейта под высоту (демка = много деталей/текста).
+        private static ulong BitrateFor(int height)
+        {
+            if (height >= 1080) return 6_000_000;
+            if (height >= 720) return 3_500_000;
+            if (height >= 480) return 1_800_000;
+            if (height >= 360) return 1_000_000;
+            return 2_500_000;   // неизвестно/маленькое — умеренно
         }
 
         private void EmitLocalScreen(byte[] bgra, int w, int h) => LocalScreenFrame?.Invoke(bgra, w, h);
