@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -36,6 +38,12 @@ namespace PISMO
         private readonly Dictionary<string, string> _names = new();     // pid -> имя
         private readonly HashSet<string> _startedTiles = new();          // "pid|source"
         private bool _screenPreviewActive = true;
+
+        // Пинг: у нативного FFI нет готового RTT, поэтому меряем задержку до
+        // сервера LiveKit сами (ICMP, с откатом на TCP-подключение к :7880).
+        private string _pingHost;
+        private int _pingPort = 7880;
+        private System.Threading.Timer _pingTimer;
 
         // ── События (контракт WebRtcTransport, используемый CallForm) ──
         public event Action Disconnected;
@@ -77,6 +85,14 @@ namespace PISMO
         public Task InitAsync(Form parentForm, string livekitUrl, string token)
         {
             _parentForm = parentForm;
+            try
+            {
+                // ws://host:port → host + port для замера пинга.
+                var u = new Uri(livekitUrl.Replace("ws://", "http://").Replace("wss://", "https://"));
+                _pingHost = u.Host;
+                if (u.Port > 0) _pingPort = u.Port;
+            }
+            catch { _pingHost = null; }
             _t = new NativeCallTransport();
             _t.Connected += OnNativeConnected;
             // Connected/Disconnected CallForm обрабатывает без UiInvoke (раньше их
@@ -116,6 +132,42 @@ namespace PISMO
             }
             catch { }
             Ui(() => Connected?.Invoke());
+            StartPing();
+        }
+
+        // ── Пинг до сервера LiveKit (📶 в окне звонка) ────────────────────
+        private void StartPing()
+        {
+            if (string.IsNullOrEmpty(_pingHost) || _pingTimer != null) return;
+            _pingTimer = new System.Threading.Timer(_ => PingTick(), null, 500, 2000);
+        }
+
+        private void PingTick()
+        {
+            int ms = MeasurePing();
+            if (ms >= 0) { try { PingUpdated?.Invoke(ms); } catch { } }
+        }
+
+        private int MeasurePing()
+        {
+            // 1) ICMP — самый честный RTT, если сервер отвечает на пинг.
+            try
+            {
+                using var p = new Ping();
+                var r = p.Send(_pingHost, 1500);
+                if (r != null && r.Status == IPStatus.Success) return (int)r.RoundtripTime;
+            }
+            catch { }
+            // 2) Откат: время TCP-подключения к сигнальному порту (ICMP часто закрыт).
+            try
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                using var c = new TcpClient();
+                var task = c.ConnectAsync(_pingHost, _pingPort);
+                if (task.Wait(1500) && c.Connected) { sw.Stop(); return (int)sw.ElapsedMilliseconds; }
+            }
+            catch { }
+            return -1;
         }
 
         /// <summary>Выполнить действие в UI-потоке формы звонка (события, которые
@@ -273,7 +325,13 @@ namespace PISMO
         public void SetMicGain(float gain) { }
         public void SetDisplayName(string name) { }
 
-        public void Dispose() { try { _t?.Dispose(); } catch { } _t = null; }
+        public void Dispose()
+        {
+            try { _pingTimer?.Dispose(); } catch { }
+            _pingTimer = null;
+            try { _t?.Dispose(); } catch { }
+            _t = null;
+        }
 
         // ── Устройства: метки и разрешение label → moniker/index ─────────
         private static string[] CameraLabels()
