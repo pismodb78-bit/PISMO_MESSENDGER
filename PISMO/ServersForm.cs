@@ -323,32 +323,54 @@ namespace PISMO
         private Panel _voicePlaque;
         private Label _voicePlaqueSub;
         private Form _voicePlaqueCall;
+        private Button _plaqueEq;               // кнопка шумоподавления (как в доке MainForm)
+        private Label _plaquePingChip;          // чип «NN ms» по клику на радар
+        private System.Windows.Forms.Timer _plaquePingTimer;
 
+        // Точная копия дока «Голосовая связь подключена» из сайдбара MainForm:
+        // зелёный радар (клик → пинг), заголовок, «канал / сервер», кнопка
+        // ШУМОПОДАВЛЕНИЯ 🎚 (зелёная = вкл) и повесить трубку ☎.
         internal Panel BuildVoicePlaque()
         {
+            Color card = Color.FromArgb(32, 34, 37);
             var p = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 46,
-                BackColor = Color.FromArgb(32, 34, 37),
+                Height = 64,
+                BackColor = Color.FromArgb(47, 49, 54),
                 Visible = false,
                 Cursor = Cursors.Hand
             };
             p.Paint += (s, e) =>
             {
                 e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                using var dot = new SolidBrush(Color.FromArgb(59, 165, 93));
-                e.Graphics.FillEllipse(dot, 14, p.Height / 2 - 5, 10, 10);
+                var rect = new Rectangle(6, 4, p.Width - 12, p.Height - 8);
+                using var path = RoundRect(rect, 10);
+                using var br = new SolidBrush(card);
+                e.Graphics.FillPath(br, path);
             };
+
+            // Радар — зелёный индикатор; клик показывает пинг.
+            var radar = new Panel { Size = new Size(16, 16), Location = new Point(16, 24), BackColor = card, Cursor = Cursors.Hand };
+            radar.Paint += (s, e) =>
+            {
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using var dot = new SolidBrush(Color.FromArgb(59, 165, 93));
+                e.Graphics.FillEllipse(dot, 4, 4, 8, 8);
+                using var arc = new Pen(Color.FromArgb(59, 165, 93), 1.6f);
+                e.Graphics.DrawArc(arc, 1, 1, 14, 14, -60, 120);
+            };
+            radar.Click += (s, e) => ShowPlaquePing();
+
             var title = new Label
             {
                 Text = "Голосовая связь подключена",
                 ForeColor = Color.FromArgb(59, 165, 93),
-                BackColor = Color.Transparent,
+                BackColor = card,
                 Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
                 AutoSize = false,
-                Location = new Point(34, 6),
-                Size = new Size(230, 17),
+                Location = new Point(38, 13),
+                Size = new Size(190, 18),
                 AutoEllipsis = true,
                 Cursor = Cursors.Hand
             };
@@ -356,27 +378,70 @@ namespace PISMO
             {
                 Text = "",
                 ForeColor = Color.FromArgb(150, 152, 158),
-                BackColor = Color.Transparent,
+                BackColor = card,
                 Font = new Font("Segoe UI", 8f),
                 AutoSize = false,
-                Location = new Point(34, 24),
-                Size = new Size(230, 15),
+                Location = new Point(38, 32),
+                Size = new Size(190, 16),
                 AutoEllipsis = true,
                 Cursor = Cursors.Hand
             };
+
+            // Кнопка ШУМОПОДАВЛЕНИЯ (та самая «маленькая кнопка» с фото 1).
+            _plaqueEq = new Button
+            {
+                Text = "🎚",
+                Font = new Font("Segoe UI", 11f),
+                Size = new Size(30, 32),
+                Location = new Point(240, 15),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = card,
+                Cursor = Cursors.Hand,
+                TabStop = false
+            };
+            _plaqueEq.FlatAppearance.BorderSize = 0;
+            PaintPlaqueEq();
+            _plaqueEq.Click += (s, e) =>
+            {
+                DeviceSettings.NoiseSuppression = !DeviceSettings.NoiseSuppression;
+                try { DeviceSettings.Save(); } catch { }
+                PaintPlaqueEq();
+                try { (_voicePlaqueCall as CallForm)?.SetNoiseSuppressionLive(DeviceSettings.NoiseSuppression); } catch { }
+            };
+            new ToolTip().SetToolTip(_plaqueEq, "Шумоподавление");
+
+            // Повесить трубку.
             var hangup = new Button
             {
                 Text = "☎",
-                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-                Size = new Size(30, 30),
-                Dock = DockStyle.Right,
+                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+                Size = new Size(32, 32),
+                Location = new Point(274, 15),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(237, 66, 69),
                 ForeColor = Color.White,
-                Cursor = Cursors.Hand
+                Cursor = Cursors.Hand,
+                TabStop = false
             };
             hangup.FlatAppearance.BorderSize = 0;
+            new ToolTip().SetToolTip(hangup, "Выйти из голосового");
             hangup.Click += (s, e) => { try { if (_voicePlaqueCall != null && !_voicePlaqueCall.IsDisposed) _voicePlaqueCall.Close(); } catch { } };
+
+            // Чип пинга.
+            _plaquePingChip = new Label
+            {
+                AutoSize = true,
+                BackColor = Color.FromArgb(17, 18, 20),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                Padding = new Padding(8, 3, 8, 3),
+                Location = new Point(8, 2),
+                Visible = false
+            };
+            _plaquePingTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+            _plaquePingTimer.Tick += (s, e) => { _plaquePingTimer.Stop(); if (_plaquePingChip != null) _plaquePingChip.Visible = false; };
 
             void FocusCall(object s, EventArgs e)
             {
@@ -392,17 +457,51 @@ namespace PISMO
             }
             p.Click += FocusCall; title.Click += FocusCall; _voicePlaqueSub.Click += FocusCall;
 
+            p.Controls.Add(radar);
             p.Controls.Add(title);
             p.Controls.Add(_voicePlaqueSub);
+            p.Controls.Add(_plaqueEq);
             p.Controls.Add(hangup);
+            p.Controls.Add(_plaquePingChip);
+            _plaquePingChip.BringToFront();
             _voicePlaque = p;
             return p;
+        }
+
+        private void PaintPlaqueEq()
+        {
+            if (_plaqueEq != null)
+                _plaqueEq.ForeColor = DeviceSettings.NoiseSuppression
+                    ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158);
+        }
+
+        private void ShowPlaquePing()
+        {
+            if (_plaquePingChip == null) return;
+            int ms = (_voicePlaqueCall as CallForm)?.CurrentPingMs ?? 0;
+            _plaquePingChip.Text = ms > 0 ? $"📶 {ms} ms" : "Пинг…";
+            _plaquePingChip.Visible = true;
+            _plaquePingChip.BringToFront();
+            _plaquePingTimer?.Stop(); _plaquePingTimer?.Start();
+        }
+
+        private static System.Drawing.Drawing2D.GraphicsPath RoundRect(Rectangle r, int radius)
+        {
+            int d = radius * 2;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            path.AddArc(r.X, r.Y, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         private void ShowVoicePlaque(string subtitle, Form call)
         {
             _voicePlaqueCall = call;
             if (_voicePlaqueSub != null) _voicePlaqueSub.Text = subtitle ?? "";
+            PaintPlaqueEq();
             if (_voicePlaque != null) { _voicePlaque.Visible = true; _voicePlaque.Invalidate(); }
         }
 
