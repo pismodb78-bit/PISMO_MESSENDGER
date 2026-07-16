@@ -931,6 +931,19 @@ namespace PISMO.Native
             // выставленных 60. Повышаем разрешение системного таймера до 1мс на
             // время демки (как делают все игры/стримеры).
             try { timeBeginPeriod(1); } catch { }
+            // Ресурсы не жалеем: демка важнее фоновых задач ПК.
+            try { Thread.CurrentThread.Priority = ThreadPriority.Highest; } catch { }
+            var proc = System.Diagnostics.Process.GetCurrentProcess();
+            var oldPrio = System.Diagnostics.ProcessPriorityClass.Normal;
+            bool prioRaised = false;
+            try { oldPrio = proc.PriorityClass; proc.PriorityClass = System.Diagnostics.ProcessPriorityClass.High; prioRaised = true; }
+            catch { }
+
+            _pushSignal = new AutoResetEvent(false);
+            _pushBusy = 0;
+            _pushThread = new Thread(PushLoop) { IsBackground = true, Priority = ThreadPriority.Highest, Name = "pismo-screen-push" };
+            _pushThread.Start();
+
             long next = _clock.ElapsedMilliseconds;
             while (_scrRun)
             {
@@ -958,12 +971,21 @@ namespace PISMO.Native
                             outH = th & ~1;
                             outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
-                        if (CaptureMonitorDib(bounds, outW, outH))
+                        var d = _dibs[_dibIdx];
+                        if (CaptureMonitorDib(d, bounds, outW, outH))
                         {
                             _scrConsecFails = 0;
-                            PushRawPtr(_scrSource, _dibBits, outW, outH, preview);
+                            // Отдаём кадр пушеру и СРАЗУ переходим к захвату следующего
+                            // во второй буфер (конвейер). Пушер занят — кадр дропаем:
+                            // темп держит захват, лага нет.
+                            if (Interlocked.CompareExchange(ref _pushBusy, 1, 0) == 0)
+                            {
+                                _dibIdx ^= 1;
+                                _pushBuf = d; _pushW = outW; _pushH = outH; _pushPreview = preview;
+                                _pushSignal.Set();
+                            }
                         }
-                        else if (++_scrConsecFails >= 20) { _scrConsecFails = 0; FreeDib(); }
+                        else if (++_scrConsecFails >= 20) { _scrConsecFails = 0; if (System.Threading.Volatile.Read(ref _pushBusy) == 0) FreeDib(); }
                     }
                     else
                     {
@@ -1011,15 +1033,22 @@ namespace PISMO.Native
                         try { _capBmp?.Dispose(); } catch { }
                         try { _scaledBmp?.Dispose(); } catch { }
                         _capBmp = null; _scaledBmp = null;
-                        FreeDib();
+                        if (System.Threading.Volatile.Read(ref _pushBusy) == 0) FreeDib();
                     }
                 }
+                // Пейсинг с суб-мс точностью: спим до дедлайна минус ~1.5мс, остаток
+                // добираем спином (жрёт ядро, зато кадры идут ровно по метроному).
                 long now = _clock.ElapsedMilliseconds;
                 int sleep = (int)(next - now);
-                if (sleep > 0) Thread.Sleep(sleep);
-                else if (sleep < -delayMs) next = now;   // сильно отстали — не догоняем рывком
+                if (sleep > 2) Thread.Sleep(sleep - 2);
+                while (_scrRun && _clock.ElapsedMilliseconds < next) Thread.SpinWait(120);
+                if (_clock.ElapsedMilliseconds - next > delayMs) next = _clock.ElapsedMilliseconds;
             }
             try { timeEndPeriod(1); } catch { }
+            if (prioRaised) { try { proc.PriorityClass = oldPrio; } catch { } }
+            try { _pushSignal?.Set(); _pushThread?.Join(500); } catch { }
+            try { _pushSignal?.Dispose(); } catch { }
+            _pushSignal = null; _pushThread = null; _pushBuf = null; _pushBusy = 0;
             try { _capBmp?.Dispose(); } catch { }
             try { _scaledBmp?.Dispose(); } catch { }
             _capBmp = null; _scaledBmp = null;
@@ -1027,21 +1056,37 @@ namespace PISMO.Native
             if (_screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, _screenDc); } catch { } _screenDc = IntPtr.Zero; }
         }
 
-        // ── DIB-захват монитора ───────────────────────────────────────────
-        private IntPtr _screenDc, _dibDc, _dibBmp, _dibOld, _dibBits;
-        private int _dibW, _dibH;
+        // ── DIB-захват монитора (двойная буферизация: захват ∥ отправка) ──
+        private sealed class DibBuf
+        {
+            public IntPtr Dc, Bmp, Old, Bits;
+            public int W, H;
+        }
 
-        private bool CaptureMonitorDib(Rectangle src, int outW, int outH)
+        private IntPtr _screenDc;
+        private readonly DibBuf[] _dibs = { new DibBuf(), new DibBuf() };
+        private int _dibIdx;
+
+        // Конвейер: пока пушер отдаёт кадр в FFI (конвертация BGRA→I420 внутри),
+        // поток захвата уже блитит следующий кадр во второй буфер.
+        private AutoResetEvent _pushSignal;
+        private Thread _pushThread;
+        private DibBuf _pushBuf;
+        private int _pushW, _pushH;
+        private Action<byte[], int, int> _pushPreview;
+        private int _pushBusy;   // 0 = свободен, 1 = отдаёт кадр
+
+        private bool CaptureMonitorDib(DibBuf d, Rectangle src, int outW, int outH)
         {
             if (outW <= 0 || outH <= 0) return false;
             if (_screenDc == IntPtr.Zero) _screenDc = GetDC(IntPtr.Zero);
             if (_screenDc == IntPtr.Zero) return false;
 
-            if (_dibDc == IntPtr.Zero || _dibW != outW || _dibH != outH)
+            if (d.Dc == IntPtr.Zero || d.W != outW || d.H != outH)
             {
-                FreeDib();
-                _dibDc = CreateCompatibleDC(_screenDc);
-                if (_dibDc == IntPtr.Zero) return false;
+                FreeDib(d);
+                d.Dc = CreateCompatibleDC(_screenDc);
+                if (d.Dc == IntPtr.Zero) return false;
                 var bmi = new BITMAPINFO
                 {
                     biSize = 40,
@@ -1051,29 +1096,46 @@ namespace PISMO.Native
                     biBitCount = 32,
                     biCompression = 0   // BI_RGB
                 };
-                _dibBmp = CreateDIBSection(_dibDc, ref bmi, 0 /*DIB_RGB_COLORS*/, out _dibBits, IntPtr.Zero, 0);
-                if (_dibBmp == IntPtr.Zero || _dibBits == IntPtr.Zero) { FreeDib(); return false; }
-                _dibOld = SelectObject(_dibDc, _dibBmp);
-                SetStretchBltMode(_dibDc, HALFTONE);   // качественный даунскейл
-                _dibW = outW; _dibH = outH;
+                d.Bmp = CreateDIBSection(d.Dc, ref bmi, 0 /*DIB_RGB_COLORS*/, out d.Bits, IntPtr.Zero, 0);
+                if (d.Bmp == IntPtr.Zero || d.Bits == IntPtr.Zero) { FreeDib(d); return false; }
+                d.Old = SelectObject(d.Dc, d.Bmp);
+                SetStretchBltMode(d.Dc, HALFTONE);   // качественный даунскейл
+                d.W = outW; d.H = outH;
             }
 
             return (outW == src.Width && outH == src.Height)
-                ? BitBlt(_dibDc, 0, 0, outW, outH, _screenDc, src.X, src.Y, SRCCOPY)
-                : StretchBlt(_dibDc, 0, 0, outW, outH, _screenDc, src.X, src.Y, src.Width, src.Height, SRCCOPY);
+                ? BitBlt(d.Dc, 0, 0, outW, outH, _screenDc, src.X, src.Y, SRCCOPY)
+                : StretchBlt(d.Dc, 0, 0, outW, outH, _screenDc, src.X, src.Y, src.Width, src.Height, SRCCOPY);
         }
 
-        private void FreeDib()
+        private static void FreeDib(DibBuf d)
         {
             try
             {
-                if (_dibDc != IntPtr.Zero && _dibOld != IntPtr.Zero) SelectObject(_dibDc, _dibOld);
-                if (_dibBmp != IntPtr.Zero) DeleteObject(_dibBmp);
-                if (_dibDc != IntPtr.Zero) DeleteDC(_dibDc);
+                if (d.Dc != IntPtr.Zero && d.Old != IntPtr.Zero) SelectObject(d.Dc, d.Old);
+                if (d.Bmp != IntPtr.Zero) DeleteObject(d.Bmp);
+                if (d.Dc != IntPtr.Zero) DeleteDC(d.Dc);
             }
             catch { }
-            _dibDc = IntPtr.Zero; _dibBmp = IntPtr.Zero; _dibOld = IntPtr.Zero; _dibBits = IntPtr.Zero;
-            _dibW = 0; _dibH = 0;
+            d.Dc = IntPtr.Zero; d.Bmp = IntPtr.Zero; d.Old = IntPtr.Zero; d.Bits = IntPtr.Zero;
+            d.W = 0; d.H = 0;
+        }
+
+        private void FreeDib() { FreeDib(_dibs[0]); FreeDib(_dibs[1]); }
+
+        // Пушер: отдаёт готовый DIB-кадр в FFI и превью, пока захват блитит следующий.
+        private void PushLoop()
+        {
+            while (_scrRun)
+            {
+                try { _pushSignal.WaitOne(200); } catch { break; }
+                if (!_scrRun) break;
+                if (System.Threading.Volatile.Read(ref _pushBusy) == 0) continue;
+                var d = _pushBuf;
+                if (d != null && d.Bits != IntPtr.Zero)
+                    try { PushRawPtr(_scrSource, d.Bits, _pushW, _pushH, _pushPreview); } catch { }
+                Interlocked.Exchange(ref _pushBusy, 0);
+            }
         }
 
         // Кадр из DIB-памяти → FFI (без каких-либо промежуточных копий) + превью.
