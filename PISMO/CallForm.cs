@@ -293,8 +293,13 @@ namespace PISMO
             _transport.RemoteTileStarted += (pid, name, source) => UiInvoke(() => OnTileStarted(pid, name, source));
             _transport.RemoteTileStopped += (pid, source) => UiInvoke(() => OnTileStopped(pid, source));
             _transport.RemoteTileFrame += (pid, source, frame) => OnTileFrameOffThread(pid, source, frame);
+            // «Последний кадр побеждает»: на 60fps BeginInvoke-очередь копит кадры
+            // быстрее, чем UI их рисует → растущий лаг и рваное превью. Храним
+            // только НОВЕЙШИЙ кадр и держим в очереди максимум один вызов.
             _transport.RemoteTileRawFrame += (pid, source, bgra, w, h) =>
-                UiInvoke(() => OnTileRawFrame(pid, source, bgra, w, h));
+                QueueLatestFrame(pid + "|" + source, bgra, w, h,
+                    (b, fw, fh, key) => OnTileRawFrame(key.Substring(0, key.IndexOf('|')),
+                                                       key.Substring(key.IndexOf('|') + 1), b, fw, fh));
 
             // --- «Смотреть стрим»: подключение к идущей демке по кнопке ---
             _transport.RemoteStreamPublished += (pid, name) => UiInvoke(() => OnStreamPublished(pid, name));
@@ -336,7 +341,9 @@ namespace PISMO
             _transport.LocalScreenStopped += () => UiInvoke(OnLocalScreenStopped);
             _transport.LocalScreenError += err => UiInvoke(() => OnLocalScreenError(err));
             _transport.ScreenPreviewFrameReceived += frame => UiInvoke(() => OnSelfScreenFrame(frame));
-            _transport.LocalScreenRawFrame += (bgra, w, h) => UiInvoke(() => OnSelfScreenRawFrame(bgra, w, h));
+            _transport.LocalScreenRawFrame += (bgra, w, h) =>
+                QueueLatestFrame("self|screen", bgra, w, h,
+                    (b, fw, fh, _) => OnSelfScreenRawFrame(b, fw, fh));
             _transport.ScreenPreviewReady += () => UiInvoke(() =>
             {
                 _transport.HideTransportWindow();
@@ -1349,6 +1356,28 @@ namespace PISMO
                 // кнопка внутри списка (там открывается системный диалог).
                 PickMonitorAndShare();
             }
+        }
+
+        // ── Доставка видеокадров в UI без лага: «последний кадр побеждает» ──
+        private sealed class RawFrameBox { public byte[] B; public int W, H; }
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, RawFrameBox> _latestRaw = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _rawQueued = new();
+
+        /// <summary>Сохраняет новейший кадр по ключу и гарантирует максимум ОДИН
+        /// ожидающий BeginInvoke: UI рисует всегда самый свежий кадр, очередь не
+        /// растёт, лага нет. Старые кадры просто выбрасываются.</summary>
+        private void QueueLatestFrame(string key, byte[] bgra, int w, int h,
+                                      Action<byte[], int, int, string> handler)
+        {
+            _latestRaw[key] = new RawFrameBox { B = bgra, W = w, H = h };
+            // 0→1 = ставим дренер; уже 1 — дренер и так заберёт новейший кадр.
+            if (!_rawQueued.TryAdd(key, 1) && !_rawQueued.TryUpdate(key, 1, 0)) return;
+            UiInvoke(() =>
+            {
+                _rawQueued[key] = 0;   // до чтения кадра: поздние кадры поставят новый дренер
+                if (_latestRaw.TryGetValue(key, out var f) && f != null)
+                    try { handler(f.B, f.W, f.H, key); } catch { }
+            });
         }
 
         /// <summary>Список участников в углу: текст + авто-высота панели, чтобы

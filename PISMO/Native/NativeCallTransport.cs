@@ -922,7 +922,6 @@ namespace PISMO.Native
         // даунскейле — два) съедал бюджет кадра и просаживал реальный FPS до 10-15
         // при выставленных 60. Плюс HighQualityBilinear ~20-40мс/кадр → Bilinear.
         private Bitmap _capBmp, _scaledBmp;
-        private int _scrFrameNo;
         private int _scrConsecFails;   // подряд неудачных кадров (самовосстановление)
 
         private void ScreenLoop()
@@ -937,9 +936,9 @@ namespace PISMO.Native
                     if (raw != null)
                     {
                         _scrConsecFails = 0;
-                        // Локальное превью (PIP/плитка) не обязано идти на полном FPS —
-                        // отдаём каждый 3-й кадр, чтобы не жечь UI-поток впустую.
-                        var preview = (LocalScreenFrame != null && (_scrFrameNo++ % 3 == 0))
+                        // Превью — на полном FPS: GPU-путь (сырой BGRA → WritePixels)
+                        // дешёвый, а прореживание делало превью дёрганым (fps/3).
+                        var preview = LocalScreenFrame != null
                             ? EmitLocalScreen : (Action<byte[], int, int>)null;
 
                         int th = _scrTargetHeight;   // даунскейл до целевой высоты (0 = как есть)
