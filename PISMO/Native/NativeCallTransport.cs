@@ -993,7 +993,9 @@ namespace PISMO.Native
                             outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
                         var d = _dibs[_dibIdx];
-                        if (CaptureMonitorDib(d, bounds, outW, outH))
+                        // Сначала DXGI (кадры от GPU), при недоступности — GDI-блит.
+                        if (CaptureMonitorDxgi(d, bounds, outW, outH)
+                            || CaptureMonitorDib(d, bounds, outW, outH))
                         {
                             _scrConsecFails = 0;
                             // Отдаём кадр пушеру и СРАЗУ переходим к захвату следующего
@@ -1074,6 +1076,8 @@ namespace PISMO.Native
             try { _scaledBmp?.Dispose(); } catch { }
             _capBmp = null; _scaledBmp = null;
             FreeDib();
+            try { _dxgi?.Dispose(); } catch { }
+            _dxgi = null; _dxgiFailed = false;   // следующая демка снова попробует DXGI
             if (_screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, _screenDc); } catch { } _screenDc = IntPtr.Zero; }
         }
 
@@ -1097,36 +1101,81 @@ namespace PISMO.Native
         private Action<byte[], int, int> _pushPreview;
         private int _pushBusy;   // 0 = свободен, 1 = отдаёт кадр
 
-        private bool CaptureMonitorDib(DibBuf d, Rectangle src, int outW, int outH)
+        private bool EnsureDibBuf(DibBuf d, int outW, int outH)
         {
             if (outW <= 0 || outH <= 0) return false;
             if (_screenDc == IntPtr.Zero) _screenDc = GetDC(IntPtr.Zero);
             if (_screenDc == IntPtr.Zero) return false;
+            if (d.Dc != IntPtr.Zero && d.W == outW && d.H == outH) return true;
 
-            if (d.Dc == IntPtr.Zero || d.W != outW || d.H != outH)
+            FreeDib(d);
+            d.Dc = CreateCompatibleDC(_screenDc);
+            if (d.Dc == IntPtr.Zero) return false;
+            var bmi = new BITMAPINFO
             {
-                FreeDib(d);
-                d.Dc = CreateCompatibleDC(_screenDc);
-                if (d.Dc == IntPtr.Zero) return false;
-                var bmi = new BITMAPINFO
-                {
-                    biSize = 40,
-                    biWidth = outW,
-                    biHeight = -outH,   // top-down: строки сверху вниз, как ждёт BGRA-кадр
-                    biPlanes = 1,
-                    biBitCount = 32,
-                    biCompression = 0   // BI_RGB
-                };
-                d.Bmp = CreateDIBSection(d.Dc, ref bmi, 0 /*DIB_RGB_COLORS*/, out d.Bits, IntPtr.Zero, 0);
-                if (d.Bmp == IntPtr.Zero || d.Bits == IntPtr.Zero) { FreeDib(d); return false; }
-                d.Old = SelectObject(d.Dc, d.Bmp);
-                SetStretchBltMode(d.Dc, HALFTONE);   // качественный даунскейл
-                d.W = outW; d.H = outH;
-            }
+                biSize = 40,
+                biWidth = outW,
+                biHeight = -outH,   // top-down: строки сверху вниз, как ждёт BGRA-кадр
+                biPlanes = 1,
+                biBitCount = 32,
+                biCompression = 0   // BI_RGB
+            };
+            d.Bmp = CreateDIBSection(d.Dc, ref bmi, 0 /*DIB_RGB_COLORS*/, out d.Bits, IntPtr.Zero, 0);
+            if (d.Bmp == IntPtr.Zero || d.Bits == IntPtr.Zero) { FreeDib(d); return false; }
+            d.Old = SelectObject(d.Dc, d.Bmp);
+            SetStretchBltMode(d.Dc, HALFTONE);   // качественный даунскейл
+            d.W = outW; d.H = outH;
+            return true;
+        }
 
+        private bool CaptureMonitorDib(DibBuf d, Rectangle src, int outW, int outH)
+        {
+            if (!EnsureDibBuf(d, outW, outH)) return false;
             return (outW == src.Width && outH == src.Height)
                 ? BitBlt(d.Dc, 0, 0, outW, outH, _screenDc, src.X, src.Y, SRCCOPY)
                 : StretchBlt(d.Dc, 0, 0, outW, outH, _screenDc, src.X, src.Y, src.Width, src.Height, SRCCOPY);
+        }
+
+        // ── DXGI Desktop Duplication: кадры от видеодрайвера (GPU) ────────
+        private DxgiDuplicator _dxgi;
+        private Rectangle _dxgiBounds;
+        private bool _dxgiFailed;   // DXGI недоступен → навсегда GDI-путь (до рестарта демки)
+
+        /// <summary>Кадр монитора через DXGI в DIB-буфер d (масштабирование через
+        /// StretchDIBits при необходимости). false = кадр не получить (откат на GDI).</summary>
+        private bool CaptureMonitorDxgi(DibBuf d, Rectangle src, int outW, int outH)
+        {
+            if (_dxgiFailed) return false;
+            if (_dxgi == null || _dxgiBounds != src)
+            {
+                try { _dxgi?.Dispose(); _dxgi = new DxgiDuplicator(src); _dxgiBounds = src; }
+                catch { _dxgi?.Dispose(); _dxgi = null; _dxgiFailed = true; return false; }
+            }
+            try
+            {
+                _dxgi.TryAcquireFrame(8);   // false = экран не менялся, Buffer хранит прошлый кадр
+                if (!_dxgi.HasFrame) return false;
+            }
+            catch
+            {
+                // ACCESS_LOST (смена режима/monitor off) — пересоздадим на следующем кадре.
+                try { _dxgi.Dispose(); } catch { }
+                _dxgi = null;
+                return false;
+            }
+
+            if (!EnsureDibBuf(d, outW, outH)) return false;
+            var bmi = new BITMAPINFO
+            {
+                biSize = 40,
+                biWidth = _dxgi.Width,
+                biHeight = -_dxgi.Height,
+                biPlanes = 1,
+                biBitCount = 32,
+                biCompression = 0
+            };
+            return StretchDIBits(d.Dc, 0, 0, outW, outH, 0, 0, _dxgi.Width, _dxgi.Height,
+                                 _dxgi.Buffer, ref bmi, 0, SRCCOPY) > 0;
         }
 
         private static void FreeDib(DibBuf d)
@@ -1719,6 +1768,10 @@ namespace PISMO.Native
                                               IntPtr hdcSrc, int sx, int sy, int scx, int scy, uint rop);
         [DllImport("gdi32.dll")]
         private static extern int SetStretchBltMode(IntPtr hdc, int mode);
+        [DllImport("gdi32.dll")]
+        private static extern int StretchDIBits(IntPtr hdc, int xd, int yd, int wd, int hd,
+                                                int xs, int ys, int ws, int hs,
+                                                IntPtr bits, ref BITMAPINFO bmi, uint usage, uint rop);
         [DllImport("gdi32.dll")]
         private static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFO bmi, uint usage,
                                                       out IntPtr bits, IntPtr hSection, uint offset);
