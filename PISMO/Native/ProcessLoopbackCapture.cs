@@ -116,7 +116,10 @@ namespace PISMO.Native
         {
             while (_run)
             {
-                if (!_bufferReady.WaitOne(200)) continue;
+                // Ждём событие, но GetBuffer пробуем ВСЕГДА: у process-loopback
+                // (VAD\Process_Loopback) событийный режим часто не срабатывает —
+                // тогда без опроса захват «жив», но данных нет вообще.
+                _bufferReady.WaitOne(20);
                 try
                 {
                     while (true)

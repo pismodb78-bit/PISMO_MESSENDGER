@@ -102,7 +102,10 @@ namespace PISMO
                 room = roomName,
                 canPublish = true,
                 canSubscribe = true,
-                canPublishData = true
+                canPublishData = true,
+                // Без этого SetLocalAttributes (значки мьюта/наушников на плитках)
+                // молча отбрасывается сервером.
+                canUpdateOwnMetadata = true
             };
 
             var payload = new

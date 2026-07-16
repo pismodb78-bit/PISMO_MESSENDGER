@@ -106,6 +106,16 @@ namespace PISMO
             _t.ParticipantJoined += (id, name) => { _names[id] = name; ParticipantJoined?.Invoke(id, name); };
             _t.ParticipantLeftById += id =>
             {
+                // Чистим стрим-состояние вышедшего: иначе при его перезаходе с
+                // новой демкой RemoteStreamPublished не выстрелит (pid уже
+                // «анонсирован») и кадры молча отбрасываются.
+                lock (_watchLock)
+                {
+                    _announcedScreens.Remove(id);
+                    _watchedScreens.Remove(id);
+                }
+                _startedTiles.Remove(id + "|screen");
+                _startedTiles.Remove(id + "|camera");
                 ParticipantLeftById?.Invoke(id);
                 RemoteParticipantLeft?.Invoke();
             };

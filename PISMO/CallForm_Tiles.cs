@@ -208,6 +208,50 @@ namespace PISMO
             return EnsureTile(pid, name, "camera");
         }
 
+        // ── Своя демонстрация — плиткой в звонке ─────────────────────────
+        /// <summary>Плитка собственной демки: превью идёт прямо в звонок; клик по
+        /// плитке открывает привычное мини-окно (PIP). Закрыл/свернул PIP — превью
+        /// продолжает жить в плитке (кадры в неё идут всегда).</summary>
+        private void EnsureSelfScreenTile()
+        {
+            var tile = EnsureTile(SelfPid, "Вы", "screen");
+            if (tile == null) return;
+            if (!tile.HasVideo)
+            {
+                tile.HasVideo = true;
+                tile.Pb.Visible = true;
+                tile.Lbl.Text = "🖥 Ваша демонстрация";
+                // Клик по СВОЕЙ демке — вынести превью в отдельное мини-окно.
+                void OpenPip(object s, EventArgs e) => ShowScreenSharePipContainer();
+                tile.Pb.Click += OpenPip;
+                tile.Panel.Click += OpenPip;
+                tile.Pb.Cursor = Cursors.Hand;
+            }
+            LayoutTiles();
+        }
+
+        /// <summary>Кадр собственной демки: в плитку звонка и (если открыт) в PIP.</summary>
+        private void OnSelfScreenFrame(byte[] imgBytes)
+        {
+            ShowScreenSharePip(imgBytes);   // мини-окно, если открыто (внутри сам проверит)
+            if (!_tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile) || tile.Pb == null) return;
+            try
+            {
+                using var ms = new System.IO.MemoryStream(imgBytes);
+                var img = new Bitmap(ms);
+                var old = tile.Pb.Image;
+                tile.Pb.Image = img;
+                old?.Dispose();
+            }
+            catch { }
+        }
+
+        private void RemoveSelfScreenTile()
+        {
+            RemoveTile(TileKey(SelfPid, "screen"));
+            LayoutTiles();
+        }
+
         private CallTile EnsureTile(string pid, string name, string source)
         {
             if (_tilesHost == null) return null;
@@ -489,7 +533,8 @@ namespace PISMO
         {
             bool anyWatching = false;
             foreach (var kv in _tiles)
-                if (kv.Value.Source == "screen" && kv.Value.HasVideo) { anyWatching = true; break; }
+                if (kv.Value.Source == "screen" && kv.Value.HasVideo
+                    && kv.Value.Pid != SelfPid) { anyWatching = true; break; }   // своя демка — не «просмотр»
             _peerScreenSharing = anyWatching;
             _tbScreenAudioVolume.Visible = anyWatching;
             _lblScreenAudioVolume.Visible = anyWatching;

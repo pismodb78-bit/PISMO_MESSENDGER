@@ -757,10 +757,47 @@ namespace PISMO.Native
                 });
                 _scrAudioPublishAsyncId = pubResp.PublishTrack.AsyncId;
 
-                if (_procLoop != null) _procLoop.DataAvailable += OnScreenAudioData;
+                if (_procLoop != null)
+                {
+                    _procLoop.DataAvailable += OnScreenAudioData;
+                    ArmScreenAudioWatchdog();
+                }
                 else { _loopback.DataAvailable += OnScreenAudioData; _loopback.StartRecording(); }
             }
             catch (Exception ex) { ConnectError?.Invoke("звук демки: " + ex.Message); }
+        }
+
+        // Сторож: process-loopback может «успешно» стартовать и молча не давать
+        // данных (COM-путь зависит от сборки Windows). Если за 2 с не пришло ни
+        // одного кадра — пересоздаём захват через обычный device-loopback.
+        private System.Threading.Timer _scrAudioWatchdog;
+        private volatile bool _scrAudioGotData;
+
+        private void ArmScreenAudioWatchdog()
+        {
+            _scrAudioGotData = false;
+            _scrAudioWatchdog?.Dispose();
+            _scrAudioWatchdog = new System.Threading.Timer(_ =>
+            {
+                _scrAudioWatchdog?.Dispose(); _scrAudioWatchdog = null;
+                if (_scrAudioGotData || _procLoop == null || _scrAudioSource == 0) return;
+                try
+                {
+                    try { _procLoop.DataAvailable -= OnScreenAudioData; _procLoop.Dispose(); } catch { }
+                    _procLoop = null;
+                    _loopback = new NAudio.Wave.WasapiLoopbackCapture();
+                    // Формат устройства может отличаться от заявленного в FFI-источнике —
+                    // но FFI-источник уже создан под старый rate/ch. Пересоздаём источник
+                    // нельзя без перепубликации, поэтому конвертируем под старый формат
+                    // в OnScreenAudioData (float→i16 уже есть; rate обычно совпадает 48к).
+                    _scrAudioFloat = true;
+                    _scrAudioRate = _loopback.WaveFormat.SampleRate;
+                    _scrAudioCh = Math.Max(1, _loopback.WaveFormat.Channels);
+                    _loopback.DataAvailable += OnScreenAudioData;
+                    _loopback.StartRecording();
+                }
+                catch { }
+            }, null, 2000, System.Threading.Timeout.Infinite);
         }
 
         // Кадр системного звука → i16 PCM → CaptureAudioFrame. Источник даёт либо
@@ -768,6 +805,7 @@ namespace PISMO.Native
         private void OnScreenAudioData(object sender, WaveInEventArgs e)
         {
             if (_scrAudioSource == 0 || e.BytesRecorded <= 0) return;
+            _scrAudioGotData = true;   // сторож: захват жив, откат не нужен
             int n;
             short[] pcm;
             if (_scrAudioFloat)
@@ -815,6 +853,8 @@ namespace PISMO.Native
 
         private void StopScreenAudio()
         {
+            try { _scrAudioWatchdog?.Dispose(); } catch { }
+            _scrAudioWatchdog = null;
             try { if (_procLoop != null) { _procLoop.DataAvailable -= OnScreenAudioData; _procLoop.Dispose(); } } catch { }
             _procLoop = null;
             try { if (_loopback != null) { _loopback.DataAvailable -= OnScreenAudioData; _loopback.StopRecording(); _loopback.Dispose(); } } catch { }
@@ -861,6 +901,12 @@ namespace PISMO.Native
             _scrSource = 0; _scrTrack = 0; _scrTrackSid = null; _scrWindow = IntPtr.Zero; _scrStarted = false;
         }
 
+        // Переиспользуемые буферы захвата: new Bitmap 1080p+ на КАЖДЫЙ кадр (а при
+        // даунскейле — два) съедал бюджет кадра и просаживал реальный FPS до 10-15
+        // при выставленных 60. Плюс HighQualityBilinear ~20-40мс/кадр → Bilinear.
+        private Bitmap _capBmp, _scaledBmp;
+        private int _scrFrameNo;
+
         private void ScreenLoop()
         {
             while (_scrRun)
@@ -869,24 +915,37 @@ namespace PISMO.Native
                 long start = _clock.ElapsedMilliseconds;
                 try
                 {
-                    using Bitmap raw = CaptureScreen();
+                    Bitmap raw = CaptureScreen();
                     if (raw != null)
                     {
+                        // Локальное превью (PIP/плитка) не обязано идти на полном FPS —
+                        // отдаём каждый 3-й кадр, чтобы не жечь UI-поток впустую.
+                        var preview = (LocalScreenFrame != null && (_scrFrameNo++ % 3 == 0))
+                            ? EmitLocalScreen : (Action<byte[], int, int>)null;
+
                         int th = _scrTargetHeight;   // даунскейл до целевой высоты (0 = как есть)
                         if (th > 0 && raw.Height > th)
                         {
-                            int tw = (int)Math.Round(raw.Width * (th / (double)raw.Height));
-                            using var scaled = new Bitmap(Math.Max(2, tw), Math.Max(2, th), PixelFormat.Format32bppArgb);
-                            using (var g = Graphics.FromImage(scaled))
+                            int tw = Math.Max(2, (int)Math.Round(raw.Width * (th / (double)raw.Height))) & ~1;
+                            if (_scaledBmp == null || _scaledBmp.Width != tw || _scaledBmp.Height != th)
                             {
-                                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
-                                g.DrawImage(raw, 0, 0, scaled.Width, scaled.Height);
+                                _scaledBmp?.Dispose();
+                                _scaledBmp = new Bitmap(tw, Math.Max(2, th), PixelFormat.Format32bppArgb);
                             }
-                            PushBitmap(_scrSource, scaled, LocalScreenFrame != null ? EmitLocalScreen : null);
+                            using (var g = Graphics.FromImage(_scaledBmp))
+                            {
+                                g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+                                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+                                g.DrawImage(raw, new Rectangle(0, 0, _scaledBmp.Width, _scaledBmp.Height),
+                                            0, 0, raw.Width, raw.Height, GraphicsUnit.Pixel);
+                            }
+                            PushBitmap(_scrSource, _scaledBmp, preview);
                         }
                         else
                         {
-                            PushBitmap(_scrSource, raw, LocalScreenFrame != null ? EmitLocalScreen : null);
+                            PushBitmap(_scrSource, raw, preview);
                         }
                     }
                 }
@@ -894,6 +953,9 @@ namespace PISMO.Native
                 int sleep = delayMs - (int)(_clock.ElapsedMilliseconds - start);
                 if (sleep > 0) Thread.Sleep(sleep);
             }
+            try { _capBmp?.Dispose(); } catch { }
+            try { _scaledBmp?.Dispose(); } catch { }
+            _capBmp = null; _scaledBmp = null;
         }
 
         // ── Качество/кодек/энкодер демки ──────────────────────────────────
@@ -941,28 +1003,36 @@ namespace PISMO.Native
 
         private void EmitLocalScreen(byte[] bgra, int w, int h) => LocalScreenFrame?.Invoke(bgra, w, h);
 
+        // Возвращает переиспользуемый _capBmp (пересоздаётся только при смене размера).
         private Bitmap CaptureScreen()
         {
+            int w, h;
             if (_scrWindow != IntPtr.Zero)
             {
                 if (!GetWindowRect(_scrWindow, out RECT r)) return null;
-                int w = r.Right - r.Left, h = r.Bottom - r.Top;
-                if (w <= 0 || h <= 0) return null;
-                var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
-                using var g = Graphics.FromImage(bmp);
+                w = r.Right - r.Left; h = r.Bottom - r.Top;
+            }
+            else { w = _scrBounds.Width; h = _scrBounds.Height; }
+            if (w <= 0 || h <= 0) return null;
+
+            if (_capBmp == null || _capBmp.Width != w || _capBmp.Height != h)
+            {
+                _capBmp?.Dispose();
+                _capBmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+            }
+
+            using var g = Graphics.FromImage(_capBmp);
+            if (_scrWindow != IntPtr.Zero)
+            {
                 IntPtr hdc = g.GetHdc();
                 try { PrintWindow(_scrWindow, hdc, PW_RENDERFULLCONTENT); }
                 finally { g.ReleaseHdc(hdc); }
-                return bmp;
             }
             else
             {
-                Rectangle b = _scrBounds;
-                var bmp = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppArgb);
-                using var g = Graphics.FromImage(bmp);
-                g.CopyFromScreen(b.Location, Point.Empty, b.Size, CopyPixelOperation.SourceCopy);
-                return bmp;
+                g.CopyFromScreen(_scrBounds.Location, Point.Empty, _scrBounds.Size, CopyPixelOperation.SourceCopy);
             }
+            return _capBmp;
         }
 
         // Кадр Bitmap → CaptureVideoFrame (BGRA packed). Кадр читается синхронно во
@@ -1129,6 +1199,11 @@ namespace PISMO.Native
                 case RoomEvent.MessageOneofCase.TrackUnsubscribed:
                     OnTrackUnsubscribed(re.TrackUnsubscribed.ParticipantIdentity, re.TrackUnsubscribed.TrackSid);
                     break;
+                case RoomEvent.MessageOneofCase.TrackUnpublished:
+                    // Собеседник ВЫКЛЮЧИЛ демку/камеру: unpublish может прийти без
+                    // TrackUnsubscribed — без этой ветки плитка висела вечно.
+                    OnTrackUnsubscribed(re.TrackUnpublished.ParticipantIdentity, re.TrackUnpublished.PublicationSid);
+                    break;
                 case RoomEvent.MessageOneofCase.ParticipantAttributesChanged:
                 {
                     var pac = re.ParticipantAttributesChanged;
@@ -1234,7 +1309,13 @@ namespace PISMO.Native
 
         private void OnTrackUnsubscribed(string identity, string sid)
         {
-            RemoteVideoRemoved?.Invoke(identity, IsScreenSid(sid));
+            // Убираем ТОЛЬКО видео-плитки. Раньше отписка ЛЮБОГО трека (в т.ч.
+            // звука демки/микрофона) прилетала как RemoteVideoRemoved(isScreen:
+            // false) и сносила плитку КАМЕРЫ участника.
+            TrackSource src;
+            lock (_videoLock) { if (!_sourceBySid.TryGetValue(sid, out src)) return; }
+            if (src == TrackSource.SourceScreenshare) RemoteVideoRemoved?.Invoke(identity, true);
+            else if (src == TrackSource.SourceCamera) RemoteVideoRemoved?.Invoke(identity, false);
         }
 
         private void HandleAudioStream(AudioStreamEvent ase)

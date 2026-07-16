@@ -333,7 +333,7 @@ namespace PISMO
             _transport.LocalScreenStarted += () => UiInvoke(OnLocalScreenStarted);
             _transport.LocalScreenStopped += () => UiInvoke(OnLocalScreenStopped);
             _transport.LocalScreenError += err => UiInvoke(() => OnLocalScreenError(err));
-            _transport.ScreenPreviewFrameReceived += frame => UiInvoke(() => ShowScreenSharePip(frame));
+            _transport.ScreenPreviewFrameReceived += frame => UiInvoke(() => OnSelfScreenFrame(frame));
             _transport.ScreenPreviewReady += () => UiInvoke(() =>
             {
                 _transport.HideTransportWindow();
@@ -343,7 +343,9 @@ namespace PISMO
                 _btnScreen.BackColor = Color.FromArgb(88, 101, 242);
                 _btnScreen.Text = "⏹";
                 _transport.ConfirmScreenShare();
-                ShowScreenSharePipContainer();
+                // Своя демка — обычной плиткой в звонке (как в Discord). Мини-окно
+                // (PIP) открывается кликом по этой плитке, а не само.
+                EnsureSelfScreenTile();
             });
 
             // --- Своя камера: кадры идут в собственную плитку ---
@@ -627,6 +629,8 @@ namespace PISMO
             _btnScreen.BackColor = Color.FromArgb(64, 68, 75);
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
+            try { RemoveSelfScreenTile(); } catch { }
+            try { HideScreenSharePip(); } catch { }
             try { Sounds.ScreenOff(); } catch { }
         }
 
@@ -645,6 +649,7 @@ namespace PISMO
             _btnScreen.BackColor = Color.FromArgb(64, 68, 75);
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
+            try { RemoveSelfScreenTile(); } catch { }
             HideScreenSharePip();
         }
 
@@ -1397,6 +1402,7 @@ namespace PISMO
             _btnScreen.BackColor = Color.FromArgb(64, 68, 75);
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
+            try { RemoveSelfScreenTile(); } catch { }
             HideScreenSharePip();
         }
 
@@ -1607,7 +1613,7 @@ namespace PISMO
                 _screenPipPicture.Visible = false;
                 if (_screenPipStats != null) _screenPipStats.Visible = false;
                 _screenPipForm.Size = new Size(180, 22);
-                try { _transport?.SetScreenPreviewActive(false); } catch { }   // превью скрыто — не извлекаем кадры
+                // Превью НЕ отключаем: кадры продолжают идти в плитку своей демки.
             }
             else
             {
@@ -1625,7 +1631,7 @@ namespace PISMO
         {
             if (_screenPipForm == null) return;
             _screenPipForm.Hide();
-            try { _transport?.SetScreenPreviewActive(false); } catch { }   // в трее — превью не нужно
+            // Превью НЕ отключаем: при свёрнутом PIP демка живёт в плитке звонка.
 
             if (_screenPipTrayIcon == null)
             {
