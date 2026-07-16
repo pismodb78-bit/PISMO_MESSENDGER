@@ -121,13 +121,34 @@ namespace PISMO.Native
         // sid трека → источник (камера/демка), чтобы различать входящее видео.
         private readonly Dictionary<string, TrackSource> _sourceBySid = new();
         // handle видеострима → (участник, это ли демка).
-        private readonly Dictionary<ulong, (string identity, bool isScreen)> _videoStreamMeta = new();
+        // Контекст входящего видеопотока: кто/что + пул буферов кадров.
+        // Пул из 3 буферов вместо new byte[8МБ] на КАЖДЫЙ кадр: на 60fps это
+        // ~500МБ/с мусора — паузы GC дёргали и превью, и входящие стримы.
+        private sealed class VideoStreamCtx
+        {
+            public string Identity;
+            public bool IsScreen;
+            public readonly byte[][] Pool = new byte[3][];
+            public int Idx;
+            public byte[] Rent(int size)
+            {
+                int i = (Idx = (Idx + 1) % 3);
+                var b = Pool[i];
+                if (b == null || b.Length != size) Pool[i] = b = new byte[size];
+                return b;
+            }
+        }
+        private readonly Dictionary<ulong, VideoStreamCtx> _videoStreamMeta = new();
         private readonly object _videoLock = new();
 
         public void Connect(string url, string token)
         {
             LiveKitFfi.Initialize();
             LiveKitFfi.FfiEventReceived += OnFfiEvent;
+
+            // На время звонка — GC с минимальными паузами: сборки мусора не должны
+            // дёргать 60fps-видео и аудио-кадры по 10мс.
+            try { System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency; } catch { }
 
             var req = new FfiRequest
             {
@@ -1161,10 +1182,23 @@ namespace PISMO.Native
             });
             if (preview != null)
             {
-                var buf = new byte[w * h * 4];
+                var buf = RentPreviewBuf(w * h * 4);   // пул вместо аллокации на кадр
                 Marshal.Copy(bits, buf, 0, buf.Length);
                 preview(buf, w, h);
             }
+        }
+
+        // Пул буферов превью (3 по кругу): UI успевает срисовать кадр до того,
+        // как буфер переиспользуется через 2 кадра.
+        private readonly byte[][] _prevPool = new byte[3][];
+        private int _prevPoolIdx;
+
+        private byte[] RentPreviewBuf(int size)
+        {
+            int i = (_prevPoolIdx = (_prevPoolIdx + 1) % 3);
+            var b = _prevPool[i];
+            if (b == null || b.Length != size) _prevPool[i] = b = new byte[size];
+            return b;
         }
 
         // ── Качество/кодек/энкодер демки ──────────────────────────────────
@@ -1286,7 +1320,7 @@ namespace PISMO.Native
                 if (preview != null)
                 {
                     int stride = data.Stride;
-                    previewBuf = new byte[w * h * 4];
+                    previewBuf = RentPreviewBuf(w * h * 4);
                     if (stride == w * 4)
                         Marshal.Copy(data.Scan0, previewBuf, 0, previewBuf.Length);
                     else
@@ -1518,7 +1552,7 @@ namespace PISMO.Native
                     }
                 });
                 ulong streamHandle = resp.NewVideoStream.Stream.Handle.Id;
-                lock (_videoLock) _videoStreamMeta[streamHandle] = (identity, isScreen);
+                lock (_videoLock) _videoStreamMeta[streamHandle] = new VideoStreamCtx { Identity = identity, IsScreen = isScreen };
             }
         }
 
@@ -1562,23 +1596,23 @@ namespace PISMO.Native
             }
             if (vse.MessageCase != VideoStreamEvent.MessageOneofCase.FrameReceived) return;
 
-            (string identity, bool isScreen) meta;
-            lock (_videoLock) { if (!_videoStreamMeta.TryGetValue(vse.StreamHandle, out meta)) meta = (null, false); }
+            VideoStreamCtx ctx;
+            lock (_videoLock) { _videoStreamMeta.TryGetValue(vse.StreamHandle, out ctx); }
 
             var buffer = vse.FrameReceived.Buffer;
             var info = buffer.Info;
             int w = (int)info.Width, h = (int)info.Height;
-            if (info.DataPtr != 0 && w > 0 && h > 0)
+            if (ctx != null && info.DataPtr != 0 && w > 0 && h > 0)
             {
                 int stride = info.HasStride && info.Stride > 0 ? (int)info.Stride : w * 4;
-                var bgra = new byte[w * h * 4];
+                var bgra = ctx.Rent(w * h * 4);   // пул: без 8МБ-аллокаций на каждый кадр
                 IntPtr src = new IntPtr((long)info.DataPtr);
                 if (stride == w * 4)
                     Marshal.Copy(src, bgra, 0, bgra.Length);
                 else
                     for (int y = 0; y < h; y++)
                         Marshal.Copy(IntPtr.Add(src, y * stride), bgra, y * w * 4, w * 4);
-                RemoteVideoFrame?.Invoke(meta.identity, meta.isScreen, bgra, w, h);
+                RemoteVideoFrame?.Invoke(ctx.Identity, ctx.IsScreen, bgra, w, h);
             }
             LiveKitFfi.DropHandle(buffer.Handle.Id);
         }
@@ -1634,6 +1668,7 @@ namespace PISMO.Native
         {
             if (_disposed) return;
             _disposed = true;
+            try { System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.Interactive; } catch { }
             try { LiveKitFfi.FfiEventReceived -= OnFfiEvent; } catch { }
             try { _statsTimer?.Dispose(); } catch { }
             _statsTimer = null;
