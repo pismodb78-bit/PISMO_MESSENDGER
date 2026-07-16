@@ -81,6 +81,7 @@ namespace PISMO.Native
         // конец (то, что играем в колонки) — референс для AEC.
         private ulong _apmHandle;
         private volatile bool _apmEnabled;
+        private bool _apmEc = true, _apmAgc = true;   // флаги APM для пересоздания
         private readonly object _apmLock = new();
         private byte[] _micAccum = new byte[0];   // накопитель микрофона для 10мс-кадров
         private int _micAccumLen;
@@ -195,24 +196,8 @@ namespace PISMO.Native
                 // 4) Нативный libwebrtc APM: настоящий шумодав + эхоподавление.
                 //    Работает на i16-кадрах по 10 мс: ближний конец в OnMicData,
                 //    дальний (референс эха) — из микшера воспроизведения.
-                try
-                {
-                    var apmResp = LiveKitFfi.Request(new FfiRequest
-                    {
-                        NewApm = new NewApmRequest
-                        {
-                            EchoCancellerEnabled = echoCancel,
-                            GainControllerEnabled = agc,
-                            HighPassFilterEnabled = true,
-                            NoiseSuppressionEnabled = noiseSuppress
-                        }
-                    });
-                    _apmHandle = apmResp.NewApm.Apm.Handle.Id;
-                    _apmEnabled = true;
-                    // Типичная задержка тракта воспроизведения (буфер WaveOut ~120мс).
-                    try { LiveKitFfi.Request(new FfiRequest { ApmSetStreamDelay = new ApmSetStreamDelayRequest { ApmHandle = _apmHandle, DelayMs = 140 } }); } catch { }
-                }
-                catch { _apmHandle = 0; _apmEnabled = false; }
+                _apmEc = echoCancel; _apmAgc = agc;
+                CreateApm(noiseSuppress);
 
                 // Резервный программный шумодав — только если APM не поднялся.
                 _nsEnabled = noiseSuppress;
@@ -222,6 +207,34 @@ namespace PISMO.Native
                 StartMicCapture();
             }
             catch (Exception ex) { ConnectError?.Invoke("микрофон: " + ex.Message); }
+        }
+
+        // Создаёт (или пересоздаёт) APM с текущими EC/AGC и заданным шумодавом.
+        // NewApmRequest фиксирует флаги на всю жизнь APM, поэтому живое
+        // переключение шумодава = пересоздание модуля (звук не прерывается:
+        // OnMicData просто перейдёт на новый handle со следующего 10мс-кадра).
+        private void CreateApm(bool noiseSuppress)
+        {
+            ulong old = _apmHandle;
+            try
+            {
+                var apmResp = LiveKitFfi.Request(new FfiRequest
+                {
+                    NewApm = new NewApmRequest
+                    {
+                        EchoCancellerEnabled = _apmEc,
+                        GainControllerEnabled = _apmAgc,
+                        HighPassFilterEnabled = true,
+                        NoiseSuppressionEnabled = noiseSuppress
+                    }
+                });
+                _apmHandle = apmResp.NewApm.Apm.Handle.Id;
+                _apmEnabled = true;
+                // Типичная задержка тракта воспроизведения (буфер WaveOut ~120мс).
+                try { LiveKitFfi.Request(new FfiRequest { ApmSetStreamDelay = new ApmSetStreamDelayRequest { ApmHandle = _apmHandle, DelayMs = 140 } }); } catch { }
+            }
+            catch { _apmHandle = 0; _apmEnabled = false; }
+            if (old != 0) { try { LiveKitFfi.DropHandle(old); } catch { } }
         }
 
         private void StartMicCapture()
@@ -244,8 +257,14 @@ namespace PISMO.Native
             _micAccumLen = 0;
         }
 
-        /// <summary>Вкл/выкл программный шумодав на лету.</summary>
-        public void SetNoiseSuppression(bool on) => _nsEnabled = on;
+        /// <summary>Вкл/выкл шумодав на лету. APM создаётся с фиксированными
+        /// флагами, поэтому пересоздаём его с новым NS (EC/AGC сохраняются);
+        /// заодно переключаем резервный программный шумодав.</summary>
+        public void SetNoiseSuppression(bool on)
+        {
+            _nsEnabled = on;
+            if (_micStarted) { try { CreateApm(on); } catch { } }
+        }
 
         /// <summary>Мьют микрофона: трек остаётся опубликованным, кадры не шлём.</summary>
         public void SetMicMuted(bool muted) => _micMuted = muted;
@@ -485,6 +504,9 @@ namespace PISMO.Native
                         {
                             Source = TrackSource.SourceCamera,
                             VideoCodec = (VideoCodec)1,                              // H264
+                            // Кодируем на выбранной в настройках видеокарте — тот же
+                            // хинт (NVENC/HW/SW/auto), что и у демонстрации экрана.
+                            VideoEncoder = (VideoEncoderBackend)MapGpu(DeviceSettings.GpuEncodePref),
                             DegradationPreference = (LiveKit.Proto.DegradationPreference)1, // MAINTAIN_FRAMERATE (лицо: плавность важнее)
                             VideoEncoding = new VideoEncoding
                             {
@@ -893,6 +915,7 @@ namespace PISMO.Native
         {
             "high" => 3,          // дискретная NVIDIA → NVENC
             "integrated" => 2,    // встроенная → HARDWARE (обобщённо)
+            "software" => 1,      // принудительно программный энкодер (CPU)
             _ => 0,               // auto
         };
 

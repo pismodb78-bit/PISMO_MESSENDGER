@@ -323,9 +323,9 @@ namespace PISMO
             var tblScreen = new TableLayoutPanel
             {
                 Location = new Point(14, 36),
-                Size = new Size(428, 50),
+                Size = new Size(428, 82),
                 ColumnCount = 4,
-                RowCount = 1,
+                RowCount = 2,
                 Padding = new Padding(0),
                 AutoSize = false,
                 BackColor = Color.FromArgb(47, 49, 54)
@@ -342,6 +342,7 @@ namespace PISMO
             tblScreen.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70f));
 
             tblScreen.RowStyles.Add(new RowStyle(SizeType.Absolute, 26f));
+            tblScreen.RowStyles.Add(new RowStyle(SizeType.Absolute, 30f));
 
             // Метка "Разрешение (по высоте, p):"
             var lblRes = new Label
@@ -393,11 +394,41 @@ namespace PISMO
             _cmbScreenFps.Items.AddRange(new object[] { "60", "45", "30", "15" });
             _cmbScreenFps.SelectedIndex = 0;
 
+            // Видеокарта для КОДИРОВАНИЯ демки/камеры (VideoEncoderBackend хинт
+            // для нативного libwebrtc). Декодер FFI не выбирает — им управляет
+            // сам libwebrtc.
+            var lblGpu = new Label
+            {
+                Text = "Кодирование (GPU):",
+                Font = new Font("Segoe UI", 8.5f),
+                ForeColor = Color.FromArgb(185, 187, 190),
+                AutoSize = false,
+                Size = new Size(150, 26),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0, 4, 0, 0)
+            };
+            _cmbGpu = new ComboBox
+            {
+                BackColor = Color.FromArgb(32, 34, 37),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9f),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Size = new Size(190, 24),
+                Margin = new Padding(0, 4, 0, 0)
+            };
+            _cmbGpu.Items.AddRange(new object[]
+                { "Авто", "NVIDIA (NVENC)", "Аппаратный (Intel/AMD)", "Программный (CPU)" });
+            _cmbGpu.SelectedIndex = 0;
+
             // Добавляем элементы в таблицу
             tblScreen.Controls.Add(lblRes, 0, 0);
             tblScreen.Controls.Add(_cmbScreenRes, 1, 0);
             tblScreen.Controls.Add(lblFps, 2, 0);
             tblScreen.Controls.Add(_cmbScreenFps, 3, 0);
+            tblScreen.Controls.Add(lblGpu, 0, 1);
+            tblScreen.Controls.Add(_cmbGpu, 1, 1);
+            tblScreen.SetColumnSpan(_cmbGpu, 3);
 
             // Аппаратное ускорение (GPU) — как в Discord; влияет на демонстрацию
             // экрана и видео в звонке (WebView2/Chromium).
@@ -408,7 +439,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
                 AutoSize = true,
-                Location = new Point(14, 92),
+                Location = new Point(14, 122),
                 Cursor = Cursors.Hand
             };
             var lblHwHint = new Label
@@ -418,7 +449,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,
                 Size = new Size(430, 16),
-                Location = new Point(16, 114)
+                Location = new Point(16, 144)
             };
 
             _chkLightTheme = new CheckBox
@@ -428,7 +459,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
                 AutoSize = true,
-                Location = new Point(14, 136),
+                Location = new Point(14, 166),
                 Cursor = Cursors.Hand
             };
             var lblThemeHint = new Label
@@ -438,7 +469,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,
                 Size = new Size(430, 16),
-                Location = new Point(16, 158)
+                Location = new Point(16, 188)
             };
 
             // Все мониторы в выборе демонстрации (WGC): DXGI-захват на мульти-GPU
@@ -451,7 +482,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
                 AutoSize = true,
-                Location = new Point(14, 180),
+                Location = new Point(14, 210),
                 Cursor = Cursors.Hand
             };
             var lblAllMonHint = new Label
@@ -461,9 +492,9 @@ namespace PISMO
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,
                 Size = new Size(430, 16),
-                Location = new Point(16, 202)
+                Location = new Point(16, 232)
             };
-            pnlScreen.Height = 230;
+            pnlScreen.Height = 260;
 
             pnlScreen.Controls.Add(lblScreenTitle);
             pnlScreen.Controls.Add(tblScreen);

@@ -137,6 +137,9 @@ namespace PISMO
         /// например голосовой канал без NotifyVoiceStarted) — ищем живой CallForm
         /// среди открытых окон. Так мьют/наушники/смена устройств из футера
         /// работают во время ЛЮБОГО звонка.</summary>
+        /// <summary>Активный CallForm для внешних форм (настройки устройств и т.п.).</summary>
+        internal CallForm ActiveCallFormPublic() => ActiveCallForm();
+
         private CallForm ActiveCallForm()
         {
             if (DockCallWindow() is CallForm c && !c.IsDisposed) return c;
@@ -319,16 +322,13 @@ namespace PISMO
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
             };
             _voiceEq.FlatAppearance.BorderSize = 0;
-            void PaintEq() => _voiceEq.ForeColor = DeviceSettings.NoiseSuppression
-                ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158);
-            PaintEq();
+            RefreshVoiceEqState();
             _voiceEq.Click += (s, e) =>
             {
                 DeviceSettings.NoiseSuppression = !DeviceSettings.NoiseSuppression;
                 try { DeviceSettings.Save(); } catch { }
-                PaintEq();
+                RefreshVoiceEqState();
                 ActiveCallForm()?.SetNoiseSuppressionLive(DeviceSettings.NoiseSuppression);
-                _voiceTip.SetToolTip(_voiceEq, DeviceSettings.NoiseSuppression ? "Шумоподавление: вкл" : "Шумоподавление: выкл");
             };
             _voiceTip.SetToolTip(_voiceEq, "Шумоподавление");
             _voiceDock.Controls.Add(_voiceEq);
@@ -336,6 +336,8 @@ namespace PISMO
             _voiceDock.Controls.Add(_voiceTitle);
             _voiceDock.Controls.Add(_voiceSub);
             _voiceDock.Controls.Add(_voiceHangup);
+            // (кнопка 🎚 перекрашивается через RefreshVoiceEqState — его дергают
+            // и клик по кнопке, и сохранение настроек устройств.)
             pnlSidebar.Controls.Add(_voiceDock);
 
             // Z-порядок дока (обрабатывается от ВЫСШЕГО индекса к низшему):
@@ -512,6 +514,22 @@ namespace PISMO
             {
                 if (InvokeRequired) { BeginInvoke(new Action(HideVoiceDock)); }
                 else HideVoiceDock();
+            }
+            catch { }
+        }
+
+        /// <summary>Перекрашивает кнопку 🎚 шумодава по текущему DeviceSettings.
+        /// Зовётся при клике по кнопке И после сохранения настроек устройств —
+        /// чтобы док и чекбокс настроек никогда не расходились.</summary>
+        internal void RefreshVoiceEqState()
+        {
+            try
+            {
+                if (_voiceEq == null) return;
+                _voiceEq.ForeColor = DeviceSettings.NoiseSuppression
+                    ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158);
+                _voiceTip?.SetToolTip(_voiceEq, DeviceSettings.NoiseSuppression
+                    ? "Шумоподавление: вкл" : "Шумоподавление: выкл");
             }
             catch { }
         }

@@ -50,6 +50,7 @@ namespace PISMO
         // ── Демонстрация экрана ─────────────────────────────────
         private ComboBox _cmbScreenRes;
         private ComboBox _cmbScreenFps;
+        private ComboBox _cmbGpu;           // видеокарта для кодирования демки/камеры
 
         public SettingsForm()
         {
@@ -207,6 +208,15 @@ namespace PISMO
             string sf = DeviceSettings.ScreenShareFps.ToString();
             for (int i = 0; i < _cmbScreenFps.Items.Count; i++)
                 if (_cmbScreenFps.Items[i].ToString() == sf) { _cmbScreenFps.SelectedIndex = i; break; }
+
+            // Видеокарта для кодирования (auto/high/integrated/software).
+            _cmbGpu.SelectedIndex = DeviceSettings.GpuEncodePref switch
+            {
+                "high" => 1,
+                "integrated" => 2,
+                "software" => 3,
+                _ => 0,
+            };
 
             // Аппаратное ускорение.
             _chkHwAccel.Checked = DeviceSettings.HardwareAcceleration;
@@ -485,6 +495,14 @@ namespace PISMO
                     DeviceSettings.ScreenShareFps = Math.Clamp(sfps, 1, 60);
             }
 
+            DeviceSettings.GpuEncodePref = _cmbGpu.SelectedIndex switch
+            {
+                1 => "high",
+                2 => "integrated",
+                3 => "software",
+                _ => "auto",
+            };
+
             DeviceSettings.HardwareAcceleration = _chkHwAccel.Checked;
             DeviceSettings.ScreenCaptureAllMonitors = _chkAllMonitors.Checked;
             bool newLight = _chkLightTheme.Checked;
@@ -493,6 +511,11 @@ namespace PISMO
             // TURN-сервер больше не используется (звонки через LiveKit).
 
             DeviceSettings.Save();
+
+            // Синхронизация с голосовым доком и активным звонком: кнопка 🎚 в доке
+            // и шумодав в идущем звонке обязаны отражать новую настройку сразу.
+            try { MainForm.Current?.RefreshVoiceEqState(); } catch { }
+            try { MainForm.Current?.ActiveCallFormPublic()?.SetNoiseSuppressionLive(DeviceSettings.NoiseSuppression); } catch { }
 
             // Тема зафиксирована на старте приложения (Theme.IsLight) — если
             // выбор изменился, честно предупреждаем и предлагаем перезапуск
