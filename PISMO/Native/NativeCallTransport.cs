@@ -67,8 +67,18 @@ namespace PISMO.Native
         private bool _micStarted;
         private volatile bool _micMuted;          // мьют = не отправляем кадры
         private int _inputDeviceIndex = -1;       // -1 = устройство по умолчанию
-        private MicDenoiser _denoiser;            // программный шумодав (null = выкл)
+        private MicDenoiser _denoiser;            // резервный программный шумодав
         private volatile bool _nsEnabled;
+
+        // Нативный libwebrtc APM: шумодав + эхоподавление + ВЧ-фильтр + AGC.
+        // ProcessStream = ближний конец (микрофон), ProcessReverseStream = дальний
+        // конец (то, что играем в колонки) — референс для AEC.
+        private ulong _apmHandle;
+        private volatile bool _apmEnabled;
+        private readonly object _apmLock = new();
+        private byte[] _micAccum = new byte[0];   // накопитель микрофона для 10мс-кадров
+        private int _micAccumLen;
+        private const int ApmFrameBytes = SR / 100 * CH * 2;   // 10 мс i16 = 960 байт
 
         // ── Видео (камера/демка) ──────────────────────────────────────────
         private ulong _camSource, _camTrack, _camPublishAsyncId;
@@ -176,10 +186,33 @@ namespace PISMO.Native
                 });
                 _publishAsyncId = pubResp.PublishTrack.AsyncId;
 
-                // 4) Захват микрофона: 48 кГц / 16 бит / моно → CaptureAudioFrame.
-                //    Программный шумодав (APM в push-режиме шум не убирает).
+                // 4) Нативный libwebrtc APM: настоящий шумодав + эхоподавление.
+                //    Работает на i16-кадрах по 10 мс: ближний конец в OnMicData,
+                //    дальний (референс эха) — из микшера воспроизведения.
+                try
+                {
+                    var apmResp = LiveKitFfi.Request(new FfiRequest
+                    {
+                        NewApm = new NewApmRequest
+                        {
+                            EchoCancellerEnabled = echoCancel,
+                            GainControllerEnabled = agc,
+                            HighPassFilterEnabled = true,
+                            NoiseSuppressionEnabled = noiseSuppress
+                        }
+                    });
+                    _apmHandle = apmResp.NewApm.Apm.Handle.Id;
+                    _apmEnabled = true;
+                    // Типичная задержка тракта воспроизведения (буфер WaveOut ~120мс).
+                    try { LiveKitFfi.Request(new FfiRequest { ApmSetStreamDelay = new ApmSetStreamDelayRequest { ApmHandle = _apmHandle, DelayMs = 140 } }); } catch { }
+                }
+                catch { _apmHandle = 0; _apmEnabled = false; }
+
+                // Резервный программный шумодав — только если APM не поднялся.
                 _nsEnabled = noiseSuppress;
                 _denoiser = new MicDenoiser(SR);
+
+                // 5) Захват микрофона: 48 кГц / 16 бит / моно → CaptureAudioFrame.
                 StartMicCapture();
             }
             catch (Exception ex) { ConnectError?.Invoke("микрофон: " + ex.Message); }
@@ -200,6 +233,9 @@ namespace PISMO.Native
             try { _micIn?.StopRecording(); _micIn?.Dispose(); } catch { }
             _micIn = null;
             _micStarted = false;
+            _apmEnabled = false;
+            if (_apmHandle != 0) { try { LiveKitFfi.DropHandle(_apmHandle); } catch { } _apmHandle = 0; }
+            _micAccumLen = 0;
         }
 
         /// <summary>Вкл/выкл программный шумодав на лету.</summary>
@@ -221,12 +257,55 @@ namespace PISMO.Native
         private void OnMicData(object sender, WaveInEventArgs e)
         {
             if (_micSource == 0 || _micMuted || e.BytesRecorded <= 0) return;
-            int samples = e.BytesRecorded / 2;   // 16-бит моно
+
+            // APM обрабатывает строго 10-мс кадры — копим и режем на куски по 960 байт.
+            if (_apmEnabled && _apmHandle != 0)
+            {
+                int need = _micAccumLen + e.BytesRecorded;
+                if (_micAccum.Length < need) Array.Resize(ref _micAccum, need);
+                Buffer.BlockCopy(e.Buffer, 0, _micAccum, _micAccumLen, e.BytesRecorded);
+                _micAccumLen = need;
+
+                int off = 0;
+                while (_micAccumLen - off >= ApmFrameBytes)
+                {
+                    ProcessAndSendFrame(_micAccum, off, ApmFrameBytes);
+                    off += ApmFrameBytes;
+                }
+                // Остаток переносим в начало.
+                int rem = _micAccumLen - off;
+                if (rem > 0) Buffer.BlockCopy(_micAccum, off, _micAccum, 0, rem);
+                _micAccumLen = rem;
+                return;
+            }
+
+            // Резервный путь без APM: программный шумодав + отправка как есть.
             if (_nsEnabled) { try { _denoiser?.Process(e.Buffer, e.BytesRecorded); } catch { } }
-            IntPtr buf = Marshal.AllocHGlobal(e.BytesRecorded);
+            SendCapturedAudio(e.Buffer, 0, e.BytesRecorded);
+        }
+
+        // Один 10-мс кадр: APM ProcessStream (шумодав/AEC/HPF/AGC) → отправка в FFI.
+        private void ProcessAndSendFrame(byte[] data, int offset, int len)
+        {
+            IntPtr buf = Marshal.AllocHGlobal(len);
             try
             {
-                Marshal.Copy(e.Buffer, 0, buf, e.BytesRecorded);
+                Marshal.Copy(data, offset, buf, len);
+                try
+                {
+                    LiveKitFfi.Request(new FfiRequest
+                    {
+                        ApmProcessStream = new ApmProcessStreamRequest
+                        {
+                            ApmHandle = _apmHandle,
+                            DataPtr = (ulong)buf.ToInt64(),
+                            Size = (uint)len,
+                            SampleRate = SR,
+                            NumChannels = CH
+                        }
+                    });
+                }
+                catch { }
                 LiveKitFfi.Request(new FfiRequest
                 {
                     CaptureAudioFrame = new CaptureAudioFrameRequest
@@ -237,8 +316,57 @@ namespace PISMO.Native
                             DataPtr = (ulong)buf.ToInt64(),
                             NumChannels = CH,
                             SampleRate = SR,
-                            SamplesPerChannel = (uint)samples
+                            SamplesPerChannel = (uint)(len / 2)
                         }
+                    }
+                });
+            }
+            catch { }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+
+        private void SendCapturedAudio(byte[] data, int offset, int len)
+        {
+            IntPtr buf = Marshal.AllocHGlobal(len);
+            try
+            {
+                Marshal.Copy(data, offset, buf, len);
+                LiveKitFfi.Request(new FfiRequest
+                {
+                    CaptureAudioFrame = new CaptureAudioFrameRequest
+                    {
+                        SourceHandle = _micSource,
+                        Buffer = new AudioFrameBufferInfo
+                        {
+                            DataPtr = (ulong)buf.ToInt64(),
+                            NumChannels = CH,
+                            SampleRate = SR,
+                            SamplesPerChannel = (uint)(len / 2)
+                        }
+                    }
+                });
+            }
+            catch { }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+
+        // Дальний конец (референс эха): 10-мс i16-кадр из микшера воспроизведения.
+        internal void ApmReverseFrame(byte[] pcm, int len)
+        {
+            if (!_apmEnabled || _apmHandle == 0) return;
+            IntPtr buf = Marshal.AllocHGlobal(len);
+            try
+            {
+                Marshal.Copy(pcm, 0, buf, len);
+                LiveKitFfi.Request(new FfiRequest
+                {
+                    ApmProcessReverseStream = new ApmProcessReverseStreamRequest
+                    {
+                        ApmHandle = _apmHandle,
+                        DataPtr = (ulong)buf.ToInt64(),
+                        Size = (uint)len,
+                        SampleRate = SR,
+                        NumChannels = CH
                     }
                 });
             }
@@ -1037,10 +1165,14 @@ namespace PISMO.Native
             _out = new WaveOutEvent { DesiredLatency = 120 };
             if (_outputDeviceIndex >= 0 && _outputDeviceIndex < WaveOut.DeviceCount)
                 _out.DeviceNumber = _outputDeviceIndex;
-            _out.Init(_mixer);
+            _out.Init(PlaybackChain());
             ApplyPlaybackVolume();
             _out.Play();
         }
+
+        // Микс + врезка эхо-референса (если играем звук, отдаём его копию в APM).
+        private ISampleProvider PlaybackChain()
+            => new ApmReverseTap(_mixer, SR, CH, ApmReverseFrame);
 
         private void ApplyPlaybackVolume()
         {
@@ -1065,7 +1197,7 @@ namespace PISMO.Native
                 {
                     _out = new WaveOutEvent { DesiredLatency = 120 };
                     if (index >= 0 && index < WaveOut.DeviceCount) _out.DeviceNumber = index;
-                    _out.Init(_mixer);
+                    _out.Init(PlaybackChain());
                     ApplyPlaybackVolume();
                     _out.Play();
                 }
