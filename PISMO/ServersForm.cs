@@ -741,29 +741,32 @@ namespace PISMO
             });
         }
 
-        private static string VoiceSig(List<(int uid, string name, bool streaming)> people)
+        private static string VoiceSig(List<(int uid, string name, bool streaming, bool micMuted, bool deafened)> people)
         {
             if (people == null || people.Count == 0) return "";
             var sb = new System.Text.StringBuilder();
-            foreach (var p in people) sb.Append(p.uid).Append(p.streaming ? 's' : '_').Append('|');
+            foreach (var p in people)
+                sb.Append(p.uid).Append(p.streaming ? 's' : '_')
+                  .Append(p.micMuted ? 'm' : '_').Append(p.deafened ? 'd' : '_').Append('|');
             return sb.ToString();
         }
 
-        private void UpdateVoiceContainer(FlowLayoutPanel cont, List<(int uid, string name, bool streaming)> people)
+        private void UpdateVoiceContainer(FlowLayoutPanel cont, List<(int uid, string name, bool streaming, bool micMuted, bool deafened)> people)
         {
             cont.SuspendLayout();
             cont.Controls.Clear();
             if (people != null)
             {
-                foreach (var (uid, name, streaming) in people)
-                    cont.Controls.Add(MakeVoiceMemberRow(uid, name, streaming));
+                foreach (var (uid, name, streaming, micMuted, deafened) in people)
+                    cont.Controls.Add(MakeVoiceMemberRow(uid, name, streaming, micMuted, deafened));
             }
             cont.ResumeLayout();
         }
 
         /// <summary>Строка участника голосового канала: аватар + имя, а бейдж
         /// «В ЭФИРЕ» — только если включена камера или демонстрация экрана.</summary>
-        private Control MakeVoiceMemberRow(int uid, string name, bool streaming)
+        private Control MakeVoiceMemberRow(int uid, string name, bool streaming,
+                                           bool micMuted = false, bool deafened = false)
         {
             var row = new Panel { Width = 178, Height = 30, Margin = new Padding(0, 0, 0, 2), BackColor = Color.Transparent };
 
@@ -800,6 +803,18 @@ namespace PISMO
             row.Controls.Add(av);
             row.Controls.Add(lbl);
 
+            // Значок мьюта справа (как в Discord): наушники, если заглушил всё,
+            // иначе перечёркнутый микрофон. Рисуем векторно поверх строки.
+            if (deafened || micMuted)
+            {
+                var mute = new Panel { Size = new Size(18, 18), BackColor = Color.Transparent, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+                bool deaf = deafened;
+                mute.Paint += (s, e) => DrawMemberMuteIcon(e.Graphics, mute.ClientRectangle, deaf);
+                row.Controls.Add(mute);
+                mute.BringToFront();
+                mute.Location = new Point(row.Width - mute.Width - (streaming ? 66 : 4), 6);
+            }
+
             // Бейдж «В ЭФИРЕ» только при активной камере/демонстрации экрана.
             if (streaming)
             {
@@ -820,6 +835,34 @@ namespace PISMO
             // Аватар может подгрузиться позже — перерисуем кружок.
             AvatarStore.EnsureLoaded(uid);
             return row;
+        }
+
+        // Значок мьюта участника в списке канала: наушники (deaf) или микрофон,
+        // перечёркнутые красным. Векторно, без эмодзи-шрифтов.
+        private static void DrawMemberMuteIcon(Graphics g, Rectangle r, bool deaf)
+        {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var red = Color.FromArgb(237, 66, 69);
+            using var pen = new Pen(red, 1.8f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
+            using var fill = new SolidBrush(red);
+            int cx = r.Width / 2, cy = r.Height / 2;
+            if (deaf)
+            {
+                int rad = 5;
+                g.DrawArc(pen, cx - rad, cy - rad, rad * 2, rad, 180, 180);
+                g.FillRectangle(fill, cx - rad - 1, cy - 1, 3, rad);
+                g.FillRectangle(fill, cx + rad - 1, cy - 1, 3, rad);
+            }
+            else
+            {
+                int mw = 5, mh = 7;
+                using var cap = new System.Drawing.Drawing2D.GraphicsPath();
+                cap.AddArc(cx - mw / 2, cy - mh / 2 - 1, mw, mw, 0, 360);
+                g.FillRectangle(fill, cx - mw / 2, cy - mh / 2 - 1, mw, mh);
+                g.DrawLine(pen, cx, cy + mh / 2, cx, cy + mh / 2 + 2);
+                g.DrawLine(pen, cx - 3, cy + mh / 2 + 2, cx + 3, cy + mh / 2 + 2);
+            }
+            g.DrawLine(pen, 2, r.Height - 2, r.Width - 2, 2);
         }
 
         private void CreateChannel()

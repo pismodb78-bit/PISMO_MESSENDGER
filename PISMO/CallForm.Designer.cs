@@ -288,11 +288,12 @@ namespace PISMO
 
                     // Heartbeat присутствия в канале раз в ~5 секунд (в фоне).
                     // «В эфире» = включена камера или демонстрация экрана.
-                    if (_vchId > 0 && (++_vchTick % 5 == 0))
+                    if (_vchId > 0 && !_presenceLeft && (++_vchTick % 5 == 0))
                     {
                         bool streaming = _cameraStarted || _screenSharing;
+                        bool mm = _muted, df = _remoteAllMuted;
                         System.Threading.Tasks.Task.Run(() =>
-                            VoicePresence.Heartbeat(_vchId, UserSession.EffectiveId, streaming));
+                            VoicePresence.Heartbeat(_vchId, UserSession.EffectiveId, streaming, mm, df));
                     }
                     return;
                 }

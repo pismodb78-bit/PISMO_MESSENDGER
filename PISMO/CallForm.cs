@@ -35,6 +35,7 @@ namespace PISMO
         private NativeCallBridge _transport = null;
         private System.Windows.Forms.Timer _signalTimer = null;  // ← явная инициализация
         private System.Windows.Forms.Timer _durationTimer = null;  // ← явная инициализация
+        private volatile bool _presenceLeft;   // после выхода heartbeat не воскрешает присутствие
         private DateTime _startTime;
         private bool _connected = false;
         private bool _ended = false;
@@ -760,6 +761,7 @@ namespace PISMO
             PaintMicButton();
             try { _transport?.SetMicrophoneEnabled(!_muted); } catch { }
             try { if (_muted) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
+            PushVoiceState();   // сразу обновляем значок мьюта в списке канала
             VoiceState.MicMuted = _muted;
             try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
         }
@@ -789,6 +791,7 @@ namespace PISMO
             PaintDeafenButton();
             try { _transport?.SetRemoteMuted(on); } catch { }
             try { if (on) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
+            PushVoiceState();   // сразу обновляем значок наушников в списке канала
             VoiceState.Deafened = on;
             try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
         }
@@ -1371,10 +1374,11 @@ namespace PISMO
         /// голосового канала, чтобы бейдж у других обновился без задержки.</summary>
         private void PushVoiceState()
         {
-            if (!_isChannel || _vchId <= 0) return;
+            if (!_isChannel || _vchId <= 0 || _presenceLeft) return;
             bool streaming = _cameraStarted || _screenSharing;
+            bool mm = _muted, df = _remoteAllMuted;
             int vch = _vchId, me = UserSession.EffectiveId;
-            System.Threading.Tasks.Task.Run(() => VoicePresence.Heartbeat(vch, me, streaming));
+            System.Threading.Tasks.Task.Run(() => VoicePresence.Heartbeat(vch, me, streaming, mm, df));
         }
 
         private void StopScreenShare()
@@ -2011,15 +2015,28 @@ namespace PISMO
                 try { AvatarStore.AvatarLoaded -= OnAvatarLoadedForTiles; } catch { }
                 if (!_ended) MarkCallEnded();
 
-                // Убираем себя из «в эфире» голосового канала.
+                // Останавливаем heartbeat ДО удаления присутствия, иначе гонка:
+                // фоновый Task.Run с Heartbeat может выполнить INSERT уже ПОСЛЕ
+                // Leave() и вернуть запись «в эфире» ещё на 20 сек (TTL).
+                _presenceLeft = true;
+                _durationTimer?.Stop();
+                _signalTimer?.Stop();
+
+                // Убираем себя из «в эфире» голосового канала. Повторный Leave с
+                // небольшой задержкой добивает возможную гонку с in-flight heartbeat.
                 if (_isChannel && _vchId > 0)
                 {
                     int vch = _vchId, me = UserSession.EffectiveId;
-                    System.Threading.Tasks.Task.Run(() => VoicePresence.Leave(vch, me));
+                    System.Threading.Tasks.Task.Run(async () =>
+                    {
+                        VoicePresence.Leave(vch, me);
+                        await System.Threading.Tasks.Task.Delay(400);
+                        VoicePresence.Leave(vch, me);
+                    });
                 }
 
-                _signalTimer?.Stop(); _signalTimer?.Dispose();
-                _durationTimer?.Stop(); _durationTimer?.Dispose();
+                _signalTimer?.Dispose();
+                _durationTimer?.Dispose();
                 _speakHoldTimer?.Stop(); _speakHoldTimer?.Dispose();
 
                 CloseAllStreamPopouts();   // окна стримов не должны переживать звонок

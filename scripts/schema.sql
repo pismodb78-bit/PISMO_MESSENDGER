@@ -222,6 +222,8 @@ CREATE TABLE IF NOT EXISTS `voice_presence` (
   `joined_at`  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `last_seen`  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `streaming`  TINYINT(1) NOT NULL DEFAULT 0,
+  `mic_muted`  TINYINT(1) NOT NULL DEFAULT 0,
+  `deafened`   TINYINT(1) NOT NULL DEFAULT 0,
   PRIMARY KEY (`channel_id`,`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

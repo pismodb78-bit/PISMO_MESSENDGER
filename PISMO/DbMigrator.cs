@@ -178,6 +178,17 @@ namespace PISMO
                                "ADD PRIMARY KEY (message_id, scope, user_id, emoji)");
                 }
             }),
+
+            (11, "voice_presence: значки мьюта микрофона/наушников (как в Discord)", conn =>
+            {
+                if (TableExists(conn, "voice_presence"))
+                {
+                    if (!ColumnExists(conn, "voice_presence", "mic_muted"))
+                        Exec(conn, "ALTER TABLE voice_presence ADD COLUMN mic_muted TINYINT NOT NULL DEFAULT 0");
+                    if (!ColumnExists(conn, "voice_presence", "deafened"))
+                        Exec(conn, "ALTER TABLE voice_presence ADD COLUMN deafened TINYINT NOT NULL DEFAULT 0");
+                }
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>
