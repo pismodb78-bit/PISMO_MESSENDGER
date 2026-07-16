@@ -66,6 +66,30 @@ namespace PISMO
         // последнего звука — чтобы при чтении текста (с микропаузами) горела ровно.
         private readonly Dictionary<string, DateTime> _speakUntil = new();
         private System.Windows.Forms.Timer _speakHoldTimer;
+
+        // Состояние мьютов участников для значков на плитке (🎤̶ / 🎧̶).
+        private readonly HashSet<string> _micMutedPids = new();
+        private readonly HashSet<string> _deafenedPids = new();
+
+        private void OnParticipantMicMuted(string pid, bool muted)
+        {
+            if (string.IsNullOrEmpty(pid)) return;
+            bool changed = muted ? _micMutedPids.Add(pid) : _micMutedPids.Remove(pid);
+            if (changed) InvalidatePidTiles(pid);
+        }
+
+        private void OnParticipantDeafened(string pid, bool deaf)
+        {
+            if (string.IsNullOrEmpty(pid)) return;
+            bool changed = deaf ? _deafenedPids.Add(pid) : _deafenedPids.Remove(pid);
+            if (changed) InvalidatePidTiles(pid);
+        }
+
+        private void InvalidatePidTiles(string pid)
+        {
+            foreach (var kv in _tiles)
+                if (kv.Value.Pid == pid) { try { kv.Value.Panel.Invalidate(); } catch { } }
+        }
         // Сглаживание (attack/release) делает JS-детектор; здесь короткий хвост,
         // чтобы рамка не моргала между тиками детектора (он шлёт каждые ~60мс).
         private const int SpeakHoldMs = 200;
@@ -710,7 +734,8 @@ namespace PISMO
             foreach (var kv in _tiles)
             {
                 var tile = kv.Value;
-                bool sp = tile.Source == "camera"
+                bool sp = tile.Source != "screen"
+                    && !_micMutedPids.Contains(tile.Pid)      // замьюченный не «говорит»
                     && _speakUntil.TryGetValue(tile.Pid, out var until)
                     && now < until;
                 if (sp != tile.Speaking)
@@ -752,6 +777,64 @@ namespace PISMO
                 using var pen = new Pen(Color.FromArgb(59, 165, 93), 3);
                 g.DrawRectangle(pen, 1, 1, p.Width - 3, p.Height - 3);
             }
+
+            // Значок мьюта в левом нижнем углу (демка — без значка): наушники,
+            // если участник заглушил всё (deafen), иначе перечёркнутый микрофон.
+            if (tile.Source != "screen")
+            {
+                bool deaf = _deafenedPids.Contains(tile.Pid);
+                bool mic = _micMutedPids.Contains(tile.Pid);
+                if (deaf || mic) DrawMuteBadge(g, p, deaf);
+            }
+        }
+
+        // Discord-подобный значок: тёмный скруглённый квадрат с перечёркнутой
+        // иконкой (микрофон или наушники) — рисуем векторно, без шрифт-эмодзи.
+        private static void DrawMuteBadge(Graphics g, Panel p, bool deaf)
+        {
+            int s = Math.Max(22, Math.Min(p.Width, p.Height) / 8);
+            int pad = 6;
+            var rect = new Rectangle(pad, p.Height - s - pad, s, s);
+            using (var bg = new SolidBrush(Color.FromArgb(220, 24, 25, 28)))
+            using (var path = RoundRect(rect, 6))
+                g.FillPath(bg, path);
+
+            var red = Color.FromArgb(237, 66, 69);
+            using var pen = new Pen(red, Math.Max(2f, s / 11f)) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
+            using var fill = new SolidBrush(red);
+            int cx = rect.X + s / 2, cy = rect.Y + s / 2;
+
+            if (deaf)
+            {
+                // Наушники: дуга оголовья + две чашки.
+                int r = s / 4;
+                g.DrawArc(pen, cx - r, cy - r, r * 2, r, 180, 180);
+                g.FillRectangle(fill, cx - r - 2, cy - 1, 4, r);
+                g.FillRectangle(fill, cx + r - 2, cy - 1, 4, r);
+            }
+            else
+            {
+                // Микрофон: капсула + ножка + основание.
+                int mw = s / 5, mh = s / 3;
+                using var cap = RoundRect(new Rectangle(cx - mw / 2, cy - mh / 2 - 2, mw, mh), mw / 2);
+                g.FillPath(fill, cap);
+                g.DrawLine(pen, cx, cy + mh / 2 - 1, cx, cy + mh / 2 + 3);
+                g.DrawLine(pen, cx - mw / 2, cy + mh / 2 + 3, cx + mw / 2, cy + mh / 2 + 3);
+            }
+            // Красная перечёркивающая линия.
+            g.DrawLine(pen, rect.X + 4, rect.Y + s - 4, rect.X + s - 4, rect.Y + 4);
+        }
+
+        private static System.Drawing.Drawing2D.GraphicsPath RoundRect(Rectangle r, int rad)
+        {
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            int d = rad * 2;
+            path.AddArc(r.X, r.Y, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         private static Color AvatarColorFor(string pid)

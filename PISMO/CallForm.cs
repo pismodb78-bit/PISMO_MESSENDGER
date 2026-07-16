@@ -323,6 +323,8 @@ namespace PISMO
             _transport.StreamWatchersChanged += n => UiInvoke(() => OnStreamWatchers(n));
             _transport.ScreenSourceSwitched += (ok, err) => UiInvoke(() => OnScreenSourceSwitched(ok, err));
             _transport.ActiveSpeakers += json => UiInvoke(() => OnActiveSpeakers(json));
+            _transport.ParticipantMicMuted += (pid, muted) => UiInvoke(() => OnParticipantMicMuted(pid, muted));
+            _transport.ParticipantDeafened += (pid, deaf) => UiInvoke(() => OnParticipantDeafened(pid, deaf));
             _transport.PingUpdated += ms => UiInvoke(() => UpdatePing(ms));
             _transport.ParticipantRenamed += (pid, name) => UiInvoke(() => OnParticipantRenamed(pid, name));
 

@@ -58,6 +58,8 @@ namespace PISMO
         public event Action<string, string> RemoteTileStopped;           // (pid, source)
         public event Action<string, string, byte[]> RemoteTileFrame;     // (pid, source, image bytes)
         public event Action<string> ActiveSpeakers;
+        public event Action<string, bool> ParticipantMicMuted;   // (pid, muted)
+        public event Action<string, bool> ParticipantDeafened;   // (pid, deafened)
         public event Action<int> PingUpdated;
         public event Action<string, string> ParticipantRenamed;
         public event Action<string, string> RemoteStreamPublished;
@@ -110,6 +112,13 @@ namespace PISMO
             _t.ConnectError += msg => System.Diagnostics.Debug.WriteLine("[NATIVE CALL] " + msg);
             _t.RemoteVideoFrame += OnRemoteVideo;
             _t.RemoteVideoRemoved += OnRemoteVideoRemoved;
+            _t.ActiveSpeakersChanged += ids =>
+            {
+                try { ActiveSpeakers?.Invoke(System.Text.Json.JsonSerializer.Serialize(ids ?? System.Array.Empty<string>())); } catch { }
+            };
+            _t.RttUpdated += ms => { _lastRttAt = DateTime.UtcNow; try { PingUpdated?.Invoke(ms); } catch { } };
+            _t.ParticipantMicMuted += (id, muted) => Ui(() => { try { ParticipantMicMuted?.Invoke(id, muted); } catch { } });
+            _t.ParticipantDeafened += (id, deaf) => Ui(() => { try { ParticipantDeafened?.Invoke(id, deaf); } catch { } });
             _t.LocalCameraFrame += OnLocalCameraFrame;
             _t.LocalScreenFrame += OnLocalScreenFrameNative;
 
@@ -145,8 +154,13 @@ namespace PISMO
             _pingTimer = new System.Threading.Timer(_ => PingTick(), null, 500, 2000);
         }
 
+        private DateTime _lastRttAt = DateTime.MinValue;
+
         private void PingTick()
         {
+            // Реальный RTT медиа-канала точнее ICMP (особенно под VPN, где сервер =
+            // точка выхода туннеля и ICMP до него ~0). ICMP — только запасной путь.
+            if ((DateTime.UtcNow - _lastRttAt).TotalSeconds < 6) return;
             int ms = MeasurePing();
             if (ms >= 0) { try { PingUpdated?.Invoke(ms); } catch { } }
         }
@@ -317,8 +331,19 @@ namespace PISMO
         public void SetScreenPreviewActive(bool on) => _screenPreviewActive = on;
 
         // ── Звук ──────────────────────────────────────────────────────────
-        public void SetMicrophoneEnabled(bool enabled) { try { _t.SetMicMuted(!enabled); } catch { } }
-        public void SetRemoteMuted(bool muted) { try { _t.SetPlaybackMuted(muted); } catch { } }
+        private bool _selfMic, _selfDeaf;
+        public void SetMicrophoneEnabled(bool enabled)
+        {
+            try { _t.SetMicMuted(!enabled); } catch { }
+            _selfMic = !enabled;
+            try { _t.PublishVoiceState(_selfMic, _selfDeaf); } catch { }
+        }
+        public void SetRemoteMuted(bool muted)
+        {
+            try { _t.SetPlaybackMuted(muted); } catch { }
+            _selfDeaf = muted;
+            try { _t.PublishVoiceState(_selfMic, _selfDeaf); } catch { }
+        }
         public void SetRemoteVoiceVolume(float volume) { try { _t.SetPlaybackVolume(volume); } catch { } }
         public void SetInputDevice(string deviceLabel) { try { _t.SetInputDeviceIndex(ResolveMic(deviceLabel)); } catch { } }
         public void SetOutputDevice(string deviceLabel) { try { _t.SetOutputDeviceIndex(ResolveSpk(deviceLabel)); } catch { } }

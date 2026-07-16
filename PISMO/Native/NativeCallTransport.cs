@@ -31,6 +31,10 @@ namespace PISMO.Native
         public event Action<string, string> ParticipantJoined;   // (identity, name)
         public event Action<string> ParticipantLeftById;          // (identity)
         public event Action<string> ConnectError;
+        public event Action<string[]> ActiveSpeakersChanged;          // список говорящих identity
+        public event Action<string, bool> ParticipantMicMuted;       // (identity, muted) — мьют МИКРОФОНА
+        public event Action<string, bool> ParticipantDeafened;       // (identity, deafened) — «наушники»
+        public event Action<int> RttUpdated;                          // реальный RTT медиа-канала, мс
 
         // Видео: кадры BGRA (packed, stride = width*4). CallForm рисует плитки.
         public event Action<string, bool, byte[], int, int> RemoteVideoFrame; // (identity, isScreen, bgra, w, h)
@@ -39,6 +43,8 @@ namespace PISMO.Native
         public event Action<byte[], int, int> LocalScreenFrame;               // локальное превью демки
 
         private ulong _connectAsyncId;
+        private ulong _statsAsyncId;
+        private System.Threading.Timer _statsTimer;
         private ulong _roomHandle;
         private ulong _localHandle;      // OwnedParticipant локального участника
         private bool _disposed;
@@ -243,6 +249,24 @@ namespace PISMO.Native
 
         /// <summary>Мьют микрофона: трек остаётся опубликованным, кадры не шлём.</summary>
         public void SetMicMuted(bool muted) => _micMuted = muted;
+
+        private bool _selfMicMuted, _selfDeafened;
+
+        /// <summary>Транслировать своё голосовое состояние (микрофон/наушники)
+        /// остальным через атрибуты "mic"/"deaf" — они рисуют значки на нашей плитке.</summary>
+        public void PublishVoiceState(bool micMuted, bool deafened)
+        {
+            _selfMicMuted = micMuted; _selfDeafened = deafened;
+            if (_localHandle == 0) return;
+            try
+            {
+                var req = new SetLocalAttributesRequest { LocalParticipantHandle = _localHandle };
+                req.Attributes.Add(new AttributesEntry { Key = "mic", Value = micMuted ? "0" : "1" });
+                req.Attributes.Add(new AttributesEntry { Key = "deaf", Value = deafened ? "1" : "0" });
+                LiveKitFfi.Request(new FfiRequest { SetLocalAttributes = req });
+            }
+            catch { }
+        }
 
         /// <summary>Сменить устройство ввода на лету (перезапуск захвата).</summary>
         public void SetInputDeviceIndex(int index)
@@ -979,6 +1003,7 @@ namespace PISMO.Native
                     case FfiEvent.MessageOneofCase.AudioStreamEvent: HandleAudioStream(ev.AudioStreamEvent); break;
                     case FfiEvent.MessageOneofCase.VideoStreamEvent: HandleVideoStream(ev.VideoStreamEvent); break;
                     case FfiEvent.MessageOneofCase.PublishTrack: HandlePublishTrack(ev.PublishTrack); break;
+                    case FfiEvent.MessageOneofCase.GetSessionStats: HandleSessionStats(ev.GetSessionStats); break;
                 }
             }
             catch { }
@@ -997,6 +1022,7 @@ namespace PISMO.Native
             {
                 var info = pwt.Participant.Info;
                 ParticipantJoined?.Invoke(info.Identity, info.Name);
+                EmitVoiceAttrsFromMap(info.Identity, info.Attributes);
                 foreach (var pub in pwt.Publications)   // запоминаем источник по sid
                     RememberSource(pub.Info.Sid, pub.Info.Source);
             }
@@ -1007,6 +1033,51 @@ namespace PISMO.Native
             // появляются «через раз». Слать ПОСЛЕ обработки начального состояния.
             try { LiveKitFfi.Request(new FfiRequest { ReadyForRoomEvent = new ReadyForRoomEventRequest { RoomHandle = _roomHandle } }); }
             catch { }
+
+            // Публикуем своё голосовое состояние, если мьют/наушники включили до подключения.
+            if (_selfMicMuted || _selfDeafened) PublishVoiceState(_selfMicMuted, _selfDeafened);
+
+            // Реальный пинг (RTT медиа-канала) — опрашиваем статистику каждые 2 с.
+            // ICMP до сервера бесполезен под VPN (сервер = точка выхода туннеля → 0 мс).
+            try
+            {
+                _statsTimer?.Dispose();
+                _statsTimer = new System.Threading.Timer(_ => RequestSessionStats(), null, 1000, 2000);
+            }
+            catch { }
+        }
+
+        private void RequestSessionStats()
+        {
+            if (_roomHandle == 0 || _disposed) return;
+            try
+            {
+                var resp = LiveKitFfi.Request(new FfiRequest
+                {
+                    GetSessionStats = new GetSessionStatsRequest { RoomHandle = _roomHandle }
+                });
+                _statsAsyncId = resp.GetSessionStats.AsyncId;
+            }
+            catch { }
+        }
+
+        private void HandleSessionStats(GetSessionStatsCallback cb)
+        {
+            if (cb.AsyncId != _statsAsyncId) return;
+            if (cb.MessageCase != GetSessionStatsCallback.MessageOneofCase.Result) return;
+            double rttSec = -1;
+            foreach (var s in cb.Result.SubscriberStats) rttSec = PickRtt(s, rttSec);
+            if (rttSec < 0) foreach (var s in cb.Result.PublisherStats) rttSec = PickRtt(s, rttSec);
+            if (rttSec >= 0) RttUpdated?.Invoke((int)Math.Round(rttSec * 1000));
+        }
+
+        // Берём RTT из НОМИНИРОВАННОЙ пары кандидатов (реально используемый маршрут).
+        private static double PickRtt(RtcStats s, double cur)
+        {
+            if (s.StatsCase != RtcStats.StatsOneofCase.CandidatePair) return cur;
+            var cp = s.CandidatePair.CandidatePair;
+            if (cp.Nominated && cp.CurrentRoundTripTime >= 0) return cp.CurrentRoundTripTime;
+            return cur;
         }
 
         private void HandleRoomEvent(RoomEvent re)
@@ -1018,6 +1089,9 @@ namespace PISMO.Native
                 {
                     var info = re.ParticipantConnected.Info.Info;
                     ParticipantJoined?.Invoke(info.Identity, info.Name);
+                    EmitVoiceAttrsFromMap(info.Identity, info.Attributes);
+                    // Новый участник — заново публикуем своё состояние, чтобы он увидел значки.
+                    if (_selfMicMuted || _selfDeafened) PublishVoiceState(_selfMicMuted, _selfDeafened);
                     break;
                 }
                 case RoomEvent.MessageOneofCase.ParticipantDisconnected:
@@ -1032,10 +1106,43 @@ namespace PISMO.Native
                 case RoomEvent.MessageOneofCase.TrackUnsubscribed:
                     OnTrackUnsubscribed(re.TrackUnsubscribed.ParticipantIdentity, re.TrackUnsubscribed.TrackSid);
                     break;
+                case RoomEvent.MessageOneofCase.ParticipantAttributesChanged:
+                {
+                    var pac = re.ParticipantAttributesChanged;
+                    EmitVoiceAttrs(pac.ParticipantIdentity, pac.Attributes);
+                    break;
+                }
+                case RoomEvent.MessageOneofCase.ActiveSpeakersChanged:
+                {
+                    var ids = new string[re.ActiveSpeakersChanged.ParticipantIdentities.Count];
+                    re.ActiveSpeakersChanged.ParticipantIdentities.CopyTo(ids, 0);
+                    ActiveSpeakersChanged?.Invoke(ids);
+                    break;
+                }
                 case RoomEvent.MessageOneofCase.Disconnected:
                     Disconnected?.Invoke();
                     break;
             }
+        }
+
+        private void EmitVoiceAttrsFromMap(string identity, Google.Protobuf.Collections.MapField<string, string> attrs)
+        {
+            if (attrs == null) return;
+            if (attrs.TryGetValue("mic", out var m)) ParticipantMicMuted?.Invoke(identity, m == "0");
+            if (attrs.TryGetValue("deaf", out var d)) ParticipantDeafened?.Invoke(identity, d == "1");
+        }
+
+        // Разбор атрибутов голосового состояния участника ("mic"/"deaf").
+        private void EmitVoiceAttrs(string identity, System.Collections.Generic.IEnumerable<AttributesEntry> attrs)
+        {
+            bool hasMic = false, micMuted = false, hasDeaf = false, deaf = false;
+            foreach (var a in attrs)
+            {
+                if (a.Key == "mic") { hasMic = true; micMuted = a.Value == "0"; }
+                else if (a.Key == "deaf") { hasDeaf = true; deaf = a.Value == "1"; }
+            }
+            if (hasMic) ParticipantMicMuted?.Invoke(identity, micMuted);
+            if (hasDeaf) ParticipantDeafened?.Invoke(identity, deaf);
         }
 
         private void RememberSource(string sid, TrackSource source)
@@ -1209,6 +1316,8 @@ namespace PISMO.Native
             if (_disposed) return;
             _disposed = true;
             try { LiveKitFfi.FfiEventReceived -= OnFfiEvent; } catch { }
+            try { _statsTimer?.Dispose(); } catch { }
+            _statsTimer = null;
             try { StopScreenShare(); } catch { }
             try { StopCamera(); } catch { }
             try { StopMicrophone(); } catch { }
