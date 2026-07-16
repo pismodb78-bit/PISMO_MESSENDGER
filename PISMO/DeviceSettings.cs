@@ -75,7 +75,24 @@ namespace PISMO
         /// <summary>Шумоподавление RNNoise (давит клавиатуру/мышь/шум). По умолчанию
         /// ВЫКЛ — оно тянется с CDN и на части систем глушит голос; включается
         /// вручную в настройках. Браузерное шумоподавление работает всегда.</summary>
-        public static bool NoiseSuppression { get; set; } = false;
+        // Режим шумодава: "off" / "standard" (WebRTC APM) / "aggressive" (APM +
+        // программный гейт — давит и клавиатурные клики). Меняется на лету.
+        private static string _nsMode = "off";
+        public static string NoiseSuppressMode
+        {
+            get => _nsMode;
+            set
+            {
+                var v = (value ?? "").Trim().ToLowerInvariant();
+                _nsMode = v == "standard" || v == "aggressive" ? v : "off";
+            }
+        }
+        // Совместимость со старым булевым флагом (конфиги/старый код).
+        public static bool NoiseSuppression
+        {
+            get => _nsMode != "off";
+            set { if (value) { if (_nsMode == "off") _nsMode = "standard"; } else _nsMode = "off"; }
+        }
 
         /// <summary>Ручной порог активации голоса в дБ (−60..0): звук тише порога
         /// не передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
@@ -211,6 +228,9 @@ namespace PISMO
                         case "NoiseSuppression":
                             NoiseSuppression = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
                             break;
+                        case "NoiseSuppressMode":
+                            NoiseSuppressMode = val;   // применяется ПОСЛЕ булевого флага — режим главнее
+                            break;
                         case "VoiceThreshold":
                             if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, -60, 0);
                             break;
@@ -261,6 +281,7 @@ namespace PISMO
                     $"GpuEncodePref={GpuEncodePref}\n" +
                     $"VoiceAutoSensitivity={(VoiceAutoSensitivity ? 1 : 0)}\n" +
                     $"NoiseSuppression={(NoiseSuppression ? 1 : 0)}\n" +
+                    $"NoiseSuppressMode={NoiseSuppressMode}\n" +
                     $"VoiceThreshold={VoiceThreshold}\n" +
                     $"HardwareAcceleration={(HardwareAcceleration ? 1 : 0)}\n" +
                     $"ThemeMode={ThemeMode}\n" +

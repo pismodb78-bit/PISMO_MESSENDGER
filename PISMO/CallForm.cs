@@ -877,7 +877,7 @@ namespace PISMO
         public void SetOutputDeviceLive(string label) { try { _transport?.SetOutputDevice(label); } catch { } }
 
         /// <summary>Вкл/выкл шумодав на лету (из дока, «эквалайзер»).</summary>
-        public void SetNoiseSuppressionLive(bool on) { try { _transport?.SetNoiseSuppression(on); } catch { } }
+        public void SetNoiseSuppressionLive(bool on) { try { _transport?.SetNoiseMode(on ? DeviceSettings.NoiseSuppressMode : "off"); } catch { } }
 
         /// <summary>Попап с живым графиком задержки (клик по плашке 📶, как в Discord).</summary>
         private void TogglePingGraph()
@@ -2047,7 +2047,7 @@ namespace PISMO
         // актуальный порог в транспорт, если он изменился.
         private bool _lastVoiceAuto;
         private int _lastVoiceThr = int.MinValue;
-        private int _lastNoise = -1; // -1 не задано, 0/1
+        private string _lastNoiseMode = null; // -1 не задано, 0/1
         protected override void OnActivated(EventArgs e)
         {
             base.OnActivated(e);
@@ -2061,11 +2061,11 @@ namespace PISMO
                     _lastVoiceThr = DeviceSettings.VoiceThreshold;
                     _transport?.SetVoiceGate(_lastVoiceAuto, _lastVoiceThr);
                 }
-                int ns = DeviceSettings.NoiseSuppression ? 1 : 0;
-                if (_lastNoise != ns)
+                string nsm = DeviceSettings.NoiseSuppressMode;
+                if (_lastNoiseMode != nsm)
                 {
-                    _lastNoise = ns;
-                    _transport?.SetNoiseSuppression(ns == 1);
+                    _lastNoiseMode = nsm;
+                    _transport?.SetNoiseMode(nsm);
                 }
                 if (Math.Abs(_lastGain - DeviceSettings.MicrophoneGain) > 0.001f)
                 {

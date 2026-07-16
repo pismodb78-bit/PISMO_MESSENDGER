@@ -222,6 +222,7 @@ namespace PISMO.Native
 
                 // Резервный программный шумодав — только если APM не поднялся.
                 _nsEnabled = noiseSuppress;
+                _gateEnabled = noiseSuppress && DeviceSettings.NoiseSuppressMode == "aggressive";
                 _denoiser = new MicDenoiser(SR);
 
                 // 5) Захват микрофона: 48 кГц / 16 бит / моно → CaptureAudioFrame.
@@ -278,14 +279,22 @@ namespace PISMO.Native
             _micAccumLen = 0;
         }
 
-        /// <summary>Вкл/выкл шумодав на лету. APM создаётся с фиксированными
-        /// флагами, поэтому пересоздаём его с новым NS (EC/AGC сохраняются);
-        /// заодно переключаем резервный программный шумодав.</summary>
-        public void SetNoiseSuppression(bool on)
+        /// <summary>Вкл/выкл шумодав на лету (совместимость: bool → режим).</summary>
+        public void SetNoiseSuppression(bool on) => SetNoiseMode(on ? "standard" : "off");
+
+        /// <summary>Режим шумодава на лету: "off" / "standard" (WebRTC APM NS) /
+        /// "aggressive" (APM NS + программный гейт — давит клики клавиатуры).
+        /// APM создаётся с фиксированными флагами → пересоздаём с новым NS.</summary>
+        public void SetNoiseMode(string mode)
         {
-            _nsEnabled = on;
-            if (_micStarted) { try { CreateApm(on); } catch { } }
+            mode = (mode ?? "off").ToLowerInvariant();
+            bool ns = mode != "off";
+            _gateEnabled = mode == "aggressive";
+            _nsEnabled = ns;   // запасной программный путь (если APM не поднялся)
+            if (_micStarted) { try { CreateApm(ns); } catch { } }
         }
+
+        private volatile bool _gateEnabled;   // программный гейт ПОВЕРХ APM (aggressive)
 
         /// <summary>Мьют микрофона: трек остаётся опубликованным, кадры не шлём.</summary>
         public void SetMicMuted(bool muted) => _micMuted = muted;
@@ -351,6 +360,9 @@ namespace PISMO.Native
         // Один 10-мс кадр: APM ProcessStream (шумодав/AEC/HPF/AGC) → отправка в FFI.
         private void ProcessAndSendFrame(byte[] data, int offset, int len)
         {
+            // «Агрессивный» шумодав: программный гейт ПОВЕРХ APM — добивает
+            // транзиенты (клики клавиатуры), которые APM-шумодав не считает шумом.
+            if (_gateEnabled) { try { _denoiser?.Process(data, offset, len); } catch { } }
             IntPtr buf = Marshal.AllocHGlobal(len);
             try
             {
@@ -415,24 +427,47 @@ namespace PISMO.Native
         }
 
         // Дальний конец (референс эха): 10-мс i16-кадр из микшера воспроизведения.
+        // Кормим ОБА эхоподавителя: микрофонный и звука демки.
         internal void ApmReverseFrame(byte[] pcm, int len)
         {
-            if (!_apmEnabled || _apmHandle == 0) return;
+            ulong mic = (_apmEnabled ? _apmHandle : 0), scr = _scrApmHandle;
+            if (mic == 0 && scr == 0) return;
             IntPtr buf = Marshal.AllocHGlobal(len);
             try
             {
                 Marshal.Copy(pcm, 0, buf, len);
-                LiveKitFfi.Request(new FfiRequest
-                {
-                    ApmProcessReverseStream = new ApmProcessReverseStreamRequest
+                if (mic != 0)
+                    try
                     {
-                        ApmHandle = _apmHandle,
-                        DataPtr = (ulong)buf.ToInt64(),
-                        Size = (uint)len,
-                        SampleRate = SR,
-                        NumChannels = CH
+                        LiveKitFfi.Request(new FfiRequest
+                        {
+                            ApmProcessReverseStream = new ApmProcessReverseStreamRequest
+                            {
+                                ApmHandle = mic,
+                                DataPtr = (ulong)buf.ToInt64(),
+                                Size = (uint)len,
+                                SampleRate = SR,
+                                NumChannels = CH
+                            }
+                        });
                     }
-                });
+                    catch { }
+                if (scr != 0)
+                    try
+                    {
+                        LiveKitFfi.Request(new FfiRequest
+                        {
+                            ApmProcessReverseStream = new ApmProcessReverseStreamRequest
+                            {
+                                ApmHandle = scr,
+                                DataPtr = (ulong)buf.ToInt64(),
+                                Size = (uint)len,
+                                SampleRate = SR,
+                                NumChannels = CH
+                            }
+                        });
+                    }
+                    catch { }
             }
             catch { }
             finally { Marshal.FreeHGlobal(buf); }
@@ -778,6 +813,26 @@ namespace PISMO.Native
                 });
                 _scrAudioSource = srcResp.NewAudioSource.Source.Handle.Id;
 
+                // APM демки: только эхоподавление (шумодав/AGC музыке и игре вредят).
+                _scrApmFrameBytes = _scrAudioRate / 100 * _scrAudioCh * 2;
+                _scrApmAccumLen = 0;
+                try
+                {
+                    var scrApm = LiveKitFfi.Request(new FfiRequest
+                    {
+                        NewApm = new NewApmRequest
+                        {
+                            EchoCancellerEnabled = true,
+                            GainControllerEnabled = false,
+                            HighPassFilterEnabled = false,
+                            NoiseSuppressionEnabled = false
+                        }
+                    });
+                    _scrApmHandle = scrApm.NewApm.Apm.Handle.Id;
+                    try { LiveKitFfi.Request(new FfiRequest { ApmSetStreamDelay = new ApmSetStreamDelayRequest { ApmHandle = _scrApmHandle, DelayMs = 140 } }); } catch { }
+                }
+                catch { _scrApmHandle = 0; }
+
                 var trkResp = LiveKitFfi.Request(new FfiRequest
                 {
                     CreateAudioTrack = new CreateAudioTrackRequest { Name = "screen_audio", SourceHandle = _scrAudioSource }
@@ -810,6 +865,15 @@ namespace PISMO.Native
         // одного кадра — пересоздаём захват через обычный device-loopback.
         private System.Threading.Timer _scrAudioWatchdog;
         private volatile bool _scrAudioGotData;
+
+        // Эхоподавление ЗВУКА ДЕМКИ: свой APM (EC on) с тем же референсом
+        // воспроизведения, что и у микрофона. Убирает голоса собеседников из
+        // демки, даже если сработал откат на device-loopback (захват всего
+        // системного звука, включая воспроизведение PISMO).
+        private ulong _scrApmHandle;
+        private byte[] _scrApmAccum = Array.Empty<byte>();
+        private int _scrApmAccumLen;
+        private int _scrApmFrameBytes;   // 10 мс = rate/100 * ch * 2
 
         private void ArmScreenAudioWatchdog()
         {
@@ -866,10 +930,55 @@ namespace PISMO.Native
                 Buffer.BlockCopy(e.Buffer, 0, pcm, 0, n * 2);
             }
 
-            IntPtr buf = Marshal.AllocHGlobal(n * 2);
+            // Через APM (эхоподавление) — строго 10-мс кусками; без APM — сразу.
+            if (_scrApmHandle != 0 && _scrApmFrameBytes > 0)
+            {
+                int add = n * 2;
+                if (_scrApmAccum.Length < _scrApmAccumLen + add)
+                    Array.Resize(ref _scrApmAccum, _scrApmAccumLen + add);
+                Buffer.BlockCopy(pcm, 0, _scrApmAccum, _scrApmAccumLen, add);
+                _scrApmAccumLen += add;
+                int off = 0;
+                while (_scrApmAccumLen - off >= _scrApmFrameBytes)
+                {
+                    SendScreenAudioChunk(_scrApmAccum, off, _scrApmFrameBytes, true);
+                    off += _scrApmFrameBytes;
+                }
+                int rem = _scrApmAccumLen - off;
+                if (rem > 0) Buffer.BlockCopy(_scrApmAccum, off, _scrApmAccum, 0, rem);
+                _scrApmAccumLen = rem;
+                return;
+            }
+
+            var raw = new byte[n * 2];
+            Buffer.BlockCopy(pcm, 0, raw, 0, raw.Length);
+            SendScreenAudioChunk(raw, 0, raw.Length, false);
+        }
+
+        private void SendScreenAudioChunk(byte[] data, int offset, int len, bool viaApm)
+        {
+            IntPtr buf = Marshal.AllocHGlobal(len);
             try
             {
-                Marshal.Copy(pcm, 0, buf, n);
+                Marshal.Copy(data, offset, buf, len);
+                if (viaApm)
+                {
+                    try
+                    {
+                        LiveKitFfi.Request(new FfiRequest
+                        {
+                            ApmProcessStream = new ApmProcessStreamRequest
+                            {
+                                ApmHandle = _scrApmHandle,
+                                DataPtr = (ulong)buf.ToInt64(),
+                                Size = (uint)len,
+                                SampleRate = (uint)_scrAudioRate,
+                                NumChannels = (uint)_scrAudioCh
+                            }
+                        });
+                    }
+                    catch { }
+                }
                 LiveKitFfi.Request(new FfiRequest
                 {
                     CaptureAudioFrame = new CaptureAudioFrameRequest
@@ -880,7 +989,7 @@ namespace PISMO.Native
                             DataPtr = (ulong)buf.ToInt64(),
                             NumChannels = (uint)_scrAudioCh,
                             SampleRate = (uint)_scrAudioRate,
-                            SamplesPerChannel = (uint)(n / _scrAudioCh)
+                            SamplesPerChannel = (uint)(len / 2 / _scrAudioCh)
                         }
                     }
                 });
@@ -893,6 +1002,8 @@ namespace PISMO.Native
         {
             try { _scrAudioWatchdog?.Dispose(); } catch { }
             _scrAudioWatchdog = null;
+            if (_scrApmHandle != 0) { try { LiveKitFfi.DropHandle(_scrApmHandle); } catch { } _scrApmHandle = 0; }
+            _scrApmAccumLen = 0;
             try { if (_procLoop != null) { _procLoop.DataAvailable -= OnScreenAudioData; _procLoop.Dispose(); } } catch { }
             _procLoop = null;
             try { if (_loopback != null) { _loopback.DataAvailable -= OnScreenAudioData; _loopback.StopRecording(); _loopback.Dispose(); } } catch { }

@@ -38,7 +38,10 @@ namespace PISMO.Native
         }
 
         /// <summary>Обработать блок 16-бит PCM in-place.</summary>
-        public void Process(byte[] buffer, int bytes)
+        public void Process(byte[] buffer, int bytes) => Process(buffer, 0, bytes);
+
+        /// <summary>Обработать блок 16-бит PCM in-place (с offset — для 10мс-кадров APM).</summary>
+        public void Process(byte[] buffer, int offset, int bytes)
         {
             int n = bytes / 2;
             if (n <= 0) return;
@@ -47,7 +50,7 @@ namespace PISMO.Native
             double sumSq = 0;
             for (int i = 0; i < n; i++)
             {
-                int idx = i * 2;
+                int idx = offset + i * 2;
                 short s = (short)(buffer[idx] | (buffer[idx + 1] << 8));
                 float x = s;
                 float y = _hpCoef * (_hpPrevOut + x - _hpPrevIn);
@@ -86,7 +89,7 @@ namespace PISMO.Native
             for (int i = 0; i < n; i++)
             {
                 _gain += (target - _gain) * coef;
-                int idx = i * 2;
+                int idx = offset + i * 2;
                 short s = (short)(buffer[idx] | (buffer[idx + 1] << 8));
                 int v = (int)(s * _gain);
                 if (v > short.MaxValue) v = short.MaxValue;

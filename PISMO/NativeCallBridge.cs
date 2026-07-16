@@ -153,6 +153,7 @@ namespace PISMO
                     echoCancel: true,
                     noiseSuppress: DeviceSettings.NoiseSuppression,
                     agc: true);
+                _t.SetNoiseMode(DeviceSettings.NoiseSuppressMode);   // режим (в т.ч. aggressive-гейт)
             }
             catch { }
             Ui(() => Connected?.Invoke());
@@ -426,6 +427,7 @@ namespace PISMO
         public void SetParticipantMuted(string pid, bool muted) { }
         public void SetVoiceGate(bool auto, int threshold) { }
         public void SetNoiseSuppression(bool on) { try { _t?.SetNoiseSuppression(on); } catch { } }
+        public void SetNoiseMode(string mode) { try { _t?.SetNoiseMode(mode); } catch { } }
         public void SetMicGain(float gain) { }
         public void SetDisplayName(string name) { }
 
