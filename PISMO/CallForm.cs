@@ -763,6 +763,7 @@ namespace PISMO
             try { _transport?.SetMicrophoneEnabled(!_muted); } catch { }
             try { if (_muted) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
             PushVoiceState();   // сразу обновляем значок мьюта в списке канала
+            try { InvalidatePidTiles(SelfPid); } catch { }   // и на своей плитке
             VoiceState.MicMuted = _muted;
             try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
         }
@@ -793,6 +794,7 @@ namespace PISMO
             try { _transport?.SetRemoteMuted(on); } catch { }
             try { if (on) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
             PushVoiceState();   // сразу обновляем значок наушников в списке канала
+            try { InvalidatePidTiles(SelfPid); } catch { }   // и на своей плитке
             VoiceState.Deafened = on;
             try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
         }

@@ -126,7 +126,7 @@ namespace PISMO
             // Сообщения — real-time по WS (OnWs); опрос сообщений только как ФОЛБЭК,
             // когда WS не подключён. «Кто в эфире» обновляем всегда, но через дифф
             // (перестроение лишь при изменении состава) — это дёшево.
-            _refresh = new System.Windows.Forms.Timer { Interval = 5000 };
+            _refresh = new System.Windows.Forms.Timer { Interval = 2000 };
             _refresh.Tick += (s, e) =>
             {
                 // Встроенное окно скрыто (пользователь в ЛС) — не тратим запросы/такты.
@@ -788,7 +788,6 @@ namespace PISMO
                 }
             };
 
-            // Имя занимает меньше места, если есть бейдж «В ЭФИРЕ».
             var lbl = new Label
             {
                 Text = name,
@@ -796,24 +795,15 @@ namespace PISMO
                 ForeColor = Color.FromArgb(210, 211, 213),
                 Font = new Font("Segoe UI", 8.5f),
                 Location = new Point(28, 0),
-                Size = new Size(streaming ? 90 : 148, 30),
+                Size = new Size(148, 30),   // ширину уточним ниже с учётом значков/бейджа
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
             row.Controls.Add(av);
             row.Controls.Add(lbl);
 
-            // Значок мьюта справа (как в Discord): наушники, если заглушил всё,
-            // иначе перечёркнутый микрофон. Рисуем векторно поверх строки.
-            if (deafened || micMuted)
-            {
-                var mute = new Panel { Size = new Size(18, 18), BackColor = Color.Transparent, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-                bool deaf = deafened;
-                mute.Paint += (s, e) => DrawMemberMuteIcon(e.Graphics, mute.ClientRectangle, deaf);
-                row.Controls.Add(mute);
-                mute.BringToFront();
-                mute.Location = new Point(row.Width - mute.Width - (streaming ? 66 : 4), 6);
-            }
+            // Раскладка справа налево: [бейдж «В ЭФИРЕ»] [значок мьюта] … имя.
+            int rightEdge = row.Width - 4;   // правый край для крайнего элемента
 
             // Бейдж «В ЭФИРЕ» только при активной камере/демонстрации экрана.
             if (streaming)
@@ -824,14 +814,32 @@ namespace PISMO
                     ForeColor = Color.White,
                     BackColor = Color.FromArgb(237, 66, 69),
                     Font = new Font("Segoe UI Semibold", 7f, FontStyle.Bold),
-                    AutoSize = true,                       // авторазмер — текст не обрежется
+                    AutoSize = true,
                     Padding = new Padding(4, 1, 4, 1),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     TextAlign = ContentAlignment.MiddleCenter
                 };
                 row.Controls.Add(badge);
-                badge.Location = new Point(row.Width - badge.PreferredWidth - 2, 6);
+                badge.Location = new Point(rightEdge - badge.PreferredWidth, 6);
+                rightEdge = badge.Left - 4;
             }
+
+            // Значок мьюта — слева от бейджа (или у правого края, если бейджа нет).
+            if (deafened || micMuted)
+            {
+                const int mSz = 22;
+                var mute = new Panel { Size = new Size(mSz, mSz), BackColor = Color.Transparent };
+                bool deaf = deafened;
+                mute.Paint += (s, e) => DrawMemberMuteIcon(e.Graphics, mute.ClientRectangle, deaf);
+                row.Controls.Add(mute);
+                mute.BringToFront();
+                mute.Location = new Point(rightEdge - mSz, (row.Height - mSz) / 2);
+                rightEdge = mute.Left - 4;
+            }
+
+            // Имя не залезает под значки: ужимаем до свободного пространства.
+            lbl.Width = Math.Max(40, rightEdge - lbl.Left);
+
             // Аватар может подгрузиться позже — перерисуем кружок.
             AvatarStore.EnsureLoaded(uid);
             return row;

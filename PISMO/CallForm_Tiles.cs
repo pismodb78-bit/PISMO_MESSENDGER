@@ -788,10 +788,12 @@ namespace PISMO
 
             // Значок мьюта в левом нижнем углу (демка — без значка): наушники,
             // если участник заглушил всё (deafen), иначе перечёркнутый микрофон.
+            // Для СВОЕЙ плитки берём локальное состояние (как в Discord).
             if (tile.Source != "screen")
             {
-                bool deaf = _deafenedPids.Contains(tile.Pid);
-                bool mic = _micMutedPids.Contains(tile.Pid);
+                bool isSelf = tile.Pid == SelfPid;
+                bool deaf = isSelf ? _remoteAllMuted : _deafenedPids.Contains(tile.Pid);
+                bool mic = isSelf ? _muted : _micMutedPids.Contains(tile.Pid);
                 if (deaf || mic) DrawMuteBadge(g, p, deaf);
             }
         }
