@@ -57,6 +57,8 @@ namespace PISMO
         public event Action<string, string, string> RemoteTileStarted;   // (pid, name, source)
         public event Action<string, string> RemoteTileStopped;           // (pid, source)
         public event Action<string, string, byte[]> RemoteTileFrame;     // (pid, source, image bytes)
+        public event Action<string, string, byte[], int, int> RemoteTileRawFrame; // (pid, source, BGRA, w, h) — GPU-рендер демок
+        public event Action<byte[], int, int> LocalScreenRawFrame;               // своя демка (BGRA) — GPU-рендер превью
         public event Action<string> ActiveSpeakers;
         public event Action<string, bool> ParticipantMicMuted;   // (pid, muted)
         public event Action<string, bool> ParticipantDeafened;   // (pid, deafened)
@@ -237,7 +239,16 @@ namespace PISMO
             string key = identity + "|" + source;
             if (_startedTiles.Add(key))
                 RemoteTileStarted?.Invoke(identity, name, source);
-            // Кодирование BGRA→BMP — вне FFI-потока (чтобы не тормозить звук).
+
+            if (isScreen)
+            {
+                // ДЕМКА: сырой BGRA сразу в GPU-поверхность (WPF/D3D) — без
+                // промежуточного BMP-кодирования (экономит CPU на 60fps-стриме).
+                RemoteTileRawFrame?.Invoke(identity, source, bgra, w, h);
+                return;
+            }
+
+            // КАМЕРА: прежний путь (маленькие плитки) — BMP вне FFI-потока.
             Task.Run(() =>
             {
                 try
@@ -277,7 +288,14 @@ namespace PISMO
 
         private void OnLocalScreenFrameNative(byte[] bgra, int w, int h)
         {
-            if (!_screenPreviewActive || ScreenPreviewFrameReceived == null) return;
+            if (!_screenPreviewActive) return;
+            // GPU-путь: сырой BGRA сразу в WPF-поверхность (плитка своей демки + PIP).
+            if (LocalScreenRawFrame != null)
+            {
+                LocalScreenRawFrame.Invoke(bgra, w, h);
+                return;
+            }
+            if (ScreenPreviewFrameReceived == null) return;
             Task.Run(() =>
             {
                 try { var img = BgraToBytes(bgra, w, h); if (img != null) ScreenPreviewFrameReceived?.Invoke(img); }

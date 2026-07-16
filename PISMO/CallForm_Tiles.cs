@@ -41,6 +41,7 @@ namespace PISMO
             public Label Lbl;
             public Button WatchBtn;    // «▶ Смотреть стрим» (пока стрим не смотрим)
             public Button MenuBtn;     // «⋮» — полный экран / мини-окно / прекратить
+            public GpuVideoSurface Gpu; // GPU-рендер демки (WPF/D3D); null = PictureBox
             public bool Speaking;
             public bool HasVideo;
         }
@@ -58,6 +59,7 @@ namespace PISMO
         {
             public Form Form;
             public PictureBox Pb;
+            public GpuVideoSurface Gpu;   // GPU-рендер стрима в отдельном окне
             public Label LblInfo;
         }
         private readonly Dictionary<string, StreamPopout> _streamPopouts = new();
@@ -233,31 +235,39 @@ namespace PISMO
             if (!tile.HasVideo)
             {
                 tile.HasVideo = true;
-                tile.Pb.Visible = true;
                 tile.Lbl.Text = "🖥 Ваша демонстрация";
-                // Клик по СВОЕЙ демке — вынести превью в отдельное мини-окно.
-                void OpenPip(object s, EventArgs e) => ShowScreenSharePipContainer();
-                tile.Pb.Click += OpenPip;
-                tile.Panel.Click += OpenPip;
-                tile.Pb.Cursor = Cursors.Hand;
+            }
+            // GPU-поверхность (рендер на видеокарте) вместо PictureBox.
+            if (tile.Gpu == null || tile.Gpu.IsDisposed)
+            {
+                var gpu = new GpuVideoSurface { Dock = DockStyle.Fill };
+                // Клик по СВОЕЙ демке — вынести превью в отдельное мини-окно;
+                // двойной клик — на весь видео-участок.
+                gpu.Clicked += () => ShowScreenSharePipContainer();
+                gpu.DoubleClicked += () => ToggleFullscreen(TileKey(SelfPid, "screen"));
+                tile.Gpu = gpu;
+                tile.Panel.Controls.Add(gpu);
+                gpu.BringToFront();
+                tile.Lbl?.BringToFront();
+                tile.Pb.Visible = false;
             }
             LayoutTiles();
         }
 
-        /// <summary>Кадр собственной демки: в плитку звонка и (если открыт) в PIP.</summary>
+        /// <summary>Сырой BGRA-кадр собственной демки: GPU-рендер в плитку и PIP.</summary>
+        private void OnSelfScreenRawFrame(byte[] bgra, int w, int h)
+        {
+            if (_tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile)
+                && tile.Gpu != null && !tile.Gpu.IsDisposed)
+                tile.Gpu.PushFrame(bgra, w, h);
+            if (_screenPipGpu != null && !_screenPipGpu.IsDisposed)
+                _screenPipGpu.PushFrame(bgra, w, h);
+        }
+
+        /// <summary>Старый BMP-путь превью (оставлен для совместимости контракта).</summary>
         private void OnSelfScreenFrame(byte[] imgBytes)
         {
             ShowScreenSharePip(imgBytes);   // мини-окно, если открыто (внутри сам проверит)
-            if (!_tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile) || tile.Pb == null) return;
-            try
-            {
-                using var ms = new System.IO.MemoryStream(imgBytes);
-                var img = new Bitmap(ms);
-                var old = tile.Pb.Image;
-                tile.Pb.Image = img;
-                old?.Dispose();
-            }
-            catch { }
         }
 
         private void RemoveSelfScreenTile()
@@ -591,6 +601,8 @@ namespace PISMO
                     wt.HasVideo = false;
                     wt.Pb.Visible = false;
                     var old = wt.Pb.Image; wt.Pb.Image = null; old?.Dispose();
+                    // GPU-поверхность убираем, иначе она перекроет кнопку «Смотреть стрим».
+                    if (wt.Gpu != null) { try { wt.Panel.Controls.Remove(wt.Gpu); wt.Gpu.Dispose(); } catch { } wt.Gpu = null; }
                     EnsureWatchTile(pid, wt.Name);
                     wt.Panel.Invalidate();
                 }
@@ -669,6 +681,49 @@ namespace PISMO
                     var oldP = po.Pb.Image;
                     po.Pb.Image = copy;
                     oldP?.Dispose();
+                    if (po.LblInfo != null && po.LblInfo.Visible) po.LblInfo.Visible = false;
+                }
+                catch { }
+            }
+        }
+
+        // ── GPU-рендер входящей демки (сырой BGRA → WPF/D3D-поверхность) ──
+        /// <summary>Кадр демки: рендер на видеокарте (WriteableBitmap → композиция
+        /// DWM/D3D). Масштабирование в плитке/фуллскрине/попауте — на GPU, CPU не
+        /// перекодирует кадры в BMP и не скейлит их в каждом Paint.</summary>
+        private void OnTileRawFrame(string pid, string source, byte[] bgra, int w, int h)
+        {
+            string key = TileKey(pid, source);
+            if (!_tiles.TryGetValue(key, out var tile))
+            {
+                tile = EnsureTile(pid, _participants.TryGetValue(pid, out var nm) ? nm : pid, source);
+                if (tile == null) return;
+            }
+
+            if (tile.Gpu == null || tile.Gpu.IsDisposed)
+            {
+                var gpu = new GpuVideoSurface { Dock = DockStyle.Fill };
+                string capPid = pid, capKey = key;
+                gpu.DoubleClicked += () => ToggleFullscreen(capKey);
+                gpu.RightClicked += () => { if (capPid != SelfPid) ShowScreenTileMenu(capPid); };
+                tile.Gpu = gpu;
+                tile.Panel.Controls.Add(gpu);
+                gpu.BringToFront();
+                tile.Lbl?.BringToFront();
+                tile.MenuBtn?.BringToFront();
+                tile.Pb.Visible = false;   // GDI-плоскость не нужна
+            }
+            tile.HasVideo = true;
+            if (tile.WatchBtn != null && tile.WatchBtn.Visible) tile.WatchBtn.Visible = false;
+            tile.Gpu.PushFrame(bgra, w, h);
+
+            // Стрим открыт в отдельном окне — тот же кадр в его GPU-поверхность.
+            if (source == "screen" && _streamPopouts.TryGetValue(pid, out var po)
+                && po.Form != null && !po.Form.IsDisposed && po.Gpu != null)
+            {
+                try
+                {
+                    po.Gpu.PushFrame(bgra, w, h);
                     if (po.LblInfo != null && po.LblInfo.Visible) po.LblInfo.Visible = false;
                 }
                 catch { }
@@ -1219,15 +1274,22 @@ namespace PISMO
                     TextAlign = ContentAlignment.MiddleCenter,
                     Font = new Font("Segoe UI", 9f)
                 };
+                // GPU-поверхность поверх PictureBox: кадры рендерит видеокарта.
+                var gpu = new GpuVideoSurface { Dock = DockStyle.Fill };
+                f.Controls.Add(gpu);
                 f.Controls.Add(pb);
+                pb.Visible = false;
                 f.Controls.Add(lblInfo);
                 f.Controls.Add(top);
+                gpu.BringToFront();
+                lblInfo.BringToFront();
+                top.BringToFront();
                 f.KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { try { f.Close(); } catch { } } };
 
                 string capPid = pid;
                 f.FormClosed += (s, e) => OnPopoutClosed(capPid);
 
-                _streamPopouts[pid] = new StreamPopout { Form = f, Pb = pb, LblInfo = lblInfo };
+                _streamPopouts[pid] = new StreamPopout { Form = f, Pb = pb, Gpu = gpu, LblInfo = lblInfo };
                 f.Show();
                 Anim.FadeIn(f);
 

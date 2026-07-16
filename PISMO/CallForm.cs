@@ -293,6 +293,8 @@ namespace PISMO
             _transport.RemoteTileStarted += (pid, name, source) => UiInvoke(() => OnTileStarted(pid, name, source));
             _transport.RemoteTileStopped += (pid, source) => UiInvoke(() => OnTileStopped(pid, source));
             _transport.RemoteTileFrame += (pid, source, frame) => OnTileFrameOffThread(pid, source, frame);
+            _transport.RemoteTileRawFrame += (pid, source, bgra, w, h) =>
+                UiInvoke(() => OnTileRawFrame(pid, source, bgra, w, h));
 
             // --- «Смотреть стрим»: подключение к идущей демке по кнопке ---
             _transport.RemoteStreamPublished += (pid, name) => UiInvoke(() => OnStreamPublished(pid, name));
@@ -334,6 +336,7 @@ namespace PISMO
             _transport.LocalScreenStopped += () => UiInvoke(OnLocalScreenStopped);
             _transport.LocalScreenError += err => UiInvoke(() => OnLocalScreenError(err));
             _transport.ScreenPreviewFrameReceived += frame => UiInvoke(() => OnSelfScreenFrame(frame));
+            _transport.LocalScreenRawFrame += (bgra, w, h) => UiInvoke(() => OnSelfScreenRawFrame(bgra, w, h));
             _transport.ScreenPreviewReady += () => UiInvoke(() =>
             {
                 _transport.HideTransportWindow();
@@ -1450,6 +1453,7 @@ namespace PISMO
         //  обратно, не закрывая саму демонстрацию.
         // ════════════════════════════════════════════════════════════
         private PictureBox _screenPipPicture;
+        private GpuVideoSurface _screenPipGpu;   // GPU-рендер превью своей демки
         private Panel _screenPipTitleBar;
         private Label _screenPipTitleLbl;    // «Ваша демонстрация · 👁 N»
         private Label _screenPipStats;       // что реально уходит зрителям (fps/битрейт)
@@ -1570,6 +1574,12 @@ namespace PISMO
                 AutoEllipsis = true
             };
 
+            // GPU-поверхность превью (WPF/D3D): PictureBox остаётся запасным
+            // (BMP-путь), но в нативном пути кадры идут сырым BGRA сюда.
+            _screenPipGpu = new GpuVideoSurface { Dock = DockStyle.Fill };
+            _screenPipPicture.Visible = false;
+
+            _screenPipForm.Controls.Add(_screenPipGpu);
             _screenPipForm.Controls.Add(_screenPipPicture);
             _screenPipForm.Controls.Add(_screenPipStats);
             _screenPipForm.Controls.Add(_screenPipTitleBar);
@@ -1649,13 +1659,14 @@ namespace PISMO
             {
                 _screenPipExpandedSize = _screenPipForm.Size;
                 _screenPipPicture.Visible = false;
+                if (_screenPipGpu != null) _screenPipGpu.Visible = false;
                 if (_screenPipStats != null) _screenPipStats.Visible = false;
                 _screenPipForm.Size = new Size(180, 22);
                 // Превью НЕ отключаем: кадры продолжают идти в плитку своей демки.
             }
             else
             {
-                _screenPipPicture.Visible = true;
+                if (_screenPipGpu != null) _screenPipGpu.Visible = true;
                 _screenPipForm.Size = _screenPipExpandedSize;
                 try { _transport?.SetScreenPreviewActive(true); } catch { }
             }
@@ -1729,6 +1740,7 @@ namespace PISMO
             try { _screenPipForm.Close(); } catch { }
             _screenPipForm = null;
             _screenPipPicture = null;
+            _screenPipGpu = null;
             _screenPipTitleBar = null;
             _screenPipTitleLbl = null;
             _screenPipStats = null;
