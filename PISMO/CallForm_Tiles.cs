@@ -17,6 +17,20 @@ namespace PISMO
     /// </summary>
     public partial class CallForm
     {
+        // Панель плитки с двойной буферизацией: обычный Panel при перерисовке
+        // (рамка говорящего, значок мьюта, кадры) заметно мерцал аватаром.
+        private sealed class TilePanel : Panel
+        {
+            public TilePanel()
+            {
+                DoubleBuffered = true;
+                SetStyle(ControlStyles.OptimizedDoubleBuffer
+                       | ControlStyles.AllPaintingInWmPaint
+                       | ControlStyles.UserPaint, true);
+                UpdateStyles();
+            }
+        }
+
         private sealed class CallTile
         {
             public string Pid;
@@ -264,7 +278,7 @@ namespace PISMO
 
             var tile = new CallTile { Pid = pid, Name = string.IsNullOrWhiteSpace(name) ? pid : name, Source = source };
 
-            tile.Panel = new Panel { BackColor = Color.FromArgb(47, 49, 54) };
+            tile.Panel = new TilePanel { BackColor = Color.FromArgb(47, 49, 54) };
             tile.Pb = new PictureBox
             {
                 Dock = DockStyle.Fill,
@@ -839,18 +853,20 @@ namespace PISMO
                 bool isSelf = tile.Pid == SelfPid;
                 bool deaf = isSelf ? _remoteAllMuted : _deafenedPids.Contains(tile.Pid);
                 bool mic = isSelf ? _muted : _micMutedPids.Contains(tile.Pid);
-                if (deaf || mic) DrawMuteBadge(g, p, deaf);
+                // Значок рисуем НАД полоской имени (Lbl докнут снизу), иначе она
+                // перекрывала нижнюю половину значка.
+                if (deaf || mic) DrawMuteBadge(g, p, deaf, tile.Lbl?.Height ?? 0);
             }
         }
 
         // Discord-подобный значок: тёмный скруглённый чип с перечёркнутой иконкой
         // (микрофон или наушники) в левом нижнем углу плитки.
-        private static void DrawMuteBadge(Graphics g, Panel p, bool deaf)
+        private static void DrawMuteBadge(Graphics g, Panel p, bool deaf, int bottomOffset = 0)
         {
             int s = Math.Max(26, Math.Min(p.Width, p.Height) / 7);
             int pad = 8;
             var chipBg = Color.FromArgb(230, 24, 25, 28);
-            var rect = new Rectangle(pad, p.Height - s - pad, s, s);
+            var rect = new Rectangle(pad, p.Height - s - pad - bottomOffset, s, s);
             using (var bg = new SolidBrush(chipBg))
             using (var path = RoundRect(rect, 7))
                 g.FillPath(bg, path);

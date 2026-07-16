@@ -365,7 +365,7 @@ namespace PISMO
             {
                 var screenMenu = new ContextMenuStrip();
                 screenMenu.Items.Add("🔁 Сменить источник (игра / весь экран)", null,
-                    (s, e) => { if (_screenSharing) try { _transport?.SwitchScreenSource(); } catch { } });
+                    (s, e) => SwitchScreenSourceLive());
                 screenMenu.Opening += (s, e) => { e.Cancel = !_screenSharing; };
                 _btnScreen.ContextMenuStrip = screenMenu;
             }
@@ -1348,6 +1348,44 @@ namespace PISMO
             }
         }
 
+        /// <summary>Список участников в углу: текст + авто-высота панели, чтобы
+        /// длинные имена не вылезали за тёмный фон (панель была фикс. 110px).</summary>
+        private void SetParticipantsText(string text)
+        {
+            if (_lblParticipants == null || _lblParticipants.IsDisposed) return;
+            _lblParticipants.Text = text;
+            try
+            {
+                if (_pnlParticipants != null && !_pnlParticipants.IsDisposed)
+                {
+                    int want = _lblParticipants.GetPreferredSize(
+                        new Size(_pnlParticipants.Width, 0)).Height + 6;
+                    _pnlParticipants.Height = Math.Clamp(want, 60, 320);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Кнопка 🔁 в мини-превью: сменить источник идущей демки на лету
+        /// (без перепубликации — зрители видят мгновенное переключение).</summary>
+        private void SwitchScreenSourceLive()
+        {
+            if (!_screenSharing) return;
+            try
+            {
+                using var picker = new ScreenPickerForm();
+                if (picker.ShowDialog(this) != DialogResult.OK) return;
+                if (!picker.SelectedIsScreen && picker.SelectedWindow != IntPtr.Zero)
+                    _transport.SwitchShareToWindow(picker.SelectedWindow);
+                else if (picker.SelectedBounds is Rectangle b)
+                    _transport.SwitchShareToMonitor(b);
+            }
+            catch (Exception ex)
+            {
+                _lblStatus.Text = "Смена источника: " + ex.Message;
+            }
+        }
+
         /// <summary>Свой выборщик (вкладки «Окно»/«Весь экран», все мониторы и окна) →
         /// захват выбранного источника. Без системного диалога Chromium — работает и
         /// при активном VR (путь к нативному захвату).</summary>
@@ -1503,7 +1541,7 @@ namespace PISMO
             };
             btnSwitch.FlatAppearance.BorderSize = 0;
             new ToolTip().SetToolTip(btnSwitch, "Сменить источник (игра / весь экран)");
-            btnSwitch.Click += (s, e) => { if (_screenSharing) try { _transport?.SwitchScreenSource(); } catch { } };
+            btnSwitch.Click += (s, e) => SwitchScreenSourceLive();
 
             _screenPipTitleBar.Controls.Add(lbl);
             _screenPipTitleBar.Controls.Add(btnSwitch);

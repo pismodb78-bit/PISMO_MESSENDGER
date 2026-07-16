@@ -610,6 +610,22 @@ namespace PISMO.Native
             if (fps > 0) _scrFps = Math.Max(1, Math.Min(60, fps));
         }
 
+        /// <summary>Сменить ИСТОЧНИК демки на лету БЕЗ перепубликации трека: петля
+        /// захвата читает _scrWindow/_scrBounds на каждом кадре, зрители видят
+        /// мгновенное переключение без «стрим завершён/начался».</summary>
+        public void SwitchShareToMonitor(Rectangle bounds)
+        {
+            if (!_scrStarted) return;
+            _scrWindow = IntPtr.Zero;
+            _scrBounds = bounds;
+        }
+
+        public void SwitchShareToWindow(IntPtr window)
+        {
+            if (!_scrStarted || window == IntPtr.Zero) return;
+            _scrWindow = window;
+        }
+
         public void StartScreenShare(Rectangle bounds, int fps = 15, int resHeight = 0, bool withAudio = false)
             => StartScreenInternal(bounds, IntPtr.Zero, fps, resHeight, withAudio);
 

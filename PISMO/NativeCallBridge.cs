@@ -396,7 +396,10 @@ namespace PISMO
         public void EnterTheater(string pid, string source, Rectangle bounds) { }
         public void UpdateTheaterBounds(Rectangle bounds) { }
         public void ExitTheater() { }
+        // Кнопка 🔁 в PIP: UI (выборщик) живёт в CallForm — он зовёт методы ниже.
         public void SwitchScreenSource() { }
+        public void SwitchShareToMonitor(Rectangle bounds) { try { _t?.SwitchShareToMonitor(bounds); } catch { } }
+        public void SwitchShareToWindow(IntPtr window) { try { _t?.SwitchShareToWindow(window); } catch { } }
         public void SetScreenShareVolume(string pid, float volume) { }
         public void SetScreenCodec(string codec) { try { _t?.SetScreenCodec(codec); } catch { } }
         public void SetScreenQualityLive(int resHeight, int fps) { try { _t?.SetScreenQualityLive(resHeight, fps); } catch { } }

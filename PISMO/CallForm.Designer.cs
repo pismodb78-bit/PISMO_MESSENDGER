@@ -282,7 +282,7 @@ namespace PISMO
                         var parts = new System.Collections.Generic.List<string> { "• Вы" };
                         foreach (var n in _participants.Values) parts.Add("• " + n);
                         if (_lblParticipants != null && !_lblParticipants.IsDisposed)
-                            _lblParticipants.Text = $"В канале ({parts.Count}):\n" + string.Join("\n", parts);
+                            SetParticipantsText($"В канале ({parts.Count}):\n" + string.Join("\n", parts));
                     }
                     catch { }
 
@@ -334,7 +334,7 @@ namespace PISMO
                             try
                             {
                                 if (_lblParticipants != null && !_lblParticipants.IsDisposed)
-                                    _lblParticipants.Text = "Участники (" + parts.Count + "):\n" + string.Join("\n", parts);
+                                    SetParticipantsText("Участники (" + parts.Count + "):\n" + string.Join("\n", parts));
 
                                 // Таймер 3 минут для личных звонков (не групп) — в стиле Discord.
                                 if (_groupId < 0)
