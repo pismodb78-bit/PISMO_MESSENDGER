@@ -926,10 +926,16 @@ namespace PISMO.Native
 
         private void ScreenLoop()
         {
+            // КРИТИЧНО для 60fps: гранулярность Thread.Sleep по умолчанию ~15.6мс —
+            // «доспать 5мс» реально спит 15 → период кадра ~25-30мс → ~35-40fps при
+            // выставленных 60. Повышаем разрешение системного таймера до 1мс на
+            // время демки (как делают все игры/стримеры).
+            try { timeBeginPeriod(1); } catch { }
+            long next = _clock.ElapsedMilliseconds;
             while (_scrRun)
             {
                 int delayMs = Math.Max(1, 1000 / Math.Max(1, _scrFps));   // FPS можно менять на лету
-                long start = _clock.ElapsedMilliseconds;
+                next += delayMs;   // абсолютный дедлайн кадра — без накопления дрейфа
                 try
                 {
                     // Превью — на полном FPS: GPU-путь (сырой BGRA → WritePixels)
@@ -1008,9 +1014,12 @@ namespace PISMO.Native
                         FreeDib();
                     }
                 }
-                int sleep = delayMs - (int)(_clock.ElapsedMilliseconds - start);
+                long now = _clock.ElapsedMilliseconds;
+                int sleep = (int)(next - now);
                 if (sleep > 0) Thread.Sleep(sleep);
+                else if (sleep < -delayMs) next = now;   // сильно отстали — не догоняем рывком
             }
+            try { timeEndPeriod(1); } catch { }
             try { _capBmp?.Dispose(); } catch { }
             try { _scaledBmp?.Dispose(); } catch { }
             _capBmp = null; _scaledBmp = null;
@@ -1585,6 +1594,12 @@ namespace PISMO.Native
 
         [DllImport("user32.dll")]
         private static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+
+        // Разрешение системного таймера (точный Thread.Sleep для пейсинга кадров).
+        [DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint uMilliseconds);
+        [DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint uMilliseconds);
 
         // ── Быстрый захват монитора: BitBlt/StretchBlt прямо в DIB-секцию ──
         [DllImport("user32.dll")]
