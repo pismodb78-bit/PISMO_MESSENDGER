@@ -863,6 +863,13 @@ namespace PISMO.Native
                 foreach (var pub in pwt.Publications)   // запоминаем источник по sid
                     RememberSource(pub.Info.Sid, pub.Info.Source);
             }
+
+            // КРИТИЧНО: сообщаем FFI, что готовы принимать события комнаты. Без
+            // этого FFI буферизует ParticipantConnected/TrackSubscribed — и они
+            // теряются: не приходит входящее медиа (звук/камера/демка) и участники
+            // появляются «через раз». Слать ПОСЛЕ обработки начального состояния.
+            try { LiveKitFfi.Request(new FfiRequest { ReadyForRoomEvent = new ReadyForRoomEventRequest { RoomHandle = _roomHandle } }); }
+            catch { }
         }
 
         private void HandleRoomEvent(RoomEvent re)
