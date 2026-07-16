@@ -1,0 +1,99 @@
+using System;
+
+namespace PISMO.Native
+{
+    /// <summary>
+    /// Программный «шумодав» для микрофона в НАТИВНОМ пути звонка (livekit_ffi).
+    /// libwebrtc APM (NoiseSuppression на push-источнике NewAudioSource) фоновый
+    /// шум практически не убирает, поэтому чистим PCM сами до отправки в FFI.
+    ///
+    /// Два каскада:
+    ///   1) Высокочастотный фильтр (~90 Гц) — срезает гул/рокот/DC-сдвиг.
+    ///   2) Адаптивный шумовой гейт — оценивает уровень фонового шума в паузах и
+    ///      плавно приглушает сигнал, когда энергия близка к шумовому полу
+    ///      (мягкая экспандер-кривая, а не жёсткий обрыв — без щелчков).
+    ///
+    /// Работает на 16-бит моно PCM in-place. Дёшево, без сторонних зависимостей.
+    /// </summary>
+    internal sealed class MicDenoiser
+    {
+        private readonly int _sampleRate;
+
+        // Высокочастотный фильтр (однополюсный, ~90 Гц).
+        private float _hpPrevIn, _hpPrevOut;
+        private readonly float _hpCoef;
+
+        // Оценка шумового пола и огибающей сигнала.
+        private float _noiseFloor = 200f;   // стартовая оценка (в отсчётах i16)
+        private float _envelope;            // сглаженная энергия текущего блока
+        private float _gain = 1f;           // текущее сглаженное усиление гейта
+
+        public MicDenoiser(int sampleRate)
+        {
+            _sampleRate = sampleRate;
+            // RC-коэффициент HPF: y = a*(y_prev + x - x_prev).
+            float rc = 1f / (2f * (float)Math.PI * 90f);
+            float dt = 1f / sampleRate;
+            _hpCoef = rc / (rc + dt);
+        }
+
+        /// <summary>Обработать блок 16-бит PCM in-place.</summary>
+        public void Process(byte[] buffer, int bytes)
+        {
+            int n = bytes / 2;
+            if (n <= 0) return;
+
+            // 1) HPF + подсчёт RMS блока.
+            double sumSq = 0;
+            for (int i = 0; i < n; i++)
+            {
+                int idx = i * 2;
+                short s = (short)(buffer[idx] | (buffer[idx + 1] << 8));
+                float x = s;
+                float y = _hpCoef * (_hpPrevOut + x - _hpPrevIn);
+                _hpPrevIn = x;
+                _hpPrevOut = y;
+                // временно сохраняем отфильтрованное значение обратно.
+                int v = (int)y;
+                if (v > short.MaxValue) v = short.MaxValue;
+                else if (v < short.MinValue) v = short.MinValue;
+                buffer[idx] = (byte)(v & 0xFF);
+                buffer[idx + 1] = (byte)((v >> 8) & 0xFF);
+                sumSq += (double)y * y;
+            }
+            float rms = (float)Math.Sqrt(sumSq / n);
+
+            // 2) Огибающая (быстрый подъём, медленный спад).
+            _envelope = rms > _envelope ? rms * 0.5f + _envelope * 0.5f
+                                        : rms * 0.05f + _envelope * 0.95f;
+
+            // 3) Адаптация шумового пола: подтягиваем только когда тихо
+            //    (иначе речь «обучила» бы гейт и он бы её резал).
+            if (_envelope < _noiseFloor * 2.2f)
+                _noiseFloor = _envelope * 0.02f + _noiseFloor * 0.98f;
+            if (_noiseFloor < 30f) _noiseFloor = 30f;    // не даём уползти в ноль
+
+            // 4) Целевое усиление: полный сигнал заметно выше шума, тишина — глушим.
+            float openLevel = _noiseFloor * 3.5f;    // порог «речь»
+            float closeLevel = _noiseFloor * 1.8f;   // порог «шум»
+            float target;
+            if (_envelope >= openLevel) target = 1f;
+            else if (_envelope <= closeLevel) target = 0.06f;
+            else target = 0.06f + 0.94f * (_envelope - closeLevel) / (openLevel - closeLevel);
+
+            // 5) Сглаживание усиления (без щелчков): быстрое открытие, мягкое закрытие.
+            float coef = target > _gain ? 0.4f : 0.03f;
+            for (int i = 0; i < n; i++)
+            {
+                _gain += (target - _gain) * coef;
+                int idx = i * 2;
+                short s = (short)(buffer[idx] | (buffer[idx + 1] << 8));
+                int v = (int)(s * _gain);
+                if (v > short.MaxValue) v = short.MaxValue;
+                else if (v < short.MinValue) v = short.MinValue;
+                buffer[idx] = (byte)(v & 0xFF);
+                buffer[idx + 1] = (byte)((v >> 8) & 0xFF);
+            }
+        }
+    }
+}

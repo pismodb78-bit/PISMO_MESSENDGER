@@ -37,6 +37,9 @@ namespace PISMO
         private Form _parentForm;                                        // для маршалинга в UI-поток
         private readonly Dictionary<string, string> _names = new();     // pid -> имя
         private readonly HashSet<string> _startedTiles = new();          // "pid|source"
+        private readonly HashSet<string> _announcedScreens = new();       // pid чьи демки анонсированы кнопкой
+        private readonly HashSet<string> _watchedScreens = new();         // pid чьи демки пользователь смотрит
+        private readonly object _watchLock = new();
         private bool _screenPreviewActive = true;
 
         // Пинг: у нативного FFI нет готового RTT, поэтому меряем задержку до
@@ -189,12 +192,27 @@ namespace PISMO
         private void OnRemoteVideo(string identity, bool isScreen, byte[] bgra, int w, int h)
         {
             string source = isScreen ? "screen" : "camera";
+            string name = _names.TryGetValue(identity, out var n) ? n : identity;
+
+            // Демонстрация экрана: как на WebView2 — НЕ качаем/показываем сразу.
+            // Показываем плитку с кнопкой «Смотреть стрим» (RemoteStreamPublished),
+            // а кадры отдаём только после WatchScreen(pid). Кадры до подписки
+            // (FFI шлёт их сразу из-за AutoSubscribe) молча отбрасываем.
+            if (isScreen)
+            {
+                bool watching;
+                lock (_watchLock)
+                {
+                    if (_announcedScreens.Add(identity))
+                        Ui(() => { try { RemoteStreamPublished?.Invoke(identity, name); } catch { } });
+                    watching = _watchedScreens.Contains(identity);
+                }
+                if (!watching) return;   // ждём нажатия «Смотреть стрим»
+            }
+
             string key = identity + "|" + source;
             if (_startedTiles.Add(key))
-            {
-                string name = _names.TryGetValue(identity, out var n) ? n : identity;
                 RemoteTileStarted?.Invoke(identity, name, source);
-            }
             // Кодирование BGRA→BMP — вне FFI-потока (чтобы не тормозить звук).
             Task.Run(() =>
             {
@@ -210,6 +228,15 @@ namespace PISMO
         private void OnRemoteVideoRemoved(string identity, bool isScreen)
         {
             string source = isScreen ? "screen" : "camera";
+            if (isScreen)
+            {
+                lock (_watchLock)
+                {
+                    _announcedScreens.Remove(identity);
+                    _watchedScreens.Remove(identity);
+                }
+                Ui(() => { try { RemoteStreamUnpublished?.Invoke(identity); } catch { } });
+            }
             if (_startedTiles.Remove(identity + "|" + source))
                 RemoteTileStopped?.Invoke(identity, source);
         }
@@ -309,9 +336,26 @@ namespace PISMO
             catch { }
         }
 
+        // ── «Смотреть стрим»: подписка/отписка на кадры чужой демонстрации ──
+        // Трек уже subscribed в FFI (AutoSubscribe); гейтим отдачу кадров в UI.
+        public void WatchScreen(string pid)
+        {
+            if (string.IsNullOrEmpty(pid)) return;
+            lock (_watchLock) { _watchedScreens.Add(pid); }
+        }
+
+        public void UnwatchScreen(string pid)
+        {
+            if (string.IsNullOrEmpty(pid)) return;
+            lock (_watchLock)
+            {
+                _watchedScreens.Remove(pid);
+                _startedTiles.Remove(pid + "|screen");   // повторный просмотр заново стартует плитку
+            }
+            RemoteTileStopped?.Invoke(pid, "screen");
+        }
+
         // ── Заглушки контракта (нативному пути не нужны / не поддержаны) ──
-        public void WatchScreen(string pid) { }
-        public void UnwatchScreen(string pid) { }
         public void SetTileRate(string pid, string source, int fps, int maxW, bool boost) { }
         public void HideTransportWindow() { }
         public void EnterTheater(string pid, string source, Rectangle bounds) { }
@@ -325,7 +369,7 @@ namespace PISMO
         public void SetParticipantVolume(string pid, float volume) { }
         public void SetParticipantMuted(string pid, bool muted) { }
         public void SetVoiceGate(bool auto, int threshold) { }
-        public void SetNoiseSuppression(bool on) { }
+        public void SetNoiseSuppression(bool on) { try { _t?.SetNoiseSuppression(on); } catch { } }
         public void SetMicGain(float gain) { }
         public void SetDisplayName(string name) { }
 

@@ -67,6 +67,8 @@ namespace PISMO.Native
         private bool _micStarted;
         private volatile bool _micMuted;          // мьют = не отправляем кадры
         private int _inputDeviceIndex = -1;       // -1 = устройство по умолчанию
+        private MicDenoiser _denoiser;            // программный шумодав (null = выкл)
+        private volatile bool _nsEnabled;
 
         // ── Видео (камера/демка) ──────────────────────────────────────────
         private ulong _camSource, _camTrack, _camPublishAsyncId;
@@ -175,6 +177,9 @@ namespace PISMO.Native
                 _publishAsyncId = pubResp.PublishTrack.AsyncId;
 
                 // 4) Захват микрофона: 48 кГц / 16 бит / моно → CaptureAudioFrame.
+                //    Программный шумодав (APM в push-режиме шум не убирает).
+                _nsEnabled = noiseSuppress;
+                _denoiser = new MicDenoiser(SR);
                 StartMicCapture();
             }
             catch (Exception ex) { ConnectError?.Invoke("микрофон: " + ex.Message); }
@@ -197,6 +202,9 @@ namespace PISMO.Native
             _micStarted = false;
         }
 
+        /// <summary>Вкл/выкл программный шумодав на лету.</summary>
+        public void SetNoiseSuppression(bool on) => _nsEnabled = on;
+
         /// <summary>Мьют микрофона: трек остаётся опубликованным, кадры не шлём.</summary>
         public void SetMicMuted(bool muted) => _micMuted = muted;
 
@@ -214,6 +222,7 @@ namespace PISMO.Native
         {
             if (_micSource == 0 || _micMuted || e.BytesRecorded <= 0) return;
             int samples = e.BytesRecorded / 2;   // 16-бит моно
+            if (_nsEnabled) { try { _denoiser?.Process(e.Buffer, e.BytesRecorded); } catch { } }
             IntPtr buf = Marshal.AllocHGlobal(e.BytesRecorded);
             try
             {
