@@ -714,9 +714,9 @@ namespace PISMO
 
         private void OnLocalCameraStarted()
         {
-            // _pbLocal.Visible уже установлен в StartVideo(); ничего
-            // дополнительного делать не требуется — кадры начнут приходить
-            // через LocalCameraFrameReceived.
+            // Звук «камера включена» — на РЕАЛЬНОМ старте трека (а не по клику,
+            // который мог быть отменён в превью).
+            try { Sounds.CameraOn(); } catch { }
         }
 
         private void OnLocalCameraStopped()
@@ -725,6 +725,7 @@ namespace PISMO
             var old = _pbLocal.Image;
             _pbLocal.Image = null;
             old?.Dispose();
+            try { Sounds.CameraOff(); } catch { }
         }
 
         private void OnLocalCameraError(string error)
@@ -799,7 +800,8 @@ namespace PISMO
         private void PaintDeafenButton()
         {
             if (_btnDeafen == null) return;
-            _btnDeafen.Text = _remoteAllMuted ? "🔕" : "🎧";
+            // Всегда наушники (как в Discord); красный фон = «оглушён» (deafen).
+            _btnDeafen.Text = "🎧";
             _btnDeafen.BackColor = _remoteAllMuted
                 ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
         }
@@ -1302,15 +1304,13 @@ namespace PISMO
                 _transport.StopCameraTrack();
                 _cameraStarted = false;
                 PushVoiceState();
-                try { Sounds.CameraOff(); } catch { }
                 var old = _pbLocal.Image; _pbLocal.Image = null; old?.Dispose();
             }
             else
             {
                 _btnCamera.Text = "📷";
                 _btnCamera.BackColor = Color.FromArgb(64, 68, 75);
-                try { Sounds.CameraOn(); } catch { }
-                StartVideo(); // откроет превью с подтверждением
+                StartVideo(); // откроет превью с подтверждением (звук — на реальном старте)
             }
         }
 

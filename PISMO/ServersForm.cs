@@ -841,28 +841,9 @@ namespace PISMO
         // перечёркнутые красным. Векторно, без эмодзи-шрифтов.
         private static void DrawMemberMuteIcon(Graphics g, Rectangle r, bool deaf)
         {
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            var red = Color.FromArgb(237, 66, 69);
-            using var pen = new Pen(red, 1.8f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
-            using var fill = new SolidBrush(red);
-            int cx = r.Width / 2, cy = r.Height / 2;
-            if (deaf)
-            {
-                int rad = 5;
-                g.DrawArc(pen, cx - rad, cy - rad, rad * 2, rad, 180, 180);
-                g.FillRectangle(fill, cx - rad - 1, cy - 1, 3, rad);
-                g.FillRectangle(fill, cx + rad - 1, cy - 1, 3, rad);
-            }
-            else
-            {
-                int mw = 5, mh = 7;
-                using var cap = new System.Drawing.Drawing2D.GraphicsPath();
-                cap.AddArc(cx - mw / 2, cy - mh / 2 - 1, mw, mw, 0, 360);
-                g.FillRectangle(fill, cx - mw / 2, cy - mh / 2 - 1, mw, mh);
-                g.DrawLine(pen, cx, cy + mh / 2, cx, cy + mh / 2 + 2);
-                g.DrawLine(pen, cx - 3, cy + mh / 2 + 2, cx + 3, cy + mh / 2 + 2);
-            }
-            g.DrawLine(pen, 2, r.Height - 2, r.Width - 2, 2);
+            // Фон строки канала — тёмно-серый (47,49,54); используем его для «выреза».
+            MuteGlyph.Draw(g, new RectangleF(1, 1, r.Width - 2, r.Height - 2), deaf,
+                           Color.FromArgb(47, 49, 54));
         }
 
         private void CreateChannel()

@@ -701,17 +701,24 @@ namespace PISMO
             catch { }
         }
 
+        private readonly HashSet<string> _activeSpeakers = new();   // кто говорит ПРЯМО СЕЙЧАС
+
         private void OnActiveSpeakers(string pidsJson)
         {
             try
             {
-                var arr = JsonSerializer.Deserialize<string[]>(pidsJson);
-                if (arr != null)
-                {
-                    // Каждое попадание в список говорящих продлевает подсветку на HOLD.
-                    var until = DateTime.UtcNow.AddMilliseconds(SpeakHoldMs);
-                    foreach (var p in arr) _speakUntil[p] = until;
-                }
+                var arr = JsonSerializer.Deserialize<string[]>(pidsJson) ?? Array.Empty<string>();
+                var now = DateTime.UtcNow;
+                var next = new HashSet<string>(arr);
+                // Кто ПЕРЕСТАЛ говорить (был в наборе, теперь нет) — даём короткий
+                // «хвост» затухания, чтобы рамка не дёргалась между обновлениями.
+                foreach (var p in _activeSpeakers)
+                    if (!next.Contains(p)) _speakUntil[p] = now.AddMilliseconds(SpeakHoldMs);
+                // Кто говорит сейчас — держим рамку без таймера (LiveKit шлёт событие
+                // только на ИЗМЕНЕНИЯ: пока человек говорит, новых событий нет).
+                foreach (var p in next) _speakUntil.Remove(p);
+                _activeSpeakers.Clear();
+                foreach (var p in next) _activeSpeakers.Add(p);
             }
             catch { }
 
@@ -727,7 +734,8 @@ namespace PISMO
             _speakHoldTimer.Start();
         }
 
-        // Пересчитывает подсветку плиток с учётом удержания (hold).
+        // Пересчитывает подсветку плиток: говорит СЕЙЧАС (в наборе active) или в
+        // пределах короткого хвоста затухания после прекращения.
         private void RefreshSpeakingState()
         {
             var now = DateTime.UtcNow;
@@ -736,8 +744,8 @@ namespace PISMO
                 var tile = kv.Value;
                 bool sp = tile.Source != "screen"
                     && !_micMutedPids.Contains(tile.Pid)      // замьюченный не «говорит»
-                    && _speakUntil.TryGetValue(tile.Pid, out var until)
-                    && now < until;
+                    && (_activeSpeakers.Contains(tile.Pid)
+                        || (_speakUntil.TryGetValue(tile.Pid, out var until) && now < until));
                 if (sp != tile.Speaking)
                 {
                     tile.Speaking = sp;
@@ -788,41 +796,20 @@ namespace PISMO
             }
         }
 
-        // Discord-подобный значок: тёмный скруглённый квадрат с перечёркнутой
-        // иконкой (микрофон или наушники) — рисуем векторно, без шрифт-эмодзи.
+        // Discord-подобный значок: тёмный скруглённый чип с перечёркнутой иконкой
+        // (микрофон или наушники) в левом нижнем углу плитки.
         private static void DrawMuteBadge(Graphics g, Panel p, bool deaf)
         {
-            int s = Math.Max(22, Math.Min(p.Width, p.Height) / 8);
-            int pad = 6;
+            int s = Math.Max(26, Math.Min(p.Width, p.Height) / 7);
+            int pad = 8;
+            var chipBg = Color.FromArgb(230, 24, 25, 28);
             var rect = new Rectangle(pad, p.Height - s - pad, s, s);
-            using (var bg = new SolidBrush(Color.FromArgb(220, 24, 25, 28)))
-            using (var path = RoundRect(rect, 6))
+            using (var bg = new SolidBrush(chipBg))
+            using (var path = RoundRect(rect, 7))
                 g.FillPath(bg, path);
-
-            var red = Color.FromArgb(237, 66, 69);
-            using var pen = new Pen(red, Math.Max(2f, s / 11f)) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
-            using var fill = new SolidBrush(red);
-            int cx = rect.X + s / 2, cy = rect.Y + s / 2;
-
-            if (deaf)
-            {
-                // Наушники: дуга оголовья + две чашки.
-                int r = s / 4;
-                g.DrawArc(pen, cx - r, cy - r, r * 2, r, 180, 180);
-                g.FillRectangle(fill, cx - r - 2, cy - 1, 4, r);
-                g.FillRectangle(fill, cx + r - 2, cy - 1, 4, r);
-            }
-            else
-            {
-                // Микрофон: капсула + ножка + основание.
-                int mw = s / 5, mh = s / 3;
-                using var cap = RoundRect(new Rectangle(cx - mw / 2, cy - mh / 2 - 2, mw, mh), mw / 2);
-                g.FillPath(fill, cap);
-                g.DrawLine(pen, cx, cy + mh / 2 - 1, cx, cy + mh / 2 + 3);
-                g.DrawLine(pen, cx - mw / 2, cy + mh / 2 + 3, cx + mw / 2, cy + mh / 2 + 3);
-            }
-            // Красная перечёркивающая линия.
-            g.DrawLine(pen, rect.X + 4, rect.Y + s - 4, rect.X + s - 4, rect.Y + 4);
+            float ip = s * 0.20f;   // внутренний отступ иконки
+            MuteGlyph.Draw(g, new RectangleF(rect.X + ip, rect.Y + ip, s - 2 * ip, s - 2 * ip),
+                           deaf, Color.FromArgb(255, 24, 25, 28));
         }
 
         private static System.Drawing.Drawing2D.GraphicsPath RoundRect(Rectangle r, int rad)
