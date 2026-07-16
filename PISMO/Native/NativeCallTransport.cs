@@ -932,38 +932,64 @@ namespace PISMO.Native
                 long start = _clock.ElapsedMilliseconds;
                 try
                 {
-                    Bitmap raw = CaptureScreen();
-                    if (raw != null)
-                    {
-                        _scrConsecFails = 0;
-                        // Превью — на полном FPS: GPU-путь (сырой BGRA → WritePixels)
-                        // дешёвый, а прореживание делало превью дёрганым (fps/3).
-                        var preview = LocalScreenFrame != null
-                            ? EmitLocalScreen : (Action<byte[], int, int>)null;
+                    // Превью — на полном FPS: GPU-путь (сырой BGRA → WritePixels)
+                    // дешёвый, а прореживание делало превью дёрганым (fps/3).
+                    var preview = LocalScreenFrame != null
+                        ? EmitLocalScreen : (Action<byte[], int, int>)null;
 
-                        int th = _scrTargetHeight;   // даунскейл до целевой высоты (0 = как есть)
-                        if (th > 0 && raw.Height > th)
+                    IntPtr win; Rectangle bounds;
+                    lock (_scrSrcLock) { win = _scrWindow; bounds = _scrBounds; }
+
+                    if (win == IntPtr.Zero && bounds.Width > 0 && bounds.Height > 0)
+                    {
+                        // МОНИТОР — быстрый путь: BitBlt/StretchBlt прямо в DIB-секцию
+                        // (без GDI+ Bitmap, без LockBits; даунскейл — в один проход
+                        // на самом блите). Экономит ~половину времени кадра → 60fps.
+                        int th = _scrTargetHeight;
+                        int outW = bounds.Width & ~1, outH = bounds.Height & ~1;
+                        if (th > 0 && bounds.Height > th)
                         {
-                            int tw = Math.Max(2, (int)Math.Round(raw.Width * (th / (double)raw.Height))) & ~1;
-                            if (_scaledBmp == null || _scaledBmp.Width != tw || _scaledBmp.Height != th)
-                            {
-                                _scaledBmp?.Dispose();
-                                _scaledBmp = new Bitmap(tw, Math.Max(2, th), PixelFormat.Format32bppArgb);
-                            }
-                            using (var g = Graphics.FromImage(_scaledBmp))
-                            {
-                                g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
-                                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
-                                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-                                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
-                                g.DrawImage(raw, new Rectangle(0, 0, _scaledBmp.Width, _scaledBmp.Height),
-                                            0, 0, raw.Width, raw.Height, GraphicsUnit.Pixel);
-                            }
-                            PushBitmap(_scrSource, _scaledBmp, preview);
+                            outH = th & ~1;
+                            outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
-                        else
+                        if (CaptureMonitorDib(bounds, outW, outH))
                         {
-                            PushBitmap(_scrSource, raw, preview);
+                            _scrConsecFails = 0;
+                            PushRawPtr(_scrSource, _dibBits, outW, outH, preview);
+                        }
+                        else if (++_scrConsecFails >= 20) { _scrConsecFails = 0; FreeDib(); }
+                    }
+                    else
+                    {
+                        // ОКНО — прежний путь через PrintWindow (DIB тут не поможет).
+                        Bitmap raw = CaptureScreen();
+                        if (raw != null)
+                        {
+                            _scrConsecFails = 0;
+                            int th = _scrTargetHeight;
+                            if (th > 0 && raw.Height > th)
+                            {
+                                int tw = Math.Max(2, (int)Math.Round(raw.Width * (th / (double)raw.Height))) & ~1;
+                                if (_scaledBmp == null || _scaledBmp.Width != tw || _scaledBmp.Height != th)
+                                {
+                                    _scaledBmp?.Dispose();
+                                    _scaledBmp = new Bitmap(tw, Math.Max(2, th), PixelFormat.Format32bppArgb);
+                                }
+                                using (var g = Graphics.FromImage(_scaledBmp))
+                                {
+                                    g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+                                    g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+                                    g.DrawImage(raw, new Rectangle(0, 0, _scaledBmp.Width, _scaledBmp.Height),
+                                                0, 0, raw.Width, raw.Height, GraphicsUnit.Pixel);
+                                }
+                                PushBitmap(_scrSource, _scaledBmp, preview);
+                            }
+                            else
+                            {
+                                PushBitmap(_scrSource, raw, preview);
+                            }
                         }
                     }
                 }
@@ -979,6 +1005,7 @@ namespace PISMO.Native
                         try { _capBmp?.Dispose(); } catch { }
                         try { _scaledBmp?.Dispose(); } catch { }
                         _capBmp = null; _scaledBmp = null;
+                        FreeDib();
                     }
                 }
                 int sleep = delayMs - (int)(_clock.ElapsedMilliseconds - start);
@@ -987,6 +1014,86 @@ namespace PISMO.Native
             try { _capBmp?.Dispose(); } catch { }
             try { _scaledBmp?.Dispose(); } catch { }
             _capBmp = null; _scaledBmp = null;
+            FreeDib();
+            if (_screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, _screenDc); } catch { } _screenDc = IntPtr.Zero; }
+        }
+
+        // ── DIB-захват монитора ───────────────────────────────────────────
+        private IntPtr _screenDc, _dibDc, _dibBmp, _dibOld, _dibBits;
+        private int _dibW, _dibH;
+
+        private bool CaptureMonitorDib(Rectangle src, int outW, int outH)
+        {
+            if (outW <= 0 || outH <= 0) return false;
+            if (_screenDc == IntPtr.Zero) _screenDc = GetDC(IntPtr.Zero);
+            if (_screenDc == IntPtr.Zero) return false;
+
+            if (_dibDc == IntPtr.Zero || _dibW != outW || _dibH != outH)
+            {
+                FreeDib();
+                _dibDc = CreateCompatibleDC(_screenDc);
+                if (_dibDc == IntPtr.Zero) return false;
+                var bmi = new BITMAPINFO
+                {
+                    biSize = 40,
+                    biWidth = outW,
+                    biHeight = -outH,   // top-down: строки сверху вниз, как ждёт BGRA-кадр
+                    biPlanes = 1,
+                    biBitCount = 32,
+                    biCompression = 0   // BI_RGB
+                };
+                _dibBmp = CreateDIBSection(_dibDc, ref bmi, 0 /*DIB_RGB_COLORS*/, out _dibBits, IntPtr.Zero, 0);
+                if (_dibBmp == IntPtr.Zero || _dibBits == IntPtr.Zero) { FreeDib(); return false; }
+                _dibOld = SelectObject(_dibDc, _dibBmp);
+                SetStretchBltMode(_dibDc, HALFTONE);   // качественный даунскейл
+                _dibW = outW; _dibH = outH;
+            }
+
+            return (outW == src.Width && outH == src.Height)
+                ? BitBlt(_dibDc, 0, 0, outW, outH, _screenDc, src.X, src.Y, SRCCOPY)
+                : StretchBlt(_dibDc, 0, 0, outW, outH, _screenDc, src.X, src.Y, src.Width, src.Height, SRCCOPY);
+        }
+
+        private void FreeDib()
+        {
+            try
+            {
+                if (_dibDc != IntPtr.Zero && _dibOld != IntPtr.Zero) SelectObject(_dibDc, _dibOld);
+                if (_dibBmp != IntPtr.Zero) DeleteObject(_dibBmp);
+                if (_dibDc != IntPtr.Zero) DeleteDC(_dibDc);
+            }
+            catch { }
+            _dibDc = IntPtr.Zero; _dibBmp = IntPtr.Zero; _dibOld = IntPtr.Zero; _dibBits = IntPtr.Zero;
+            _dibW = 0; _dibH = 0;
+        }
+
+        // Кадр из DIB-памяти → FFI (без каких-либо промежуточных копий) + превью.
+        private void PushRawPtr(ulong source, IntPtr bits, int w, int h, Action<byte[], int, int> preview)
+        {
+            if (source == 0 || bits == IntPtr.Zero) return;
+            LiveKitFfi.Request(new FfiRequest
+            {
+                CaptureVideoFrame = new CaptureVideoFrameRequest
+                {
+                    SourceHandle = source,
+                    TimestampUs = NowUs(),
+                    Rotation = (VideoRotation)0,
+                    Buffer = new VideoBufferInfo
+                    {
+                        Type = VideoBufferType.Bgra,
+                        Width = (uint)w,
+                        Height = (uint)h,
+                        DataPtr = (ulong)bits.ToInt64(),
+                        Stride = (uint)(w * 4)
+                    }
+                }
+            });
+            if (preview != null)
+            {
+                var buf = new byte[w * h * 4];
+                Marshal.Copy(bits, buf, 0, buf.Length);
+                preview(buf, w, h);
+            }
         }
 
         // ── Качество/кодек/энкодер демки ──────────────────────────────────
@@ -1478,5 +1585,50 @@ namespace PISMO.Native
 
         [DllImport("user32.dll")]
         private static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+
+        // ── Быстрый захват монитора: BitBlt/StretchBlt прямо в DIB-секцию ──
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr hWnd);
+        [DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteDC(IntPtr hdc);
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr h);
+        [DllImport("gdi32.dll")]
+        private static extern bool BitBlt(IntPtr hdcDst, int x, int y, int cx, int cy,
+                                          IntPtr hdcSrc, int sx, int sy, uint rop);
+        [DllImport("gdi32.dll")]
+        private static extern bool StretchBlt(IntPtr hdcDst, int x, int y, int cx, int cy,
+                                              IntPtr hdcSrc, int sx, int sy, int scx, int scy, uint rop);
+        [DllImport("gdi32.dll")]
+        private static extern int SetStretchBltMode(IntPtr hdc, int mode);
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFO bmi, uint usage,
+                                                      out IntPtr bits, IntPtr hSection, uint offset);
+
+        private const uint SRCCOPY = 0x00CC0020;
+        private const int HALFTONE = 4;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BITMAPINFO
+        {
+            public int biSize;
+            public int biWidth;
+            public int biHeight;      // ОТРИЦАТЕЛЬНАЯ = top-down (как BGRA-кадр)
+            public short biPlanes;
+            public short biBitCount;
+            public int biCompression;
+            public int biSizeImage;
+            public int biXPelsPerMeter;
+            public int biYPelsPerMeter;
+            public int biClrUsed;
+            public int biClrImportant;
+            // Палитра не используется (32bpp BI_RGB).
+        }
     }
 }
