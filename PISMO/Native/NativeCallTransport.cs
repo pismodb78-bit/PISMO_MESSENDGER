@@ -613,17 +613,18 @@ namespace PISMO.Native
         /// <summary>Сменить ИСТОЧНИК демки на лету БЕЗ перепубликации трека: петля
         /// захвата читает _scrWindow/_scrBounds на каждом кадре, зрители видят
         /// мгновенное переключение без «стрим завершён/начался».</summary>
+        private readonly object _scrSrcLock = new();   // источник читается из потока захвата
+
         public void SwitchShareToMonitor(Rectangle bounds)
         {
             if (!_scrStarted) return;
-            _scrWindow = IntPtr.Zero;
-            _scrBounds = bounds;
+            lock (_scrSrcLock) { _scrWindow = IntPtr.Zero; _scrBounds = bounds; }
         }
 
         public void SwitchShareToWindow(IntPtr window)
         {
             if (!_scrStarted || window == IntPtr.Zero) return;
-            _scrWindow = window;
+            lock (_scrSrcLock) { _scrWindow = window; }
         }
 
         public void StartScreenShare(Rectangle bounds, int fps = 15, int resHeight = 0, bool withAudio = false)
@@ -922,6 +923,7 @@ namespace PISMO.Native
         // при выставленных 60. Плюс HighQualityBilinear ~20-40мс/кадр → Bilinear.
         private Bitmap _capBmp, _scaledBmp;
         private int _scrFrameNo;
+        private int _scrConsecFails;   // подряд неудачных кадров (самовосстановление)
 
         private void ScreenLoop()
         {
@@ -934,6 +936,7 @@ namespace PISMO.Native
                     Bitmap raw = CaptureScreen();
                     if (raw != null)
                     {
+                        _scrConsecFails = 0;
                         // Локальное превью (PIP/плитка) не обязано идти на полном FPS —
                         // отдаём каждый 3-й кадр, чтобы не жечь UI-поток впустую.
                         var preview = (LocalScreenFrame != null && (_scrFrameNo++ % 3 == 0))
@@ -965,7 +968,20 @@ namespace PISMO.Native
                         }
                     }
                 }
-                catch { }
+                catch
+                {
+                    // Самовосстановление: если кадры падают ПОДРЯД (например, Bitmap
+                    // остался залоченным после сбоя LockBits/UnlockBits — тогда КАЖДЫЙ
+                    // следующий LockBits кидает исключение, и у зрителей «зависает»
+                    // последний удачный кадр) — пересоздаём переиспользуемые буферы.
+                    if (++_scrConsecFails >= 20)
+                    {
+                        _scrConsecFails = 0;
+                        try { _capBmp?.Dispose(); } catch { }
+                        try { _scaledBmp?.Dispose(); } catch { }
+                        _capBmp = null; _scaledBmp = null;
+                    }
+                }
                 int sleep = delayMs - (int)(_clock.ElapsedMilliseconds - start);
                 if (sleep > 0) Thread.Sleep(sleep);
             }
@@ -1022,13 +1038,19 @@ namespace PISMO.Native
         // Возвращает переиспользуемый _capBmp (пересоздаётся только при смене размера).
         private Bitmap CaptureScreen()
         {
+            // Снимок источника под замком: UI-поток может сменить его на лету
+            // (кнопка 🔁), а Rectangle — не атомарен (рваное чтение = мусорные
+            // размеры → исключения на каждом кадре).
+            IntPtr win; Rectangle bounds;
+            lock (_scrSrcLock) { win = _scrWindow; bounds = _scrBounds; }
+
             int w, h;
-            if (_scrWindow != IntPtr.Zero)
+            if (win != IntPtr.Zero)
             {
-                if (!GetWindowRect(_scrWindow, out RECT r)) return null;
+                if (!GetWindowRect(win, out RECT r)) return null;
                 w = r.Right - r.Left; h = r.Bottom - r.Top;
             }
-            else { w = _scrBounds.Width; h = _scrBounds.Height; }
+            else { w = bounds.Width; h = bounds.Height; }
             if (w <= 0 || h <= 0) return null;
 
             if (_capBmp == null || _capBmp.Width != w || _capBmp.Height != h)
@@ -1038,15 +1060,15 @@ namespace PISMO.Native
             }
 
             using var g = Graphics.FromImage(_capBmp);
-            if (_scrWindow != IntPtr.Zero)
+            if (win != IntPtr.Zero)
             {
                 IntPtr hdc = g.GetHdc();
-                try { PrintWindow(_scrWindow, hdc, PW_RENDERFULLCONTENT); }
+                try { PrintWindow(win, hdc, PW_RENDERFULLCONTENT); }
                 finally { g.ReleaseHdc(hdc); }
             }
             else
             {
-                g.CopyFromScreen(_scrBounds.Location, Point.Empty, _scrBounds.Size, CopyPixelOperation.SourceCopy);
+                g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
             }
             return _capBmp;
         }
