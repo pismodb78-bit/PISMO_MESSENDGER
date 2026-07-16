@@ -1075,7 +1075,7 @@ namespace PISMO.Native
         private static double PickRtt(RtcStats s, double cur)
         {
             if (s.StatsCase != RtcStats.StatsOneofCase.CandidatePair) return cur;
-            var cp = s.CandidatePair.CandidatePair;
+            var cp = s.CandidatePair.CandidatePair_;
             if (cp.Nominated && cp.CurrentRoundTripTime >= 0) return cp.CurrentRoundTripTime;
             return cur;
         }
