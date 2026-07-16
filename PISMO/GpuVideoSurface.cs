@@ -1,6 +1,5 @@
 using System;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Forms.Integration;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -19,7 +18,7 @@ namespace PISMO
     /// </summary>
     internal sealed class GpuVideoSurface : ElementHost
     {
-        private readonly Image _img;
+        private readonly System.Windows.Controls.Image _img;
         private WriteableBitmap _wb;
 
         /// <summary>Одиночный клик по видео.</summary>
@@ -32,7 +31,7 @@ namespace PISMO
         public GpuVideoSurface()
         {
             BackColor = System.Drawing.Color.FromArgb(24, 25, 28);
-            _img = new Image
+            _img = new System.Windows.Controls.Image
             {
                 Stretch = Stretch.Uniform,
                 SnapsToDevicePixels = true
@@ -41,7 +40,7 @@ namespace PISMO
             RenderOptions.SetBitmapScalingMode(_img, BitmapScalingMode.Linear);
 
             // Фон WPF-части — тот же тёмный, чтобы поля letterbox не белели.
-            var host = new Border
+            var host = new System.Windows.Controls.Border
             {
                 Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(24, 25, 28)),
                 Child = _img
