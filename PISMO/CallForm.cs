@@ -1514,6 +1514,18 @@ namespace PISMO
         /// РЕАЛЬНЫЙ исходящий поток, а эта плашка показывает его цифрами.</summary>
         private void UpdatePipStats(string text)
         {
+            // Показываем fps/режим захвата ВСЕГДА — прямо на бейдже демонстрации
+            // (не только в мини-окне PIP, которое ещё надо открыть кликом).
+            try
+            {
+                if (_screenSharing && _lblScreenBadge != null && !_lblScreenBadge.IsDisposed
+                    && !string.IsNullOrEmpty(text))
+                {
+                    _lblScreenBadge.Text = "🖥 Демонстрация · " + text;
+                    _lblScreenBadge.Visible = true;
+                }
+            }
+            catch { }
             if (_screenPipStats == null || _screenPipStats.IsDisposed) return;
             try
             {
