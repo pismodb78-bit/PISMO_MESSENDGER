@@ -419,12 +419,12 @@ namespace PISMO
         public void SwitchScreenSource() { }
         public void SwitchShareToMonitor(Rectangle bounds) { try { _t?.SwitchShareToMonitor(bounds); } catch { } }
         public void SwitchShareToWindow(IntPtr window) { try { _t?.SwitchShareToWindow(window); } catch { } }
-        public void SetScreenShareVolume(string pid, float volume) { }
+        public void SetScreenShareVolume(string pid, float volume) { try { _t?.SetScreenShareVolume(pid, volume); } catch { } }
         public void SetScreenCodec(string codec) { try { _t?.SetScreenCodec(codec); } catch { } }
         public void SetScreenQualityLive(int resHeight, int fps) { try { _t?.SetScreenQualityLive(resHeight, fps); } catch { } }
-        public void SetRemoteScreenAudioVolume(float volume) { }
-        public void SetParticipantVolume(string pid, float volume) { }
-        public void SetParticipantMuted(string pid, bool muted) { }
+        public void SetRemoteScreenAudioVolume(float volume) { try { _t?.SetScreenAudioVolumeAll(volume); } catch { } }
+        public void SetParticipantVolume(string pid, float volume) { try { _t?.SetParticipantVolume(pid, volume); } catch { } }
+        public void SetParticipantMuted(string pid, bool muted) { try { _t?.SetParticipantMuted(pid, muted); } catch { } }
         public void SetVoiceGate(bool auto, int threshold) { }
         public void SetNoiseSuppression(bool on) { try { _t?.SetNoiseSuppression(on); } catch { } }
         public void SetNoiseMode(string mode) { try { _t?.SetNoiseMode(mode); } catch { } }

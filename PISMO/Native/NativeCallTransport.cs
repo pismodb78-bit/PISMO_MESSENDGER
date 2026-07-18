@@ -61,6 +61,56 @@ namespace PISMO.Native
         private WaveOutEvent _out;
         private MixingSampleProvider _mixer;
         private readonly Dictionary<ulong, BufferedWaveProvider> _remoteByStream = new();
+
+        // Пер-поточная громкость входящего звука (голос/демка каждого участника).
+        private sealed class RemoteAudioCtx
+        {
+            public string Pid;
+            public bool IsScreen;         // звук демки (SCREENSHARE_AUDIO), не голос
+            public VolumeSampleProvider Vol;
+            public float User = 1f;       // пользовательская громкость (0..3)
+            public bool Muted;
+        }
+        private readonly Dictionary<ulong, RemoteAudioCtx> _audioCtxByStream = new();
+        private float _globalScreenVol = 1f;   // общий ползунок «Громкость демонстрации»
+
+        private void ApplyRemoteAudioVolume(RemoteAudioCtx c)
+            => c.Vol.Volume = c.Muted ? 0f : Math.Clamp(c.User * (c.IsScreen ? _globalScreenVol : 1f), 0f, 4f);
+
+        /// <summary>Громкость ГОЛОСА конкретного участника (ПКМ по плитке).</summary>
+        public void SetParticipantVolume(string pid, float volume)
+        {
+            lock (_audioLock)
+                foreach (var c in _audioCtxByStream.Values)
+                    if (!c.IsScreen && c.Pid == pid) { c.User = volume; ApplyRemoteAudioVolume(c); }
+        }
+
+        /// <summary>Заглушить голос конкретного участника.</summary>
+        public void SetParticipantMuted(string pid, bool muted)
+        {
+            lock (_audioLock)
+                foreach (var c in _audioCtxByStream.Values)
+                    if (!c.IsScreen && c.Pid == pid) { c.Muted = muted; ApplyRemoteAudioVolume(c); }
+        }
+
+        /// <summary>Громкость ДЕМКИ конкретного участника (0 = заглушить).</summary>
+        public void SetScreenShareVolume(string pid, float volume)
+        {
+            lock (_audioLock)
+                foreach (var c in _audioCtxByStream.Values)
+                    if (c.IsScreen && c.Pid == pid) { c.User = volume; ApplyRemoteAudioVolume(c); }
+        }
+
+        /// <summary>Общая громкость всех демок (ползунок в панели ⚙).</summary>
+        public void SetScreenAudioVolumeAll(float volume)
+        {
+            lock (_audioLock)
+            {
+                _globalScreenVol = volume;
+                foreach (var c in _audioCtxByStream.Values)
+                    if (c.IsScreen) ApplyRemoteAudioVolume(c);
+            }
+        }
         private readonly object _audioLock = new();
         private int _outputDeviceIndex = -1;      // -1 = устройство по умолчанию
         private float _playbackVolume = 1.0f;
@@ -1677,13 +1727,24 @@ namespace PISMO.Native
                     }
                 });
                 ulong streamHandle = resp.NewAudioStream.Stream.Handle.Id;
+                // Демка это или голос — по источнику трека (для отдельной громкости).
+                bool isScreenAudio;
+                lock (_videoLock)
+                    isScreenAudio = _sourceBySid.TryGetValue(track.Info.Sid, out var srcKind)
+                                    && srcKind == TrackSource.SourceScreenshareAudio;
                 lock (_audioLock)
                 {
                     EnsurePlayback();
                     var prov = new BufferedWaveProvider(new WaveFormat(SR, 16, CH))
                     { BufferDuration = TimeSpan.FromSeconds(2), DiscardOnBufferOverflow = true };
                     _remoteByStream[streamHandle] = prov;
-                    _mixer.AddMixerInput(prov.ToSampleProvider());
+                    // Обёртка громкости: у каждого потока (голос/демка участника)
+                    // своя ручка — «заглушить/поменять громкость конкретной демки».
+                    var vol = new VolumeSampleProvider(prov.ToSampleProvider());
+                    var ctx = new RemoteAudioCtx { Pid = identity, IsScreen = isScreenAudio, Vol = vol };
+                    _audioCtxByStream[streamHandle] = ctx;
+                    ApplyRemoteAudioVolume(ctx);
+                    _mixer.AddMixerInput(vol);
                 }
             }
             else if (track.Info.Kind == TrackKind.KindVideo)
