@@ -28,6 +28,14 @@ namespace PISMO.Native
         private float _envelope;            // сглаженная энергия текущего блока
         private float _gain = 1f;           // текущее сглаженное усиление гейта
 
+        // Транзиент-фильтр («Агрессивный» режим): клики клавиатуры ГРОМКИЕ, но
+        // короткие (<20мс) — обычный гейт от них наоборот открывается. Здесь
+        // гейт открывает только УСТОЙЧИВАЯ громкость (~30мс подряд = начало
+        // речи), а после речи держится hangover, чтобы не резать середину фраз.
+        public bool TransientGuard;
+        private int _loudRun;      // сколько блоков подряд «громко»
+        private int _hangBlocks;   // осталось блоков удержания «идёт речь»
+
         public MicDenoiser(int sampleRate)
         {
             _sampleRate = sampleRate;
@@ -83,6 +91,21 @@ namespace PISMO.Native
             if (_envelope >= openLevel) target = 1f;
             else if (_envelope <= closeLevel) target = 0.06f;
             else target = 0.06f + 0.94f * (_envelope - closeLevel) / (openLevel - closeLevel);
+
+            if (TransientGuard)
+            {
+                // Блоки по 10-20мс: считаем подряд идущие громкие блоки.
+                int msPerBlock = Math.Max(1, n * 1000 / _sampleRate);
+                int needBlocks = Math.Max(1, 30 / msPerBlock);          // ~30мс до открытия
+                int hangTotal = Math.Max(1, 350 / msPerBlock);          // ~350мс удержания
+
+                if (_envelope >= openLevel) _loudRun++; else _loudRun = 0;
+                if (_loudRun >= needBlocks) _hangBlocks = hangTotal;    // речь подтверждена
+                bool speech = _hangBlocks > 0;
+                if (_hangBlocks > 0) _hangBlocks--;
+                // Одиночный громкий всплеск (клик) без подтверждения речи — глушим.
+                if (!speech) target = 0.06f;
+            }
 
             // 5) Сглаживание усиления (без щелчков): быстрое открытие, мягкое закрытие.
             float coef = target > _gain ? 0.4f : 0.03f;

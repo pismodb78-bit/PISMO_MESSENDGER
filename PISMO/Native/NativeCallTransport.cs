@@ -223,7 +223,7 @@ namespace PISMO.Native
                 // Резервный программный шумодав — только если APM не поднялся.
                 _nsEnabled = noiseSuppress;
                 _gateEnabled = noiseSuppress && DeviceSettings.NoiseSuppressMode == "aggressive";
-                _denoiser = new MicDenoiser(SR);
+                _denoiser = new MicDenoiser(SR) { TransientGuard = _gateEnabled };
 
                 // 5) Захват микрофона: 48 кГц / 16 бит / моно → CaptureAudioFrame.
                 StartMicCapture();
@@ -291,6 +291,7 @@ namespace PISMO.Native
             bool ns = mode != "off";
             _gateEnabled = mode == "aggressive";
             _nsEnabled = ns;   // запасной программный путь (если APM не поднялся)
+            if (_denoiser != null) _denoiser.TransientGuard = _gateEnabled;
             if (_micStarted) { try { CreateApm(ns); } catch { } }
         }
 
@@ -759,7 +760,12 @@ namespace PISMO.Native
                 _scrThread = new Thread(ScreenLoop) { IsBackground = true, Name = "pismo-screen-capture" };
                 _scrThread.Start();
 
-                if (withAudio) StartScreenAudio();
+                // ВАЖНО: с UI-потока (STA) активация process-loopback дедлочится —
+                // COM-колбэк ActivateAudioInterfaceAsync приходит на тот же STA-поток,
+                // который заблокирован ожиданием → таймаут → откат на device-loopback
+                // (а это эхо голосов в демке). Стартуем звук в фоновом MTA-потоке.
+                if (withAudio)
+                    new Thread(StartScreenAudio) { IsBackground = true, Name = "pismo-screen-audio-init" }.Start();
             }
             catch (Exception ex) { ConnectError?.Invoke("демонстрация: " + ex.Message); _scrStarted = false; }
         }

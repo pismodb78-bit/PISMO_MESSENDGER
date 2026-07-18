@@ -984,12 +984,12 @@ namespace PISMO
                 StartPosition = FormStartPosition.Manual,
                 ShowInTaskbar = false,
                 BackColor = Color.FromArgb(40, 42, 46),
-                ClientSize = new Size(310, 510)
+                ClientSize = new Size(310, 570)
             };
             var anchor = PointToScreen(new Point(_pnlButtons.Left, _pnlButtons.Top));
             _audioPanel.Location = new Point(
                 Math.Max(0, anchor.X + (_pnlButtons.Width - 310) / 2),
-                Math.Max(0, anchor.Y - 520));
+                Math.Max(0, anchor.Y - 580));
 
             int y = 12;
             Label MkLbl(string t)
@@ -1078,6 +1078,24 @@ namespace PISMO
             // (Диагностическое окно нативного NVENC убрано из сборки — потолок
             //  демонстрации на этой машине определяется частотой ЗАХВАТА экрана
             //  ~50fps, а не энкодером, поэтому нативный путь fps не поднимает.)
+
+            MkLbl("🎚 Шумоподавление");
+            var cmbNs = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
+            cmbNs.Items.AddRange(new object[]
+                { "Выключено", "Стандартный (WebRTC)", "Агрессивный (давит клики клавиатуры)" });
+            cmbNs.SelectedIndex = DeviceSettings.NoiseSuppressMode == "aggressive" ? 2
+                : DeviceSettings.NoiseSuppressMode == "standard" ? 1 : 0;
+            cmbNs.SelectedIndexChanged += (s, e) =>
+            {
+                DeviceSettings.NoiseSuppressMode = cmbNs.SelectedIndex == 2 ? "aggressive"
+                    : cmbNs.SelectedIndex == 1 ? "standard" : "off";
+                try { DeviceSettings.Save(); } catch { }
+                // Применяется к идущему звонку СРАЗУ (пересоздание APM на лету).
+                try { _transport?.SetNoiseMode(DeviceSettings.NoiseSuppressMode); } catch { }
+                try { MainForm.Current?.RefreshVoiceEqState(); } catch { }
+            };
+            _audioPanel.Controls.Add(cmbNs);
+            y += 38;
 
             MkLbl("Громкость собеседников");
             var tbVoice = MkTb((int)(_remoteVoiceVolume * 100));
