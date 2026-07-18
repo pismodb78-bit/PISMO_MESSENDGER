@@ -35,10 +35,28 @@ namespace PISMO
                 using var key = Registry.CurrentUser.CreateSubKey(RegPath);
                 if (key == null) return;
 
-                // auto → НИЧЕГО не пишем и не удаляем (уважаем ручную настройку
-                // Windows / выбор ОС). Явный выбор — пишем предпочтение.
+                // КРИТИЧНО: главный процесс PISMO.exe НЕЛЬЗЯ прибивать к дискретке
+                // (GpuPreference=2). Это ломает DXGI Desktop Duplication захвата
+                // демки на Optimus-ноутбуках (монитор ведёт Intel, а процесс на
+                // NVIDIA → DuplicateOutput 0x887A0004 UNSUPPORTED → откат на GDI
+                // ~35fps). NVENC при этом НЕ страдает: в нативном пути кодек берётся
+                // через драйвер NVIDIA независимо от «рендер-GPU» процесса.
+                // Поэтому для главного exe убираем любой high-perf пин, а Quick Sync
+                // (=1, Intel) не мешает DXGI и разрешён.
+                string mainExe = Environment.ProcessPath;
+                if (!string.IsNullOrWhiteSpace(mainExe))
+                {
+                    try
+                    {
+                        if (mode == "integrated") SetFor(key, mainExe, 1);
+                        else key.DeleteValue(mainExe, throwOnMissingValue: false);   // high/auto → не пиним
+                    }
+                    catch { }
+                }
+
+                // WebView2-процессы (legacy, звонки их не используют) — как раньше.
                 if (mode != "high" && mode != "integrated") return;
-                foreach (var exe in AllTargetExecutables())
+                foreach (var exe in FindWebView2Executables())
                 {
                     try { SetFor(key, exe, mode == "high" ? 2 : 1); }
                     catch { }
