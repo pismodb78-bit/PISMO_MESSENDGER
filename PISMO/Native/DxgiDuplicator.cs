@@ -31,10 +31,13 @@ namespace PISMO.Native
             IntPtr factory = IntPtr.Zero, adapter = IntPtr.Zero, output = IntPtr.Zero;
             try
             {
-                Check(CreateDXGIFactory1(IID_IDXGIFactory1, out factory));
+                Check(CreateDXGIFactory1(IID_IDXGIFactory1, out factory), "CreateDXGIFactory1");
 
-                // Ищем выход (монитор) с нужными координатами по всем адаптерам.
+                // Ищем выход (монитор). Сначала точное совпадение координат; если
+                // из-за DPI-масштабирования не совпало — берём ПЕРВЫЙ активный выход
+                // (обычно основной монитор), лишь бы дубликация вообще поднялась.
                 bool found = false;
+                IntPtr firstAd = IntPtr.Zero, firstOp = IntPtr.Zero;
                 for (uint a = 0; !found; a++)
                 {
                     if (VtblCall2(factory, 12, a, out IntPtr ad) != 0) break;   // EnumAdapters1
@@ -44,6 +47,7 @@ namespace PISMO.Native
                         var desc = new DXGI_OUTPUT_DESC();
                         if (GetOutputDesc(op, ref desc) == 0 && desc.AttachedToDesktop != 0)
                         {
+                            if (firstOp == IntPtr.Zero) { firstAd = ad; firstOp = op; Marshal.AddRef(ad); Marshal.AddRef(op); }
                             var r = Rectangle.FromLTRB(desc.Left, desc.Top, desc.Right, desc.Bottom);
                             if (r == monitorBounds)
                             {
@@ -54,15 +58,29 @@ namespace PISMO.Native
                     }
                     if (!found) Marshal.Release(ad);
                 }
-                if (!found) throw new InvalidOperationException("монитор не найден среди DXGI-выходов");
+                // Точного совпадения нет (DPI/масштаб) → берём первый активный выход.
+                if (!found && firstOp != IntPtr.Zero) { adapter = firstAd; output = firstOp; firstAd = IntPtr.Zero; firstOp = IntPtr.Zero; found = true; }
+                if (firstOp != IntPtr.Zero) Marshal.Release(firstOp);
+                if (firstAd != IntPtr.Zero) Marshal.Release(firstAd);
+                if (!found) throw new InvalidOperationException("нет активных DXGI-выходов");
 
                 // D3D11-устройство на адаптере монитора (D3D_DRIVER_TYPE_UNKNOWN).
-                Check(D3D11CreateDevice(adapter, 0 /*UNKNOWN*/, IntPtr.Zero, 0, IntPtr.Zero, 0,
-                                        7 /*D3D11_SDK_VERSION*/, out _device, out _, out _context));
+                // BGRA_SUPPORT (0x20) — часто требуется для дубликации; явные
+                // feature levels (11_0..9_1) — иначе на части драйверов E_INVALIDARG.
+                int[] levels = { 0xb000 /*11_0*/, 0xa100 /*10_1*/, 0xa000 /*10_0*/, 0x9300 /*9_3*/ };
+                var pLevels = Marshal.AllocHGlobal(levels.Length * 4);
+                try
+                {
+                    Marshal.Copy(levels, 0, pLevels, levels.Length);
+                    Check(D3D11CreateDevice(adapter, 0 /*UNKNOWN*/, IntPtr.Zero, 0x20 /*BGRA_SUPPORT*/,
+                                            pLevels, (uint)levels.Length,
+                                            7 /*D3D11_SDK_VERSION*/, out _device, out _, out _context), "D3D11CreateDevice");
+                }
+                finally { Marshal.FreeHGlobal(pLevels); }
 
                 // IDXGIOutput1.DuplicateOutput(device) — vtbl slot 22.
                 IntPtr output1 = QueryInterface(output, IID_IDXGIOutput1);
-                try { Check(VtblCall2Ptr(output1, 22, _device, out _dupl)); }
+                try { Check(VtblCall2Ptr(output1, 22, _device, out _dupl), "DuplicateOutput"); }
                 finally { Marshal.Release(output1); }
 
                 var dd = new DXGI_OUTDUPL_DESC();
@@ -86,7 +104,7 @@ namespace PISMO.Native
                     CPUAccessFlags = 0x20000 /*D3D11_CPU_ACCESS_READ*/,
                     MiscFlags = 0
                 };
-                Check(CreateTexture2D(_device, ref td, out _staging));
+                Check(CreateTexture2D(_device, ref td, out _staging), "CreateTexture2D");
 
                 Buffer = Marshal.AllocHGlobal(Width * Height * 4);
             }
@@ -111,7 +129,7 @@ namespace PISMO.Native
             var fi = new DXGI_OUTDUPL_FRAME_INFO();
             int hr = AcquireNextFrame(_dupl, (uint)timeoutMs, ref fi, out IntPtr resource);
             if (hr == unchecked((int)0x887A0027)) return false;   // DXGI_ERROR_WAIT_TIMEOUT
-            if (hr != 0) throw new COMException("AcquireNextFrame", hr);
+            if (hr != 0) throw new COMException($"AcquireNextFrame 0x{(uint)hr:X8}", hr);
             try
             {
                 if (fi.LastPresentTime == 0 && !HasFrame && fi.AccumulatedFrames == 0)
@@ -121,7 +139,7 @@ namespace PISMO.Native
                 {
                     CopyResource(_context, _staging, tex);
                     var mapped = new D3D11_MAPPED_SUBRESOURCE();
-                    Check(MapResource(_context, _staging, 0, 1 /*D3D11_MAP_READ*/, 0, ref mapped));
+                    Check(MapResource(_context, _staging, 0, 1 /*D3D11_MAP_READ*/, 0, ref mapped), "Map");
                     try
                     {
                         int rowBytes = Width * 4;
@@ -210,7 +228,10 @@ namespace PISMO.Native
             return result;
         }
 
-        private static void Check(int hr) { if (hr != 0) throw new COMException("DXGI/D3D11", hr); }
+        private static void Check(int hr, string what = "call")
+        {
+            if (hr != 0) throw new COMException($"{what} 0x{(uint)hr:X8}", hr);
+        }
 
         // ── P/Invoke / структуры ──────────────────────────────────────────
         [DllImport("dxgi.dll")]
