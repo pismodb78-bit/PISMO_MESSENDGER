@@ -140,7 +140,8 @@ namespace PISMO.Native
         private bool _micStarted;
         private volatile bool _micMuted;          // мьют = не отправляем кадры
         private int _inputDeviceIndex = -1;       // -1 = устройство по умолчанию
-        private MicDenoiser _denoiser;            // резервный программный шумодав
+        private MicDenoiser _denoiser;            // клик-гейт (транзиенты)
+        private SpectralDenoiser _spectral;       // частотный шумодав (постоянный фон)
         private volatile bool _nsEnabled;
 
         // Нативный libwebrtc APM: шумодав + эхоподавление + ВЧ-фильтр + AGC.
@@ -293,6 +294,7 @@ namespace PISMO.Native
                 _nsEnabled = noiseSuppress;
                 _gateEnabled = noiseSuppress;
                 _denoiser = new MicDenoiser(SR) { TransientGuard = noiseSuppress };
+                _spectral = new SpectralDenoiser();
 
                 // 5) Захват микрофона: 48 кГц / 16 бит / моно → CaptureAudioFrame.
                 StartMicCapture();
@@ -316,7 +318,9 @@ namespace PISMO.Native
                         EchoCancellerEnabled = _apmEc,
                         GainControllerEnabled = _apmAgc,
                         HighPassFilterEnabled = true,
-                        NoiseSuppressionEnabled = noiseSuppress
+                        // NS делает наш SpectralDenoiser (детерминированно, не зависит
+                        // от того, работает ли NS внутри этой сборки FFI).
+                        NoiseSuppressionEnabled = false
                     }
                 });
                 _apmHandle = apmResp.NewApm.Apm.Handle.Id;
@@ -421,17 +425,24 @@ namespace PISMO.Native
                 return;
             }
 
-            // Резервный путь без APM: программный шумодав + отправка как есть.
-            if (_nsEnabled) { try { _denoiser?.Process(e.Buffer, e.BytesRecorded); } catch { } }
+            // Резервный путь без APM: частотный шумодав + клик-гейт → отправка.
+            if (_nsEnabled)
+            {
+                try { _spectral?.Process(e.Buffer, 0, e.BytesRecorded); } catch { }
+                try { _denoiser?.Process(e.Buffer, e.BytesRecorded); } catch { }
+            }
             SendCapturedAudio(e.Buffer, 0, e.BytesRecorded);
         }
 
         // Один 10-мс кадр: APM ProcessStream (шумодав/AEC/HPF/AGC) → отправка в FFI.
         private void ProcessAndSendFrame(byte[] data, int offset, int len)
         {
-            // «Агрессивный» шумодав: программный гейт ПОВЕРХ APM — добивает
-            // транзиенты (клики клавиатуры), которые APM-шумодав не считает шумом.
-            if (_gateEnabled) { try { _denoiser?.Process(data, offset, len); } catch { } }
+            // Шумодав: сперва частотный (постоянный фон), затем клик-гейт (транзиенты).
+            if (_nsEnabled)
+            {
+                try { _spectral?.Process(data, offset, len); } catch { }
+                try { _denoiser?.Process(data, offset, len); } catch { }
+            }
             IntPtr buf = Marshal.AllocHGlobal(len);
             try
             {
