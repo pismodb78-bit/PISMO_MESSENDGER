@@ -1158,7 +1158,8 @@ namespace PISMO.Native
         // при выставленных 60. Плюс HighQualityBilinear ~20-40мс/кадр → Bilinear.
         private Bitmap _capBmp, _scaledBmp;
         private int _scrConsecFails;   // подряд неудачных кадров (самовосстановление)
-        private int _capFrameCount;
+        private int _capFrameCount;   // реально ОТПРАВЛЕНО (принял пушер/кодер)
+        private int _grabCount;       // реально ЗАХВАЧЕНО (успешный кадр из экрана)
         private long _capFpsAt;
         private string _capMode = "GDI";   // "DXGI" или "GDI" — реальный путь захвата
 
@@ -1168,10 +1169,17 @@ namespace PISMO.Native
             long now = _clock.ElapsedMilliseconds;
             if (_capFpsAt == 0) { _capFpsAt = now; return; }
             if (now - _capFpsAt < 1000) return;
-            int fps = (int)Math.Round(_capFrameCount * 1000.0 / (now - _capFpsAt));
-            _capFrameCount = 0; _capFpsAt = now;
-            try { ScreenCaptureStats.Invoke($"{fps} fps · {_capMode} {w}x{h}"); } catch { }
+            double dt = (now - _capFpsAt) / 1000.0;
+            int sent = (int)Math.Round(_capFrameCount / dt);
+            int grab = (int)Math.Round(_grabCount / dt);
+            _capFrameCount = 0; _grabCount = 0; _capFpsAt = now;
+            // отпр/цель · захват · режим — сразу видно, что упирается (кодер/захват/настройка)
+            string mode = _capMode == "GDI" && _dxgiErr != null
+                ? "GDI (DXGI: " + Trunc(_dxgiErr, 40) + ")" : _capMode;
+            try { ScreenCaptureStats.Invoke($"{sent}/{_scrFps} fps · захват {grab} · {mode} {w}x{h}"); } catch { }
         }
+
+        private static string Trunc(string s, int n) => string.IsNullOrEmpty(s) ? "" : (s.Length <= n ? s : s.Substring(0, n));
 
         private void ScreenLoop()
         {
@@ -1226,6 +1234,7 @@ namespace PISMO.Native
                             || CaptureMonitorDib(d, bounds, outW, outH))
                         {
                             _scrConsecFails = 0;
+                            _grabCount++;
                             // Отдаём кадр пушеру и СРАЗУ переходим к захвату следующего
                             // во второй буфер (конвейер). Пушер занят — кадр дропаем:
                             // темп держит захват, лага нет.
@@ -1371,6 +1380,7 @@ namespace PISMO.Native
         private DxgiDuplicator _dxgi;
         private Rectangle _dxgiBounds;
         private bool _dxgiFailed;   // DXGI недоступен → навсегда GDI-путь (до рестарта демки)
+        private string _dxgiErr;    // причина отказа DXGI (для плашки диагностики)
 
         /// <summary>Кадр монитора через DXGI в DIB-буфер d (масштабирование через
         /// StretchDIBits при необходимости). false = кадр не получить (откат на GDI).</summary>
@@ -1380,7 +1390,7 @@ namespace PISMO.Native
             if (_dxgi == null || _dxgiBounds != src)
             {
                 try { _dxgi?.Dispose(); _dxgi = new DxgiDuplicator(src); _dxgiBounds = src; }
-                catch { _dxgi?.Dispose(); _dxgi = null; _dxgiFailed = true; return false; }
+                catch (Exception ex) { _dxgi?.Dispose(); _dxgi = null; _dxgiFailed = true; _dxgiErr = ex.Message; return false; }
             }
             try
             {
