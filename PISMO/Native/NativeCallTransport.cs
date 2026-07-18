@@ -73,9 +73,25 @@ namespace PISMO.Native
         }
         private readonly Dictionary<ulong, RemoteAudioCtx> _audioCtxByStream = new();
         private float _globalScreenVol = 1f;   // общий ползунок «Громкость демонстрации»
+        private readonly HashSet<string> _watchedScreenAudio = new();   // чью демку СМОТРИМ
 
         private void ApplyRemoteAudioVolume(RemoteAudioCtx c)
-            => c.Vol.Volume = c.Muted ? 0f : Math.Clamp(c.User * (c.IsScreen ? _globalScreenVol : 1f), 0f, 4f);
+        {
+            // Звук демки слышен ТОЛЬКО когда её смотрят (нажали «Смотреть стрим»).
+            if (c.IsScreen && !_watchedScreenAudio.Contains(c.Pid)) { c.Vol.Volume = 0f; return; }
+            c.Vol.Volume = c.Muted ? 0f : Math.Clamp(c.User * (c.IsScreen ? _globalScreenVol : 1f), 0f, 4f);
+        }
+
+        /// <summary>Смотрим/не смотрим демку участника → включаем/глушим её звук.</summary>
+        public void SetScreenAudioWatched(string pid, bool watched)
+        {
+            lock (_audioLock)
+            {
+                if (watched) _watchedScreenAudio.Add(pid); else _watchedScreenAudio.Remove(pid);
+                foreach (var c in _audioCtxByStream.Values)
+                    if (c.IsScreen && c.Pid == pid) ApplyRemoteAudioVolume(c);
+            }
+        }
 
         /// <summary>Громкость ГОЛОСА конкретного участника (ПКМ по плитке).</summary>
         public void SetParticipantVolume(string pid, float volume)
@@ -162,7 +178,9 @@ namespace PISMO.Native
         // чтобы шумодав/эхоподавление не гасили звуки игры/музыки в демке.
         private NAudio.Wave.WasapiLoopbackCapture _loopback;
         private ProcessLoopbackCapture _procLoop;   // захват без своего процесса (без эха)
-        private bool _scrAudioFloat;                // true = float (device loopback), false = i16 PCM
+        private bool _scrAudioFloat;                // (устар.) — см. _scrCaptureFloat
+        private int _scrCaptureRate = 48000, _scrCaptureCh = 2;
+        private bool _scrCaptureFloat = true;
         private ulong _scrAudioSource, _scrAudioTrack;
         private ulong _scrAudioPublishAsyncId;
         private string _scrAudioTrackSid;
@@ -833,9 +851,14 @@ namespace PISMO.Native
                 // ниже: у него есть точная копия того, что PISMO играет в колонки
                 // (реверс-референс из микшера), AEC убирает именно её.
                 _loopback = new NAudio.Wave.WasapiLoopbackCapture();
-                _scrAudioRate = _loopback.WaveFormat.SampleRate;
-                _scrAudioCh = Math.Max(1, _loopback.WaveFormat.Channels);
-                _scrAudioFloat = true;
+                _scrCaptureRate = _loopback.WaveFormat.SampleRate;
+                _scrCaptureCh = Math.Max(1, _loopback.WaveFormat.Channels);
+                _scrCaptureFloat = _loopback.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
+                // Публикуем/обрабатываем МОНО: эхоподавитель демки получает моно-
+                // референс воспроизведения, поэтому и вход APM обязан быть моно —
+                // иначе AEC молча не работает и голоса звонка остаются в демке.
+                _scrAudioCh = 1;
+                _scrAudioRate = _scrCaptureRate;
 
                 var srcResp = LiveKitFfi.Request(new FfiRequest
                 {
@@ -855,11 +878,13 @@ namespace PISMO.Native
                 });
                 _scrAudioSource = srcResp.NewAudioSource.Source.Handle.Id;
 
-                // APM демки: только эхоподавление (шумодав/AGC музыке и игре вредят).
+                // APM демки: только эхоподавление. Референс воспроизведения — 48к
+                // моно, поэтому AEC корректен лишь при совпадении частоты.
                 _scrApmFrameBytes = _scrAudioRate / 100 * _scrAudioCh * 2;
                 _scrApmAccumLen = 0;
                 try
                 {
+                    if (_scrAudioRate != SR) throw new InvalidOperationException("rate mismatch, AEC skipped");
                     var scrApm = LiveKitFfi.Request(new FfiRequest
                     {
                         NewApm = new NewApmRequest
@@ -946,27 +971,30 @@ namespace PISMO.Native
         {
             if (_scrAudioSource == 0 || e.BytesRecorded <= 0) return;
             _scrAudioGotData = true;   // сторож: захват жив, откат не нужен
-            int n;
-            short[] pcm;
-            if (_scrAudioFloat)
+            int ch = _scrCaptureCh;
+            int bytesPerSample = _scrCaptureFloat ? 4 : 2;
+            int frames = e.BytesRecorded / (bytesPerSample * ch);   // сэмплов на канал
+            if (frames <= 0) return;
+
+            // Даунмикс в МОНО (среднее по каналам) → i16.
+            short[] pcm = new short[frames];
+            for (int f = 0; f < frames; f++)
             {
-                n = e.BytesRecorded / 4;
-                if (n <= 0) return;
-                pcm = new short[n];
-                for (int i = 0; i < n; i++)
+                float acc = 0f;
+                int baseIdx = f * ch * bytesPerSample;
+                for (int c = 0; c < ch; c++)
                 {
-                    float f = BitConverter.ToSingle(e.Buffer, i * 4);
-                    if (f > 1f) f = 1f; else if (f < -1f) f = -1f;
-                    pcm[i] = (short)(f * 32767f);
+                    int idx = baseIdx + c * bytesPerSample;
+                    float v = _scrCaptureFloat
+                        ? BitConverter.ToSingle(e.Buffer, idx)
+                        : (short)(e.Buffer[idx] | (e.Buffer[idx + 1] << 8)) / 32768f;
+                    acc += v;
                 }
+                acc /= ch;
+                if (acc > 1f) acc = 1f; else if (acc < -1f) acc = -1f;
+                pcm[f] = (short)(acc * 32767f);
             }
-            else
-            {
-                n = e.BytesRecorded / 2;
-                if (n <= 0) return;
-                pcm = new short[n];
-                Buffer.BlockCopy(e.Buffer, 0, pcm, 0, n * 2);
-            }
+            int n = frames;
 
             // Через APM (эхоподавление) — строго 10-мс кусками; без APM — сразу.
             if (_scrApmHandle != 0 && _scrApmFrameBytes > 0)

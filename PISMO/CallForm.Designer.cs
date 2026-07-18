@@ -22,7 +22,8 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════
         private void BuildUi()
         {
-            Text = "PISMO — Звонок";
+            Text = "PISMO — Звонок  ·  v" +
+                   (System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?");
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             ClientSize = new Size(660, 540);
             MinimumSize = new Size(480, 400);

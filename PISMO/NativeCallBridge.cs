@@ -271,6 +271,7 @@ namespace PISMO
                     _announcedScreens.Remove(identity);
                     _watchedScreens.Remove(identity);
                 }
+                try { _t?.SetScreenAudioWatched(identity, false); } catch { }
                 Ui(() => { try { RemoteStreamUnpublished?.Invoke(identity); } catch { } });
             }
             if (_startedTiles.Remove(identity + "|" + source))
@@ -396,6 +397,7 @@ namespace PISMO
         {
             if (string.IsNullOrEmpty(pid)) return;
             lock (_watchLock) { _watchedScreens.Add(pid); }
+            try { _t?.SetScreenAudioWatched(pid, true); } catch { }   // звук демки — только при просмотре
         }
 
         public void UnwatchScreen(string pid)
@@ -406,6 +408,7 @@ namespace PISMO
                 _watchedScreens.Remove(pid);
                 _startedTiles.Remove(pid + "|screen");   // повторный просмотр заново стартует плитку
             }
+            try { _t?.SetScreenAudioWatched(pid, false); } catch { }
             RemoteTileStopped?.Invoke(pid, "screen");
         }
 
