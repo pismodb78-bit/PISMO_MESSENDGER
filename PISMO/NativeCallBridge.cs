@@ -133,6 +133,7 @@ namespace PISMO
             _t.ParticipantDeafened += (id, deaf) => Ui(() => { try { ParticipantDeafened?.Invoke(id, deaf); } catch { } });
             _t.LocalCameraFrame += OnLocalCameraFrame;
             _t.LocalScreenFrame += OnLocalScreenFrameNative;
+            _t.ScreenCaptureStats += txt => { try { ScreenSendStats?.Invoke(txt); } catch { } };
 
             _t.Connect(livekitUrl, token);
             return Task.CompletedTask;

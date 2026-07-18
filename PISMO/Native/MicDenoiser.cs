@@ -80,17 +80,17 @@ namespace PISMO.Native
 
             // 3) Адаптация шумового пола: подтягиваем только когда тихо
             //    (иначе речь «обучила» бы гейт и он бы её резал).
-            if (_envelope < _noiseFloor * 2.2f)
-                _noiseFloor = _envelope * 0.02f + _noiseFloor * 0.98f;
+            if (_envelope < _noiseFloor * 2.5f)
+                _noiseFloor = _envelope * 0.05f + _noiseFloor * 0.95f;   // быстрее учим фон
             if (_noiseFloor < 30f) _noiseFloor = 30f;    // не даём уползти в ноль
 
             // 4) Целевое усиление: полный сигнал заметно выше шума, тишина — глушим.
-            float openLevel = _noiseFloor * 3.5f;    // порог «речь»
-            float closeLevel = _noiseFloor * 1.8f;   // порог «шум»
+            float openLevel = _noiseFloor * 4.0f;    // порог «речь»
+            float closeLevel = _noiseFloor * 2.2f;   // порог «шум»
             float target;
             if (_envelope >= openLevel) target = 1f;
-            else if (_envelope <= closeLevel) target = 0.06f;
-            else target = 0.06f + 0.94f * (_envelope - closeLevel) / (openLevel - closeLevel);
+            else if (_envelope <= closeLevel) target = 0.02f;   // тише глушим фон между словами
+            else target = 0.02f + 0.98f * (_envelope - closeLevel) / (openLevel - closeLevel);
 
             if (TransientGuard)
             {

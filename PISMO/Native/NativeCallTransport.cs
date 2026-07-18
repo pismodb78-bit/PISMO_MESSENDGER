@@ -41,6 +41,7 @@ namespace PISMO.Native
         public event Action<string, bool> RemoteVideoRemoved;                 // (identity, isScreen)
         public event Action<byte[], int, int> LocalCameraFrame;               // локальное превью камеры
         public event Action<byte[], int, int> LocalScreenFrame;               // локальное превью демки
+        public event Action<string> ScreenCaptureStats;                       // "48 fps · DXGI 1920x1080" для плашки
 
         private ulong _connectAsyncId;
         private ulong _statsAsyncId;
@@ -1146,6 +1147,20 @@ namespace PISMO.Native
         // при выставленных 60. Плюс HighQualityBilinear ~20-40мс/кадр → Bilinear.
         private Bitmap _capBmp, _scaledBmp;
         private int _scrConsecFails;   // подряд неудачных кадров (самовосстановление)
+        private int _capFrameCount;
+        private long _capFpsAt;
+        private string _capMode = "GDI";   // "DXGI" или "GDI" — реальный путь захвата
+
+        private void ReportCaptureFps(int w, int h)
+        {
+            if (ScreenCaptureStats == null) return;
+            long now = _clock.ElapsedMilliseconds;
+            if (_capFpsAt == 0) { _capFpsAt = now; return; }
+            if (now - _capFpsAt < 1000) return;
+            int fps = (int)Math.Round(_capFrameCount * 1000.0 / (now - _capFpsAt));
+            _capFrameCount = 0; _capFpsAt = now;
+            try { ScreenCaptureStats.Invoke($"{fps} fps · {_capMode} {w}x{h}"); } catch { }
+        }
 
         private void ScreenLoop()
         {
@@ -1208,7 +1223,9 @@ namespace PISMO.Native
                                 _dibIdx ^= 1;
                                 _pushBuf = d; _pushW = outW; _pushH = outH; _pushPreview = preview;
                                 _pushSignal.Set();
+                                _capFrameCount++;
                             }
+                            ReportCaptureFps(outW, outH);
                         }
                         else if (++_scrConsecFails >= 20) { _scrConsecFails = 0; if (System.Threading.Volatile.Read(ref _pushBusy) == 0) FreeDib(); }
                     }
@@ -1333,6 +1350,7 @@ namespace PISMO.Native
         private bool CaptureMonitorDib(DibBuf d, Rectangle src, int outW, int outH)
         {
             if (!EnsureDibBuf(d, outW, outH)) return false;
+            _capMode = "GDI";
             return (outW == src.Width && outH == src.Height)
                 ? BitBlt(d.Dc, 0, 0, outW, outH, _screenDc, src.X, src.Y, SRCCOPY)
                 : StretchBlt(d.Dc, 0, 0, outW, outH, _screenDc, src.X, src.Y, src.Width, src.Height, SRCCOPY);
@@ -1376,8 +1394,10 @@ namespace PISMO.Native
                 biBitCount = 32,
                 biCompression = 0
             };
-            return StretchDIBits(d.Dc, 0, 0, outW, outH, 0, 0, _dxgi.Width, _dxgi.Height,
+            bool ok = StretchDIBits(d.Dc, 0, 0, outW, outH, 0, 0, _dxgi.Width, _dxgi.Height,
                                  _dxgi.Buffer, ref bmi, 0, SRCCOPY) > 0;
+            if (ok) _capMode = "DXGI";
+            return ok;
         }
 
         private static void FreeDib(DibBuf d)
