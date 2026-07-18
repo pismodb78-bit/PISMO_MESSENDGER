@@ -777,28 +777,15 @@ namespace PISMO.Native
         {
             try
             {
-                // Сначала пытаемся захватить звук БЕЗ своего процесса (process
-                // loopback, exclude-self) — тогда голоса собеседников, которые
-                // играет сам PISMO, в демку не попадут → у друзей нет эха. Если
-                // ОС не поддержит — откат на обычный loopback устройства.
-                try
-                {
-                    _procLoop = new ProcessLoopbackCapture(
-                        System.Diagnostics.Process.GetCurrentProcess().Id, excludeTargetTree: true);
-                    _procLoop.Start();
-                    _scrAudioRate = _procLoop.WaveFormat.SampleRate;
-                    _scrAudioCh = _procLoop.WaveFormat.Channels;
-                    _scrAudioFloat = false;
-                }
-                catch
-                {
-                    try { _procLoop?.Dispose(); } catch { }
-                    _procLoop = null;
-                    _loopback = new NAudio.Wave.WasapiLoopbackCapture();
-                    _scrAudioRate = _loopback.WaveFormat.SampleRate;
-                    _scrAudioCh = Math.Max(1, _loopback.WaveFormat.Channels);
-                    _scrAudioFloat = true;
-                }
+                // Захватываем ВЕСЬ системный звук (device loopback) — в демке
+                // слышно всё: игру, музыку, браузер и звуки самого приложения.
+                // Голоса звонка (и «эхо» зрителя) из демки вычитает эхоподавитель
+                // ниже: у него есть точная копия того, что PISMO играет в колонки
+                // (реверс-референс из микшера), AEC убирает именно её.
+                _loopback = new NAudio.Wave.WasapiLoopbackCapture();
+                _scrAudioRate = _loopback.WaveFormat.SampleRate;
+                _scrAudioCh = Math.Max(1, _loopback.WaveFormat.Channels);
+                _scrAudioFloat = true;
 
                 var srcResp = LiveKitFfi.Request(new FfiRequest
                 {
@@ -855,12 +842,8 @@ namespace PISMO.Native
                 });
                 _scrAudioPublishAsyncId = pubResp.PublishTrack.AsyncId;
 
-                if (_procLoop != null)
-                {
-                    _procLoop.DataAvailable += OnScreenAudioData;
-                    ArmScreenAudioWatchdog();
-                }
-                else { _loopback.DataAvailable += OnScreenAudioData; _loopback.StartRecording(); }
+                _loopback.DataAvailable += OnScreenAudioData;
+                _loopback.StartRecording();
             }
             catch (Exception ex) { ConnectError?.Invoke("звук демки: " + ex.Message); }
         }
