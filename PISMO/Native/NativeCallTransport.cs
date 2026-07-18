@@ -845,18 +845,34 @@ namespace PISMO.Native
         {
             try
             {
-                // Захватываем ВЕСЬ системный звук (device loopback) — в демке
-                // слышно всё: игру, музыку, браузер и звуки самого приложения.
-                // Голоса звонка (и «эхо» зрителя) из демки вычитает эхоподавитель
-                // ниже: у него есть точная копия того, что PISMO играет в колонки
-                // (реверс-референс из микшера), AEC убирает именно её.
-                _loopback = new NAudio.Wave.WasapiLoopbackCapture();
-                _scrCaptureRate = _loopback.WaveFormat.SampleRate;
-                _scrCaptureCh = Math.Max(1, _loopback.WaveFormat.Channels);
-                _scrCaptureFloat = _loopback.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
-                // Публикуем/обрабатываем МОНО: эхоподавитель демки получает моно-
-                // референс воспроизведения, поэтому и вход APM обязан быть моно —
-                // иначе AEC молча не работает и голоса звонка остаются в демке.
+                // ПРАВИЛЬНОЕ решение эха: захватываем системный звук БЕЗ своего
+                // процесса (process-loopback, exclude-self). Звук PISMO (голоса
+                // звонка) физически НЕ попадает в захват → эхо невозможно в
+                // принципе, без всякого AEC. Игра/музыка/браузер — попадают.
+                // Активация в фоновом MTA-потоке (мы уже в отдельном потоке).
+                bool useProc = false;
+                try
+                {
+                    _procLoop = new ProcessLoopbackCapture(
+                        System.Diagnostics.Process.GetCurrentProcess().Id, excludeTargetTree: true);
+                    _procLoop.Start();
+                    _scrCaptureRate = _procLoop.WaveFormat.SampleRate;   // 48000
+                    _scrCaptureCh = _procLoop.WaveFormat.Channels;       // 2
+                    _scrCaptureFloat = false;                            // i16 PCM
+                    useProc = true;
+                }
+                catch
+                {
+                    try { _procLoop?.Dispose(); } catch { }
+                    _procLoop = null;
+                    // Фолбэк: device-loopback (весь звук). Здесь голоса звонка ТОЖЕ
+                    // попадут — их гасит эхоподавитель ниже (моно-референс).
+                    _loopback = new NAudio.Wave.WasapiLoopbackCapture();
+                    _scrCaptureRate = _loopback.WaveFormat.SampleRate;
+                    _scrCaptureCh = Math.Max(1, _loopback.WaveFormat.Channels);
+                    _scrCaptureFloat = _loopback.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
+                }
+                // Публикуем/обрабатываем МОНО (единый формат для источника и AEC).
                 _scrAudioCh = 1;
                 _scrAudioRate = _scrCaptureRate;
 
@@ -878,27 +894,30 @@ namespace PISMO.Native
                 });
                 _scrAudioSource = srcResp.NewAudioSource.Source.Handle.Id;
 
-                // APM демки: только эхоподавление. Референс воспроизведения — 48к
-                // моно, поэтому AEC корректен лишь при совпадении частоты.
+                // APM демки нужен ТОЛЬКО на фолбэке (device-loopback ловит голоса).
+                // При process-loopback голосов в захвате нет — AEC не нужен.
                 _scrApmFrameBytes = _scrAudioRate / 100 * _scrAudioCh * 2;
                 _scrApmAccumLen = 0;
-                try
+                _scrApmHandle = 0;
+                if (!useProc && _scrAudioRate == SR)
                 {
-                    if (_scrAudioRate != SR) throw new InvalidOperationException("rate mismatch, AEC skipped");
-                    var scrApm = LiveKitFfi.Request(new FfiRequest
+                    try
                     {
-                        NewApm = new NewApmRequest
+                        var scrApm = LiveKitFfi.Request(new FfiRequest
                         {
-                            EchoCancellerEnabled = true,
-                            GainControllerEnabled = false,
-                            HighPassFilterEnabled = false,
-                            NoiseSuppressionEnabled = false
-                        }
-                    });
-                    _scrApmHandle = scrApm.NewApm.Apm.Handle.Id;
-                    try { LiveKitFfi.Request(new FfiRequest { ApmSetStreamDelay = new ApmSetStreamDelayRequest { ApmHandle = _scrApmHandle, DelayMs = 140 } }); } catch { }
+                            NewApm = new NewApmRequest
+                            {
+                                EchoCancellerEnabled = true,
+                                GainControllerEnabled = false,
+                                HighPassFilterEnabled = false,
+                                NoiseSuppressionEnabled = false
+                            }
+                        });
+                        _scrApmHandle = scrApm.NewApm.Apm.Handle.Id;
+                        try { LiveKitFfi.Request(new FfiRequest { ApmSetStreamDelay = new ApmSetStreamDelayRequest { ApmHandle = _scrApmHandle, DelayMs = 140 } }); } catch { }
+                    }
+                    catch { _scrApmHandle = 0; }
                 }
-                catch { _scrApmHandle = 0; }
 
                 var trkResp = LiveKitFfi.Request(new FfiRequest
                 {
@@ -917,8 +936,16 @@ namespace PISMO.Native
                 });
                 _scrAudioPublishAsyncId = pubResp.PublishTrack.AsyncId;
 
-                _loopback.DataAvailable += OnScreenAudioData;
-                _loopback.StartRecording();
+                if (_procLoop != null)
+                {
+                    _procLoop.DataAvailable += OnScreenAudioData;
+                    ArmScreenAudioWatchdog();   // если данных нет за 2с — откат на device
+                }
+                else
+                {
+                    _loopback.DataAvailable += OnScreenAudioData;
+                    _loopback.StartRecording();
+                }
             }
             catch (Exception ex) { ConnectError?.Invoke("звук демки: " + ex.Message); }
         }
@@ -951,13 +978,11 @@ namespace PISMO.Native
                     try { _procLoop.DataAvailable -= OnScreenAudioData; _procLoop.Dispose(); } catch { }
                     _procLoop = null;
                     _loopback = new NAudio.Wave.WasapiLoopbackCapture();
-                    // Формат устройства может отличаться от заявленного в FFI-источнике —
-                    // но FFI-источник уже создан под старый rate/ch. Пересоздаём источник
-                    // нельзя без перепубликации, поэтому конвертируем под старый формат
-                    // в OnScreenAudioData (float→i16 уже есть; rate обычно совпадает 48к).
-                    _scrAudioFloat = true;
-                    _scrAudioRate = _loopback.WaveFormat.SampleRate;
-                    _scrAudioCh = Math.Max(1, _loopback.WaveFormat.Channels);
+                    // Захват меняем на устройство, но публикуем ПО-ПРЕЖНЕМУ моно под
+                    // тем же источником (OnScreenAudioData даунмиксит любой формат).
+                    _scrCaptureRate = _loopback.WaveFormat.SampleRate;
+                    _scrCaptureCh = Math.Max(1, _loopback.WaveFormat.Channels);
+                    _scrCaptureFloat = _loopback.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
                     _loopback.DataAvailable += OnScreenAudioData;
                     _loopback.StartRecording();
                 }
