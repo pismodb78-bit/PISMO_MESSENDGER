@@ -28,60 +28,73 @@ namespace PISMO.Native
 
         public DxgiDuplicator(Rectangle monitorBounds)
         {
-            IntPtr factory = IntPtr.Zero, adapter = IntPtr.Zero, output = IntPtr.Zero;
+            IntPtr factory = IntPtr.Zero;
+            int[] levels = { 0xb000 /*11_0*/, 0xa100 /*10_1*/, 0xa000 /*10_0*/, 0x9300 /*9_3*/ };
+            var pLevels = Marshal.AllocHGlobal(levels.Length * 4);
+            Marshal.Copy(levels, 0, pLevels, levels.Length);
+            int lastHr = unchecked((int)0x887A0004);   // UNSUPPORTED по умолчанию
             try
             {
                 Check(CreateDXGIFactory1(IID_IDXGIFactory1, out factory), "CreateDXGIFactory1");
 
-                // Ищем выход (монитор). Сначала точное совпадение координат; если
-                // из-за DPI-масштабирования не совпало — берём ПЕРВЫЙ активный выход
-                // (обычно основной монитор), лишь бы дубликация вообще поднялась.
-                bool found = false;
-                IntPtr firstAd = IntPtr.Zero, firstOp = IntPtr.Zero;
-                for (uint a = 0; !found; a++)
+                // Optimus/мульти-GPU: дупликация выхода работает ТОЛЬКО на том
+                // адаптере, который реально гонит монитор (обычно Intel), даже если
+                // приложение форснуто на NVIDIA (→ 0x887A0004 UNSUPPORTED). Поэтому
+                // перебираем ВСЕ адаптеры: создаём устройство на адаптере и пробуем
+                // DuplicateOutput на его выходах — берём первую успешную пару.
+                for (uint a = 0; _dupl == IntPtr.Zero; a++)
                 {
                     if (VtblCall2(factory, 12, a, out IntPtr ad) != 0) break;   // EnumAdapters1
-                    for (uint o = 0; ; o++)
+                    IntPtr dev = IntPtr.Zero, ctx = IntPtr.Zero;
+                    try
                     {
-                        if (VtblCall2(ad, 7, o, out IntPtr op) != 0) break;      // EnumOutputs
-                        var desc = new DXGI_OUTPUT_DESC();
-                        if (GetOutputDesc(op, ref desc) == 0 && desc.AttachedToDesktop != 0)
+                        int hr = D3D11CreateDevice(ad, 0, IntPtr.Zero, 0x20 /*BGRA_SUPPORT*/,
+                                                   pLevels, (uint)levels.Length, 7, out dev, out _, out ctx);
+                        if (hr != 0) { lastHr = hr; continue; }
+
+                        for (uint o = 0; ; o++)
                         {
-                            if (firstOp == IntPtr.Zero) { firstAd = ad; firstOp = op; Marshal.AddRef(ad); Marshal.AddRef(op); }
-                            var r = Rectangle.FromLTRB(desc.Left, desc.Top, desc.Right, desc.Bottom);
-                            if (r == monitorBounds)
+                            if (VtblCall2(ad, 7, o, out IntPtr op) != 0) break;  // EnumOutputs
+                            try
                             {
-                                adapter = ad; output = op; found = true; break;
+                                var desc = new DXGI_OUTPUT_DESC();
+                                if (GetOutputDesc(op, ref desc) != 0 || desc.AttachedToDesktop == 0) continue;
+                                var r = Rectangle.FromLTRB(desc.Left, desc.Top, desc.Right, desc.Bottom);
+                                bool wanted = r == monitorBounds;
+                                IntPtr o1 = QueryInterface(op, IID_IDXGIOutput1);
+                                try
+                                {
+                                    int dhr = VtblCall2Ptr(o1, 22, dev, out IntPtr dup);   // DuplicateOutput
+                                    if (dhr == 0)
+                                    {
+                                        // нашли рабочую пару; если это не «нужный» монитор,
+                                        // но других нет — сгодится. «Нужный» имеет приоритет.
+                                        if (_dupl == IntPtr.Zero || wanted)
+                                        {
+                                            if (_dupl != IntPtr.Zero) Marshal.Release(_dupl);
+                                            if (_device != IntPtr.Zero) Marshal.Release(_device);
+                                            if (_context != IntPtr.Zero) Marshal.Release(_context);
+                                            _dupl = dup; _device = dev; _context = ctx;
+                                            Marshal.AddRef(dev); Marshal.AddRef(ctx);
+                                            if (wanted) { o = uint.MaxValue - 1; } // выходим — это нужный монитор
+                                        }
+                                        else Marshal.Release(dup);
+                                    }
+                                    else lastHr = dhr;
+                                }
+                                finally { Marshal.Release(o1); }
                             }
+                            finally { Marshal.Release(op); }
                         }
-                        Marshal.Release(op);
                     }
-                    if (!found) Marshal.Release(ad);
+                    finally
+                    {
+                        if (dev != IntPtr.Zero) Marshal.Release(dev);
+                        if (ctx != IntPtr.Zero) Marshal.Release(ctx);
+                        Marshal.Release(ad);
+                    }
                 }
-                // Точного совпадения нет (DPI/масштаб) → берём первый активный выход.
-                if (!found && firstOp != IntPtr.Zero) { adapter = firstAd; output = firstOp; firstAd = IntPtr.Zero; firstOp = IntPtr.Zero; found = true; }
-                if (firstOp != IntPtr.Zero) Marshal.Release(firstOp);
-                if (firstAd != IntPtr.Zero) Marshal.Release(firstAd);
-                if (!found) throw new InvalidOperationException("нет активных DXGI-выходов");
-
-                // D3D11-устройство на адаптере монитора (D3D_DRIVER_TYPE_UNKNOWN).
-                // BGRA_SUPPORT (0x20) — часто требуется для дубликации; явные
-                // feature levels (11_0..9_1) — иначе на части драйверов E_INVALIDARG.
-                int[] levels = { 0xb000 /*11_0*/, 0xa100 /*10_1*/, 0xa000 /*10_0*/, 0x9300 /*9_3*/ };
-                var pLevels = Marshal.AllocHGlobal(levels.Length * 4);
-                try
-                {
-                    Marshal.Copy(levels, 0, pLevels, levels.Length);
-                    Check(D3D11CreateDevice(adapter, 0 /*UNKNOWN*/, IntPtr.Zero, 0x20 /*BGRA_SUPPORT*/,
-                                            pLevels, (uint)levels.Length,
-                                            7 /*D3D11_SDK_VERSION*/, out _device, out _, out _context), "D3D11CreateDevice");
-                }
-                finally { Marshal.FreeHGlobal(pLevels); }
-
-                // IDXGIOutput1.DuplicateOutput(device) — vtbl slot 22.
-                IntPtr output1 = QueryInterface(output, IID_IDXGIOutput1);
-                try { Check(VtblCall2Ptr(output1, 22, _device, out _dupl), "DuplicateOutput"); }
-                finally { Marshal.Release(output1); }
+                if (_dupl == IntPtr.Zero) throw new COMException($"DuplicateOutput 0x{(uint)lastHr:X8}", lastHr);
 
                 var dd = new DXGI_OUTDUPL_DESC();
                 GetDuplDesc(_dupl, ref dd);
@@ -115,8 +128,7 @@ namespace PISMO.Native
             }
             finally
             {
-                if (output != IntPtr.Zero) Marshal.Release(output);
-                if (adapter != IntPtr.Zero) Marshal.Release(adapter);
+                Marshal.FreeHGlobal(pLevels);
                 if (factory != IntPtr.Zero) Marshal.Release(factory);
             }
         }
