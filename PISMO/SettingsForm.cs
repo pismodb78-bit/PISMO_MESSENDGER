@@ -29,7 +29,6 @@ namespace PISMO
         private Label _lblGainValue;
         private CheckBox _chkVoiceAuto;
         private CheckBox _chkNoiseSuppress;
-        private ComboBox _cmbNoiseMode;   // Стандартный / Агрессивный
         private CheckBox _chkHwAccel;
         private CheckBox _chkLightTheme;
         private CheckBox _chkAllMonitors;   // все мониторы в выборе демонстрации (WGC)
@@ -193,8 +192,6 @@ namespace PISMO
 
             // Шумоподавление.
             _chkNoiseSuppress.Checked = DeviceSettings.NoiseSuppression;
-            _cmbNoiseMode.SelectedIndex = DeviceSettings.NoiseSuppressMode == "aggressive" ? 1 : 0;
-            _cmbNoiseMode.Enabled = _chkNoiseSuppress.Checked;
 
             // Активация голоса (порог в дБ).
             _chkVoiceAuto.Checked = DeviceSettings.VoiceAutoSensitivity;
@@ -484,8 +481,7 @@ namespace PISMO
 
             DeviceSettings.VoiceAutoSensitivity = _chkVoiceAuto.Checked;
             DeviceSettings.VoiceThreshold = _trkVoiceThreshold.Value;
-            DeviceSettings.NoiseSuppressMode = !_chkNoiseSuppress.Checked ? "off"
-                : (_cmbNoiseMode.SelectedIndex == 1 ? "aggressive" : "standard");
+            DeviceSettings.NoiseSuppressMode = _chkNoiseSuppress.Checked ? "standard" : "off";
 
             if (_cmbScreenRes.SelectedIndex >= 0)
             {

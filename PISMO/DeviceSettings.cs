@@ -84,7 +84,8 @@ namespace PISMO
             set
             {
                 var v = (value ?? "").Trim().ToLowerInvariant();
-                _nsMode = v == "standard" || v == "aggressive" ? v : "off";
+                // Единый режим «включён»: старое значение "aggressive" сводим к нему же.
+                _nsMode = v == "standard" || v == "aggressive" ? "standard" : "off";
             }
         }
         // Совместимость со старым булевым флагом (конфиги/старый код).

@@ -222,8 +222,8 @@ namespace PISMO.Native
 
                 // Резервный программный шумодав — только если APM не поднялся.
                 _nsEnabled = noiseSuppress;
-                _gateEnabled = noiseSuppress && DeviceSettings.NoiseSuppressMode == "aggressive";
-                _denoiser = new MicDenoiser(SR) { TransientGuard = _gateEnabled };
+                _gateEnabled = noiseSuppress;
+                _denoiser = new MicDenoiser(SR) { TransientGuard = noiseSuppress };
 
                 // 5) Захват микрофона: 48 кГц / 16 бит / моно → CaptureAudioFrame.
                 StartMicCapture();
@@ -282,16 +282,15 @@ namespace PISMO.Native
         /// <summary>Вкл/выкл шумодав на лету (совместимость: bool → режим).</summary>
         public void SetNoiseSuppression(bool on) => SetNoiseMode(on ? "standard" : "off");
 
-        /// <summary>Режим шумодава на лету: "off" / "standard" (WebRTC APM NS) /
-        /// "aggressive" (APM NS + программный гейт — давит клики клавиатуры).
-        /// APM создаётся с фиксированными флагами → пересоздаём с новым NS.</summary>
+        /// <summary>Шумодав на лету: "off" либо включён. «Включён» = WebRTC APM NS
+        /// + мягкий транзиент-гейт (давит и клики клавиатуры) — один режим, как
+        /// был RNNoise во времена WebView2. APM пересоздаётся на лету.</summary>
         public void SetNoiseMode(string mode)
         {
-            mode = (mode ?? "off").ToLowerInvariant();
-            bool ns = mode != "off";
-            _gateEnabled = mode == "aggressive";
+            bool ns = !string.Equals(mode ?? "off", "off", StringComparison.OrdinalIgnoreCase);
+            _gateEnabled = ns;
             _nsEnabled = ns;   // запасной программный путь (если APM не поднялся)
-            if (_denoiser != null) _denoiser.TransientGuard = _gateEnabled;
+            if (_denoiser != null) _denoiser.TransientGuard = ns;
             if (_micStarted) { try { CreateApm(ns); } catch { } }
         }
 

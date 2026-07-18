@@ -1079,23 +1079,25 @@ namespace PISMO
             //  демонстрации на этой машине определяется частотой ЗАХВАТА экрана
             //  ~50fps, а не энкодером, поэтому нативный путь fps не поднимает.)
 
-            MkLbl("🎚 Шумоподавление");
-            var cmbNs = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
-            cmbNs.Items.AddRange(new object[]
-                { "Выключено", "Стандартный (WebRTC)", "Агрессивный (давит клики клавиатуры)" });
-            cmbNs.SelectedIndex = DeviceSettings.NoiseSuppressMode == "aggressive" ? 2
-                : DeviceSettings.NoiseSuppressMode == "standard" ? 1 : 0;
-            cmbNs.SelectedIndexChanged += (s, e) =>
+            var chkNs = new CheckBox
             {
-                DeviceSettings.NoiseSuppressMode = cmbNs.SelectedIndex == 2 ? "aggressive"
-                    : cmbNs.SelectedIndex == 1 ? "standard" : "off";
+                Text = "🎚 Шумоподавление включено",
+                ForeColor = Color.FromArgb(220, 221, 222),
+                AutoSize = true,
+                Location = new Point(14, y),
+                Checked = DeviceSettings.NoiseSuppression,
+                Font = new Font("Segoe UI", 9.5f)
+            };
+            chkNs.CheckedChanged += (s, e) =>
+            {
+                DeviceSettings.NoiseSuppressMode = chkNs.Checked ? "standard" : "off";
                 try { DeviceSettings.Save(); } catch { }
                 // Применяется к идущему звонку СРАЗУ (пересоздание APM на лету).
                 try { _transport?.SetNoiseMode(DeviceSettings.NoiseSuppressMode); } catch { }
                 try { MainForm.Current?.RefreshVoiceEqState(); } catch { }
             };
-            _audioPanel.Controls.Add(cmbNs);
-            y += 38;
+            _audioPanel.Controls.Add(chkNs);
+            y += 30;
 
             MkLbl("Громкость собеседников");
             var tbVoice = MkTb((int)(_remoteVoiceVolume * 100));

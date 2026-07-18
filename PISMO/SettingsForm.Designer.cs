@@ -281,22 +281,6 @@ namespace PISMO
                 Location = new Point(14, 162),
                 Cursor = Cursors.Hand
             };
-            // Режим шумодава (меняется и на лету во время звонка):
-            // Стандартный = WebRTC APM; Агрессивный = APM + программный гейт
-            // (давит транзиенты вроде кликов клавиатуры).
-            _cmbNoiseMode = new ComboBox
-            {
-                BackColor = Color.FromArgb(32, 34, 37),
-                ForeColor = Color.FromArgb(220, 221, 222),
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 9f),
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Location = new Point(170, 159),
-                Size = new Size(170, 24)
-            };
-            _cmbNoiseMode.Items.AddRange(new object[] { "Стандартный", "Агрессивный" });
-            _cmbNoiseMode.SelectedIndex = 0;
-            _chkNoiseSuppress.CheckedChanged += (s, e) => _cmbNoiseMode.Enabled = _chkNoiseSuppress.Checked;
 
             // Живо применяем смену устройства/шумодава к открытому тесту микрофона.
             _cmbMic.SelectedIndexChanged += (s, e) =>
@@ -312,7 +296,7 @@ namespace PISMO
 
             pnlMic.Controls.AddRange(new Control[]
             {
-                _chkNoiseSuppress, _cmbNoiseMode,
+                _chkNoiseSuppress,
                 lblMicTitle, lblMicHint, _cmbMic, _btnMicTest,
                 lblGainHint, _trkGain, _lblGainValue,
                 lblLevelHint, _lblDbValue, _pnlLevelBar, _lblMicStatus,
