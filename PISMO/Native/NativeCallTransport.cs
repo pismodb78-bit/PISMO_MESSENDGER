@@ -1317,7 +1317,7 @@ namespace PISMO.Native
             _capBmp = null; _scaledBmp = null;
             FreeDib();
             try { _dxgi?.Dispose(); } catch { }
-            _dxgi = null; _dxgiFailed = false;   // следующая демка снова попробует DXGI
+            _dxgi = null; _dxgiFailed = false; _dxgiBlackRun = 0; _dxgiSawContent = false;   // следующая демка снова попробует DXGI
             if (_screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, _screenDc); } catch { } _screenDc = IntPtr.Zero; }
         }
 
@@ -1382,6 +1382,25 @@ namespace PISMO.Native
         private Rectangle _dxgiBounds;
         private bool _dxgiFailed;   // DXGI недоступен → навсегда GDI-путь (до рестарта демки)
         private string _dxgiErr;    // причина отказа DXGI (для плашки диагностики)
+        private int _dxgiBlackRun;  // подряд чёрных кадров DXGI
+        private bool _dxgiSawContent;   // DXGI хоть раз отдал непустой кадр
+
+        // Проверка «кадр не полностью чёрный»: на Optimus-ноутбуках Desktop
+        // Duplication нередко «успешно» отдаёт ЧЁРНЫЕ кадры (рабочий стол ведёт
+        // Intel, дублируем с NVIDIA). Сэмплируем буфер и, если подряд идёт много
+        // чёрных кадров, — отключаем DXGI и уходим на GDI (тот захватывает реально).
+        private static bool BufferHasContent(IntPtr buf, int lenBytes)
+        {
+            if (buf == IntPtr.Zero || lenBytes < 4) return false;
+            // Сэмплируем ~каждые 2000 байт (без unsafe): ищем непустой B/G/R.
+            for (int i = 0; i + 2 < lenBytes; i += 2000)
+            {
+                if (Marshal.ReadByte(buf, i) > 8) return true;
+                if (Marshal.ReadByte(buf, i + 1) > 8) return true;
+                if (Marshal.ReadByte(buf, i + 2) > 8) return true;
+            }
+            return false;
+        }
 
         /// <summary>Кадр монитора через DXGI в DIB-буфер d (масштабирование через
         /// StretchDIBits при необходимости). false = кадр не получить (откат на GDI).</summary>
@@ -1404,6 +1423,23 @@ namespace PISMO.Native
                 try { _dxgi.Dispose(); } catch { }
                 _dxgi = null;
                 return false;
+            }
+
+            // Детект чёрных кадров DXGI (Optimus): если первые ~20 кадров подряд
+            // пустые — Desktop Duplication на этой машине не отдаёт картинку,
+            // переключаемся на GDI (он захватывает реально).
+            if (!_dxgiSawContent)
+            {
+                if (BufferHasContent(_dxgi.Buffer, _dxgi.Width * _dxgi.Height * 4))
+                    _dxgiSawContent = true;
+                else if (++_dxgiBlackRun >= 20)
+                {
+                    _dxgiFailed = true;
+                    _dxgiErr = "чёрные кадры → GDI";
+                    try { _dxgi.Dispose(); } catch { }
+                    _dxgi = null;
+                    return false;
+                }
             }
 
             if (!EnsureDibBuf(d, outW, outH)) return false;
