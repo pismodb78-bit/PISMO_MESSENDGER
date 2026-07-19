@@ -85,7 +85,7 @@ namespace PISMO.Native
                     try
                     {
                         var mem = c.GetMemory("memory");
-                        var span = mem.GetSpan(c);
+                        var span = mem.GetSpan<byte>(0);
                         if (num > 0 && src >= 0 && dest >= 0 &&
                             src + num <= span.Length && dest + num <= span.Length)
                             span.Slice(src, num).CopyTo(span.Slice(dest, num));
@@ -101,12 +101,12 @@ namespace PISMO.Native
                     try
                     {
                         var mem = c.GetMemory("memory");
-                        long curBytes = mem.GetLength(c);
+                        long curBytes = mem.GetLength();
                         long need = (uint)requested;
                         long delta = need - curBytes;
                         if (delta <= 0) return 1;
                         long pages = (delta + 65535) / 65536;
-                        mem.Grow(c, pages);
+                        mem.Grow(pages);
                         return 1;
                     }
                     catch { return 0; }
@@ -190,7 +190,7 @@ namespace PISMO.Native
         {
             try
             {
-                var span = _memory.GetSpan(_store);
+                var span = _memory.GetSpan<byte>(0);
                 var floats = MemoryMarshal.Cast<byte, float>(span.Slice(_inPtr, FRAME * 4));
                 for (int i = 0; i < FRAME; i++) floats[i] = _inFifo[inOffset + i];   // i16-диапазон как float
 
@@ -200,7 +200,7 @@ namespace PISMO.Native
                 _rnProcess(_st2, _outPtr, _outPtr);    // проход 2: out -> out
 
                 // память могла переехать при вызове — берём span заново
-                var span2 = _memory.GetSpan(_store);
+                var span2 = _memory.GetSpan<byte>(0);
                 var outF = MemoryMarshal.Cast<byte, float>(span2.Slice(_outPtr, FRAME * 4));
                 for (int i = 0; i < FRAME; i++)
                 {
