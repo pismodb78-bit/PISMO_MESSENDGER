@@ -42,6 +42,7 @@ namespace PISMO
             public Button WatchBtn;    // «▶ Смотреть стрим» (пока стрим не смотрим)
             public Button MenuBtn;     // «⋮» — полный экран / мини-окно / прекратить
             public GpuVideoSurface Gpu; // GPU-рендер демки (WPF/D3D); null = PictureBox
+            public bool RawClickHooked; // клики демки (PIP/фуллскрин) уже повешены на Pb
             public bool Speaking;
             public bool HasVideo;
         }
@@ -237,31 +238,26 @@ namespace PISMO
                 tile.HasVideo = true;
                 tile.Lbl.Text = "🖥 Ваша демонстрация";
             }
-            // GPU-поверхность (рендер на видеокарте) вместо PictureBox.
-            if (tile.Gpu == null || tile.Gpu.IsDisposed)
+            // Рендер через PictureBox (надёжно на любой системе). Клик по своей
+            // демке — вынести превью в мини-окно; двойной — на весь видео-участок.
+            if (!tile.RawClickHooked && tile.Pb != null)
             {
-                var gpu = new GpuVideoSurface { Dock = DockStyle.Fill };
-                // Клик по СВОЕЙ демке — вынести превью в отдельное мини-окно;
-                // двойной клик — на весь видео-участок.
-                gpu.Clicked += () => ShowScreenSharePipContainer();
-                gpu.DoubleClicked += () => ToggleFullscreen(TileKey(SelfPid, "screen"));
-                tile.Gpu = gpu;
-                tile.Panel.Controls.Add(gpu);
-                gpu.BringToFront();
+                tile.Pb.Visible = true;
+                tile.Pb.Click += (s, e) => ShowScreenSharePipContainer();
+                tile.Pb.DoubleClick += (s, e) => ToggleFullscreen(TileKey(SelfPid, "screen"));
+                tile.RawClickHooked = true;
                 tile.Lbl?.BringToFront();
-                tile.Pb.Visible = false;
             }
             LayoutTiles();
         }
 
-        /// <summary>Сырой BGRA-кадр собственной демки: GPU-рендер в плитку и PIP.</summary>
+        /// <summary>Сырой BGRA-кадр собственной демки: рендер в плитку и PIP.</summary>
         private void OnSelfScreenRawFrame(byte[] bgra, int w, int h)
         {
-            if (_tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile)
-                && tile.Gpu != null && !tile.Gpu.IsDisposed)
-                tile.Gpu.PushFrame(bgra, w, h);
-            if (_screenPipGpu != null && !_screenPipGpu.IsDisposed)
-                _screenPipGpu.PushFrame(bgra, w, h);
+            if (_tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile))
+                SetTileRaw(tile, bgra, w, h);
+            if (_screenPipPicture != null && !_screenPipPicture.IsDisposed)
+                SetPipRaw(bgra, w, h);
         }
 
         /// <summary>Старый BMP-путь превью (оставлен для совместимости контракта).</summary>
@@ -355,6 +351,7 @@ namespace PISMO
                 try
                 {
                     var old = tile.Pb.Image; tile.Pb.Image = null; old?.Dispose();
+                    if (_rawBmp.TryGetValue(tile.Pb, out var rb)) { _rawBmp.Remove(tile.Pb); rb?.Dispose(); }
                     _tilesHost.Controls.Remove(tile.Panel);
                     tile.Panel.Dispose();
                 }
@@ -700,30 +697,28 @@ namespace PISMO
                 if (tile == null) return;
             }
 
-            if (tile.Gpu == null || tile.Gpu.IsDisposed)
+            // Рендер демки через PictureBox (GPU-поверхность серела на части систем).
+            if (!tile.RawClickHooked && tile.Pb != null)
             {
-                var gpu = new GpuVideoSurface { Dock = DockStyle.Fill };
                 string capPid = pid, capKey = key;
-                gpu.DoubleClicked += () => ToggleFullscreen(capKey);
-                gpu.RightClicked += () => { if (capPid != SelfPid) ShowScreenTileMenu(capPid); };
-                tile.Gpu = gpu;
-                tile.Panel.Controls.Add(gpu);
-                gpu.BringToFront();
+                tile.Pb.Visible = true;
+                tile.Pb.DoubleClick += (s, e) => ToggleFullscreen(capKey);
+                tile.Pb.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right && capPid != SelfPid) ShowScreenTileMenu(capPid); };
+                tile.RawClickHooked = true;
                 tile.Lbl?.BringToFront();
                 tile.MenuBtn?.BringToFront();
-                tile.Pb.Visible = false;   // GDI-плоскость не нужна
             }
             tile.HasVideo = true;
             if (tile.WatchBtn != null && tile.WatchBtn.Visible) tile.WatchBtn.Visible = false;
-            tile.Gpu.PushFrame(bgra, w, h);
+            SetTileRaw(tile, bgra, w, h);
 
-            // Стрим открыт в отдельном окне — тот же кадр в его GPU-поверхность.
+            // Стрим открыт в отдельном окне — тот же кадр в его PictureBox.
             if (source == "screen" && _streamPopouts.TryGetValue(pid, out var po)
-                && po.Form != null && !po.Form.IsDisposed && po.Gpu != null)
+                && po.Form != null && !po.Form.IsDisposed && po.Pb != null && !po.Pb.IsDisposed)
             {
                 try
                 {
-                    po.Gpu.PushFrame(bgra, w, h);
+                    SetPictureRaw(po.Pb, bgra, w, h);
                     if (po.LblInfo != null && po.LblInfo.Visible) po.LblInfo.Visible = false;
                 }
                 catch { }
@@ -769,6 +764,63 @@ namespace PISMO
             tile.HasVideo = true;
             if (!tile.Pb.Visible) tile.Pb.Visible = true;
             old?.Dispose();
+        }
+
+        /// <summary>Показ сырого BGRA-кадра демки через PictureBox (как камера).
+        /// GPU-поверхность (ElementHost/WPF) на части систем не композитится и
+        /// висит серым прямоугольником — PictureBox рисует надёжно.</summary>
+        private void SetTileRaw(CallTile tile, byte[] bgra, int w, int h)
+        {
+            if (tile == null || tile.Pb == null || tile.Pb.IsDisposed) return;
+            SetPictureRaw(tile.Pb, bgra, w, h);
+            tile.HasVideo = true;
+        }
+
+        private void SetPipRaw(byte[] bgra, int w, int h)
+        {
+            if (_screenPipPicture == null || _screenPipPicture.IsDisposed) return;
+            if (!_screenPipPicture.Visible) _screenPipPicture.Visible = true;
+            SetPictureRaw(_screenPipPicture, bgra, w, h);
+        }
+
+        // Переиспользуемые битмапы демки (по одному на PictureBox): new Bitmap на
+        // каждый кадр 1080p60 — ~480МБ/с мусора и рывки GC. Пишем в тот же битмап
+        // и перерисовываем.
+        private readonly Dictionary<PictureBox, Bitmap> _rawBmp = new();
+
+        /// <summary>Копирует BGRA-буфер в (переиспользуемый) Bitmap и рисует в PictureBox.</summary>
+        private void SetPictureRaw(PictureBox pb, byte[] bgra, int w, int h)
+        {
+            if (pb == null || pb.IsDisposed || bgra == null || w <= 0 || h <= 0) return;
+            try
+            {
+                _rawBmp.TryGetValue(pb, out var img);
+                if (img == null || img.Width != w || img.Height != h)
+                {
+                    try { if (pb.Image == img) pb.Image = null; } catch { }
+                    img?.Dispose();
+                    img = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    _rawBmp[pb] = img;
+                }
+                var bd = img.LockBits(new Rectangle(0, 0, w, h),
+                    System.Drawing.Imaging.ImageLockMode.WriteOnly,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                try
+                {
+                    int stride = bd.Stride;
+                    if (stride == w * 4)
+                        System.Runtime.InteropServices.Marshal.Copy(bgra, 0, bd.Scan0, Math.Min(bgra.Length, w * 4 * h));
+                    else
+                        for (int y = 0; y < h; y++)
+                            System.Runtime.InteropServices.Marshal.Copy(bgra, y * w * 4,
+                                IntPtr.Add(bd.Scan0, y * stride), w * 4);
+                }
+                finally { img.UnlockBits(bd); }
+
+                if (pb.Image != img) pb.Image = img; else pb.Invalidate();
+                if (!pb.Visible) pb.Visible = true;
+            }
+            catch { }
         }
 
         /// <summary>Участник сменил имя в звонке — обновляем подписи его плиток.</summary>
@@ -1274,14 +1326,11 @@ namespace PISMO
                     TextAlign = ContentAlignment.MiddleCenter,
                     Font = new Font("Segoe UI", 9f)
                 };
-                // GPU-поверхность поверх PictureBox: кадры рендерит видеокарта.
-                var gpu = new GpuVideoSurface { Dock = DockStyle.Fill };
-                f.Controls.Add(gpu);
+                // Рендер через PictureBox (GPU-поверхность серела на части систем).
                 f.Controls.Add(pb);
-                pb.Visible = false;
                 f.Controls.Add(lblInfo);
                 f.Controls.Add(top);
-                gpu.BringToFront();
+                pb.BringToFront();
                 lblInfo.BringToFront();
                 top.BringToFront();
                 f.KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { try { f.Close(); } catch { } } };
@@ -1289,7 +1338,7 @@ namespace PISMO
                 string capPid = pid;
                 f.FormClosed += (s, e) => OnPopoutClosed(capPid);
 
-                _streamPopouts[pid] = new StreamPopout { Form = f, Pb = pb, Gpu = gpu, LblInfo = lblInfo };
+                _streamPopouts[pid] = new StreamPopout { Form = f, Pb = pb, Gpu = null, LblInfo = lblInfo };
                 f.Show();
                 Anim.FadeIn(f);
 
@@ -1311,6 +1360,8 @@ namespace PISMO
         {
             try
             {
+                if (_streamPopouts.TryGetValue(pid, out var cpo) && cpo.Pb != null
+                    && _rawBmp.TryGetValue(cpo.Pb, out var prb)) { _rawBmp.Remove(cpo.Pb); prb?.Dispose(); }
                 _streamPopouts.Remove(pid);
                 try { _transport?.SetTileRate(pid, "screen", 15, 960, false); } catch { }
                 if (_theaterKey != TileKey(pid, "screen"))

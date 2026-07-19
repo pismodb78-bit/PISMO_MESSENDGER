@@ -1635,12 +1635,11 @@ namespace PISMO
                 AutoEllipsis = true
             };
 
-            // GPU-поверхность превью (WPF/D3D): PictureBox остаётся запасным
-            // (BMP-путь), но в нативном пути кадры идут сырым BGRA сюда.
-            _screenPipGpu = new GpuVideoSurface { Dock = DockStyle.Fill };
-            _screenPipPicture.Visible = false;
+            // Превью рисуем PictureBox'ом: GPU-поверхность (ElementHost/WPF) на
+            // части систем не композитится и висит серым прямоугольником.
+            _screenPipGpu = null;
+            _screenPipPicture.Visible = true;
 
-            _screenPipForm.Controls.Add(_screenPipGpu);
             _screenPipForm.Controls.Add(_screenPipPicture);
             _screenPipForm.Controls.Add(_screenPipStats);
             _screenPipForm.Controls.Add(_screenPipTitleBar);
@@ -1727,6 +1726,7 @@ namespace PISMO
             }
             else
             {
+                if (_screenPipPicture != null) _screenPipPicture.Visible = true;
                 if (_screenPipGpu != null) _screenPipGpu.Visible = true;
                 _screenPipForm.Size = _screenPipExpandedSize;
                 try { _transport?.SetScreenPreviewActive(true); } catch { }
@@ -1798,6 +1798,7 @@ namespace PISMO
                 _screenPipTrayIcon = null;
             }
             if (_screenPipForm == null) return;
+            try { if (_screenPipPicture != null && _rawBmp.TryGetValue(_screenPipPicture, out var prb)) { _rawBmp.Remove(_screenPipPicture); prb?.Dispose(); } } catch { }
             try { _screenPipForm.Close(); } catch { }
             _screenPipForm = null;
             _screenPipPicture = null;
