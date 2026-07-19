@@ -2,7 +2,10 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- Версия Windows в TFM включает проекции WinRT (Microsoft.Windows.SDK.NET)
+         — нужны для Windows.Graphics.Capture (живой захват конкретного окна,
+         в т.ч. GPU-приложений вроде Discord). WinForms/WPF/WebView2 совместимы. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <!-- WPF нужен ТОЛЬКО для растеризации ЦВЕТНЫХ эмодзи (GDI+ не умеет

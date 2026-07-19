@@ -1263,7 +1263,7 @@ namespace PISMO.Native
                         // Окно: DXGI даёт весь монитор, поэтому область окна берём
                         // GDI-блитом её экранного прямоугольника (живой захват).
                         bool got = isWindow
-                            ? CaptureMonitorDib(d, bounds, outW, outH)
+                            ? (CaptureWindowWgc(d, win, outW, outH) || CaptureMonitorDib(d, bounds, outW, outH))
                             : (CaptureMonitorDxgi(d, bounds, outW, outH) || CaptureMonitorDib(d, bounds, outW, outH));
                         if (got)
                         {
@@ -1318,6 +1318,8 @@ namespace PISMO.Native
             FreeDib();
             try { _dxgi?.Dispose(); } catch { }
             _dxgi = null; _dxgiFailed = false; _dxgiBlackRun = 0; _dxgiSawContent = false;   // следующая демка снова попробует DXGI
+            try { _wgc?.Dispose(); } catch { }
+            _wgc = null; _wgcHwnd = IntPtr.Zero; _wgcFailed = false;
             if (_screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, _screenDc); } catch { } _screenDc = IntPtr.Zero; }
         }
 
@@ -1384,6 +1386,45 @@ namespace PISMO.Native
         private string _dxgiErr;    // причина отказа DXGI (для плашки диагностики)
         private int _dxgiBlackRun;  // подряд чёрных кадров DXGI
         private bool _dxgiSawContent;   // DXGI хоть раз отдал непустой кадр
+
+        // WGC (Windows.Graphics.Capture) — живой захват конкретного окна.
+        private WgcCapturer _wgc;
+        private IntPtr _wgcHwnd;
+        private bool _wgcFailed;
+        private string _wgcErr;
+
+        /// <summary>Кадр КОНКРЕТНОГО окна через WGC → DIB-буфер d. false = не вышло
+        /// (окно закрыто/WGC недоступен) → откат на GDI-захват области.</summary>
+        private bool CaptureWindowWgc(DibBuf d, IntPtr win, int outW, int outH)
+        {
+            if (_wgcFailed || win == IntPtr.Zero) return false;
+            if (_wgc == null || _wgcHwnd != win)
+            {
+                try { _wgc?.Dispose(); _wgc = new WgcCapturer(win); _wgcHwnd = win; }
+                catch (Exception ex) { _wgc?.Dispose(); _wgc = null; _wgcFailed = true; _wgcErr = ex.Message; return false; }
+            }
+            try
+            {
+                _wgc.TryAcquireFrame(8);
+                if (!_wgc.HasFrame) return false;
+            }
+            catch { try { _wgc.Dispose(); } catch { } _wgc = null; return false; }
+
+            if (!EnsureDibBuf(d, outW, outH)) return false;
+            var bmi = new BITMAPINFO
+            {
+                biSize = 40,
+                biWidth = _wgc.Width,
+                biHeight = -_wgc.Height,
+                biPlanes = 1,
+                biBitCount = 32,
+                biCompression = 0
+            };
+            bool ok = StretchDIBits(d.Dc, 0, 0, outW, outH, 0, 0, _wgc.Width, _wgc.Height,
+                                 _wgc.Buffer, ref bmi, 0, SRCCOPY) > 0;
+            if (ok) _capMode = "WGC";
+            return ok;
+        }
 
         // Проверка «кадр не полностью чёрный»: на Optimus-ноутбуках Desktop
         // Duplication нередко «успешно» отдаёт ЧЁРНЫЕ кадры (рабочий стол ведёт
