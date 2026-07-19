@@ -140,8 +140,9 @@ namespace PISMO.Native
         private bool _micStarted;
         private volatile bool _micMuted;          // мьют = не отправляем кадры
         private int _inputDeviceIndex = -1;       // -1 = устройство по умолчанию
-        private MicDenoiser _denoiser;            // клик-гейт (транзиенты)
-        private SpectralDenoiser _spectral;       // частотный шумодав (постоянный фон)
+        private MicDenoiser _denoiser;            // клик-гейт (транзиенты) — откат
+        private SpectralDenoiser _spectral;       // частотный шумодав (постоянный фон) — откат
+        private RnnoiseDenoiser _rnnoise;         // НАСТОЯЩИЙ RNNoise (как в тесте) — основной
         private volatile bool _nsEnabled;
 
         // Нативный libwebrtc APM: шумодав + эхоподавление + ВЧ-фильтр + AGC.
@@ -290,9 +291,12 @@ namespace PISMO.Native
                 _apmEc = echoCancel; _apmAgc = agc;
                 CreateApm(noiseSuppress);
 
-                // Резервный программный шумодав — только если APM не поднялся.
+                // Шумодав. Основной — НАСТОЯЩИЙ RNNoise (тот же wasm, что в тесте
+                // микрофона), крутится в процессе через Wasmtime. Если он не поднялся
+                // (нет wasm/рантайма) — откат на программный spectral+gate.
                 _nsEnabled = noiseSuppress;
                 _gateEnabled = noiseSuppress;
+                _rnnoise = RnnoiseDenoiser.TryCreate();
                 _denoiser = new MicDenoiser(SR) { TransientGuard = noiseSuppress };
                 _spectral = new SpectralDenoiser();
 
@@ -350,6 +354,8 @@ namespace PISMO.Native
             _apmEnabled = false;
             if (_apmHandle != 0) { try { LiveKitFfi.DropHandle(_apmHandle); } catch { } _apmHandle = 0; }
             _micAccumLen = 0;
+            try { _rnnoise?.Dispose(); } catch { }
+            _rnnoise = null;
         }
 
         /// <summary>Вкл/выкл шумодав на лету (совместимость: bool → режим).</summary>
@@ -362,8 +368,14 @@ namespace PISMO.Native
         {
             bool ns = !string.Equals(mode ?? "off", "off", StringComparison.OrdinalIgnoreCase);
             _gateEnabled = ns;
-            _nsEnabled = ns;   // запасной программный путь (если APM не поднялся)
+            _nsEnabled = ns;
             if (_denoiser != null) _denoiser.TransientGuard = ns;
+            // Если включают шумодав, а RNNoise ещё не поднят (звонок начали с off) —
+            // поднимаем его на лету.
+            if (ns && _micStarted && _rnnoise == null)
+            {
+                try { _rnnoise = RnnoiseDenoiser.TryCreate(); } catch { }
+            }
             if (_micStarted) { try { CreateApm(ns); } catch { } }
         }
 
@@ -425,24 +437,29 @@ namespace PISMO.Native
                 return;
             }
 
-            // Резервный путь без APM: частотный шумодав + клик-гейт → отправка.
-            if (_nsEnabled)
-            {
-                try { _spectral?.Process(e.Buffer, 0, e.BytesRecorded); } catch { }
-                try { _denoiser?.Process(e.Buffer, e.BytesRecorded); } catch { }
-            }
+            // Резервный путь без APM: шумодав → отправка.
+            if (_nsEnabled) DenoiseInPlace(e.Buffer, 0, e.BytesRecorded);
             SendCapturedAudio(e.Buffer, 0, e.BytesRecorded);
+        }
+
+        // Единый шумодав in-place. Если поднялся нативный RNNoise (как в тесте) —
+        // используем ТОЛЬКО его (он давит и фон, и клавиатуру). Иначе — программный
+        // откат: частотный spectral (фон) + клик-гейт (транзиенты).
+        private void DenoiseInPlace(byte[] data, int offset, int len)
+        {
+            var rn = _rnnoise;
+            if (rn != null && rn.IsReady)
+            {
+                try { rn.Process(data, offset, len); return; } catch { }
+            }
+            try { _spectral?.Process(data, offset, len); } catch { }
+            try { _denoiser?.Process(data, offset, len); } catch { }
         }
 
         // Один 10-мс кадр: APM ProcessStream (шумодав/AEC/HPF/AGC) → отправка в FFI.
         private void ProcessAndSendFrame(byte[] data, int offset, int len)
         {
-            // Шумодав: сперва частотный (постоянный фон), затем клик-гейт (транзиенты).
-            if (_nsEnabled)
-            {
-                try { _spectral?.Process(data, offset, len); } catch { }
-                try { _denoiser?.Process(data, offset, len); } catch { }
-            }
+            if (_nsEnabled) DenoiseInPlace(data, offset, len);
             IntPtr buf = Marshal.AllocHGlobal(len);
             try
             {

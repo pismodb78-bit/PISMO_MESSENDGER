@@ -13,9 +13,9 @@
     <RootNamespace>PISMO</RootNamespace>
     <ApplicationIcon>pismo.ico</ApplicationIcon>
     <StartupObject>PISMO.Program</StartupObject>
-    <Version>2.6.5</Version>
-    <AssemblyVersion>2.6.5.0</AssemblyVersion>
-    <FileVersion>2.6.5.0</FileVersion>
+    <Version>2.6.6</Version>
+    <AssemblyVersion>2.6.6.0</AssemblyVersion>
+    <FileVersion>2.6.6.0</FileVersion>
     <Company>PISMO</Company>
     <Product>PISMO Messenger</Product>
   </PropertyGroup>
@@ -43,6 +43,10 @@
     <PackageReference Include="MySql.Data" Version="9.7.0" />
 
     <PackageReference Include="NAudio" Version="2.3.0" />
+
+    <!-- WASM-рантайм для нативного RNNoise: гоняем noise/rnnoise.wasm (тот же
+         шумодав, что в тесте микрофона) прямо в процессе, без WebView2. -->
+    <PackageReference Include="Wasmtime" Version="22.0.0" />
 
     <!-- Нативный клиент звонков (замена WebView2): protobuf-протокол LiveKit FFI.
          Grpc.Tools генерирует C#-классы из .proto на сборке (только messages). -->
