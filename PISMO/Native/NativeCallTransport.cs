@@ -1233,11 +1233,24 @@ namespace PISMO.Native
                     IntPtr win; Rectangle bounds;
                     lock (_scrSrcLock) { win = _scrWindow; bounds = _scrBounds; }
 
-                    if (win == IntPtr.Zero && bounds.Width > 0 && bounds.Height > 0)
+                    // Окно: берём его ТЕКУЩИЙ экранный прямоугольник (окно могли
+                    // подвинуть/растянуть) и захватываем эту область живьём тем же
+                    // DIB-пайплайном. PrintWindow для GPU-ускоренных окон (игры,
+                    // Chromium, видео) отдаёт СТАТИЧНЫЙ кадр — демка «зависает».
+                    bool isWindow = win != IntPtr.Zero;
+                    if (isWindow)
                     {
-                        // МОНИТОР — быстрый путь: BitBlt/StretchBlt прямо в DIB-секцию
-                        // (без GDI+ Bitmap, без LockBits; даунскейл — в один проход
-                        // на самом блите). Экономит ~половину времени кадра → 60fps.
+                        if (GetWindowRect(win, out RECT wr))
+                            bounds = new Rectangle(wr.Left, wr.Top,
+                                Math.Max(2, wr.Right - wr.Left), Math.Max(2, wr.Bottom - wr.Top));
+                        else
+                            isWindow = false;
+                    }
+
+                    if (bounds.Width > 0 && bounds.Height > 0)
+                    {
+                        // Быстрый путь: BitBlt/StretchBlt прямо в DIB-секцию (без GDI+
+                        // Bitmap/LockBits; даунскейл — в один проход на блите).
                         int th = _scrTargetHeight;
                         int outW = bounds.Width & ~1, outH = bounds.Height & ~1;
                         if (th > 0 && bounds.Height > th)
@@ -1246,9 +1259,13 @@ namespace PISMO.Native
                             outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
                         var d = _dibs[_dibIdx];
-                        // Сначала DXGI (кадры от GPU), при недоступности — GDI-блит.
-                        if (CaptureMonitorDxgi(d, bounds, outW, outH)
-                            || CaptureMonitorDib(d, bounds, outW, outH))
+                        // Монитор: сначала DXGI (кадры от GPU), затем GDI-блит.
+                        // Окно: DXGI даёт весь монитор, поэтому область окна берём
+                        // GDI-блитом её экранного прямоугольника (живой захват).
+                        bool got = isWindow
+                            ? CaptureMonitorDib(d, bounds, outW, outH)
+                            : (CaptureMonitorDxgi(d, bounds, outW, outH) || CaptureMonitorDib(d, bounds, outW, outH));
+                        if (got)
                         {
                             _scrConsecFails = 0;
                             _grabCount++;
@@ -1265,39 +1282,6 @@ namespace PISMO.Native
                             ReportCaptureFps(outW, outH);
                         }
                         else if (++_scrConsecFails >= 20) { _scrConsecFails = 0; if (System.Threading.Volatile.Read(ref _pushBusy) == 0) FreeDib(); }
-                    }
-                    else
-                    {
-                        // ОКНО — прежний путь через PrintWindow (DIB тут не поможет).
-                        Bitmap raw = CaptureScreen();
-                        if (raw != null)
-                        {
-                            _scrConsecFails = 0;
-                            int th = _scrTargetHeight;
-                            if (th > 0 && raw.Height > th)
-                            {
-                                int tw = Math.Max(2, (int)Math.Round(raw.Width * (th / (double)raw.Height))) & ~1;
-                                if (_scaledBmp == null || _scaledBmp.Width != tw || _scaledBmp.Height != th)
-                                {
-                                    _scaledBmp?.Dispose();
-                                    _scaledBmp = new Bitmap(tw, Math.Max(2, th), PixelFormat.Format32bppArgb);
-                                }
-                                using (var g = Graphics.FromImage(_scaledBmp))
-                                {
-                                    g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
-                                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
-                                    g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-                                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
-                                    g.DrawImage(raw, new Rectangle(0, 0, _scaledBmp.Width, _scaledBmp.Height),
-                                                0, 0, raw.Width, raw.Height, GraphicsUnit.Pixel);
-                                }
-                                PushBitmap(_scrSource, _scaledBmp, preview);
-                            }
-                            else
-                            {
-                                PushBitmap(_scrSource, raw, preview);
-                            }
-                        }
                     }
                 }
                 catch
