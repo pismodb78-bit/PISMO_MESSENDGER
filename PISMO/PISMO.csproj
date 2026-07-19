@@ -2,17 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- Версия Windows в TFM включает проекции WinRT (Microsoft.Windows.SDK.NET)
-         — нужны для Windows.Graphics.Capture (живой захват конкретного окна,
-         в т.ч. GPU-приложений вроде Discord). WinForms/WPF/WebView2 совместимы. -->
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
-    <!-- Явно фиксируем версии платформы: иначе на машинах с новым Windows SDK
-         (напр. Insider 10.0.28000) MSBuild подставляет его как SupportedOS
-         PlatformVersion и падает «выше TargetPlatformVersion». Min 17763 = WGC
-         (CreateFreeThreaded, Win10 1809+). -->
-    <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
-    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
-    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <!-- WPF нужен ТОЛЬКО для растеризации ЦВЕТНЫХ эмодзи (GDI+ не умеет

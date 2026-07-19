@@ -1233,24 +1233,10 @@ namespace PISMO.Native
                     IntPtr win; Rectangle bounds;
                     lock (_scrSrcLock) { win = _scrWindow; bounds = _scrBounds; }
 
-                    // Окно: берём его ТЕКУЩИЙ экранный прямоугольник (окно могли
-                    // подвинуть/растянуть) и захватываем эту область живьём тем же
-                    // DIB-пайплайном. PrintWindow для GPU-ускоренных окон (игры,
-                    // Chromium, видео) отдаёт СТАТИЧНЫЙ кадр — демка «зависает».
-                    bool isWindow = win != IntPtr.Zero;
-                    if (isWindow)
+                    if (win == IntPtr.Zero && bounds.Width > 0 && bounds.Height > 0)
                     {
-                        if (GetWindowRect(win, out RECT wr))
-                            bounds = new Rectangle(wr.Left, wr.Top,
-                                Math.Max(2, wr.Right - wr.Left), Math.Max(2, wr.Bottom - wr.Top));
-                        else
-                            isWindow = false;
-                    }
-
-                    if (bounds.Width > 0 && bounds.Height > 0)
-                    {
-                        // Быстрый путь: BitBlt/StretchBlt прямо в DIB-секцию (без GDI+
-                        // Bitmap/LockBits; даунскейл — в один проход на блите).
+                        // МОНИТОР — быстрый путь: DXGI (кадры от GPU) → GDI-блит в
+                        // DIB-секцию. DXGI с чёрными кадрами (Optimus) сам уходит на GDI.
                         int th = _scrTargetHeight;
                         int outW = bounds.Width & ~1, outH = bounds.Height & ~1;
                         if (th > 0 && bounds.Height > th)
@@ -1259,19 +1245,11 @@ namespace PISMO.Native
                             outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
                         var d = _dibs[_dibIdx];
-                        // Монитор: сначала DXGI (кадры от GPU), затем GDI-блит.
-                        // Окно: DXGI даёт весь монитор, поэтому область окна берём
-                        // GDI-блитом её экранного прямоугольника (живой захват).
-                        bool got = isWindow
-                            ? (CaptureWindowWgc(d, win, outW, outH) || CaptureMonitorDib(d, bounds, outW, outH))
-                            : (CaptureMonitorDxgi(d, bounds, outW, outH) || CaptureMonitorDib(d, bounds, outW, outH));
-                        if (got)
+                        if (CaptureMonitorDxgi(d, bounds, outW, outH)
+                            || CaptureMonitorDib(d, bounds, outW, outH))
                         {
                             _scrConsecFails = 0;
                             _grabCount++;
-                            // Отдаём кадр пушеру и СРАЗУ переходим к захвату следующего
-                            // во второй буфер (конвейер). Пушер занят — кадр дропаем:
-                            // темп держит захват, лага нет.
                             if (Interlocked.CompareExchange(ref _pushBusy, 1, 0) == 0)
                             {
                                 _dibIdx ^= 1;
@@ -1282,6 +1260,41 @@ namespace PISMO.Native
                             ReportCaptureFps(outW, outH);
                         }
                         else if (++_scrConsecFails >= 20) { _scrConsecFails = 0; if (System.Threading.Volatile.Read(ref _pushBusy) == 0) FreeDib(); }
+                    }
+                    else if (win != IntPtr.Zero)
+                    {
+                        // ОКНО — PrintWindow: захватывает ИМЕННО это окно (даже
+                        // перекрытое). Для GPU-ускоренных окон (Discord/игры) кадр
+                        // может быть статичным — тогда делись всем экраном (монитор).
+                        Bitmap raw = CaptureScreen();
+                        if (raw != null)
+                        {
+                            _scrConsecFails = 0;
+                            int th = _scrTargetHeight;
+                            if (th > 0 && raw.Height > th)
+                            {
+                                int tw = Math.Max(2, (int)Math.Round(raw.Width * (th / (double)raw.Height))) & ~1;
+                                if (_scaledBmp == null || _scaledBmp.Width != tw || _scaledBmp.Height != th)
+                                {
+                                    _scaledBmp?.Dispose();
+                                    _scaledBmp = new Bitmap(tw, Math.Max(2, th), PixelFormat.Format32bppArgb);
+                                }
+                                using (var g = Graphics.FromImage(_scaledBmp))
+                                {
+                                    g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+                                    g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+                                    g.DrawImage(raw, new Rectangle(0, 0, _scaledBmp.Width, _scaledBmp.Height),
+                                                0, 0, raw.Width, raw.Height, GraphicsUnit.Pixel);
+                                }
+                                PushBitmap(_scrSource, _scaledBmp, preview);
+                            }
+                            else
+                            {
+                                PushBitmap(_scrSource, raw, preview);
+                            }
+                        }
                     }
                 }
                 catch
@@ -1318,8 +1331,6 @@ namespace PISMO.Native
             FreeDib();
             try { _dxgi?.Dispose(); } catch { }
             _dxgi = null; _dxgiFailed = false; _dxgiBlackRun = 0; _dxgiSawContent = false;   // следующая демка снова попробует DXGI
-            try { _wgc?.Dispose(); } catch { }
-            _wgc = null; _wgcHwnd = IntPtr.Zero; _wgcFailed = false;
             if (_screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, _screenDc); } catch { } _screenDc = IntPtr.Zero; }
         }
 
@@ -1386,45 +1397,6 @@ namespace PISMO.Native
         private string _dxgiErr;    // причина отказа DXGI (для плашки диагностики)
         private int _dxgiBlackRun;  // подряд чёрных кадров DXGI
         private bool _dxgiSawContent;   // DXGI хоть раз отдал непустой кадр
-
-        // WGC (Windows.Graphics.Capture) — живой захват конкретного окна.
-        private WgcCapturer _wgc;
-        private IntPtr _wgcHwnd;
-        private bool _wgcFailed;
-        private string _wgcErr;
-
-        /// <summary>Кадр КОНКРЕТНОГО окна через WGC → DIB-буфер d. false = не вышло
-        /// (окно закрыто/WGC недоступен) → откат на GDI-захват области.</summary>
-        private bool CaptureWindowWgc(DibBuf d, IntPtr win, int outW, int outH)
-        {
-            if (_wgcFailed || win == IntPtr.Zero) return false;
-            if (_wgc == null || _wgcHwnd != win)
-            {
-                try { _wgc?.Dispose(); _wgc = new WgcCapturer(win); _wgcHwnd = win; }
-                catch (Exception ex) { _wgc?.Dispose(); _wgc = null; _wgcFailed = true; _wgcErr = ex.Message; return false; }
-            }
-            try
-            {
-                _wgc.TryAcquireFrame(8);
-                if (!_wgc.HasFrame) return false;
-            }
-            catch { try { _wgc.Dispose(); } catch { } _wgc = null; return false; }
-
-            if (!EnsureDibBuf(d, outW, outH)) return false;
-            var bmi = new BITMAPINFO
-            {
-                biSize = 40,
-                biWidth = _wgc.Width,
-                biHeight = -_wgc.Height,
-                biPlanes = 1,
-                biBitCount = 32,
-                biCompression = 0
-            };
-            bool ok = StretchDIBits(d.Dc, 0, 0, outW, outH, 0, 0, _wgc.Width, _wgc.Height,
-                                 _wgc.Buffer, ref bmi, 0, SRCCOPY) > 0;
-            if (ok) _capMode = "WGC";
-            return ok;
-        }
 
         // Проверка «кадр не полностью чёрный»: на Optimus-ноутбуках Desktop
         // Duplication нередко «успешно» отдаёт ЧЁРНЫЕ кадры (рабочий стол ведёт
