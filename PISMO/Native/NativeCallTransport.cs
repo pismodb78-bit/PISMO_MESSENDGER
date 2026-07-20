@@ -912,16 +912,17 @@ namespace PISMO.Native
                     _scrCaptureFloat = false;                            // i16 PCM
                     useProc = true;
                 }
-                catch
+                catch (Exception ex)
                 {
                     try { _procLoop?.Dispose(); } catch { }
                     _procLoop = null;
-                    // Фолбэк: device-loopback (весь звук). Здесь голоса звонка ТОЖЕ
-                    // попадут — их гасит эхоподавитель ниже (моно-референс).
-                    _loopback = new NAudio.Wave.WasapiLoopbackCapture();
-                    _scrCaptureRate = _loopback.WaveFormat.SampleRate;
-                    _scrCaptureCh = Math.Max(1, _loopback.WaveFormat.Channels);
-                    _scrCaptureFloat = _loopback.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
+                    // БЕЗ device-loopback фолбэка: он ловит воспроизведение PISMO
+                    // (голоса звонка) → это и эхо в демке, и «пропажа звука демки при
+                    // дефене» (при дефене _out глушится, и эта часть исчезает). Лучше
+                    // без звука демки, чем с эхом. process-loopback недоступен —
+                    // выходим (видео демки при этом продолжается).
+                    ConnectError?.Invoke("звук демки недоступен (process-loopback): " + ex.Message);
+                    return;
                 }
                 // Публикуем/обрабатываем МОНО (единый формат для источника и AEC).
                 _scrAudioCh = 1;
@@ -1024,20 +1025,10 @@ namespace PISMO.Native
             {
                 _scrAudioWatchdog?.Dispose(); _scrAudioWatchdog = null;
                 if (_scrAudioGotData || _procLoop == null || _scrAudioSource == 0) return;
-                try
-                {
-                    try { _procLoop.DataAvailable -= OnScreenAudioData; _procLoop.Dispose(); } catch { }
-                    _procLoop = null;
-                    _loopback = new NAudio.Wave.WasapiLoopbackCapture();
-                    // Захват меняем на устройство, но публикуем ПО-ПРЕЖНЕМУ моно под
-                    // тем же источником (OnScreenAudioData даунмиксит любой формат).
-                    _scrCaptureRate = _loopback.WaveFormat.SampleRate;
-                    _scrCaptureCh = Math.Max(1, _loopback.WaveFormat.Channels);
-                    _scrCaptureFloat = _loopback.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
-                    _loopback.DataAvailable += OnScreenAudioData;
-                    _loopback.StartRecording();
-                }
-                catch { }
+                // process-loopback молчит. НЕ откатываемся на device-loopback (он
+                // ловил бы воспроизведение PISMO → эхо + пропажа при дефене). Просто
+                // сообщаем — звук демки будет недоступен, но без эха.
+                try { ConnectError?.Invoke("звук демки: process-loopback не отдаёт данные (без эха, но звука демки нет)"); } catch { }
             }, null, 2000, System.Threading.Timeout.Infinite);
         }
 
