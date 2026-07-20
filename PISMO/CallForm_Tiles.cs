@@ -238,15 +238,18 @@ namespace PISMO
                 tile.HasVideo = true;
                 tile.Lbl.Text = "🖥 Ваша демонстрация";
             }
-            // Рендер через PictureBox (надёжно на любой системе). Клик по своей
-            // демке — вынести превью в мини-окно; двойной — на весь видео-участок.
-            if (!tile.RawClickHooked && tile.Pb != null)
+            // Рендер через PictureBox (надёжно на любой системе). Двойной клик (на
+            // весь участок) уже повешен в EnsureTile; здесь добавляем ТОЛЬКО
+            // одиночный клик по своей демке — вынести превью в мини-окно.
+            if (tile.Pb != null)
             {
-                tile.Pb.Visible = true;
-                tile.Pb.Click += (s, e) => ShowScreenSharePipContainer();
-                tile.Pb.DoubleClick += (s, e) => ToggleFullscreen(TileKey(SelfPid, "screen"));
-                tile.RawClickHooked = true;
-                tile.Lbl?.BringToFront();
+                if (!tile.Pb.Visible) tile.Pb.Visible = true;
+                if (!tile.RawClickHooked)
+                {
+                    tile.Pb.Click += (s, e) => ShowScreenSharePipContainer();
+                    tile.RawClickHooked = true;
+                    tile.Lbl?.BringToFront();
+                }
             }
             LayoutTiles();
         }
@@ -698,16 +701,9 @@ namespace PISMO
             }
 
             // Рендер демки через PictureBox (GPU-поверхность серела на части систем).
-            if (!tile.RawClickHooked && tile.Pb != null)
-            {
-                string capPid = pid, capKey = key;
-                tile.Pb.Visible = true;
-                tile.Pb.DoubleClick += (s, e) => ToggleFullscreen(capKey);
-                tile.Pb.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right && capPid != SelfPid) ShowScreenTileMenu(capPid); };
-                tile.RawClickHooked = true;
-                tile.Lbl?.BringToFront();
-                tile.MenuBtn?.BringToFront();
-            }
+            // Двойной клик/правый клик уже повешены в EnsureTile — здесь только
+            // делаем Pb видимым (EnsureTile создаёт его скрытым).
+            if (!tile.Pb.Visible) tile.Pb.Visible = true;
             tile.HasVideo = true;
             if (tile.WatchBtn != null && tile.WatchBtn.Visible) tile.WatchBtn.Visible = false;
             SetTileRaw(tile, bgra, w, h);
