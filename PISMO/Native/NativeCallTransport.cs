@@ -1256,10 +1256,14 @@ namespace PISMO.Native
                     IntPtr win; Rectangle bounds;
                     lock (_scrSrcLock) { win = _scrWindow; bounds = _scrBounds; }
 
-                    if (win == IntPtr.Zero && bounds.Width > 0 && bounds.Height > 0)
+                    bool isWindow = win != IntPtr.Zero;
+                    // Для окна — его текущий экранный прямоугольник (для размеров выхода).
+                    if (isWindow && GetWindowRect(win, out RECT wr))
+                        bounds = new Rectangle(wr.Left, wr.Top,
+                            Math.Max(2, wr.Right - wr.Left), Math.Max(2, wr.Bottom - wr.Top));
+
+                    if (bounds.Width > 0 && bounds.Height > 0)
                     {
-                        // МОНИТОР — быстрый путь: DXGI (кадры от GPU) → GDI-блит в
-                        // DIB-секцию. DXGI с чёрными кадрами (Optimus) сам уходит на GDI.
                         int th = _scrTargetHeight;
                         int outW = bounds.Width & ~1, outH = bounds.Height & ~1;
                         if (th > 0 && bounds.Height > th)
@@ -1268,11 +1272,12 @@ namespace PISMO.Native
                             outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
                         var d = _dibs[_dibIdx];
-                        // Монитор: WGC (60fps, композиция DWM — не чёрное на Optimus,
-                        // в отличие от DXGI-дупликации). Откат на GDI, если WGC не
-                        // поддерживается/не поднялся.
-                        if (CaptureMonitorWgc(d, bounds, outW, outH)
-                            || CaptureMonitorDib(d, bounds, outW, outH))
+                        // ОКНО и МОНИТОР — через WGC (60fps, композиция DWM; на Optimus
+                        // не чёрное, для GPU-окон живое). Аварийный GDI ТОЛЬКО для
+                        // монитора и только если WGC вообще не поднялся.
+                        bool got = CaptureWgc(d, isWindow, win, bounds, outW, outH)
+                                   || (!isWindow && CaptureMonitorDib(d, bounds, outW, outH));
+                        if (got)
                         {
                             _scrConsecFails = 0;
                             _grabCount++;
@@ -1286,41 +1291,6 @@ namespace PISMO.Native
                             ReportCaptureFps(outW, outH);
                         }
                         else if (++_scrConsecFails >= 20) { _scrConsecFails = 0; if (System.Threading.Volatile.Read(ref _pushBusy) == 0) FreeDib(); }
-                    }
-                    else if (win != IntPtr.Zero)
-                    {
-                        // ОКНО — PrintWindow: захватывает ИМЕННО это окно (даже
-                        // перекрытое). Для GPU-ускоренных окон (Discord/игры) кадр
-                        // может быть статичным — тогда делись всем экраном (монитор).
-                        Bitmap raw = CaptureScreen();
-                        if (raw != null)
-                        {
-                            _scrConsecFails = 0;
-                            int th = _scrTargetHeight;
-                            if (th > 0 && raw.Height > th)
-                            {
-                                int tw = Math.Max(2, (int)Math.Round(raw.Width * (th / (double)raw.Height))) & ~1;
-                                if (_scaledBmp == null || _scaledBmp.Width != tw || _scaledBmp.Height != th)
-                                {
-                                    _scaledBmp?.Dispose();
-                                    _scaledBmp = new Bitmap(tw, Math.Max(2, th), PixelFormat.Format32bppArgb);
-                                }
-                                using (var g = Graphics.FromImage(_scaledBmp))
-                                {
-                                    g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
-                                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
-                                    g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-                                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
-                                    g.DrawImage(raw, new Rectangle(0, 0, _scaledBmp.Width, _scaledBmp.Height),
-                                                0, 0, raw.Width, raw.Height, GraphicsUnit.Pixel);
-                                }
-                                PushBitmap(_scrSource, _scaledBmp, preview);
-                            }
-                            else
-                            {
-                                PushBitmap(_scrSource, raw, preview);
-                            }
-                        }
                     }
                 }
                 catch
@@ -1357,8 +1327,8 @@ namespace PISMO.Native
             FreeDib();
             try { _dxgi?.Dispose(); } catch { }
             _dxgi = null; _dxgiFailed = false; _dxgiBlackRun = 0;   // следующая демка снова попробует DXGI
-            try { _wgcMon?.Dispose(); } catch { }
-            _wgcMon = null; _wgcMonBounds = Rectangle.Empty; _wgcMonFailed = false;
+            try { _wgc?.Dispose(); } catch { }
+            _wgc = null; _wgcHandle = IntPtr.Zero; _wgcFailed = false;
             if (_screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, _screenDc); } catch { } _screenDc = IntPtr.Zero; }
         }
 
@@ -1418,47 +1388,53 @@ namespace PISMO.Native
                 : StretchBlt(d.Dc, 0, 0, outW, outH, _screenDc, src.X, src.Y, src.Width, src.Height, SRCCOPY);
         }
 
-        // ── WGC (Windows.Graphics.Capture): 60fps захват монитора через DWM ──
-        // На Optimus даёт НЕ чёрную картинку (в отличие от DXGI-дупликации).
-        private WgcCapturer _wgcMon;
-        private Rectangle _wgcMonBounds;
-        private bool _wgcMonFailed;
-        private string _wgcMonErr;
+        // ── WGC (Windows.Graphics.Capture): 60fps захват ОКНА и МОНИТОРА через
+        // композицию DWM. На Optimus не чёрное; для GPU-окон (Discord) — живое (в
+        // отличие от статичного PrintWindow). Один и тот же путь для обоих. ──
+        private WgcCapturer _wgc;
+        private IntPtr _wgcHandle;    // HWND (окно) или HMONITOR (монитор) — источник
+        private bool _wgcIsMon;
+        private bool _wgcFailed;
+        private string _wgcErr;
 
-        /// <summary>Кадр монитора через WGC → DIB-буфер d. false = не вышло → GDI.</summary>
-        private bool CaptureMonitorWgc(DibBuf d, Rectangle src, int outW, int outH)
+        /// <summary>Кадр окна/монитора через WGC → DIB-буфер d. isWindow=true → win
+        /// (HWND); иначе монитор по bounds. false = WGC не поднялся (аварийный GDI).</summary>
+        private bool CaptureWgc(DibBuf d, bool isWindow, IntPtr win, Rectangle bounds, int outW, int outH)
         {
-            if (_wgcMonFailed) return false;
-            if (_wgcMon == null || _wgcMonBounds != src)
+            if (_wgcFailed) return false;
+            IntPtr handle = isWindow
+                ? win
+                : MonitorFromPoint(new POINT { X = bounds.X + bounds.Width / 2, Y = bounds.Y + bounds.Height / 2 }, 2 /*NEAREST*/);
+            if (handle == IntPtr.Zero) return false;
+            if (_wgc == null || _wgcHandle != handle || _wgcIsMon != !isWindow)
             {
                 try
                 {
-                    _wgcMon?.Dispose();
-                    IntPtr hmon = MonitorFromPoint(new POINT { X = src.X + src.Width / 2, Y = src.Y + src.Height / 2 }, 2 /*NEAREST*/);
-                    _wgcMon = new WgcCapturer(hmon, true);
-                    _wgcMonBounds = src;
+                    _wgc?.Dispose();
+                    _wgc = new WgcCapturer(handle, !isWindow);
+                    _wgcHandle = handle; _wgcIsMon = !isWindow;
                 }
-                catch (Exception ex) { _wgcMon?.Dispose(); _wgcMon = null; _wgcMonFailed = true; _wgcMonErr = ex.Message; return false; }
+                catch (Exception ex) { _wgc?.Dispose(); _wgc = null; _wgcFailed = true; _wgcErr = ex.Message; return false; }
             }
             try
             {
-                _wgcMon.TryAcquireFrame(8);
-                if (!_wgcMon.HasFrame) return false;
+                _wgc.TryAcquireFrame(8);
+                if (!_wgc.HasFrame) return false;
             }
-            catch { try { _wgcMon.Dispose(); } catch { } _wgcMon = null; return false; }
+            catch { try { _wgc.Dispose(); } catch { } _wgc = null; return false; }
 
             if (!EnsureDibBuf(d, outW, outH)) return false;
             var bmi = new BITMAPINFO
             {
                 biSize = 40,
-                biWidth = _wgcMon.Width,
-                biHeight = -_wgcMon.Height,
+                biWidth = _wgc.Width,
+                biHeight = -_wgc.Height,
                 biPlanes = 1,
                 biBitCount = 32,
                 biCompression = 0
             };
-            bool ok = StretchDIBits(d.Dc, 0, 0, outW, outH, 0, 0, _wgcMon.Width, _wgcMon.Height,
-                                 _wgcMon.Buffer, ref bmi, 0, SRCCOPY) > 0;
+            bool ok = StretchDIBits(d.Dc, 0, 0, outW, outH, 0, 0, _wgc.Width, _wgc.Height,
+                                 _wgc.Buffer, ref bmi, 0, SRCCOPY) > 0;
             if (ok) _capMode = "WGC";
             return ok;
         }
