@@ -254,28 +254,13 @@ namespace PISMO
             LayoutTiles();
         }
 
-        private int _selfScrRx;   // сколько кадров своей демки реально дошло сюда
-
         /// <summary>Сырой BGRA-кадр собственной демки: рендер в плитку и PIP.</summary>
         private void OnSelfScreenRawFrame(byte[] bgra, int w, int h)
         {
-            _selfScrRx++;
-            bool haveTile = _tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile);
-            if (haveTile)
+            if (_tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile))
                 SetTileRaw(tile, bgra, w, h);
             if (_screenPipPicture != null && !_screenPipPicture.IsDisposed)
                 SetPipRaw(bgra, w, h);
-
-            // ДИАГНОСТИКА на плитке: rx = дошло кадров, ярк = средняя яркость кадра.
-            // rx растёт + ярк>10 → кадры есть и не чёрные (проблема была бы в рендере);
-            // ярк≈0 → кадры чёрные (проблема захвата); rx не растёт → кадры не доходят.
-            if (haveTile && tile.Lbl != null && (_selfScrRx % 10 == 0))
-            {
-                long sum = 0; int n = 0;
-                for (int i = 0; i + 2 < bgra.Length; i += 4000) { sum += bgra[i] + bgra[i + 1] + bgra[i + 2]; n++; }
-                int bright = n > 0 ? (int)(sum / (n * 3)) : 0;
-                try { tile.Lbl.Text = $"🖥 Демонстрация · rx {_selfScrRx} · ярк {bright}"; } catch { }
-            }
         }
 
         /// <summary>Старый BMP-путь превью (оставлен для совместимости контракта).</summary>

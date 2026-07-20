@@ -37,12 +37,14 @@ namespace PISMO.Native
             {
                 Check(CreateDXGIFactory1(IID_IDXGIFactory1, out factory), "CreateDXGIFactory1");
 
-                // Optimus/мульти-GPU: дупликация выхода работает ТОЛЬКО на том
-                // адаптере, который реально гонит монитор (обычно Intel), даже если
-                // приложение форснуто на NVIDIA (→ 0x887A0004 UNSUPPORTED). Поэтому
-                // перебираем ВСЕ адаптеры: создаём устройство на адаптере и пробуем
-                // DuplicateOutput на его выходах — берём первую успешную пару.
-                for (uint a = 0; _dupl == IntPtr.Zero; a++)
+                // Optimus/мульти-GPU: НЕСКОЛЬКО адаптеров могут дуплицировать один и
+                // тот же монитор, но кадр отдаёт непустым ТОЛЬКО тот, что реально
+                // рисует рабочий стол (Intel); NVIDIA-кандидат «успешно» даёт ЧЁРНОЕ.
+                // Поэтому для каждого кандидата делаем ТЕСТ-захват кадра и выбираем
+                // тот, чей кадр НЕ чёрный. Если непустого нет — берём первый рабочий.
+                bool committedContent = false;   // выбран кандидат с непустым кадром
+                bool committedWanted = false;    // текущий кандидат — «нужный» монитор
+                for (uint a = 0; !committedContent; a++)
                 {
                     if (VtblCall2(factory, 12, a, out IntPtr ad) != 0) break;   // EnumAdapters1
                     IntPtr dev = IntPtr.Zero, ctx = IntPtr.Zero;
@@ -52,7 +54,7 @@ namespace PISMO.Native
                                                    pLevels, (uint)levels.Length, 7, out dev, out _, out ctx);
                         if (hr != 0) { lastHr = hr; continue; }
 
-                        for (uint o = 0; ; o++)
+                        for (uint o = 0; !committedContent; o++)
                         {
                             if (VtblCall2(ad, 7, o, out IntPtr op) != 0) break;  // EnumOutputs
                             try
@@ -65,22 +67,32 @@ namespace PISMO.Native
                                 try
                                 {
                                     int dhr = VtblCall2Ptr(o1, 22, dev, out IntPtr dup);   // DuplicateOutput
-                                    if (dhr == 0)
+                                    if (dhr != 0) { lastHr = dhr; continue; }
+
+                                    // Тест-захват: этот адаптер отдаёт НЕпустой кадр нужного монитора?
+                                    bool content = wanted && DuplYieldsContent(dev, ctx, dup);
+                                    if (content)
                                     {
-                                        // нашли рабочую пару; если это не «нужный» монитор,
-                                        // но других нет — сгодится. «Нужный» имеет приоритет.
-                                        if (_dupl == IntPtr.Zero || wanted)
-                                        {
-                                            if (_dupl != IntPtr.Zero) Marshal.Release(_dupl);
-                                            if (_device != IntPtr.Zero) Marshal.Release(_device);
-                                            if (_context != IntPtr.Zero) Marshal.Release(_context);
-                                            _dupl = dup; _device = dev; _context = ctx;
-                                            Marshal.AddRef(dev); Marshal.AddRef(ctx);
-                                            if (wanted) { o = uint.MaxValue - 1; } // выходим — это нужный монитор
-                                        }
-                                        else Marshal.Release(dup);
+                                        // идеал: нужный монитор + живая картинка → фиксируем и выходим
+                                        if (_dupl != IntPtr.Zero) Marshal.Release(_dupl);
+                                        if (_device != IntPtr.Zero) Marshal.Release(_device);
+                                        if (_context != IntPtr.Zero) Marshal.Release(_context);
+                                        _dupl = dup; _device = dev; _context = ctx;
+                                        Marshal.AddRef(dev); Marshal.AddRef(ctx);
+                                        committedContent = true; committedWanted = true;
                                     }
-                                    else lastHr = dhr;
+                                    else if (_dupl == IntPtr.Zero || (wanted && !committedWanted))
+                                    {
+                                        // запасной кандидат (первый рабочий / первый «нужный»),
+                                        // пока не нашли адаптер с непустым кадром
+                                        if (_dupl != IntPtr.Zero) Marshal.Release(_dupl);
+                                        if (_device != IntPtr.Zero) Marshal.Release(_device);
+                                        if (_context != IntPtr.Zero) Marshal.Release(_context);
+                                        _dupl = dup; _device = dev; _context = ctx;
+                                        Marshal.AddRef(dev); Marshal.AddRef(ctx);
+                                        committedWanted = wanted;
+                                    }
+                                    else Marshal.Release(dup);
                                 }
                                 finally { Marshal.Release(o1); }
                             }
@@ -131,6 +143,77 @@ namespace PISMO.Native
                 Marshal.FreeHGlobal(pLevels);
                 if (factory != IntPtr.Zero) Marshal.Release(factory);
             }
+        }
+
+        // Тест-захват: пробует получить кадр с этого (dev/ctx/dupl) и проверяет, что
+        // он НЕ полностью чёрный. Нужен для Optimus: NVIDIA-кандидат дуплицируется
+        // «успешно», но отдаёт чёрное; Intel — реальную картинку. Оставляет
+        // дупликацию в чистом состоянии (кадр освобождён) для дальнейшего захвата.
+        private static bool DuplYieldsContent(IntPtr dev, IntPtr ctx, IntPtr dupl)
+        {
+            var dd = new DXGI_OUTDUPL_DESC();
+            GetDuplDesc(dupl, ref dd);
+            int w = (int)dd.ModeWidth, h = (int)dd.ModeHeight;
+            if (w <= 0 || h <= 0) return false;
+
+            var td = new D3D11_TEXTURE2D_DESC
+            {
+                Width = (uint)w, Height = (uint)h, MipLevels = 1, ArraySize = 1,
+                Format = 87, SampleCount = 1, SampleQuality = 0, Usage = 3,
+                BindFlags = 0, CPUAccessFlags = 0x20000, MiscFlags = 0
+            };
+            if (CreateTexture2D(dev, ref td, out IntPtr staging) != 0 || staging == IntPtr.Zero) return false;
+
+            bool content = false;
+            try
+            {
+                // Первый AcquireNextFrame обычно сразу отдаёт текущий рабочий стол;
+                // до ~12 попыток по 50мс на случай статичного экрана.
+                for (int attempt = 0; attempt < 12 && !content; attempt++)
+                {
+                    var fi = new DXGI_OUTDUPL_FRAME_INFO();
+                    int hr = AcquireNextFrame(dupl, 50, ref fi, out IntPtr res);
+                    if (hr != 0) continue;   // таймаут/ошибка — res невалиден
+                    try
+                    {
+                        IntPtr tex = QueryInterface(res, IID_ID3D11Texture2D);
+                        try
+                        {
+                            CopyResource(ctx, staging, tex);
+                            var m = new D3D11_MAPPED_SUBRESOURCE();
+                            if (MapResource(ctx, staging, 0, 1, 0, ref m) == 0)
+                            {
+                                try { content = MappedHasContent(m.pData, w, h, (int)m.RowPitch); }
+                                finally { UnmapResource(ctx, staging, 0); }
+                            }
+                        }
+                        finally { Marshal.Release(tex); }
+                    }
+                    catch { }
+                    finally { ReleaseFrame(dupl); if (res != IntPtr.Zero) Marshal.Release(res); }
+                }
+            }
+            catch { }
+            finally { Marshal.Release(staging); }
+            return content;
+        }
+
+        // Кадр не полностью чёрный: сэмплируем сетку ~64×64, «есть картинка» = хотя
+        // бы ~1% точек не чёрные (одиночный яркий пиксель не считается).
+        private static bool MappedHasContent(IntPtr data, int w, int h, int rowPitch)
+        {
+            if (data == IntPtr.Zero || rowPitch <= 0) return false;
+            int total = 0, nonBlack = 0;
+            int stepY = Math.Max(1, h / 64), stepX = Math.Max(1, w / 64);
+            for (int y = 0; y < h; y += stepY)
+                for (int x = 0; x < w; x += stepX)
+                {
+                    int off = y * rowPitch + x * 4;
+                    total++;
+                    if (Marshal.ReadByte(data, off) > 12 || Marshal.ReadByte(data, off + 1) > 12 || Marshal.ReadByte(data, off + 2) > 12)
+                        nonBlack++;
+                }
+            return total > 0 && nonBlack * 100 >= total;
         }
 
         /// <summary>Пытается забрать новый кадр (timeoutMs). true — Buffer обновлён;

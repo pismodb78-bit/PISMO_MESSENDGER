@@ -1245,11 +1245,11 @@ namespace PISMO.Native
                             outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
                         var d = _dibs[_dibIdx];
-                        // Захват монитора — только GDI (BitBlt с экрана). DXGI на
-                        // Optimus-ноутбуках отдаёт ЧЁРНЫЕ кадры (рабочий стол ведёт
-                        // Intel, дублируем с NVIDIA), а GDI берёт реальные пиксели.
-                        // FPS чуть ниже 60, зато картинка есть всегда.
-                        if (CaptureMonitorDib(d, bounds, outW, outH))
+                        // Монитор: DXGI (60fps). DxgiDuplicator сам выбирает адаптер
+                        // с НЕпустым кадром (Optimus: Intel, не чёрная NVIDIA). GDI —
+                        // только если DXGI вообще не поднялся (адаптеров нет).
+                        if (CaptureMonitorDxgi(d, bounds, outW, outH)
+                            || CaptureMonitorDib(d, bounds, outW, outH))
                         {
                             _scrConsecFails = 0;
                             _grabCount++;
@@ -1443,14 +1443,16 @@ namespace PISMO.Native
                 return false;
             }
 
-            // Детект чёрных кадров DXGI (Optimus): проверяем КАЖДЫЙ кадр. Если
-            // подряд идёт ≥8 чёрных — Desktop Duplication на этой машине не отдаёт
-            // картинку (рабочий стол ведёт Intel), навсегда уходим на GDI.
+            // Страховка от чёрного экрана: DxgiDuplicator уже выбрал адаптер с
+            // непустым кадром, так что в норме тут всегда картинка. Но если по
+            // какой-то причине кадры идут чёрными ≥30 подряд (~0.5с) — лучше отдать
+            // рабочий GDI, чем чёрный экран. 30, а не 8 — чтобы тёмные сцены
+            // игры/видео (почти чёрные) не считались за сбой.
             if (BufferHasContent(_dxgi.Buffer, _dxgi.Width * _dxgi.Height * 4))
             {
                 _dxgiBlackRun = 0;
             }
-            else if (++_dxgiBlackRun >= 8)
+            else if (++_dxgiBlackRun >= 30)
             {
                 _dxgiFailed = true;
                 _dxgiErr = "чёрные кадры → GDI";
