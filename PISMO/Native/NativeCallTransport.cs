@@ -1268,11 +1268,11 @@ namespace PISMO.Native
                             outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
                         var d = _dibs[_dibIdx];
-                        // Монитор: DXGI (60fps). DxgiDuplicator сам выбирает адаптер
-                        // с НЕпустым кадром (Optimus: Intel, не чёрная NVIDIA). GDI —
-                        // только если DXGI вообще не поднялся (адаптеров нет).
-                        if (CaptureMonitorDxgi(d, bounds, outW, outH)
-                            || CaptureMonitorDib(d, bounds, outW, outH))
+                        // Монитор — ТОЛЬКО GDI (BitBlt с экрана). DXGI на этом Optimus
+                        // отдаёт ЧЁРНЫЕ кадры при трансляции (даже когда тест-адаптер
+                        // прошёл), а GDI берёт реальные пиксели (в пикере источника и
+                        // в v2.6.8 картинка была). ~48fps при 1080p, зато не чёрное.
+                        if (CaptureMonitorDib(d, bounds, outW, outH))
                         {
                             _scrConsecFails = 0;
                             _grabCount++;
