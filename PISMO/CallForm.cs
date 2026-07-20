@@ -1608,10 +1608,30 @@ namespace PISMO
             new ToolTip().SetToolTip(btnSwitch, "Сменить источник (игра / весь экран)");
             btnSwitch.Click += (s, e) => SwitchScreenSourceLive();
 
+            // Крестик: закрыть мини-окно совсем (демонстрация ПРОДОЛЖАЕТСЯ, превью
+            // живёт в плитке звонка). Чтобы не убирать окно в трей и не доставать
+            // его оттуда каждый раз.
+            var btnClose = new Button
+            {
+                Text = "✕",
+                Dock = DockStyle.Right,
+                Width = 26,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(40, 42, 46),
+                ForeColor = Color.White
+            };
+            btnClose.FlatAppearance.BorderSize = 0;
+            btnClose.FlatAppearance.MouseOverBackColor = Color.FromArgb(232, 17, 35);
+            new ToolTip().SetToolTip(btnClose, "Закрыть мини-окно (демонстрация продолжится)");
+            btnClose.Click += (s, e) => HideScreenSharePip();
+
+            // Порядок Add для Dock=Right: добавленный РАНЬШЕ встаёт правее. Крестик
+            // первым среди правых → в самом правом углу.
             _screenPipTitleBar.Controls.Add(lbl);
-            _screenPipTitleBar.Controls.Add(btnSwitch);
-            _screenPipTitleBar.Controls.Add(btnToggle);
+            _screenPipTitleBar.Controls.Add(btnClose);
             _screenPipTitleBar.Controls.Add(btnTray);
+            _screenPipTitleBar.Controls.Add(btnToggle);
+            _screenPipTitleBar.Controls.Add(btnSwitch);
 
             _screenPipPicture = new PictureBox
             {
