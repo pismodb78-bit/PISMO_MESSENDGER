@@ -1521,9 +1521,7 @@ namespace PISMO
                 if (_screenSharing && _lblScreenBadge != null && !_lblScreenBadge.IsDisposed
                     && !string.IsNullOrEmpty(text))
                 {
-                    _lblScreenBadge.Text = "🖥 Демонстрация · " + text
-                        + " · R" + _selfRenderCount + " T" + (_selfTileFound ? "1" : "0")
-                        + " рб" + _selfRenderBright + _selfRenderDbg;
+                    _lblScreenBadge.Text = "🖥 Демонстрация · " + text;
                     _lblScreenBadge.Visible = true;
                 }
             }

@@ -254,28 +254,10 @@ namespace PISMO
             LayoutTiles();
         }
 
-        // Диагностика рендера своей демки (видна на бейдже): R=вызовов рендера,
-        // T=найдена плитка, V=Pb.Visible, I=Image задан, sz=размер панели,
-        // рб=яркость кадра на момент рендера.
-        internal int _selfRenderCount;
-        internal bool _selfTileFound;
-        internal int _selfRenderBright = -1;
-        internal string _selfRenderDbg = "";
-
         /// <summary>Сырой BGRA-кадр собственной демки: рендер в плитку и PIP.</summary>
         private void OnSelfScreenRawFrame(byte[] bgra, int w, int h)
         {
-            _selfRenderCount++;
-            try
-            {
-                long sum = 0; int n = 0;
-                for (int i = 0; i + 2 < bgra.Length; i += 4000) { sum += bgra[i] + bgra[i + 1] + bgra[i + 2]; n++; }
-                _selfRenderBright = n > 0 ? (int)(sum / (n * 3)) : -1;
-            }
-            catch { }
-            bool found = _tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile);
-            _selfTileFound = found;
-            if (found)
+            if (_tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile))
             {
                 // Плитка должна быть видима и «с видео» — иначе PaintTile рисует
                 // заглушку-аватар поверх (панель серая). Форсируем как у зрителя.
@@ -283,13 +265,6 @@ namespace PISMO
                 if (tile.Pb != null && !tile.Pb.Visible) tile.Pb.Visible = true;
                 if (tile.WatchBtn != null && tile.WatchBtn.Visible) tile.WatchBtn.Visible = false;
                 SetTileRaw(tile, bgra, w, h);
-                try
-                {
-                    _selfRenderDbg = " V" + (tile.Pb != null && tile.Pb.Visible ? "1" : "0")
-                        + " I" + (tile.Pb != null && tile.Pb.Image != null ? "1" : "0")
-                        + " sz" + (tile.Panel?.Width ?? -1) + "x" + (tile.Panel?.Height ?? -1);
-                }
-                catch { }
             }
             if (_screenPipPicture != null && !_screenPipPicture.IsDisposed)
                 SetPipRaw(bgra, w, h);
@@ -816,20 +791,23 @@ namespace PISMO
         // и перерисовываем.
         private readonly Dictionary<PictureBox, Bitmap> _rawBmp = new();
 
-        /// <summary>Копирует BGRA-буфер в НОВЫЙ Bitmap и показывает в PictureBox —
-        /// ровно как камера (SetTileImage), которая на этой машине рисует. Пишем в
-        /// свежий, ещё не показанный битмап (LockBits безопасен), потом присваиваем
-        /// и освобождаем старый. Без переиспользования — надёжнее.</summary>
+        /// <summary>Копирует BGRA-буфер в НОВЫЙ Bitmap и показывает в PictureBox.
+        /// ВАЖНО: формат Format32bppRgb (без альфы), а НЕ Argb. Сырой кадр WGC —
+        /// B8G8R8A8, где альфа-байт = 0 (захват не заполняет альфу). В 32bppArgb
+        /// альфа=0 = ПОЛНОСТЬЮ ПРОЗРАЧНЫЙ пиксель → плитка своей демки рисовалась
+        /// чёрной (фон PictureBox), хотя байты RGB непустые (яркость на бейдже была
+        /// нормальной). У зрителя кадр декодируется из видео с альфой=255, поэтому
+        /// там всё показывалось. 32bppRgb игнорирует альфу — кадр непрозрачен.</summary>
         private void SetPictureRaw(PictureBox pb, byte[] bgra, int w, int h)
         {
             if (pb == null || pb.IsDisposed || bgra == null || w <= 0 || h <= 0) return;
             Bitmap img;
             try
             {
-                img = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                img = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
                 var bd = img.LockBits(new Rectangle(0, 0, w, h),
                     System.Drawing.Imaging.ImageLockMode.WriteOnly,
-                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    System.Drawing.Imaging.PixelFormat.Format32bppRgb);
                 try
                 {
                     int stride = bd.Stride;
