@@ -1330,7 +1330,7 @@ namespace PISMO.Native
             _capBmp = null; _scaledBmp = null;
             FreeDib();
             try { _dxgi?.Dispose(); } catch { }
-            _dxgi = null; _dxgiFailed = false; _dxgiBlackRun = 0; _dxgiSawContent = false;   // следующая демка снова попробует DXGI
+            _dxgi = null; _dxgiFailed = false; _dxgiBlackRun = 0;   // следующая демка снова попробует DXGI
             if (_screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, _screenDc); } catch { } _screenDc = IntPtr.Zero; }
         }
 
@@ -1396,7 +1396,6 @@ namespace PISMO.Native
         private bool _dxgiFailed;   // DXGI недоступен → навсегда GDI-путь (до рестарта демки)
         private string _dxgiErr;    // причина отказа DXGI (для плашки диагностики)
         private int _dxgiBlackRun;  // подряд чёрных кадров DXGI
-        private bool _dxgiSawContent;   // DXGI хоть раз отдал непустой кадр
 
         // Проверка «кадр не полностью чёрный»: на Optimus-ноутбуках Desktop
         // Duplication нередко «успешно» отдаёт ЧЁРНЫЕ кадры (рабочий стол ведёт
@@ -1405,14 +1404,17 @@ namespace PISMO.Native
         private static bool BufferHasContent(IntPtr buf, int lenBytes)
         {
             if (buf == IntPtr.Zero || lenBytes < 4) return false;
-            // Сэмплируем ~каждые 2000 байт (без unsafe): ищем непустой B/G/R.
+            // Сэмплируем ~каждые 2000 байт (без unsafe). «Есть картинка» = хотя бы
+            // ~1% сэмплов не чёрные (одиночный яркий пиксель не должен «спасать»
+            // чёрный DXGI-кадр — иначе плитка чёрная, а откат на GDI не срабатывает).
+            int total = 0, nonBlack = 0;
             for (int i = 0; i + 2 < lenBytes; i += 2000)
             {
-                if (Marshal.ReadByte(buf, i) > 8) return true;
-                if (Marshal.ReadByte(buf, i + 1) > 8) return true;
-                if (Marshal.ReadByte(buf, i + 2) > 8) return true;
+                total++;
+                if (Marshal.ReadByte(buf, i) > 12 || Marshal.ReadByte(buf, i + 1) > 12 || Marshal.ReadByte(buf, i + 2) > 12)
+                    nonBlack++;
             }
-            return false;
+            return total > 0 && nonBlack * 100 >= total;   // ≥1% непустых
         }
 
         /// <summary>Кадр монитора через DXGI в DIB-буфер d (масштабирование через
@@ -1438,21 +1440,20 @@ namespace PISMO.Native
                 return false;
             }
 
-            // Детект чёрных кадров DXGI (Optimus): если первые ~20 кадров подряд
-            // пустые — Desktop Duplication на этой машине не отдаёт картинку,
-            // переключаемся на GDI (он захватывает реально).
-            if (!_dxgiSawContent)
+            // Детект чёрных кадров DXGI (Optimus): проверяем КАЖДЫЙ кадр. Если
+            // подряд идёт ≥8 чёрных — Desktop Duplication на этой машине не отдаёт
+            // картинку (рабочий стол ведёт Intel), навсегда уходим на GDI.
+            if (BufferHasContent(_dxgi.Buffer, _dxgi.Width * _dxgi.Height * 4))
             {
-                if (BufferHasContent(_dxgi.Buffer, _dxgi.Width * _dxgi.Height * 4))
-                    _dxgiSawContent = true;
-                else if (++_dxgiBlackRun >= 20)
-                {
-                    _dxgiFailed = true;
-                    _dxgiErr = "чёрные кадры → GDI";
-                    try { _dxgi.Dispose(); } catch { }
-                    _dxgi = null;
-                    return false;
-                }
+                _dxgiBlackRun = 0;
+            }
+            else if (++_dxgiBlackRun >= 8)
+            {
+                _dxgiFailed = true;
+                _dxgiErr = "чёрные кадры → GDI";
+                try { _dxgi.Dispose(); } catch { }
+                _dxgi = null;
+                return false;
             }
 
             if (!EnsureDibBuf(d, outW, outH)) return false;
