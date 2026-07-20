@@ -33,8 +33,7 @@ namespace PISMO.Native
         private Func<int, int> _rnCreate;
         private Func<int, int, int, float> _rnProcess;
         private Func<int, int> _malloc;
-        private int _st;        // DenoiseState* (проход 1)
-        private int _st2;       // DenoiseState* (проход 2 — отдельное состояние, как node2 в тесте)
+        private int _st;        // DenoiseState* (один проход)
         private int _inPtr;     // float[480] в wasm-памяти
         private int _outPtr;    // float[480]
         private bool _ok;
@@ -44,6 +43,19 @@ namespace PISMO.Native
         private int _inCount;
         private short[] _outFifo = new short[FRAME * 4];
         private int _outHead, _outCount;
+
+        // VAD-затухание остаточного шума: rnnoise_process_frame возвращает
+        // вероятность речи (0..1). В паузах дожимаем фон ещё на ~-18дБ, в речи —
+        // gain=1. Сглаживаем (быстрая атака / медленный спад), чтобы не рубить
+        // начала/хвосты слов (иначе голос «цифровой/звонкий»).
+        private const float VAD_SPEECH = 0.55f;   // выше — точно речь → gain→1
+        private const float VAD_NOISE = 0.15f;    // ниже — точно пауза → gain→FLOOR
+        private const float GAIN_FLOOR = 0.12f;   // остаточный фон в паузе (~-18дБ)
+        private float _gain = 1f;
+
+        // Плавный вход: первые кадры RNNoise со свежим состоянием дают всплеск-
+        // «скрежет». Прогоняем их через рампу 0→1 (~150мс), чтобы не резало по ушам.
+        private int _fadeLeft = 15;   // 15 кадров * 10мс = 150мс
 
         public bool IsReady => _ok;
 
@@ -134,8 +146,7 @@ namespace PISMO.Native
                 throw new InvalidOperationException("missing rnnoise exports");
 
             _st = _rnCreate(0);    // 0 = встроенная модель
-            _st2 = _rnCreate(0);   // второе состояние для второго прохода
-            if (_st == 0 || _st2 == 0) throw new InvalidOperationException("rnnoise_create failed");
+            if (_st == 0) throw new InvalidOperationException("rnnoise_create failed");
             _inPtr = _malloc(FRAME * 4);
             _outPtr = _malloc(FRAME * 4);
             if (_inPtr == 0 || _outPtr == 0) throw new InvalidOperationException("malloc failed");
@@ -196,15 +207,27 @@ namespace PISMO.Native
 
                 // ОДИН проход RNNoise: два прохода переобрабатывают голос — он
                 // становится «звонким/цифровым» (как дешёвый микрофон). Один проход
-                // давит шум достаточно и сохраняет натуральность голоса.
-                _rnProcess(_st, _outPtr, _inPtr);      // in -> out
+                // давит шум достаточно и сохраняет натуральность голоса. Возврат —
+                // вероятность речи (VAD), ей дожимаем остаточный фон в паузах.
+                float vad = _rnProcess(_st, _outPtr, _inPtr);   // in -> out
+
+                // Целевой gain по VAD + сглаживание (быстрая атака, медленный спад).
+                float target = vad >= VAD_SPEECH ? 1f
+                    : vad <= VAD_NOISE ? GAIN_FLOOR
+                    : GAIN_FLOOR + (1f - GAIN_FLOOR) * ((vad - VAD_NOISE) / (VAD_SPEECH - VAD_NOISE));
+                _gain += (target > _gain ? 0.6f : 0.05f) * (target - _gain);
+
+                // Плавный вход первых кадров (рампа 0→1) — глушит стартовый «скрежет».
+                float fade = 1f;
+                if (_fadeLeft > 0) { fade = 1f - (_fadeLeft / 15f); _fadeLeft--; }
+                float g = _gain * fade;
 
                 // память могла переехать при вызове — берём span заново
                 var span2 = _memory.GetSpan<byte>(0);
                 var outF = MemoryMarshal.Cast<byte, float>(span2.Slice(_outPtr, FRAME * 4));
                 for (int i = 0; i < FRAME; i++)
                 {
-                    float v = outF[i];
+                    float v = outF[i] * g;
                     if (v > 32767f) v = 32767f; else if (v < -32768f) v = -32768f;
                     PushOut((short)v);
                 }

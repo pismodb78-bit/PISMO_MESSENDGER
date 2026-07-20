@@ -114,11 +114,13 @@ namespace PISMO.Native
             int w = Math.Max(2, size.Width) & ~1;
             int h = Math.Max(2, size.Height) & ~1;
 
+            // Глубина пула 3 (а не 2): запас на случай, если поток захвата на кадр
+            // отстанет — DWM не начнёт резать выдачу, пока есть свободный буфер.
             if (_pool == null)
                 _pool = Direct3D11CaptureFramePool.CreateFreeThreaded(
-                    _rtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, new SizeInt32 { Width = w, Height = h });
+                    _rtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 3, new SizeInt32 { Width = w, Height = h });
             else
-                _pool.Recreate(_rtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, new SizeInt32 { Width = w, Height = h });
+                _pool.Recreate(_rtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 3, new SizeInt32 { Width = w, Height = h });
             _poolW = w; _poolH = h;
 
             if (_staging != IntPtr.Zero) { Marshal.Release(_staging); _staging = IntPtr.Zero; }
@@ -148,8 +150,20 @@ namespace PISMO.Native
         {
             if (_disposed || _pool == null) return false;
             Direct3D11CaptureFrame frame = null;
-            try { frame = _pool.TryGetNextFrame(); }
-            catch { return false; }
+            try
+            {
+                // Осушаем очередь до САМОГО свежего кадра, освобождая устаревшие сразу.
+                // Пул CreateFreeThreaded имеет конечную глубину: если кадры копятся
+                // быстрее, чем мы их забираем по одному, буферы кончаются и DWM режет
+                // выдачу вдвое (60→30 через пару минут). Дренаж держит пул свободным.
+                Direct3D11CaptureFrame f;
+                while ((f = _pool.TryGetNextFrame()) != null)
+                {
+                    frame?.Dispose();
+                    frame = f;
+                }
+            }
+            catch { try { frame?.Dispose(); } catch { } return false; }
             if (frame == null) return false;
             try
             {
