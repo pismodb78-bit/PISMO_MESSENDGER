@@ -2,7 +2,16 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- Версия Windows в TFM даёт проекции WinRT для Windows.Graphics.Capture
+         (WGC) — единственный путь к 60fps захвату монитора БЕЗ чёрного экрана на
+         Optimus (берёт композицию DWM). Версии платформы фиксируем явно, иначе на
+         машинах с новым Windows SDK MSBuild подставляет его и падает
+         SupportedOSPlatformVersion. Если пакет microsoft.windows.sdk.net.ref не
+         тянется — очистить кэш NuGet (dotnet nuget locals all --clear) и restore. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <!-- WPF нужен ТОЛЬКО для растеризации ЦВЕТНЫХ эмодзи (GDI+ не умеет
@@ -13,9 +22,9 @@
     <RootNamespace>PISMO</RootNamespace>
     <ApplicationIcon>pismo.ico</ApplicationIcon>
     <StartupObject>PISMO.Program</StartupObject>
-    <Version>2.6.8</Version>
-    <AssemblyVersion>2.6.8.0</AssemblyVersion>
-    <FileVersion>2.6.8.0</FileVersion>
+    <Version>2.6.9</Version>
+    <AssemblyVersion>2.6.9.0</AssemblyVersion>
+    <FileVersion>2.6.9.0</FileVersion>
     <Company>PISMO</Company>
     <Product>PISMO Messenger</Product>
   </PropertyGroup>

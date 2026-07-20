@@ -1268,11 +1268,11 @@ namespace PISMO.Native
                             outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
                         var d = _dibs[_dibIdx];
-                        // Монитор — ТОЛЬКО GDI (BitBlt с экрана). DXGI на этом Optimus
-                        // отдаёт ЧЁРНЫЕ кадры при трансляции (даже когда тест-адаптер
-                        // прошёл), а GDI берёт реальные пиксели (в пикере источника и
-                        // в v2.6.8 картинка была). ~48fps при 1080p, зато не чёрное.
-                        if (CaptureMonitorDib(d, bounds, outW, outH))
+                        // Монитор: WGC (60fps, композиция DWM — не чёрное на Optimus,
+                        // в отличие от DXGI-дупликации). Откат на GDI, если WGC не
+                        // поддерживается/не поднялся.
+                        if (CaptureMonitorWgc(d, bounds, outW, outH)
+                            || CaptureMonitorDib(d, bounds, outW, outH))
                         {
                             _scrConsecFails = 0;
                             _grabCount++;
@@ -1357,6 +1357,8 @@ namespace PISMO.Native
             FreeDib();
             try { _dxgi?.Dispose(); } catch { }
             _dxgi = null; _dxgiFailed = false; _dxgiBlackRun = 0;   // следующая демка снова попробует DXGI
+            try { _wgcMon?.Dispose(); } catch { }
+            _wgcMon = null; _wgcMonBounds = Rectangle.Empty; _wgcMonFailed = false;
             if (_screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, _screenDc); } catch { } _screenDc = IntPtr.Zero; }
         }
 
@@ -1415,6 +1417,56 @@ namespace PISMO.Native
                 ? BitBlt(d.Dc, 0, 0, outW, outH, _screenDc, src.X, src.Y, SRCCOPY)
                 : StretchBlt(d.Dc, 0, 0, outW, outH, _screenDc, src.X, src.Y, src.Width, src.Height, SRCCOPY);
         }
+
+        // ── WGC (Windows.Graphics.Capture): 60fps захват монитора через DWM ──
+        // На Optimus даёт НЕ чёрную картинку (в отличие от DXGI-дупликации).
+        private WgcCapturer _wgcMon;
+        private Rectangle _wgcMonBounds;
+        private bool _wgcMonFailed;
+        private string _wgcMonErr;
+
+        /// <summary>Кадр монитора через WGC → DIB-буфер d. false = не вышло → GDI.</summary>
+        private bool CaptureMonitorWgc(DibBuf d, Rectangle src, int outW, int outH)
+        {
+            if (_wgcMonFailed) return false;
+            if (_wgcMon == null || _wgcMonBounds != src)
+            {
+                try
+                {
+                    _wgcMon?.Dispose();
+                    IntPtr hmon = MonitorFromPoint(new POINT { X = src.X + src.Width / 2, Y = src.Y + src.Height / 2 }, 2 /*NEAREST*/);
+                    _wgcMon = new WgcCapturer(hmon, true);
+                    _wgcMonBounds = src;
+                }
+                catch (Exception ex) { _wgcMon?.Dispose(); _wgcMon = null; _wgcMonFailed = true; _wgcMonErr = ex.Message; return false; }
+            }
+            try
+            {
+                _wgcMon.TryAcquireFrame(8);
+                if (!_wgcMon.HasFrame) return false;
+            }
+            catch { try { _wgcMon.Dispose(); } catch { } _wgcMon = null; return false; }
+
+            if (!EnsureDibBuf(d, outW, outH)) return false;
+            var bmi = new BITMAPINFO
+            {
+                biSize = 40,
+                biWidth = _wgcMon.Width,
+                biHeight = -_wgcMon.Height,
+                biPlanes = 1,
+                biBitCount = 32,
+                biCompression = 0
+            };
+            bool ok = StretchDIBits(d.Dc, 0, 0, outW, outH, 0, 0, _wgcMon.Width, _wgcMon.Height,
+                                 _wgcMon.Buffer, ref bmi, 0, SRCCOPY) > 0;
+            if (ok) _capMode = "WGC";
+            return ok;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT { public int X, Y; }
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
 
         // ── DXGI Desktop Duplication: кадры от видеодрайвера (GPU) ────────
         private DxgiDuplicator _dxgi;
