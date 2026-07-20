@@ -194,10 +194,10 @@ namespace PISMO.Native
                 var floats = MemoryMarshal.Cast<byte, float>(span.Slice(_inPtr, FRAME * 4));
                 for (int i = 0; i < FRAME; i++) floats[i] = _inFifo[inOffset + i];   // i16-диапазон как float
 
-                // Два прохода RNNoise (как в тесте: node -> node2), КАЖДЫЙ со своим
-                // состоянием — сильнее давит клавиатуру/мышь без порчи pitch-модели.
-                _rnProcess(_st, _outPtr, _inPtr);      // проход 1: in -> out
-                _rnProcess(_st2, _outPtr, _outPtr);    // проход 2: out -> out
+                // ОДИН проход RNNoise: два прохода переобрабатывают голос — он
+                // становится «звонким/цифровым» (как дешёвый микрофон). Один проход
+                // давит шум достаточно и сохраняет натуральность голоса.
+                _rnProcess(_st, _outPtr, _inPtr);      // in -> out
 
                 // память могла переехать при вызове — берём span заново
                 var span2 = _memory.GetSpan<byte>(0);
