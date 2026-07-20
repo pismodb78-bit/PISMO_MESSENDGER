@@ -1245,8 +1245,11 @@ namespace PISMO.Native
                             outW = Math.Max(2, (int)Math.Round(bounds.Width * (outH / (double)bounds.Height))) & ~1;
                         }
                         var d = _dibs[_dibIdx];
-                        if (CaptureMonitorDxgi(d, bounds, outW, outH)
-                            || CaptureMonitorDib(d, bounds, outW, outH))
+                        // Захват монитора — только GDI (BitBlt с экрана). DXGI на
+                        // Optimus-ноутбуках отдаёт ЧЁРНЫЕ кадры (рабочий стол ведёт
+                        // Intel, дублируем с NVIDIA), а GDI берёт реальные пиксели.
+                        // FPS чуть ниже 60, зато картинка есть всегда.
+                        if (CaptureMonitorDib(d, bounds, outW, outH))
                         {
                             _scrConsecFails = 0;
                             _grabCount++;
