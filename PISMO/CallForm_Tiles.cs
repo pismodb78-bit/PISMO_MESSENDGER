@@ -254,13 +254,28 @@ namespace PISMO
             LayoutTiles();
         }
 
+        private int _selfScrRx;   // сколько кадров своей демки реально дошло сюда
+
         /// <summary>Сырой BGRA-кадр собственной демки: рендер в плитку и PIP.</summary>
         private void OnSelfScreenRawFrame(byte[] bgra, int w, int h)
         {
-            if (_tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile))
+            _selfScrRx++;
+            bool haveTile = _tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile);
+            if (haveTile)
                 SetTileRaw(tile, bgra, w, h);
             if (_screenPipPicture != null && !_screenPipPicture.IsDisposed)
                 SetPipRaw(bgra, w, h);
+
+            // ДИАГНОСТИКА на плитке: rx = дошло кадров, ярк = средняя яркость кадра.
+            // rx растёт + ярк>10 → кадры есть и не чёрные (проблема была бы в рендере);
+            // ярк≈0 → кадры чёрные (проблема захвата); rx не растёт → кадры не доходят.
+            if (haveTile && tile.Lbl != null && (_selfScrRx % 10 == 0))
+            {
+                long sum = 0; int n = 0;
+                for (int i = 0; i + 2 < bgra.Length; i += 4000) { sum += bgra[i] + bgra[i + 1] + bgra[i + 2]; n++; }
+                int bright = n > 0 ? (int)(sum / (n * 3)) : 0;
+                try { tile.Lbl.Text = $"🖥 Демонстрация · rx {_selfScrRx} · ярк {bright}"; } catch { }
+            }
         }
 
         /// <summary>Старый BMP-путь превью (оставлен для совместимости контракта).</summary>
@@ -784,20 +799,17 @@ namespace PISMO
         // и перерисовываем.
         private readonly Dictionary<PictureBox, Bitmap> _rawBmp = new();
 
-        /// <summary>Копирует BGRA-буфер в (переиспользуемый) Bitmap и рисует в PictureBox.</summary>
+        /// <summary>Копирует BGRA-буфер в НОВЫЙ Bitmap и показывает в PictureBox —
+        /// ровно как камера (SetTileImage), которая на этой машине рисует. Пишем в
+        /// свежий, ещё не показанный битмап (LockBits безопасен), потом присваиваем
+        /// и освобождаем старый. Без переиспользования — надёжнее.</summary>
         private void SetPictureRaw(PictureBox pb, byte[] bgra, int w, int h)
         {
             if (pb == null || pb.IsDisposed || bgra == null || w <= 0 || h <= 0) return;
+            Bitmap img;
             try
             {
-                _rawBmp.TryGetValue(pb, out var img);
-                if (img == null || img.Width != w || img.Height != h)
-                {
-                    try { if (pb.Image == img) pb.Image = null; } catch { }
-                    img?.Dispose();
-                    img = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-                    _rawBmp[pb] = img;
-                }
+                img = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
                 var bd = img.LockBits(new Rectangle(0, 0, w, h),
                     System.Drawing.Imaging.ImageLockMode.WriteOnly,
                     System.Drawing.Imaging.PixelFormat.Format32bppArgb);
@@ -812,11 +824,12 @@ namespace PISMO
                                 IntPtr.Add(bd.Scan0, y * stride), w * 4);
                 }
                 finally { img.UnlockBits(bd); }
-
-                if (pb.Image != img) pb.Image = img; else pb.Invalidate();
-                if (!pb.Visible) pb.Visible = true;
             }
-            catch { }
+            catch { return; }
+            var old = pb.Image;
+            pb.Image = img;
+            if (!pb.Visible) pb.Visible = true;
+            old?.Dispose();
         }
 
         /// <summary>Участник сменил имя в звонке — обновляем подписи его плиток.</summary>
