@@ -1212,7 +1212,8 @@ namespace PISMO.Native
             // отпр/цель · захват · режим — сразу видно, что упирается (кодер/захват/настройка)
             string mode = _capMode == "GDI" && _dxgiErr != null
                 ? "GDI (DXGI: " + Trunc(_dxgiErr, 40) + ")" : _capMode;
-            try { ScreenCaptureStats.Invoke($"{sent}/{_scrFps} fps · захват {grab} · {mode} {w}x{h}"); } catch { }
+            string pv = _prevBright >= 0 ? " · превью-ярк " + _prevBright : "";
+            try { ScreenCaptureStats.Invoke($"{sent}/{_scrFps} fps · захват {grab} · {mode} {w}x{h}{pv}"); } catch { }
         }
 
         private static string Trunc(string s, int n) => string.IsNullOrEmpty(s) ? "" : (s.Length <= n ? s : s.Substring(0, n));
@@ -1611,7 +1612,19 @@ namespace PISMO.Native
             return 10_000_000;   // неизвестно/родное большое — щедро
         }
 
-        private void EmitLocalScreen(byte[] bgra, int w, int h) => LocalScreenFrame?.Invoke(bgra, w, h);
+        private volatile int _prevBright = -1;   // яркость кадра ПРЕВЬЮ (диагностика бейджа)
+        private void EmitLocalScreen(byte[] bgra, int w, int h)
+        {
+            // Диагностика: средняя яркость кадра, что уходит в локальное превью.
+            try
+            {
+                long sum = 0; int n = 0;
+                for (int i = 0; i + 2 < bgra.Length; i += 4000) { sum += bgra[i] + bgra[i + 1] + bgra[i + 2]; n++; }
+                _prevBright = n > 0 ? (int)(sum / (n * 3)) : -1;
+            }
+            catch { }
+            LocalScreenFrame?.Invoke(bgra, w, h);
+        }
 
         // Возвращает переиспользуемый _capBmp (пересоздаётся только при смене размера).
         private Bitmap CaptureScreen()
