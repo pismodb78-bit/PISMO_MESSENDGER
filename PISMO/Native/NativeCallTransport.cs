@@ -321,7 +321,10 @@ namespace PISMO.Native
                     {
                         EchoCancellerEnabled = _apmEc,
                         GainControllerEnabled = _apmAgc,
-                        HighPassFilterEnabled = true,
+                        // ВЧ-фильтр ВЫКЛ: он срезает низы и делает голос «звонким/
+                        // тонким» (как дешёвый микрофон) даже при выключенном шумодаве.
+                        // Рокот/DC при желании убирает мягкий HPF нашего гейта.
+                        HighPassFilterEnabled = false,
                         // NS делает наш SpectralDenoiser (детерминированно, не зависит
                         // от того, работает ли NS внутри этой сборки FFI).
                         NoiseSuppressionEnabled = false
