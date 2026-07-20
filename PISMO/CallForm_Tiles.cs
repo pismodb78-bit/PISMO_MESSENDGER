@@ -254,11 +254,43 @@ namespace PISMO
             LayoutTiles();
         }
 
+        // Диагностика рендера своей демки (видна на бейдже): R=вызовов рендера,
+        // T=найдена плитка, V=Pb.Visible, I=Image задан, sz=размер панели,
+        // рб=яркость кадра на момент рендера.
+        internal int _selfRenderCount;
+        internal bool _selfTileFound;
+        internal int _selfRenderBright = -1;
+        internal string _selfRenderDbg = "";
+
         /// <summary>Сырой BGRA-кадр собственной демки: рендер в плитку и PIP.</summary>
         private void OnSelfScreenRawFrame(byte[] bgra, int w, int h)
         {
-            if (_tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile))
+            _selfRenderCount++;
+            try
+            {
+                long sum = 0; int n = 0;
+                for (int i = 0; i + 2 < bgra.Length; i += 4000) { sum += bgra[i] + bgra[i + 1] + bgra[i + 2]; n++; }
+                _selfRenderBright = n > 0 ? (int)(sum / (n * 3)) : -1;
+            }
+            catch { }
+            bool found = _tiles.TryGetValue(TileKey(SelfPid, "screen"), out var tile);
+            _selfTileFound = found;
+            if (found)
+            {
+                // Плитка должна быть видима и «с видео» — иначе PaintTile рисует
+                // заглушку-аватар поверх (панель серая). Форсируем как у зрителя.
+                tile.HasVideo = true;
+                if (tile.Pb != null && !tile.Pb.Visible) tile.Pb.Visible = true;
+                if (tile.WatchBtn != null && tile.WatchBtn.Visible) tile.WatchBtn.Visible = false;
                 SetTileRaw(tile, bgra, w, h);
+                try
+                {
+                    _selfRenderDbg = " V" + (tile.Pb != null && tile.Pb.Visible ? "1" : "0")
+                        + " I" + (tile.Pb != null && tile.Pb.Image != null ? "1" : "0")
+                        + " sz" + (tile.Panel?.Width ?? -1) + "x" + (tile.Panel?.Height ?? -1);
+                }
+                catch { }
+            }
             if (_screenPipPicture != null && !_screenPipPicture.IsDisposed)
                 SetPipRaw(bgra, w, h);
         }
