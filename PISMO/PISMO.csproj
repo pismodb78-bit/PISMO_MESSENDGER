@@ -3,11 +3,11 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <!-- Версия Windows в TFM даёт проекции WinRT для Windows.Graphics.Capture
-         (WGC) — единственный путь к 60fps захвату монитора БЕЗ чёрного экрана на
+         (WGC) - единственный путь к 60fps захвату монитора БЕЗ чёрного экрана на
          Optimus (берёт композицию DWM). Версии платформы фиксируем явно, иначе на
          машинах с новым Windows SDK MSBuild подставляет его и падает
          SupportedOSPlatformVersion. Если пакет microsoft.windows.sdk.net.ref не
-         тянется — очистить кэш NuGet (dotnet nuget locals all --clear) и restore. -->
+         тянется - очистить кэш NuGet (dotnet nuget locals all clear) и restore. -->
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
