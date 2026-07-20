@@ -461,14 +461,19 @@ namespace PISMO.Native
             try { _denoiser?.Process(data, offset, len); } catch { }
         }
 
-        // Один 10-мс кадр: APM ProcessStream (шумодав/AEC/HPF/AGC) → отправка в FFI.
+        // Один 10-мс кадр: AEC → шумодав → отправка в FFI. ПОРЯДОК ВАЖЕН: сначала
+        // AEC (ApmProcessStream), потом шумодав. Эхоподавитель вычитает эхо по
+        // ЛИНЕЙНОЙ связи «эхо в микрофоне ↔ референс воспроизведения». Если сперва
+        // прогнать нелинейный RNNoise, связь рушится и эхо не вычитается — слышно
+        // собственный голос. Поэтому AEC первым, шумодав — после.
         private void ProcessAndSendFrame(byte[] data, int offset, int len)
         {
-            if (_nsEnabled) DenoiseInPlace(data, offset, len);
             IntPtr buf = Marshal.AllocHGlobal(len);
             try
             {
                 Marshal.Copy(data, offset, buf, len);
+
+                // 1) AEC/HPF/AGC на СЫРОМ микрофоне (in-place в buf).
                 try
                 {
                     LiveKitFfi.Request(new FfiRequest
@@ -484,6 +489,15 @@ namespace PISMO.Native
                     });
                 }
                 catch { }
+
+                // 2) Шумодав (RNNoise + гейт) ПОСЛЕ AEC.
+                if (_nsEnabled)
+                {
+                    Marshal.Copy(buf, data, offset, len);   // результат AEC → managed
+                    DenoiseInPlace(data, offset, len);
+                    Marshal.Copy(data, offset, buf, len);   // и обратно в unmanaged для отправки
+                }
+
                 LiveKitFfi.Request(new FfiRequest
                 {
                     CaptureAudioFrame = new CaptureAudioFrameRequest
