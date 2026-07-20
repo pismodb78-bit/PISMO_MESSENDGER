@@ -450,7 +450,12 @@ namespace PISMO.Native
             var rn = _rnnoise;
             if (rn != null && rn.IsReady)
             {
-                try { rn.Process(data, offset, len); return; } catch { }
+                try { rn.Process(data, offset, len); } catch { }
+                // Клик-гейт ПОВЕРХ RNNoise (как в тесте: rnnoise -> gate) — сильнее
+                // добивает клавиатуру/мышь и остаточный фон, которые нейросеть
+                // пропускает во время речи.
+                try { _denoiser?.Process(data, offset, len); } catch { }
+                return;
             }
             try { _spectral?.Process(data, offset, len); } catch { }
             try { _denoiser?.Process(data, offset, len); } catch { }
