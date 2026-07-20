@@ -924,6 +924,18 @@ namespace PISMO
         private void JoinVoiceChannel(int cid, string name)
         {
             if (_joinedVoice.Contains(cid)) return;
+            // Нельзя быть в двух голосовых каналах разом: выходим из текущего
+            // голоса (личного/серверного) перед входом в новый — иначе две комнаты
+            // LiveKit, звук стакается/усиливается и слышен свой голос.
+            try
+            {
+                if (MainForm.Current != null && MainForm.Current.HasActiveVoice())
+                {
+                    MainForm.Current.EndCurrentVoice();
+                    _joinedVoice.Clear();
+                }
+            }
+            catch { }
             _joinedVoice.Add(cid);
             var call = new CallForm("vch_" + cid, name);
             // Показ «Голосовая связь подключена» — тот же док MainForm (в серверном

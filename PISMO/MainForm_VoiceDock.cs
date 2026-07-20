@@ -518,6 +518,32 @@ namespace PISMO
             catch { }
         }
 
+        /// <summary>Уже идёт голос (личный/серверный/любое окно звонка)?</summary>
+        public bool HasActiveVoice()
+        {
+            if (_activeCall != null && !_activeCall.IsDisposed) return true;
+            if (_voiceDockCall != null && !_voiceDockCall.IsDisposed) return true;
+            try { foreach (Form f in Application.OpenForms) if (f is CallForm cf && !cf.IsDisposed) return true; }
+            catch { }
+            return false;
+        }
+
+        /// <summary>Закрыть ТЕКУЩИЙ голос перед входом в новый — нельзя быть в двух
+        /// комнатах LiveKit разом (иначе звук стакается/усиливается, слышно свой
+        /// голос, а мьют/наушники управляют не тем окном).</summary>
+        public void EndCurrentVoice()
+        {
+            if (InvokeRequired) { try { Invoke((Action)EndCurrentVoice); } catch { } return; }
+            var calls = new System.Collections.Generic.List<Form>();
+            try { foreach (Form f in Application.OpenForms) if (f is CallForm cf && !cf.IsDisposed) calls.Add(cf); }
+            catch { }
+            if (_activeCall != null && !_activeCall.IsDisposed && !calls.Contains(_activeCall)) calls.Add(_activeCall);
+            if (_voiceDockCall != null && !_voiceDockCall.IsDisposed && !calls.Contains(_voiceDockCall)) calls.Add(_voiceDockCall);
+            foreach (var f in calls) { try { f.Close(); } catch { } }
+            _activeCall = null; _voiceDockCall = null;
+            try { HideVoiceDock(); } catch { }
+        }
+
         /// <summary>Перекрашивает кнопку 🎚 шумодава по текущему DeviceSettings.
         /// Зовётся при клике по кнопке И после сохранения настроек устройств —
         /// чтобы док и чекбокс настроек никогда не расходились.</summary>

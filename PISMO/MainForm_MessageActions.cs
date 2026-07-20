@@ -1065,6 +1065,9 @@ namespace PISMO
                 _activeCall.Activate();
                 return;
             }
+            // В серверном голосовом канале (или другом окне звонка)? Выходим —
+            // нельзя быть в двух ГС разом.
+            try { if (HasActiveVoice()) EndCurrentVoice(); } catch { }
 
             int myId = UserSession.EffectiveId;
             int peerId = _currentChatPartnerId;
