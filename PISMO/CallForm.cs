@@ -2104,6 +2104,24 @@ namespace PISMO
         protected override void OnActivated(EventArgs e)
         {
             base.OnActivated(e);
+            ApplyLiveSettings();
+            EnsureLiveSettingsTimer();
+        }
+
+        // Применение настроек «на горячую»: громкость микрофона, порог голоса и режим
+        // шумодава подхватываются БЕЗ переоткрытия звонка. OnActivated ловит возврат
+        // из окна настроек, а таймер — изменение ползунка прямо во время звонка.
+        private System.Windows.Forms.Timer _liveSettingsTimer;
+        private void EnsureLiveSettingsTimer()
+        {
+            if (_liveSettingsTimer != null) return;
+            _liveSettingsTimer = new System.Windows.Forms.Timer { Interval = 400 };
+            _liveSettingsTimer.Tick += (s, e) => ApplyLiveSettings();
+            _liveSettingsTimer.Start();
+        }
+
+        private void ApplyLiveSettings()
+        {
             try
             {
                 if (_lastVoiceThr == int.MinValue ||
@@ -2178,6 +2196,7 @@ namespace PISMO
                 _signalTimer?.Dispose();
                 _durationTimer?.Dispose();
                 _speakHoldTimer?.Stop(); _speakHoldTimer?.Dispose();
+                _liveSettingsTimer?.Stop(); _liveSettingsTimer?.Dispose();
 
                 CloseAllStreamPopouts();   // окна стримов не должны переживать звонок
                 StopScreenShare();

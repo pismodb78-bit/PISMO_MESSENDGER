@@ -201,6 +201,8 @@ namespace PISMO.Native
         private double _resT;
         private short _resPrev;
         private bool _resHas;
+        private volatile string _scrAudioMode = "—";   // диагностика: proc / device+AEC / нет
+        private volatile bool _scrHasAudio;             // запрашивался ли звук демки
 
         // sid трека → источник (камера/демка), чтобы различать входящее видео.
         private readonly Dictionary<string, TrackSource> _sourceBySid = new();
@@ -943,6 +945,8 @@ namespace PISMO.Native
                 // COM-колбэк ActivateAudioInterfaceAsync приходит на тот же STA-поток,
                 // который заблокирован ожиданием → таймаут → откат на device-loopback
                 // (а это эхо голосов в демке). Стартуем звук в фоновом MTA-потоке.
+                _scrHasAudio = withAudio;
+                _scrAudioMode = withAudio ? "…" : "—";
                 if (withAudio)
                     new Thread(StartScreenAudio) { IsBackground = true, Name = "pismo-screen-audio-init" }.Start();
             }
@@ -974,6 +978,7 @@ namespace PISMO.Native
                         _scrCaptureCh = _procLoop.WaveFormat.Channels;       // 2
                         _scrCaptureFloat = false;                            // i16 PCM
                         useProc = true;
+                        _scrAudioMode = "proc";
                     }
                     catch
                     {
@@ -994,11 +999,13 @@ namespace PISMO.Native
                         _scrCaptureCh = _loopback.WaveFormat.Channels;
                         _scrCaptureFloat =
                             _loopback.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
+                        _scrAudioMode = "device+AEC";
                     }
                     catch (Exception ex2)
                     {
                         try { _loopback?.Dispose(); } catch { }
                         _loopback = null;
+                        _scrAudioMode = "нет";
                         ConnectError?.Invoke("звук демки недоступен: " + ex2.Message);
                         return;
                     }
@@ -1114,7 +1121,7 @@ namespace PISMO.Native
                 try { StopScreenAudio(); } catch { }
                 if (_scrRun)
                     new Thread(StartScreenAudio) { IsBackground = true, Name = "pismo-screen-audio-reinit" }.Start();
-            }, null, 4000, System.Threading.Timeout.Infinite);   // даём process-loopback (без эха) фору
+            }, null, 8000, System.Threading.Timeout.Infinite);   // даём process-loopback (без эха) фору
         }
 
         // Кадр системного звука → i16 PCM → CaptureAudioFrame. Источник даёт либо
@@ -1155,7 +1162,11 @@ namespace PISMO.Native
             if (n <= 0) return;
 
             // Через APM (эхоподавление) — строго 10-мс кусками; без APM — сразу.
-            if (_scrApmHandle != 0 && _scrApmFrameBytes > 0)
+            // ПРИ ДЕФЕНЕ (_playbackMuted) AEC ОТКЛЮЧАЕМ: голоса звонка не играют →
+            // в захвате их нет → вычитать нечего, а NLP подавителя иначе приглушал бы
+            // сам звук демки (VM/игры) → «при дефене демку не слышно». Пропускаем
+            // звук демки напрямую, без AEC.
+            if (_scrApmHandle != 0 && _scrApmFrameBytes > 0 && !_playbackMuted)
             {
                 int add = n * 2;
                 if (_scrApmAccum.Length < _scrApmAccumLen + add)
@@ -1335,7 +1346,8 @@ namespace PISMO.Native
             // отпр/цель · захват · режим — сразу видно, что упирается (кодер/захват/настройка)
             string mode = _capMode == "GDI" && _dxgiErr != null
                 ? "GDI (DXGI: " + Trunc(_dxgiErr, 40) + ")" : _capMode;
-            try { ScreenCaptureStats.Invoke($"{sent}/{_scrFps} fps · захват {grab} · {mode} {w}x{h}"); } catch { }
+            string au = _scrHasAudio ? " · звук " + _scrAudioMode : "";
+            try { ScreenCaptureStats.Invoke($"{sent}/{_scrFps} fps · захват {grab} · {mode} {w}x{h}{au}"); } catch { }
         }
 
         private static string Trunc(string s, int n) => string.IsNullOrEmpty(s) ? "" : (s.Length <= n ? s : s.Substring(0, n));
