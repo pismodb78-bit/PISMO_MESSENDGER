@@ -45,12 +45,16 @@ namespace PISMO.Native
         private int _outHead, _outCount;
 
         // VAD-затухание остаточного шума: rnnoise_process_frame возвращает
-        // вероятность речи (0..1). В паузах дожимаем фон ещё на ~-18дБ, в речи —
-        // gain=1. Сглаживаем (быстрая атака / медленный спад), чтобы не рубить
-        // начала/хвосты слов (иначе голос «цифровой/звонкий»).
-        private const float VAD_SPEECH = 0.55f;   // выше — точно речь → gain→1
-        private const float VAD_NOISE = 0.15f;    // ниже — точно пауза → gain→FLOOR
-        private const float GAIN_FLOOR = 0.12f;   // остаточный фон в паузе (~-18дБ)
+        // вероятность речи (0..1). В паузах дожимаем фон ещё на ~-16дБ, в речи —
+        // gain=1. КЛЮЧЕВОЕ: VAD RNNoise ПРОВАЛИВАЕТСЯ на глухих согласных (с, ф, т,
+        // к, п) — если глушить по нему напрямую, согласные срезаются и голос «режет
+        // по ушам». Поэтому держим hangover: после речевого кадра оставляем gain=1
+        // ещё ~250мс, чтобы короткие провалы VAD внутри слов НЕ приглушались; в
+        // затухание уходим только на настоящей паузе (устойчивый низкий VAD).
+        private const float VAD_SPEECH = 0.5f;    // выше — речь → взводим hangover
+        private const float GAIN_FLOOR = 0.16f;   // остаточный фон в паузе (~-16дБ)
+        private const int HANG_FRAMES = 25;       // 25*10мс = 250мс удержания «речь»
+        private int _vadHang;
         private float _gain = 1f;
 
         // Плавный вход: первые кадры RNNoise со свежим состоянием дают всплеск-
@@ -211,11 +215,13 @@ namespace PISMO.Native
                 // вероятность речи (VAD), ей дожимаем остаточный фон в паузах.
                 float vad = _rnProcess(_st, _outPtr, _inPtr);   // in -> out
 
-                // Целевой gain по VAD + сглаживание (быстрая атака, медленный спад).
-                float target = vad >= VAD_SPEECH ? 1f
-                    : vad <= VAD_NOISE ? GAIN_FLOOR
-                    : GAIN_FLOOR + (1f - GAIN_FLOOR) * ((vad - VAD_NOISE) / (VAD_SPEECH - VAD_NOISE));
-                _gain += (target > _gain ? 0.6f : 0.05f) * (target - _gain);
+                // Речевой кадр взводит hangover; пока он не истёк — держим полный
+                // сигнал (короткие провалы VAD на согласных не приглушаются).
+                if (vad >= VAD_SPEECH) _vadHang = HANG_FRAMES;
+                else if (_vadHang > 0) _vadHang--;
+                float target = _vadHang > 0 ? 1f : GAIN_FLOOR;
+                // Быстрое открытие, мягкое закрытие (в паузу уходим плавно).
+                _gain += (target > _gain ? 0.6f : 0.04f) * (target - _gain);
 
                 // Плавный вход первых кадров (рампа 0→1) — глушит стартовый «скрежет».
                 float fade = 1f;

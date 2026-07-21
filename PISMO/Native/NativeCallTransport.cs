@@ -144,7 +144,10 @@ namespace PISMO.Native
         private SpectralDenoiser _spectral;       // частотный шумодав (постоянный фон) — откат
         private RnnoiseDenoiser _rnnoise;         // НАСТОЯЩИЙ RNNoise (как в тесте) — основной
         private volatile bool _nsEnabled;
-
+        // Ручная громкость микрофона (ползунок настроек). Множитель поверх APM/AGC —
+        // применяется ПОСЛЕ обработки, финальным масштабом, поэтому AGC его не гасит.
+        private volatile float _micGain = 1f;
+        private short[] _gainTmp = new short[480];
         // Нативный libwebrtc APM: шумодав + эхоподавление + ВЧ-фильтр + AGC.
         // ProcessStream = ближний конец (микрофон), ProcessReverseStream = дальний
         // конец (то, что играем в колонки) — референс для AEC.
@@ -181,6 +184,10 @@ namespace PISMO.Native
         // чтобы шумодав/эхоподавление не гасили звуки игры/музыки в демке.
         private NAudio.Wave.WasapiLoopbackCapture _loopback;
         private ProcessLoopbackCapture _procLoop;   // захват без своего процесса (без эха)
+        // process-loopback требует Windows 10 build 20348+. Если он недоступен или
+        // молчит — форсируем device-loopback (весь звук эндпоинта) + AEC, чтобы
+        // звук демки БЫЛ, а голоса PISMO из него вычитались (без эха).
+        private volatile bool _forceDeviceLoopback;
         private bool _scrAudioFloat;                // (устар.) — см. _scrCaptureFloat
         private int _scrCaptureRate = 48000, _scrCaptureCh = 2;
         private bool _scrCaptureFloat = true;
@@ -415,6 +422,28 @@ namespace PISMO.Native
             try { StartMicCapture(); } catch (Exception ex) { ConnectError?.Invoke("микрофон: " + ex.Message); }
         }
 
+        /// <summary>Ручная громкость микрофона (1.0 = без изменений). Ползунок в
+        /// настройках дёргает это на лету; применяется финальным масштабом после APM.</summary>
+        public void SetMicGain(float gain) => _micGain = gain > 0f ? gain : 1f;
+
+        /// <summary>Масштаб i16-сэмплов в unmanaged-буфере на _micGain (с ограничением
+        /// по клиппингу). len — в байтах. При gain≈1 — почти no-op (ранний выход).</summary>
+        private void ApplyMicGainUnmanaged(IntPtr buf, int len)
+        {
+            float g = _micGain;
+            if (g > 0.99f && g < 1.01f) return;   // ~1.0 — ничего не делаем
+            int n = len / 2;
+            if (_gainTmp.Length < n) _gainTmp = new short[n];
+            Marshal.Copy(buf, _gainTmp, 0, n);
+            for (int i = 0; i < n; i++)
+            {
+                int v = (int)(_gainTmp[i] * g);
+                if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+                _gainTmp[i] = (short)v;
+            }
+            Marshal.Copy(_gainTmp, 0, buf, n);
+        }
+
         private void OnMicData(object sender, WaveInEventArgs e)
         {
             if (_micSource == 0 || _micMuted || e.BytesRecorded <= 0) return;
@@ -453,11 +482,11 @@ namespace PISMO.Native
             var rn = _rnnoise;
             if (rn != null && rn.IsReady)
             {
+                // ТОЛЬКО RNNoise + его встроенный VAD-гейт остаточного шума. Клик-гейт
+                // (MicDenoiser) поверх УБРАН: его де-кликер давит быстрые транзиенты, а
+                // согласные (с/ф/т/к/п) — тоже транзиенты, поэтому он резал их и голос
+                // «резал по ушам». RNNoise клавиатуру/фон давит и сам.
                 try { rn.Process(data, offset, len); } catch { }
-                // Клик-гейт ПОВЕРХ RNNoise (как в тесте: rnnoise -> gate) — сильнее
-                // добивает клавиатуру/мышь и остаточный фон, которые нейросеть
-                // пропускает во время речи.
-                try { _denoiser?.Process(data, offset, len); } catch { }
                 return;
             }
             try { _spectral?.Process(data, offset, len); } catch { }
@@ -501,6 +530,9 @@ namespace PISMO.Native
                     Marshal.Copy(data, offset, buf, len);   // и обратно в unmanaged для отправки
                 }
 
+                // 3) Ручная громкость (ползунок) — финальным масштабом, после AGC.
+                ApplyMicGainUnmanaged(buf, len);
+
                 LiveKitFfi.Request(new FfiRequest
                 {
                     CaptureAudioFrame = new CaptureAudioFrameRequest
@@ -526,6 +558,7 @@ namespace PISMO.Native
             try
             {
                 Marshal.Copy(data, offset, buf, len);
+                ApplyMicGainUnmanaged(buf, len);   // ручная громкость (ползунок)
                 LiveKitFfi.Request(new FfiRequest
                 {
                     CaptureAudioFrame = new CaptureAudioFrameRequest
@@ -902,27 +935,45 @@ namespace PISMO.Native
                 // принципе, без всякого AEC. Игра/музыка/браузер — попадают.
                 // Активация в фоновом MTA-потоке (мы уже в отдельном потоке).
                 bool useProc = false;
-                try
+                if (!_forceDeviceLoopback)
                 {
-                    _procLoop = new ProcessLoopbackCapture(
-                        System.Diagnostics.Process.GetCurrentProcess().Id, excludeTargetTree: true);
-                    _procLoop.Start();
-                    _scrCaptureRate = _procLoop.WaveFormat.SampleRate;   // 48000
-                    _scrCaptureCh = _procLoop.WaveFormat.Channels;       // 2
-                    _scrCaptureFloat = false;                            // i16 PCM
-                    useProc = true;
+                    try
+                    {
+                        _procLoop = new ProcessLoopbackCapture(
+                            System.Diagnostics.Process.GetCurrentProcess().Id, excludeTargetTree: true);
+                        _procLoop.Start();
+                        _scrCaptureRate = _procLoop.WaveFormat.SampleRate;   // 48000
+                        _scrCaptureCh = _procLoop.WaveFormat.Channels;       // 2
+                        _scrCaptureFloat = false;                            // i16 PCM
+                        useProc = true;
+                    }
+                    catch
+                    {
+                        try { _procLoop?.Dispose(); } catch { }
+                        _procLoop = null;   // недоступен → device-loopback ниже
+                    }
                 }
-                catch (Exception ex)
+                if (!useProc)
                 {
-                    try { _procLoop?.Dispose(); } catch { }
-                    _procLoop = null;
-                    // БЕЗ device-loopback фолбэка: он ловит воспроизведение PISMO
-                    // (голоса звонка) → это и эхо в демке, и «пропажа звука демки при
-                    // дефене» (при дефене _out глушится, и эта часть исчезает). Лучше
-                    // без звука демки, чем с эхом. process-loopback недоступен —
-                    // выходим (видео демки при этом продолжается).
-                    ConnectError?.Invoke("звук демки недоступен (process-loopback): " + ex.Message);
-                    return;
+                    // Откат: обычный device-loopback (весь звук эндпоинта). Эхо голосов
+                    // PISMO убираем через AEC (_scrApmHandle, ниже) с тем же референсом
+                    // воспроизведения. Реальный звук игры/музыки при этом остаётся и НЕ
+                    // пропадает при дефене (игра играет в эндпоинт независимо от PISMO).
+                    try
+                    {
+                        _loopback = new NAudio.Wave.WasapiLoopbackCapture();
+                        _scrCaptureRate = _loopback.WaveFormat.SampleRate;
+                        _scrCaptureCh = _loopback.WaveFormat.Channels;
+                        _scrCaptureFloat =
+                            _loopback.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
+                    }
+                    catch (Exception ex2)
+                    {
+                        try { _loopback?.Dispose(); } catch { }
+                        _loopback = null;
+                        ConnectError?.Invoke("звук демки недоступен: " + ex2.Message);
+                        return;
+                    }
                 }
                 // Публикуем/обрабатываем МОНО (единый формат для источника и AEC).
                 _scrAudioCh = 1;
@@ -1025,10 +1076,12 @@ namespace PISMO.Native
             {
                 _scrAudioWatchdog?.Dispose(); _scrAudioWatchdog = null;
                 if (_scrAudioGotData || _procLoop == null || _scrAudioSource == 0) return;
-                // process-loopback молчит. НЕ откатываемся на device-loopback (он
-                // ловил бы воспроизведение PISMO → эхо + пропажа при дефене). Просто
-                // сообщаем — звук демки будет недоступен, но без эха.
-                try { ConnectError?.Invoke("звук демки: process-loopback не отдаёт данные (без эха, но звука демки нет)"); } catch { }
+                // process-loopback «стартовал», но молчит (частый баг на части сборок
+                // Windows). Форсируем device-loopback + AEC: пересобираем звук демки.
+                _forceDeviceLoopback = true;
+                try { StopScreenAudio(); } catch { }
+                if (_scrRun)
+                    new Thread(StartScreenAudio) { IsBackground = true, Name = "pismo-screen-audio-reinit" }.Start();
             }, null, 2000, System.Threading.Timeout.Infinite);
         }
 
@@ -1160,6 +1213,7 @@ namespace PISMO.Native
 
         public void StopScreenShare()
         {
+            _forceDeviceLoopback = false;   // следующая демка снова попробует process-loopback
             StopScreenAudio();
             _scrRun = false;
             try { _scrThread?.Join(500); } catch { }

@@ -155,6 +155,7 @@ namespace PISMO
                     noiseSuppress: DeviceSettings.NoiseSuppression,
                     agc: true);
                 _t.SetNoiseMode(DeviceSettings.NoiseSuppressMode);   // режим (в т.ч. aggressive-гейт)
+                _t.SetMicGain(DeviceSettings.MicrophoneGain);        // сохранённая громкость микрофона
             }
             catch { }
             Ui(() => Connected?.Invoke());
@@ -432,7 +433,7 @@ namespace PISMO
         public void SetVoiceGate(bool auto, int threshold) { }
         public void SetNoiseSuppression(bool on) { try { _t?.SetNoiseSuppression(on); } catch { } }
         public void SetNoiseMode(string mode) { try { _t?.SetNoiseMode(mode); } catch { } }
-        public void SetMicGain(float gain) { }
+        public void SetMicGain(float gain) { try { _t?.SetMicGain(gain); } catch { } }
         public void SetDisplayName(string name) { }
 
         public void Dispose()
