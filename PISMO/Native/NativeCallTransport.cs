@@ -195,6 +195,12 @@ namespace PISMO.Native
         private ulong _scrAudioPublishAsyncId;
         private string _scrAudioTrackSid;
         private int _scrAudioRate = 48000, _scrAudioCh = 2;
+        // Потоковый линейный ресемплер захвата демки → 48кГц (чтобы AEC включался на
+        // устройствах не-48кГц). _resT — позиция чтения (в сэмплах входа) для след.
+        // выходного сэмпла; _resPrev — вход[-1] (последний сэмпл прошлого блока).
+        private double _resT;
+        private short _resPrev;
+        private bool _resHas;
 
         // sid трека → источник (камера/демка), чтобы различать входящее видео.
         private readonly Dictionary<string, TrackSource> _sourceBySid = new();
@@ -997,9 +1003,13 @@ namespace PISMO.Native
                         return;
                     }
                 }
-                // Публикуем/обрабатываем МОНО (единый формат для источника и AEC).
+                // Публикуем/обрабатываем МОНО @48кГц ВСЕГДА. Если устройство отдаёт
+                // не 48кГц (частый случай — 44100), ресемплим захват до 48кГц в
+                // OnScreenAudioData: тогда AEC (WebRTC APM умеет только 8/16/32/48кГц)
+                // включается на ЛЮБОМ устройстве и вычитает голоса звонка из демки.
                 _scrAudioCh = 1;
-                _scrAudioRate = _scrCaptureRate;
+                _scrAudioRate = SR;               // выход всегда 48кГц (ресемпл ниже)
+                _resT = 0; _resHas = false;       // сброс состояния ресемплера
 
                 var srcResp = LiveKitFfi.Request(new FfiRequest
                 {
@@ -1024,7 +1034,7 @@ namespace PISMO.Native
                 _scrApmFrameBytes = _scrAudioRate / 100 * _scrAudioCh * 2;
                 _scrApmAccumLen = 0;
                 _scrApmHandle = 0;
-                if (!useProc && _scrAudioRate == SR)
+                if (!useProc)   // device-loopback ловит голоса → нужен AEC (всегда 48кГц)
                 {
                     try
                     {
@@ -1136,7 +1146,13 @@ namespace PISMO.Native
                 if (acc > 1f) acc = 1f; else if (acc < -1f) acc = -1f;
                 pcm[f] = (short)(acc * 32767f);
             }
+
+            // Ресемпл захвата → 48кГц (если устройство не 48кГц). Иначе AEC (только
+            // 8/16/32/48кГц) не создаётся и голоса звонка не вычитаются — эхо в демке.
+            if (_scrCaptureRate != SR)
+                pcm = ResampleMonoTo48k(pcm, frames, _scrCaptureRate, out frames);
             int n = frames;
+            if (n <= 0) return;
 
             // Через APM (эхоподавление) — строго 10-мс кусками; без APM — сразу.
             if (_scrApmHandle != 0 && _scrApmFrameBytes > 0)
@@ -1161,6 +1177,43 @@ namespace PISMO.Native
             var raw = new byte[n * 2];
             Buffer.BlockCopy(pcm, 0, raw, 0, raw.Length);
             SendScreenAudioChunk(raw, 0, raw.Length, false);
+        }
+
+        // Потоковый линейный ресемплер моно i16: inRate → 48кГц. Держит позицию
+        // чтения и последний сэмпл прошлого блока, поэтому склейка блоков без щелчков.
+        // Линейная интерполяция: для звука игры/музыки на демке качества достаточно,
+        // а AEC получает вход строго 48кГц и реально вычитает голоса звонка.
+        private short[] ResampleMonoTo48k(short[] inp, int n, int inRate, out int outN)
+        {
+            if (n <= 0 || inRate == SR) { outN = n; return inp; }
+            double step = (double)inRate / SR;             // сэмплов входа на 1 сэмпл выхода
+            // Виртуальный поток текущего блока: [ _resPrev, inp[0..n-1] ] — индекс 0 =
+            // последний сэмпл прошлого блока. Позиция _resT в этом кадре (0.._resT<n).
+            int cap = (int)(n / step) + 4;
+            var outp = new short[cap];
+            int o = 0;
+            while (_resT < n && o < cap)
+            {
+                int i0 = (int)Math.Floor(_resT);
+                double frac = _resT - i0;
+                short a = FrameSample(inp, n, i0);
+                short b = FrameSample(inp, n, i0 + 1);
+                outp[o++] = (short)(a + (b - a) * frac);
+                _resT += step;
+            }
+            _resT -= n;                 // остаток → следующий блок (inp[n-1] станет индексом 0)
+            _resPrev = inp[n - 1];
+            _resHas = true;
+            outN = o;
+            return outp;
+        }
+
+        // Отсчёт виртуального потока [ _resPrev, inp[0..n-1] ]: индекс 0 = _resPrev.
+        private short FrameSample(short[] arr, int n, int idx)
+        {
+            if (idx <= 0) return _resHas ? _resPrev : arr[0];
+            if (idx - 1 >= n) return arr[n - 1];
+            return arr[idx - 1];
         }
 
         private void SendScreenAudioChunk(byte[] data, int offset, int len, bool viaApm)
