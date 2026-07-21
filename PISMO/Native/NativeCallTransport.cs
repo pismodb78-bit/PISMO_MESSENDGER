@@ -580,6 +580,8 @@ namespace PISMO.Native
 
         // Дальний конец (референс эха): 10-мс i16-кадр из микшера воспроизведения.
         // Кормим ОБА эхоподавителя: микрофонный и звука демки.
+        private short[] _revTmp = new short[480];
+
         internal void ApmReverseFrame(byte[] pcm, int len)
         {
             ulong mic = (_apmEnabled ? _apmHandle : 0), scr = _scrApmHandle;
@@ -588,6 +590,26 @@ namespace PISMO.Native
             try
             {
                 Marshal.Copy(pcm, 0, buf, len);
+
+                // Референс эха = то, что РЕАЛЬНО уходит в колонки, т.е. микшер голосов
+                // ПОСЛЕ громкости/мьюта воспроизведения. Тап снимает микшер до
+                // громкости, поэтому масштабируем здесь. КЛЮЧЕВОЕ для демки: при
+                // дефене (_playbackMuted) воспроизведения нет → референс = тишина, и
+                // AEC демки НЕ вычитает фантомные голоса из звука VM/игры (иначе он
+                // пропадал при дефене). При обычной громкости (=1) — без изменений.
+                float f = _playbackMuted ? 0f : _playbackVolume;
+                if (f < 0.999f)
+                {
+                    int n = len / 2;
+                    if (_revTmp.Length < n) _revTmp = new short[n];
+                    if (f <= 0f) Array.Clear(_revTmp, 0, n);
+                    else
+                    {
+                        Marshal.Copy(buf, _revTmp, 0, n);
+                        for (int i = 0; i < n; i++) _revTmp[i] = (short)(_revTmp[i] * f);
+                    }
+                    Marshal.Copy(_revTmp, 0, buf, n);
+                }
                 if (mic != 0)
                     try
                     {
@@ -1082,7 +1104,7 @@ namespace PISMO.Native
                 try { StopScreenAudio(); } catch { }
                 if (_scrRun)
                     new Thread(StartScreenAudio) { IsBackground = true, Name = "pismo-screen-audio-reinit" }.Start();
-            }, null, 2000, System.Threading.Timeout.Infinite);
+            }, null, 4000, System.Threading.Timeout.Infinite);   // даём process-loopback (без эха) фору
         }
 
         // Кадр системного звука → i16 PCM → CaptureAudioFrame. Источник даёт либо
