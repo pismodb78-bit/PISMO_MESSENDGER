@@ -131,7 +131,7 @@ namespace PISMO.Native
         private readonly object _audioLock = new();
         private int _outputDeviceIndex = -1;      // -1 = устройство по умолчанию
         private float _playbackVolume = 1.0f;
-        private bool _playbackMuted;
+        private volatile bool _playbackMuted;
 
         // Отправка: микрофон → FFI audio source.
         private WaveInEvent _micIn;

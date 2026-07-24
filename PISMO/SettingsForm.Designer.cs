@@ -185,7 +185,10 @@ namespace PISMO
             {
                 _lblGainValue.Text = $"{_trkGain.Value}%";
                 _gainCached = _trkGain.Value / 100f;
-                // Живо применяем громкость к открытому тесту микрофона.
+                // Применяем громкость СРАЗУ: и к открытому тесту микрофона, и в
+                // настройки — активный звонок подхватит её на лету (таймер CallForm),
+                // без нажатия «Сохранить».
+                DeviceSettings.MicrophoneGain = _gainCached;
                 if (_micTest != null && !_micTest.IsDisposed) _micTest.ApplyGain(_gainCached);
             };
 
