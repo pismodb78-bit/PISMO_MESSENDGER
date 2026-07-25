@@ -7,11 +7,17 @@ namespace PISMO.Native
 {
     /// <summary>
     /// Захват системного звука в обход СВОЕГО процесса — WASAPI process loopback
-    /// (ActivateAudioInterfaceAsync, Windows 10 20348+). Режим «исключить дерево
-    /// процесса PISMO» означает: в звук демонстрации попадёт всё, что играет
-    /// система (игра/музыка/браузер), КРОМЕ того, что выводит сам PISMO
-    /// (голоса собеседников). Поэтому у друзей нет эха собственного голоса, а
-    /// микрофон в демку и так не попадает.
+    /// (ActivateAudioInterfaceAsync). Режим «исключить дерево процесса PISMO»:
+    /// в звук демонстрации попадёт всё, что играет система (игра/музыка/браузер),
+    /// КРОМЕ того, что выводит сам PISMO (голоса собеседников). Поэтому у друзей
+    /// нет эха собственного голоса, а микрофон в демку и так не попадает.
+    ///
+    /// ВАЖНО (.NET 8 + CsWinRT): проект использует WinRT-проекции (WGC), а CsWinRT
+    /// регистрирует ГЛОБАЛЬНЫЙ ComWrappers. После этого весь встроенный COM-маршалинг
+    /// (P/Invoke интерфейсов, RCW, приведения [ComImport]) идёт через него, и
+    /// классические [ComImport]-интерфейсы падают «Specified cast is not valid».
+    /// Поэтому здесь COM делается ВРУЧНУЮ: вызовы методов — по vtable через указатели
+    /// функций, а колбэк завершения — самодельный CCW (своя vtable), без RCW/ComImport.
     ///
     /// Отдаёт кадры 48 кГц / 16 бит / стерео. Если активация не поддержана —
     /// Start() кидает исключение, и вызывающий откатывается на обычный
@@ -24,12 +30,13 @@ namespace PISMO.Native
 
         private readonly int _targetPid;
         private readonly bool _excludeTree;
-        private IAudioClient _audioClient;
-        private IAudioCaptureClient _capture;
+        private IntPtr _audioClient;    // IAudioClient*
+        private IntPtr _capture;        // IAudioCaptureClient*
         private EventWaitHandle _bufferReady;
         private Thread _thread;
         private volatile bool _run;
         private int _blockAlign;
+        private ManualCompletionHandler _handler;   // живёт до Dispose (native может дёрнуть Release позже)
 
         public ProcessLoopbackCapture(int targetPid, bool excludeTargetTree)
         {
@@ -39,15 +46,15 @@ namespace PISMO.Native
 
         public void Start()
         {
-            // 1) Параметры активации: process loopback с исключением/включением дерева.
             var actParams = new AUDIOCLIENT_ACTIVATION_PARAMS
             {
-                ActivationType = 1, // AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK
+                ActivationType = 1,                          // PROCESS_LOOPBACK
                 TargetProcessId = _targetPid,
-                ProcessLoopbackMode = _excludeTree ? 1 : 0 // 1 = EXCLUDE_TARGET_PROCESS_TREE
+                ProcessLoopbackMode = _excludeTree ? 1 : 0   // 1 = EXCLUDE_TARGET_PROCESS_TREE
             };
             IntPtr pParams = Marshal.AllocHGlobal(Marshal.SizeOf<AUDIOCLIENT_ACTIVATION_PARAMS>());
             IntPtr pProp = Marshal.AllocHGlobal(Marshal.SizeOf<PROPVARIANT_BLOB>());
+            var handler = _handler = new ManualCompletionHandler();
             try
             {
                 Marshal.StructureToPtr(actParams, pParams, false);
@@ -59,19 +66,21 @@ namespace PISMO.Native
                 };
                 Marshal.StructureToPtr(prop, pProp, false);
 
-                var handler = new ActivateHandler();
                 Guid iidAudioClient = IID_IAudioClient;
-                ActivateAudioInterfaceAsync(VirtualDevicePath, ref iidAudioClient, pProp, handler, out _);
+                int hr = ActivateAudioInterfaceAsync(VirtualDevicePath, ref iidAudioClient,
+                    pProp, handler.NativePtr, out IntPtr opPtr);
+                if (opPtr != IntPtr.Zero) Release(opPtr);
+                if (hr != 0) Marshal.ThrowExceptionForHR(hr);
 
                 if (!handler.Done.WaitOne(3000)) throw new TimeoutException("process loopback: активация не ответила");
-                Marshal.ThrowExceptionForHR(handler.ActivateResult);
-                if (handler.InterfacePtr == IntPtr.Zero)
-                    throw new InvalidOperationException("process loopback: нет IAudioClient");
-                try { _audioClient = (IAudioClient)Marshal.GetObjectForIUnknown(handler.InterfacePtr); }
-                finally { Marshal.Release(handler.InterfacePtr); handler.InterfacePtr = IntPtr.Zero; }
+                if (handler.ResultHr != 0) Marshal.ThrowExceptionForHR(handler.ResultHr);
+                _audioClient = handler.Interface;
+                if (_audioClient == IntPtr.Zero) throw new InvalidOperationException("process loopback: нет IAudioClient");
             }
             finally
             {
+                // handler НЕ освобождаем здесь: native может дёрнуть Release позже —
+                // держим его native-память живой до Dispose всего захвата.
                 Marshal.FreeHGlobal(pParams);
                 Marshal.FreeHGlobal(pProp);
             }
@@ -79,38 +88,33 @@ namespace PISMO.Native
             // 2) Формат — задаём сами (GetMixFormat для process loopback = E_NOTIMPL).
             var wf = new WAVEFORMATEX
             {
-                wFormatTag = 1, // WAVE_FORMAT_PCM
-                nChannels = 2,
-                nSamplesPerSec = 48000,
-                wBitsPerSample = 16,
-                nBlockAlign = 4,           // 2 канала * 16 бит / 8
-                nAvgBytesPerSec = 48000 * 4,
-                cbSize = 0
+                wFormatTag = 1, nChannels = 2, nSamplesPerSec = 48000,
+                wBitsPerSample = 16, nBlockAlign = 4, nAvgBytesPerSec = 48000 * 4, cbSize = 0
             };
             _blockAlign = wf.nBlockAlign;
 
-            const int AUDCLNT_SHAREMODE_SHARED = 0;
+            const int SHARED = 0;
             const uint LOOPBACK = 0x00020000;
             const uint EVENTCALLBACK = 0x00040000;
             IntPtr pWf = Marshal.AllocHGlobal(Marshal.SizeOf<WAVEFORMATEX>());
             try
             {
                 Marshal.StructureToPtr(wf, pWf, false);
-                _audioClient.Initialize(AUDCLNT_SHAREMODE_SHARED, LOOPBACK | EVENTCALLBACK,
+                int hr = AC_Initialize(_audioClient, SHARED, LOOPBACK | EVENTCALLBACK,
                     2_000_000, 0, pWf, IntPtr.Zero);
+                Marshal.ThrowExceptionForHR(hr);
             }
             finally { Marshal.FreeHGlobal(pWf); }
 
             _bufferReady = new EventWaitHandle(false, EventResetMode.AutoReset);
-            _audioClient.SetEventHandle(_bufferReady.SafeWaitHandle.DangerousGetHandle());
+            Marshal.ThrowExceptionForHR(AC_SetEventHandle(_audioClient,
+                _bufferReady.SafeWaitHandle.DangerousGetHandle()));
 
             Guid iidCapture = IID_IAudioCaptureClient;
-            _audioClient.GetService(ref iidCapture, out IntPtr capPtr);
-            if (capPtr == IntPtr.Zero) throw new InvalidOperationException("process loopback: нет IAudioCaptureClient");
-            try { _capture = (IAudioCaptureClient)Marshal.GetObjectForIUnknown(capPtr); }
-            finally { Marshal.Release(capPtr); }
+            Marshal.ThrowExceptionForHR(AC_GetService(_audioClient, ref iidCapture, out _capture));
+            if (_capture == IntPtr.Zero) throw new InvalidOperationException("process loopback: нет IAudioCaptureClient");
 
-            _audioClient.Start();
+            Marshal.ThrowExceptionForHR(AC_Start(_audioClient));
             _run = true;
             _thread = new Thread(CaptureLoop) { IsBackground = true, Name = "pismo-proc-loopback" };
             _thread.Start();
@@ -120,22 +124,20 @@ namespace PISMO.Native
         {
             while (_run)
             {
-                // Ждём событие, но GetBuffer пробуем ВСЕГДА: у process-loopback
-                // (VAD\Process_Loopback) событийный режим часто не срабатывает —
-                // тогда без опроса захват «жив», но данных нет вообще.
+                // Событийный режим у process-loopback часто не срабатывает — опрашиваем всегда.
                 _bufferReady.WaitOne(20);
                 try
                 {
                     while (true)
                     {
-                        int hr = _capture.GetBuffer(out IntPtr pData, out uint frames, out uint flags, out _, out _);
-                        if (hr != 0 || frames == 0) break;            // S_OK==0; иначе (в т.ч. buffer empty) выходим
+                        int hr = CC_GetBuffer(_capture, out IntPtr pData, out uint frames,
+                            out uint flags, out _, out _);
+                        if (hr != 0 || frames == 0) break;
                         int bytes = (int)frames * _blockAlign;
                         var buf = new byte[bytes];
-                        // AUDCLNT_BUFFERFLAGS_SILENT = 0x2 — тишина: отдаём нули.
-                        if ((flags & 0x2) == 0 && pData != IntPtr.Zero)
+                        if ((flags & 0x2) == 0 && pData != IntPtr.Zero)   // 0x2 = SILENT
                             Marshal.Copy(pData, buf, 0, bytes);
-                        _capture.ReleaseBuffer(frames);
+                        CC_ReleaseBuffer(_capture, frames);
                         try { DataAvailable?.Invoke(this, new WaveInEventArgs(buf, bytes)); } catch { }
                     }
                 }
@@ -148,26 +150,141 @@ namespace PISMO.Native
             _run = false;
             try { _thread?.Join(400); } catch { }
             _thread = null;
-            try { _audioClient?.Stop(); } catch { }
-            try { if (_capture != null) Marshal.ReleaseComObject(_capture); } catch { }
-            try { if (_audioClient != null) Marshal.ReleaseComObject(_audioClient); } catch { }
-            _capture = null; _audioClient = null;
+            try { if (_audioClient != IntPtr.Zero) AC_Stop(_audioClient); } catch { }
+            if (_capture != IntPtr.Zero) { try { Release(_capture); } catch { } _capture = IntPtr.Zero; }
+            if (_audioClient != IntPtr.Zero) { try { Release(_audioClient); } catch { } _audioClient = IntPtr.Zero; }
             try { _bufferReady?.Dispose(); } catch { }
             _bufferReady = null;
+            try { _handler?.Dispose(); } catch { }
+            _handler = null;
+        }
+
+        // ── Вызовы методов COM по vtable (без RCW/ComImport) ──────────────
+        private static T Fn<T>(IntPtr obj, int slot) where T : Delegate
+        {
+            IntPtr vtbl = Marshal.ReadIntPtr(obj);
+            IntPtr fn = Marshal.ReadIntPtr(vtbl, slot * IntPtr.Size);
+            return Marshal.GetDelegateForFunctionPointer<T>(fn);
+        }
+
+        // IUnknown::Release (slot 2)
+        private delegate uint FnRelease(IntPtr self);
+        private static void Release(IntPtr obj) { try { Fn<FnRelease>(obj, 2)(obj); } catch { } }
+
+        // IAudioClient (после IUnknown 0..2)
+        private delegate int FnInitialize(IntPtr self, int share, uint flags, long dur, long period, IntPtr fmt, IntPtr guid);
+        private delegate int FnStart(IntPtr self);
+        private delegate int FnStop(IntPtr self);
+        private delegate int FnSetEventHandle(IntPtr self, IntPtr h);
+        private delegate int FnGetService(IntPtr self, ref Guid iid, out IntPtr svc);
+        private static int AC_Initialize(IntPtr o, int s, uint f, long d, long p, IntPtr fmt, IntPtr g)
+            => Fn<FnInitialize>(o, 3)(o, s, f, d, p, fmt, g);
+        private static int AC_Start(IntPtr o) => Fn<FnStart>(o, 10)(o);
+        private static int AC_Stop(IntPtr o) => Fn<FnStop>(o, 11)(o);
+        private static int AC_SetEventHandle(IntPtr o, IntPtr h) => Fn<FnSetEventHandle>(o, 13)(o, h);
+        private static int AC_GetService(IntPtr o, ref Guid iid, out IntPtr svc) => Fn<FnGetService>(o, 14)(o, ref iid, out svc);
+
+        // IAudioCaptureClient (после IUnknown 0..2)
+        private delegate int FnGetBuffer(IntPtr self, out IntPtr data, out uint frames, out uint flags, out ulong devPos, out ulong qpc);
+        private delegate int FnReleaseBuffer(IntPtr self, uint frames);
+        private static int CC_GetBuffer(IntPtr o, out IntPtr d, out uint fr, out uint fl, out ulong dp, out ulong qp)
+            => Fn<FnGetBuffer>(o, 3)(o, out d, out fr, out fl, out dp, out qp);
+        private static int CC_ReleaseBuffer(IntPtr o, uint fr) => Fn<FnReleaseBuffer>(o, 4)(o, fr);
+
+        // ── Самодельный CCW колбэка IActivateAudioInterfaceCompletionHandler ──
+        // Native вызывает наш объект: vtable из 4 указателей (QI, AddRef, Release,
+        // ActivateCompleted). Внутри ActivateCompleted берём результат у operation
+        // тоже по vtable (slot 3 = GetActivateResult), без ComImport.
+        private sealed class ManualCompletionHandler : IDisposable
+        {
+            public readonly EventWaitHandle Done = new(false, EventResetMode.ManualReset);
+            public int ResultHr;
+            public IntPtr Interface;
+            public IntPtr NativePtr { get; }   // указатель на COM-объект (для передачи в native)
+
+            private readonly IntPtr _vtbl;
+            private GCHandle _self;
+            // Делегаты держим живыми, иначе GC соберёт трамплины.
+            private readonly FnQI _qi; private readonly FnAddRefRel _ar; private readonly FnAddRefRel _rel;
+            private readonly FnActivateCompleted _done;
+
+            [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+            private delegate int FnQI(IntPtr self, IntPtr riid, out IntPtr ppv);
+            [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+            private delegate uint FnAddRefRel(IntPtr self);
+            [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+            private delegate int FnActivateCompleted(IntPtr self, IntPtr operation);
+            [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+            private delegate int FnGetActivateResult(IntPtr self, out int hr, out IntPtr iface);
+
+            public ManualCompletionHandler()
+            {
+                _qi = QI; _ar = AddRef; _rel = Rel; _done = Completed;
+                _vtbl = Marshal.AllocHGlobal(IntPtr.Size * 4);
+                Marshal.WriteIntPtr(_vtbl, 0 * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_qi));
+                Marshal.WriteIntPtr(_vtbl, 1 * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_ar));
+                Marshal.WriteIntPtr(_vtbl, 2 * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_rel));
+                Marshal.WriteIntPtr(_vtbl, 3 * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_done));
+                // COM-объект: [vtable*][GCHandle этого класса] — чтобы из статик-колбэков
+                // добраться до экземпляра.
+                NativePtr = Marshal.AllocHGlobal(IntPtr.Size * 2);
+                _self = GCHandle.Alloc(this);
+                Marshal.WriteIntPtr(NativePtr, 0, _vtbl);
+                Marshal.WriteIntPtr(NativePtr, IntPtr.Size, GCHandle.ToIntPtr(_self));
+            }
+
+            private static ManualCompletionHandler From(IntPtr self)
+                => (ManualCompletionHandler)GCHandle.FromIntPtr(Marshal.ReadIntPtr(self, IntPtr.Size)).Target;
+
+            private static int QI(IntPtr self, IntPtr riid, out IntPtr ppv)
+            {
+                Guid iid = Marshal.PtrToStructure<Guid>(riid);
+                if (iid == IID_IUnknown || iid == IID_CompletionHandler) { ppv = self; return 0; }
+                ppv = IntPtr.Zero; return unchecked((int)0x80004002); // E_NOINTERFACE
+            }
+            private static uint AddRef(IntPtr self) => 1;
+            private static uint Rel(IntPtr self) => 1;
+
+            private static int Completed(IntPtr self, IntPtr operation)
+            {
+                var h = From(self);
+                try
+                {
+                    IntPtr vtbl = Marshal.ReadIntPtr(operation);
+                    IntPtr fn = Marshal.ReadIntPtr(vtbl, 3 * IntPtr.Size);   // GetActivateResult
+                    var get = Marshal.GetDelegateForFunctionPointer<FnGetActivateResult>(fn);
+                    int callHr = get(operation, out int ar, out IntPtr iface);
+                    h.ResultHr = callHr != 0 ? callHr : ar;
+                    h.Interface = iface;
+                }
+                catch (Exception ex) { h.ResultHr = Marshal.GetHRForException(ex); }
+                finally { h.Done.Set(); }
+                return 0;
+            }
+
+            public void Dispose()
+            {
+                try { if (NativePtr != IntPtr.Zero) Marshal.FreeHGlobal(NativePtr); } catch { }
+                try { if (_vtbl != IntPtr.Zero) Marshal.FreeHGlobal(_vtbl); } catch { }
+                try { if (_self.IsAllocated) _self.Free(); } catch { }
+                try { Done.Dispose(); } catch { }
+            }
         }
 
         // ── COM / Win32 ───────────────────────────────────────────────────
         private const string VirtualDevicePath = "VAD\\Process_Loopback";
+        private static readonly Guid IID_IUnknown = new("00000000-0000-0000-C000-000000000046");
         private static readonly Guid IID_IAudioClient = new("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
         private static readonly Guid IID_IAudioCaptureClient = new("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
+        private static readonly Guid IID_CompletionHandler = new("41D949AB-9862-444A-80F6-C261334DA5EB");
 
-        [DllImport("Mmdevapi.dll", ExactSpelling = true, PreserveSig = false)]
-        private static extern void ActivateAudioInterfaceAsync(
+        [DllImport("Mmdevapi.dll", ExactSpelling = true, PreserveSig = true)]
+        private static extern int ActivateAudioInterfaceAsync(
             [MarshalAs(UnmanagedType.LPWStr)] string deviceInterfacePath,
             [MarshalAs(UnmanagedType.LPStruct)] ref Guid riid,
             IntPtr activationParams,
-            IActivateAudioInterfaceCompletionHandler completionHandler,
-            out IActivateAudioInterfaceAsyncOperation operation);
+            IntPtr completionHandler,
+            out IntPtr operation);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct AUDIOCLIENT_ACTIVATION_PARAMS
@@ -196,79 +313,6 @@ namespace PISMO.Native
             public short nBlockAlign;
             public short wBitsPerSample;
             public short cbSize;
-        }
-
-        [ComImport, Guid("41D949AB-9862-444A-80F6-C261334DA5EB"),
-         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IActivateAudioInterfaceCompletionHandler
-        {
-            // operation получаем СЫРЫМ указателем (IntPtr), а не типизированным
-            // интерфейсом: на .NET 8 маршалинг входящего COM-параметра в
-            // [ComImport]-интерфейс отдаёт ComWrappers-объект, вызов метода на
-            // котором падает InvalidCastException («Specified cast is not valid»),
-            // и process-loopback тихо откатывается на device+AEC. Через IntPtr +
-            // Marshal.GetObjectForIUnknown получаем классический RCW.
-            void ActivateCompleted(IntPtr operation);
-        }
-
-        [ComImport, Guid("72A22D78-CDE4-431D-B8CC-843A71199B6D"),
-         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IActivateAudioInterfaceAsyncOperation
-        {
-            // Забираем интерфейс СЫРЫМ указателем (out IntPtr), а не как out object:
-            // на .NET 8 маршалинг [MarshalAs(IUnknown)] out object отдаёт RCW, к
-            // которому приведение к [ComImport]-интерфейсу падает «Specified cast is
-            // not valid». Через IntPtr + Marshal.GetObjectForIUnknown получаем
-            // «классический» RCW, который приведение поддерживает.
-            void GetActivateResult(out int activateResult, out IntPtr activatedInterface);
-        }
-
-        private sealed class ActivateHandler : IActivateAudioInterfaceCompletionHandler
-        {
-            public readonly EventWaitHandle Done = new(false, EventResetMode.ManualReset);
-            public int ActivateResult;
-            public IntPtr InterfacePtr;
-
-            public void ActivateCompleted(IntPtr operationPtr)
-            {
-                try
-                {
-                    var operation = (IActivateAudioInterfaceAsyncOperation)
-                        Marshal.GetObjectForIUnknown(operationPtr);
-                    operation.GetActivateResult(out ActivateResult, out InterfacePtr);
-                }
-                catch (Exception ex) { ActivateResult = Marshal.GetHRForException(ex); }
-                finally { Done.Set(); }
-            }
-        }
-
-        [ComImport, Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2"),
-         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IAudioClient
-        {
-            void Initialize(int shareMode, uint streamFlags, long hnsBufferDuration,
-                long hnsPeriodicity, IntPtr format, IntPtr audioSessionGuid);
-            void GetBufferSize(out uint bufferFrames);
-            void GetStreamLatency(out long latency);
-            void GetCurrentPadding(out uint padding);
-            [PreserveSig] int IsFormatSupported(int shareMode, IntPtr format, IntPtr closestMatch);
-            void GetMixFormat(out IntPtr format);
-            void GetDevicePeriod(out long defaultPeriod, out long minimumPeriod);
-            void Start();
-            void Stop();
-            void Reset();
-            void SetEventHandle(IntPtr eventHandle);
-            void GetService(ref Guid riid, out IntPtr service);
-        }
-
-        [ComImport, Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317"),
-         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IAudioCaptureClient
-        {
-            [PreserveSig] int GetBuffer(out IntPtr data, out uint numFramesToRead,
-                out uint flags, out ulong devicePosition, out ulong qpcPosition);
-            [PreserveSig] int ReleaseBuffer(uint numFramesRead);
-            [PreserveSig] int GetNextPacketSize(out uint numFramesInNextPacket);
         }
     }
 }
