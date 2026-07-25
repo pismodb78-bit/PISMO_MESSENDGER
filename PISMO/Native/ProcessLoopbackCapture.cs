@@ -65,8 +65,10 @@ namespace PISMO.Native
 
                 if (!handler.Done.WaitOne(3000)) throw new TimeoutException("process loopback: активация не ответила");
                 Marshal.ThrowExceptionForHR(handler.ActivateResult);
-                _audioClient = (IAudioClient)handler.Interface
-                    ?? throw new InvalidOperationException("process loopback: нет IAudioClient");
+                if (handler.InterfacePtr == IntPtr.Zero)
+                    throw new InvalidOperationException("process loopback: нет IAudioClient");
+                try { _audioClient = (IAudioClient)Marshal.GetObjectForIUnknown(handler.InterfacePtr); }
+                finally { Marshal.Release(handler.InterfacePtr); handler.InterfacePtr = IntPtr.Zero; }
             }
             finally
             {
@@ -103,8 +105,10 @@ namespace PISMO.Native
             _audioClient.SetEventHandle(_bufferReady.SafeWaitHandle.DangerousGetHandle());
 
             Guid iidCapture = IID_IAudioCaptureClient;
-            _audioClient.GetService(ref iidCapture, out object capObj);
-            _capture = (IAudioCaptureClient)capObj;
+            _audioClient.GetService(ref iidCapture, out IntPtr capPtr);
+            if (capPtr == IntPtr.Zero) throw new InvalidOperationException("process loopback: нет IAudioCaptureClient");
+            try { _capture = (IAudioCaptureClient)Marshal.GetObjectForIUnknown(capPtr); }
+            finally { Marshal.Release(capPtr); }
 
             _audioClient.Start();
             _run = true;
@@ -205,19 +209,23 @@ namespace PISMO.Native
          InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         private interface IActivateAudioInterfaceAsyncOperation
         {
-            void GetActivateResult(out int activateResult,
-                [MarshalAs(UnmanagedType.IUnknown)] out object activatedInterface);
+            // Забираем интерфейс СЫРЫМ указателем (out IntPtr), а не как out object:
+            // на .NET 8 маршалинг [MarshalAs(IUnknown)] out object отдаёт RCW, к
+            // которому приведение к [ComImport]-интерфейсу падает «Specified cast is
+            // not valid». Через IntPtr + Marshal.GetObjectForIUnknown получаем
+            // «классический» RCW, который приведение поддерживает.
+            void GetActivateResult(out int activateResult, out IntPtr activatedInterface);
         }
 
         private sealed class ActivateHandler : IActivateAudioInterfaceCompletionHandler
         {
             public readonly EventWaitHandle Done = new(false, EventResetMode.ManualReset);
             public int ActivateResult;
-            public object Interface;
+            public IntPtr InterfacePtr;
 
             public void ActivateCompleted(IActivateAudioInterfaceAsyncOperation operation)
             {
-                try { operation.GetActivateResult(out ActivateResult, out Interface); }
+                try { operation.GetActivateResult(out ActivateResult, out InterfacePtr); }
                 catch (Exception ex) { ActivateResult = Marshal.GetHRForException(ex); }
                 finally { Done.Set(); }
             }
@@ -239,7 +247,7 @@ namespace PISMO.Native
             void Stop();
             void Reset();
             void SetEventHandle(IntPtr eventHandle);
-            void GetService(ref Guid riid, [MarshalAs(UnmanagedType.IUnknown)] out object service);
+            void GetService(ref Guid riid, out IntPtr service);
         }
 
         [ComImport, Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317"),
