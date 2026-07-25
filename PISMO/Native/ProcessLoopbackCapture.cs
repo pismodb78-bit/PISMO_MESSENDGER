@@ -202,7 +202,13 @@ namespace PISMO.Native
          InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         private interface IActivateAudioInterfaceCompletionHandler
         {
-            void ActivateCompleted(IActivateAudioInterfaceAsyncOperation operation);
+            // operation получаем СЫРЫМ указателем (IntPtr), а не типизированным
+            // интерфейсом: на .NET 8 маршалинг входящего COM-параметра в
+            // [ComImport]-интерфейс отдаёт ComWrappers-объект, вызов метода на
+            // котором падает InvalidCastException («Specified cast is not valid»),
+            // и process-loopback тихо откатывается на device+AEC. Через IntPtr +
+            // Marshal.GetObjectForIUnknown получаем классический RCW.
+            void ActivateCompleted(IntPtr operation);
         }
 
         [ComImport, Guid("72A22D78-CDE4-431D-B8CC-843A71199B6D"),
@@ -223,9 +229,14 @@ namespace PISMO.Native
             public int ActivateResult;
             public IntPtr InterfacePtr;
 
-            public void ActivateCompleted(IActivateAudioInterfaceAsyncOperation operation)
+            public void ActivateCompleted(IntPtr operationPtr)
             {
-                try { operation.GetActivateResult(out ActivateResult, out InterfacePtr); }
+                try
+                {
+                    var operation = (IActivateAudioInterfaceAsyncOperation)
+                        Marshal.GetObjectForIUnknown(operationPtr);
+                    operation.GetActivateResult(out ActivateResult, out InterfacePtr);
+                }
                 catch (Exception ex) { ActivateResult = Marshal.GetHRForException(ex); }
                 finally { Done.Set(); }
             }
