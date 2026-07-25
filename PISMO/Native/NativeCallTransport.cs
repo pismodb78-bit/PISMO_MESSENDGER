@@ -194,6 +194,7 @@ namespace PISMO.Native
         private ulong _scrAudioSource, _scrAudioTrack;
         private ulong _scrAudioPublishAsyncId;
         private string _scrAudioTrackSid;
+        private string _procFailReason;   // почему process-loopback не взлетел (для бейджа)
         private int _scrAudioRate = 48000, _scrAudioCh = 2;
         // Потоковый линейный ресемплер захвата демки → 48кГц (чтобы AEC включался на
         // устройствах не-48кГц). _resT — позиция чтения (в сэмплах входа) для след.
@@ -948,7 +949,7 @@ namespace PISMO.Native
                 _scrHasAudio = withAudio;
                 _scrAudioMode = withAudio ? "…" : "—";
                 if (withAudio)
-                    new Thread(StartScreenAudio) { IsBackground = true, Name = "pismo-screen-audio-init" }.Start();
+                    StartScreenAudioThread();
             }
             catch (Exception ex) { ConnectError?.Invoke("демонстрация: " + ex.Message); _scrStarted = false; }
         }
@@ -980,10 +981,11 @@ namespace PISMO.Native
                         useProc = true;
                         _scrAudioMode = "proc";
                     }
-                    catch
+                    catch (Exception exProc)
                     {
                         try { _procLoop?.Dispose(); } catch { }
                         _procLoop = null;   // недоступен → device-loopback ниже
+                        _procFailReason = "err:" + Trunc(exProc.Message, 30);
                     }
                 }
                 if (!useProc)
@@ -999,7 +1001,7 @@ namespace PISMO.Native
                         _scrCaptureCh = _loopback.WaveFormat.Channels;
                         _scrCaptureFloat =
                             _loopback.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
-                        _scrAudioMode = "device+AEC";
+                        _scrAudioMode = "device+AEC(" + (_procFailReason ?? "?") + ")";
                     }
                     catch (Exception ex2)
                     {
@@ -1118,10 +1120,20 @@ namespace PISMO.Native
                 // process-loopback «стартовал», но молчит (частый баг на части сборок
                 // Windows). Форсируем device-loopback + AEC: пересобираем звук демки.
                 _forceDeviceLoopback = true;
+                _procFailReason = "тихо";   // активировался, но не отдал данных
                 try { StopScreenAudio(); } catch { }
-                if (_scrRun)
-                    new Thread(StartScreenAudio) { IsBackground = true, Name = "pismo-screen-audio-reinit" }.Start();
+                if (_scrRun) StartScreenAudioThread();
             }, null, 8000, System.Threading.Timeout.Infinite);   // даём process-loopback (без эха) фору
+        }
+
+        // Запуск инициализации звука демки в фоновом ЯВНО MTA-потоке: COM-колбэк
+        // ActivateAudioInterfaceAsync (process-loopback) должен прийти в MTA, иначе
+        // на части машин активация тихо не срабатывает и идёт откат на device+AEC.
+        private void StartScreenAudioThread()
+        {
+            var t = new Thread(StartScreenAudio) { IsBackground = true, Name = "pismo-screen-audio-init" };
+            try { t.SetApartmentState(System.Threading.ApartmentState.MTA); } catch { }
+            t.Start();
         }
 
         // Кадр системного звука → i16 PCM → CaptureAudioFrame. Источник даёт либо
@@ -1300,6 +1312,7 @@ namespace PISMO.Native
         public void StopScreenShare()
         {
             _forceDeviceLoopback = false;   // следующая демка снова попробует process-loopback
+            _procFailReason = null;
             StopScreenAudio();
             _scrRun = false;
             try { _scrThread?.Join(500); } catch { }
