@@ -46,6 +46,13 @@ namespace PISMO.Native
 
         public void Start()
         {
+            // ActivateAudioInterfaceAsync — обычный DllImport (не вызов COM-метода),
+            // поэтому .NET НЕ инициализирует COM на этом потоке автоматически, и
+            // отметки потока как MTA мало: без реального CoInitializeEx активация
+            // отвечает E_ILLEGAL_METHOD_CALL (0x8000000E). Инициализируем COM как
+            // MTA явно (S_FALSE/уже-инициализирован — не ошибка).
+            CoInitializeEx(IntPtr.Zero, 0 /* COINIT_MULTITHREADED */);
+
             var actParams = new AUDIOCLIENT_ACTIVATION_PARAMS
             {
                 ActivationType = 1,                          // PROCESS_LOOPBACK
@@ -284,6 +291,9 @@ namespace PISMO.Native
         private static readonly Guid IID_IAudioClient = new("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
         private static readonly Guid IID_IAudioCaptureClient = new("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
         private static readonly Guid IID_CompletionHandler = new("41D949AB-9862-444A-80F6-C261334DA5EB");
+
+        [DllImport("ole32.dll")]
+        private static extern int CoInitializeEx(IntPtr reserved, uint coInit);
 
         [DllImport("Mmdevapi.dll", ExactSpelling = true, PreserveSig = true)]
         private static extern int ActivateAudioInterfaceAsync(
