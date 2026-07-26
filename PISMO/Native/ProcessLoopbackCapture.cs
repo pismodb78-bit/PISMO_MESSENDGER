@@ -367,7 +367,11 @@ namespace PISMO.Native
         [DllImport("Mmdevapi.dll", ExactSpelling = true, PreserveSig = true)]
         private static extern int ActivateAudioInterfaceAsync(
             [MarshalAs(UnmanagedType.LPWStr)] string deviceInterfacePath,
-            [MarshalAs(UnmanagedType.LPStruct)] ref Guid riid,
+            // REFIID = GUID*. `ref Guid` уже даёт указатель на GUID; добавлять
+            // LPStruct НЕЛЬЗЯ — с ним получается GUID** (двойная косвенность), Windows
+            // читает мусорный IID, активирует, а потом отдаёт E_NOINTERFACE на запрос
+            // интерфейса. Без LPStruct — корректный REFIID.
+            ref Guid riid,
             IntPtr activationParams,
             IntPtr completionHandler,
             out IntPtr operation);
