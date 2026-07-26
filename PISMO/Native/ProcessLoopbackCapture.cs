@@ -259,6 +259,7 @@ namespace PISMO.Native
             public IntPtr NativePtr { get; }   // указатель на COM-объект (для передачи в native)
 
             private readonly IntPtr _vtbl;
+            private IntPtr _ftm;        // агрегированный Free-Threaded Marshaler (IMarshal)
             private GCHandle _self;
             // Делегаты держим живыми, иначе GC соберёт трамплины.
             private readonly FnQI _qi; private readonly FnAddRefRel _ar; private readonly FnAddRefRel _rel;
@@ -287,6 +288,14 @@ namespace PISMO.Native
                 _self = GCHandle.Alloc(this);
                 Marshal.WriteIntPtr(NativePtr, 0, _vtbl);
                 Marshal.WriteIntPtr(NativePtr, IntPtr.Size, GCHandle.ToIntPtr(_self));
+
+                // Настоящая agile-обёртка = агрегируем Free-Threaded Marshaler (как FtmBase
+                // в C++-примере MS). Без него ответа на один IAgileObject мало: COM при
+                // маршалинге спрашивает IMarshal, не находит FTM, строит стандартный прокси
+                // в другой апартамент — и результат активации (IAudioClient) не может
+                // вернуться → E_NOINTERFACE. С FTM объект по-настоящему свободнопоточный,
+                // колбэк идёт напрямую, и GetActivateResult отдаёт живой IAudioClient.
+                CoCreateFreeThreadedMarshaler(NativePtr, out _ftm);
             }
 
             private static ManualCompletionHandler From(IntPtr self)
@@ -295,12 +304,19 @@ namespace PISMO.Native
             private static int QI(IntPtr self, IntPtr riid, out IntPtr ppv)
             {
                 Guid iid = Marshal.PtrToStructure<Guid>(riid);
-                // IAgileObject ОБЯЗАТЕЛЕН: ActivateAudioInterfaceAsync маршалит колбэк
-                // между апартаментами и требует, чтобы он был agile; без этого API
-                // отвечает E_ILLEGAL_METHOD_CALL. IAgileObject — маркер без своих
-                // методов, поэтому отдаём тот же объект (vtable IUnknown нам хватает).
                 if (iid == IID_IUnknown || iid == IID_CompletionHandler || iid == IID_IAgileObject)
                 { ppv = self; return 0; }
+                // IMarshal перенаправляем в агрегированный FTM — так объект становится
+                // по-настоящему свободнопоточным и колбэк не маршалится в чужой апартамент.
+                if (iid == IID_IMarshal)
+                {
+                    var h = From(self);
+                    if (h._ftm != IntPtr.Zero)
+                    {
+                        Guid g = iid;
+                        return Marshal.QueryInterface(h._ftm, ref g, out ppv);
+                    }
+                }
                 ppv = IntPtr.Zero; return unchecked((int)0x80004002); // E_NOINTERFACE
             }
             private static uint AddRef(IntPtr self) => 1;
@@ -325,6 +341,7 @@ namespace PISMO.Native
 
             public void Dispose()
             {
+                try { if (_ftm != IntPtr.Zero) { Marshal.Release(_ftm); _ftm = IntPtr.Zero; } } catch { }
                 try { if (NativePtr != IntPtr.Zero) Marshal.FreeHGlobal(NativePtr); } catch { }
                 try { if (_vtbl != IntPtr.Zero) Marshal.FreeHGlobal(_vtbl); } catch { }
                 try { if (_self.IsAllocated) _self.Free(); } catch { }
@@ -335,6 +352,7 @@ namespace PISMO.Native
         // ── COM / Win32 ───────────────────────────────────────────────────
         private const string VirtualDevicePath = "VAD\\Process_Loopback";
         private static readonly Guid IID_IUnknown = new("00000000-0000-0000-C000-000000000046");
+        private static readonly Guid IID_IMarshal = new("00000003-0000-0000-C000-000000000046");
         private static readonly Guid IID_IAudioClient = new("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
         private static readonly Guid IID_IAudioCaptureClient = new("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
         private static readonly Guid IID_CompletionHandler = new("41D949AB-9862-444A-80F6-C261334DA5EB");
@@ -342,6 +360,9 @@ namespace PISMO.Native
 
         [DllImport("ole32.dll")]
         private static extern int CoInitializeEx(IntPtr reserved, uint coInit);
+
+        [DllImport("ole32.dll")]
+        private static extern int CoCreateFreeThreadedMarshaler(IntPtr pUnkOuter, out IntPtr ppunkMarshal);
 
         [DllImport("Mmdevapi.dll", ExactSpelling = true, PreserveSig = true)]
         private static extern int ActivateAudioInterfaceAsync(
