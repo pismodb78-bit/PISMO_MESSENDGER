@@ -107,7 +107,8 @@ namespace PISMO.Native
                     // Диагностика: апартамент потока (M/S/U) + код CoInitializeEx + код act.
                     var apt = Thread.CurrentThread.GetApartmentState();
                     char a = apt == ApartmentState.MTA ? 'M' : apt == ApartmentState.STA ? 'S' : 'U';
-                    throw new InvalidOperationException($"act{a}:{coHr:X8}:{hr:X8}");
+                    // + номер сборки ОС: process-loopback требует Windows build >= 20348.
+                    throw new InvalidOperationException($"act{a}:{hr:X8}:b{Environment.OSVersion.Version.Build}");
                 }
 
                 if (!handler.Done.WaitOne(3000)) throw new TimeoutException("process loopback: активация не ответила");
@@ -279,7 +280,12 @@ namespace PISMO.Native
             private static int QI(IntPtr self, IntPtr riid, out IntPtr ppv)
             {
                 Guid iid = Marshal.PtrToStructure<Guid>(riid);
-                if (iid == IID_IUnknown || iid == IID_CompletionHandler) { ppv = self; return 0; }
+                // IAgileObject ОБЯЗАТЕЛЕН: ActivateAudioInterfaceAsync маршалит колбэк
+                // между апартаментами и требует, чтобы он был agile; без этого API
+                // отвечает E_ILLEGAL_METHOD_CALL. IAgileObject — маркер без своих
+                // методов, поэтому отдаём тот же объект (vtable IUnknown нам хватает).
+                if (iid == IID_IUnknown || iid == IID_CompletionHandler || iid == IID_IAgileObject)
+                { ppv = self; return 0; }
                 ppv = IntPtr.Zero; return unchecked((int)0x80004002); // E_NOINTERFACE
             }
             private static uint AddRef(IntPtr self) => 1;
@@ -317,6 +323,7 @@ namespace PISMO.Native
         private static readonly Guid IID_IAudioClient = new("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
         private static readonly Guid IID_IAudioCaptureClient = new("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
         private static readonly Guid IID_CompletionHandler = new("41D949AB-9862-444A-80F6-C261334DA5EB");
+        private static readonly Guid IID_IAgileObject = new("94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90");
 
         [DllImport("ole32.dll")]
         private static extern int CoInitializeEx(IntPtr reserved, uint coInit);
