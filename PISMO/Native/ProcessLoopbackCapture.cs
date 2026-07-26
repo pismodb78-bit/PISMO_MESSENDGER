@@ -70,10 +70,10 @@ namespace PISMO.Native
                 int hr = ActivateAudioInterfaceAsync(VirtualDevicePath, ref iidAudioClient,
                     pProp, handler.NativePtr, out IntPtr opPtr);
                 if (opPtr != IntPtr.Zero) Release(opPtr);
-                if (hr != 0) Marshal.ThrowExceptionForHR(hr);
+                Check("act", hr);
 
                 if (!handler.Done.WaitOne(3000)) throw new TimeoutException("process loopback: активация не ответила");
-                if (handler.ResultHr != 0) Marshal.ThrowExceptionForHR(handler.ResultHr);
+                Check("res", handler.ResultHr);
                 _audioClient = handler.Interface;
                 if (_audioClient == IntPtr.Zero) throw new InvalidOperationException("process loopback: нет IAudioClient");
             }
@@ -95,26 +95,25 @@ namespace PISMO.Native
 
             const int SHARED = 0;
             const uint LOOPBACK = 0x00020000;
-            const uint EVENTCALLBACK = 0x00040000;
+            // БЕЗ EVENTCALLBACK: у process-loopback событийный режим капризен
+            // (и мог давать «метод вызван в неожиданное время»); капчур-луп и так
+            // опрашивает буфер по таймеру.
             IntPtr pWf = Marshal.AllocHGlobal(Marshal.SizeOf<WAVEFORMATEX>());
             try
             {
                 Marshal.StructureToPtr(wf, pWf, false);
-                int hr = AC_Initialize(_audioClient, SHARED, LOOPBACK | EVENTCALLBACK,
-                    2_000_000, 0, pWf, IntPtr.Zero);
-                Marshal.ThrowExceptionForHR(hr);
+                Check("init", AC_Initialize(_audioClient, SHARED, LOOPBACK,
+                    2_000_000, 0, pWf, IntPtr.Zero));
             }
             finally { Marshal.FreeHGlobal(pWf); }
 
             _bufferReady = new EventWaitHandle(false, EventResetMode.AutoReset);
-            Marshal.ThrowExceptionForHR(AC_SetEventHandle(_audioClient,
-                _bufferReady.SafeWaitHandle.DangerousGetHandle()));
 
             Guid iidCapture = IID_IAudioCaptureClient;
-            Marshal.ThrowExceptionForHR(AC_GetService(_audioClient, ref iidCapture, out _capture));
+            Check("svc", AC_GetService(_audioClient, ref iidCapture, out _capture));
             if (_capture == IntPtr.Zero) throw new InvalidOperationException("process loopback: нет IAudioCaptureClient");
 
-            Marshal.ThrowExceptionForHR(AC_Start(_audioClient));
+            Check("start", AC_Start(_audioClient));
             _run = true;
             _thread = new Thread(CaptureLoop) { IsBackground = true, Name = "pismo-proc-loopback" };
             _thread.Start();
@@ -157,6 +156,14 @@ namespace PISMO.Native
             _bufferReady = null;
             try { _handler?.Dispose(); } catch { }
             _handler = null;
+        }
+
+        // На ошибке кидаем с меткой шага и hex-кодом HRESULT — чтобы бейдж
+        // показал ГДЕ и ЧТО (например «start:0x88890004»), а не только текст.
+        private static void Check(string step, int hr)
+        {
+            if (hr >= 0) return;
+            throw new InvalidOperationException($"{step}:0x{hr:X8}");
         }
 
         // ── Вызовы методов COM по vtable (без RCW/ComImport) ──────────────
