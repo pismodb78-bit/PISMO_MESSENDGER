@@ -39,6 +39,7 @@ namespace PISMO
         private readonly HashSet<string> _startedTiles = new();          // "pid|source"
         private readonly HashSet<string> _announcedScreens = new();       // pid чьи демки анонсированы кнопкой
         private readonly HashSet<string> _watchedScreens = new();         // pid чьи демки пользователь смотрит
+        private readonly Dictionary<string, DateTime> _screenStoppedAt = new(); // когда демка остановлена (антидребезг «хвоста» кадров)
         private readonly object _watchLock = new();
         private bool _screenPreviewActive = true;
 
@@ -232,6 +233,11 @@ namespace PISMO
                 bool watching;
                 lock (_watchLock)
                 {
+                    // Антидребезг: «хвост» буферизованных кадров после остановки не
+                    // должен воскрешать плитку (иначе она висит после стопа демки).
+                    if (_screenStoppedAt.TryGetValue(identity, out var stoppedAt)
+                        && (DateTime.UtcNow - stoppedAt).TotalMilliseconds < 1500)
+                        return;
                     if (_announcedScreens.Add(identity))
                         Ui(() => { try { RemoteStreamPublished?.Invoke(identity, name); } catch { } });
                     watching = _watchedScreens.Contains(identity);
@@ -272,6 +278,7 @@ namespace PISMO
                 {
                     _announcedScreens.Remove(identity);
                     _watchedScreens.Remove(identity);
+                    _screenStoppedAt[identity] = DateTime.UtcNow;
                 }
                 try { _t?.SetScreenAudioWatched(identity, false); } catch { }
                 Ui(() => { try { RemoteStreamUnpublished?.Invoke(identity); } catch { } });

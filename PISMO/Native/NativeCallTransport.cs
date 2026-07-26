@@ -208,6 +208,9 @@ namespace PISMO.Native
 
         // sid трека → источник (камера/демка), чтобы различать входящее видео.
         private readonly Dictionary<string, TrackSource> _sourceBySid = new();
+        // Кто из участников сейчас демонстрирует экран (identity). Нужен, чтобы
+        // надёжно снять плитку демки, даже если при отписке FFI пришлёт другой sid.
+        private readonly HashSet<string> _screenByIdentity = new();
         // handle видеострима → (участник, это ли демка).
         // Контекст входящего видеопотока: кто/что + пул буферов кадров.
         // Пул из 3 буферов вместо new byte[8МБ] на КАЖДЫЙ кадр: на 60fps это
@@ -1933,7 +1936,7 @@ namespace PISMO.Native
                 ParticipantJoined?.Invoke(info.Identity, info.Name);
                 EmitVoiceAttrsFromMap(info.Identity, info.Attributes);
                 foreach (var pub in pwt.Publications)   // запоминаем источник по sid
-                    RememberSource(pub.Info.Sid, pub.Info.Source);
+                    RememberSource(info.Identity, pub.Info.Sid, pub.Info.Source);
             }
 
             // КРИТИЧНО: сообщаем FFI, что готовы принимать события комнаты. Без
@@ -2007,7 +2010,8 @@ namespace PISMO.Native
                     ParticipantLeftById?.Invoke(re.ParticipantDisconnected.ParticipantIdentity);
                     break;
                 case RoomEvent.MessageOneofCase.TrackPublished:
-                    RememberSource(re.TrackPublished.Publication.Info.Sid, re.TrackPublished.Publication.Info.Source);
+                    RememberSource(re.TrackPublished.ParticipantIdentity,
+                        re.TrackPublished.Publication.Info.Sid, re.TrackPublished.Publication.Info.Source);
                     break;
                 case RoomEvent.MessageOneofCase.TrackSubscribed:
                     OnTrackSubscribed(re.TrackSubscribed.ParticipantIdentity, re.TrackSubscribed.Track);
@@ -2059,10 +2063,15 @@ namespace PISMO.Native
             if (hasDeaf) ParticipantDeafened?.Invoke(identity, deaf);
         }
 
-        private void RememberSource(string sid, TrackSource source)
+        private void RememberSource(string identity, string sid, TrackSource source)
         {
             if (string.IsNullOrEmpty(sid)) return;
-            lock (_videoLock) _sourceBySid[sid] = source;
+            lock (_videoLock)
+            {
+                _sourceBySid[sid] = source;
+                if (source == TrackSource.SourceScreenshare && !string.IsNullOrEmpty(identity))
+                    _screenByIdentity.Add(identity);
+            }
         }
 
         private bool IsScreenSid(string sid)
@@ -2139,10 +2148,28 @@ namespace PISMO.Native
             // Убираем ТОЛЬКО видео-плитки. Раньше отписка ЛЮБОГО трека (в т.ч.
             // звука демки/микрофона) прилетала как RemoteVideoRemoved(isScreen:
             // false) и сносила плитку КАМЕРЫ участника.
-            TrackSource src;
-            lock (_videoLock) { if (!_sourceBySid.TryGetValue(sid, out src)) return; }
-            if (src == TrackSource.SourceScreenshare) RemoteVideoRemoved?.Invoke(identity, true);
-            else if (src == TrackSource.SourceCamera) RemoteVideoRemoved?.Invoke(identity, false);
+            TrackSource src; bool found;
+            lock (_videoLock)
+            {
+                found = _sourceBySid.TryGetValue(sid, out src);
+                if (found) _sourceBySid.Remove(sid);
+            }
+            if (found)
+            {
+                if (src == TrackSource.SourceScreenshare)
+                {
+                    lock (_videoLock) _screenByIdentity.Remove(identity);
+                    RemoteVideoRemoved?.Invoke(identity, true);
+                }
+                else if (src == TrackSource.SourceCamera) RemoteVideoRemoved?.Invoke(identity, false);
+                return;
+            }
+            // sid неизвестен (FFI при отписке иногда шлёт другой sid) — но если этот
+            // участник демонстрировал экран, считаем это остановкой демки: иначе
+            // плитка «Смотреть стрим» висит вечно.
+            bool wasScreen;
+            lock (_videoLock) wasScreen = _screenByIdentity.Remove(identity);
+            if (wasScreen) RemoteVideoRemoved?.Invoke(identity, true);
         }
 
         private void HandleAudioStream(AudioStreamEvent ase)
