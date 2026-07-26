@@ -118,7 +118,7 @@ namespace PISMO
                     _audioMs = new MemoryStream(_video.AudioWav);
                     var reader = new WaveFileReader(_audioMs);
                     _waveOut = new WaveOutEvent();
-                    _waveOut.Init(reader);
+                    _waveOut.Init(new PISMO.Native.TapWaveProvider(reader));
                     _waveOut.PlaybackStopped += (s, e) => reader.Dispose();
                     _waveOut.Play();
                 }

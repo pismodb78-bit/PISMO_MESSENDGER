@@ -3250,7 +3250,7 @@ namespace PISMO
                 var ms = new MemoryStream(audioBytes);
                 var reader = new WaveFileReader(ms);
                 _voiceOutStatic = new WaveOutEvent();
-                _voiceOutStatic.Init(reader);
+                _voiceOutStatic.Init(new PISMO.Native.TapWaveProvider(reader));
                 _voiceOutStatic.Play();
                 btn.Text = "⏹  Остановить";
                 _voiceOutStatic.PlaybackStopped += (s, ev) =>
@@ -3285,7 +3285,7 @@ namespace PISMO
                 var ms = new MemoryStream(audioBytes);
                 var reader = new WaveFileReader(ms);
                 _waveOut = new WaveOutEvent();
-                _waveOut.Init(reader);
+                _waveOut.Init(new PISMO.Native.TapWaveProvider(reader));
                 _waveOut.Play();
 
                 btn.Text = "⏹  Остановить";

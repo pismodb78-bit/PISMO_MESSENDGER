@@ -184,6 +184,7 @@ namespace PISMO.Native
         // чтобы шумодав/эхоподавление не гасили звуки игры/музыки в демке.
         private NAudio.Wave.WasapiLoopbackCapture _loopback;
         private ProcessLoopbackCapture _procLoop;   // захват без своего процесса (без эха)
+        private short[] _tapBuf;                     // буфер подмешивания медиа PISMO в демку
         // process-loopback требует Windows 10 build 20348+. Если он недоступен или
         // молчит — форсируем device-loopback (весь звук эндпоинта) + AEC, чтобы
         // звук демки БЫЛ, а голоса PISMO из него вычитались (без эха).
@@ -1082,11 +1083,15 @@ namespace PISMO.Native
 
                 if (_procLoop != null)
                 {
+                    // Наш процесс исключён из захвата → включаем подмешивание медиа PISMO.
+                    DemoMediaTap.Reset();
+                    DemoMediaTap.Active = true;
                     _procLoop.DataAvailable += OnScreenAudioData;
                     ArmScreenAudioWatchdog();   // если данных нет за 2с — откат на device
                 }
                 else
                 {
+                    DemoMediaTap.Active = false;   // device-loopback уже ловит медиа PISMO
                     _loopback.DataAvailable += OnScreenAudioData;
                     _loopback.StartRecording();
                 }
@@ -1172,6 +1177,21 @@ namespace PISMO.Native
                 pcm = ResampleMonoTo48k(pcm, frames, _scrCaptureRate, out frames);
             int n = frames;
             if (n <= 0) return;
+
+            // На process-loopback пути в захвате НЕТ звука самого PISMO (наш процесс
+            // исключён), поэтому видео-кружки и голосовые не слышны в демке. Подмешиваем
+            // их из DemoMediaTap (голоса звонка туда не идут → эхо не возвращается).
+            // На device-loopback пути этого делать НЕ нужно: там медиа уже в захвате.
+            if (_procLoop != null)
+            {
+                if (_tapBuf == null || _tapBuf.Length < n) _tapBuf = new short[n];
+                if (DemoMediaTap.Pull(_tapBuf, n) > 0)
+                    for (int i = 0; i < n; i++)
+                    {
+                        int s = pcm[i] + _tapBuf[i];
+                        pcm[i] = (short)(s > 32767 ? 32767 : s < -32768 ? -32768 : s);
+                    }
+            }
 
             // Через APM (эхоподавление) — строго 10-мс кусками; без APM — сразу.
             // ПРИ ДЕФЕНЕ (_playbackMuted) AEC ОТКЛЮЧАЕМ: голоса звонка не играют →
@@ -1284,6 +1304,7 @@ namespace PISMO.Native
 
         private void StopScreenAudio()
         {
+            DemoMediaTap.Active = false;
             try { _scrAudioWatchdog?.Dispose(); } catch { }
             _scrAudioWatchdog = null;
             if (_scrApmHandle != 0) { try { LiveKitFfi.DropHandle(_scrApmHandle); } catch { } _scrApmHandle = 0; }
