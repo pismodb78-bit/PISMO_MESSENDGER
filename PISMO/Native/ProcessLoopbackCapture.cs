@@ -101,18 +101,26 @@ namespace PISMO.Native
                 Guid iidAudioClient = IID_IAudioClient;
                 int hr = ActivateAudioInterfaceAsync(VirtualDevicePath, ref iidAudioClient,
                     pProp, handler.NativePtr, out IntPtr opPtr);
-                if (opPtr != IntPtr.Zero) Release(opPtr);
                 if (hr < 0)
                 {
-                    // Диагностика: апартамент потока (M/S/U) + код CoInitializeEx + код act.
+                    if (opPtr != IntPtr.Zero) Release(opPtr);
+                    // Диагностика: апартамент потока (M/S/U) + код act + сборка ОС.
                     var apt = Thread.CurrentThread.GetApartmentState();
                     char a = apt == ApartmentState.MTA ? 'M' : apt == ApartmentState.STA ? 'S' : 'U';
-                    // + номер сборки ОС: process-loopback требует Windows build >= 20348.
+                    // process-loopback требует Windows build >= 20348.
                     throw new InvalidOperationException($"act{a}:{hr:X8}:b{Environment.OSVersion.Version.Build}");
                 }
 
-                if (!handler.Done.WaitOne(3000)) throw new TimeoutException("process loopback: активация не ответила");
-                Check("res", handler.ResultHr);
+                bool answered = handler.Done.WaitOne(3000);
+                // Операцию освобождаем ТОЛЬКО после колбэка: раньше Release шёл сразу
+                // после вызова, т.е. объект мог быть снесён до/во время колбэка.
+                if (opPtr != IntPtr.Zero) Release(opPtr);
+                if (!answered) throw new TimeoutException("process loopback: активация не ответила");
+
+                // Разделяем два разных HRESULT: сам вызов GetActivateResult (resC) и
+                // результат активации, который он вернул (resA) — причины разные.
+                Check("resC", handler.CallHr);
+                Check("resA", handler.ActivateHr);
                 _audioClient = handler.Interface;
                 if (_audioClient == IntPtr.Zero) throw new InvalidOperationException("process loopback: нет IAudioClient");
             }
@@ -239,7 +247,8 @@ namespace PISMO.Native
         private sealed class ManualCompletionHandler : IDisposable
         {
             public readonly EventWaitHandle Done = new(false, EventResetMode.ManualReset);
-            public int ResultHr;
+            public int CallHr;       // HRESULT самого вызова GetActivateResult
+            public int ActivateHr;   // HRESULT активации, который он вернул
             public IntPtr Interface;
             public IntPtr NativePtr { get; }   // указатель на COM-объект (для передачи в native)
 
@@ -299,11 +308,11 @@ namespace PISMO.Native
                     IntPtr vtbl = Marshal.ReadIntPtr(operation);
                     IntPtr fn = Marshal.ReadIntPtr(vtbl, 3 * IntPtr.Size);   // GetActivateResult
                     var get = Marshal.GetDelegateForFunctionPointer<FnGetActivateResult>(fn);
-                    int callHr = get(operation, out int ar, out IntPtr iface);
-                    h.ResultHr = callHr != 0 ? callHr : ar;
+                    h.CallHr = get(operation, out int ar, out IntPtr iface);
+                    h.ActivateHr = ar;
                     h.Interface = iface;
                 }
-                catch (Exception ex) { h.ResultHr = Marshal.GetHRForException(ex); }
+                catch (Exception ex) { h.CallHr = Marshal.GetHRForException(ex); }
                 finally { h.Done.Set(); }
                 return 0;
             }
