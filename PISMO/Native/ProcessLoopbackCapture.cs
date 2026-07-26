@@ -44,14 +44,39 @@ namespace PISMO.Native
             _excludeTree = excludeTargetTree;
         }
 
+        private readonly ManualResetEvent _setupDone = new(false);
+        private Exception _setupError;
+
         public void Start()
         {
+            // ВСЁ (активация + захват) делаем на ОДНОМ выделенном MTA-потоке: так
+            // апартамент гарантирован и объекты IAudioClient используются там же,
+            // где созданы. Ждём результат настройки и пробрасываем ошибку наверх.
+            _thread = new Thread(SetupAndRun) { IsBackground = true, Name = "pismo-proc-loopback" };
+            try { _thread.SetApartmentState(ApartmentState.MTA); } catch { }
+            _thread.Start();
+            if (!_setupDone.WaitOne(6000))
+            {
+                _run = false;
+                throw new TimeoutException("process loopback: настройка не завершилась");
+            }
+            if (_setupError != null) throw _setupError;
+        }
+
+        private void SetupAndRun()
+        {
+            try { Setup(); }
+            catch (Exception e) { _setupError = e; _setupDone.Set(); return; }
+            _setupDone.Set();
+            CaptureLoop();
+        }
+
+        private void Setup()
+        {
             // ActivateAudioInterfaceAsync — обычный DllImport (не вызов COM-метода),
-            // поэтому .NET НЕ инициализирует COM на этом потоке автоматически, и
-            // отметки потока как MTA мало: без реального CoInitializeEx активация
-            // отвечает E_ILLEGAL_METHOD_CALL (0x8000000E). Инициализируем COM как
-            // MTA явно (S_FALSE/уже-инициализирован — не ошибка).
-            CoInitializeEx(IntPtr.Zero, 0 /* COINIT_MULTITHREADED */);
+            // поэтому .NET НЕ инициализирует COM на этом потоке сам. Инициализируем
+            // явно MTA (S_FALSE/уже-инициализирован — не ошибка).
+            int coHr = CoInitializeEx(IntPtr.Zero, 0 /* COINIT_MULTITHREADED */);
 
             var actParams = new AUDIOCLIENT_ACTIVATION_PARAMS
             {
@@ -77,7 +102,13 @@ namespace PISMO.Native
                 int hr = ActivateAudioInterfaceAsync(VirtualDevicePath, ref iidAudioClient,
                     pProp, handler.NativePtr, out IntPtr opPtr);
                 if (opPtr != IntPtr.Zero) Release(opPtr);
-                Check("act", hr);
+                if (hr < 0)
+                {
+                    // Диагностика: апартамент потока (M/S/U) + код CoInitializeEx + код act.
+                    var apt = Thread.CurrentThread.GetApartmentState();
+                    char a = apt == ApartmentState.MTA ? 'M' : apt == ApartmentState.STA ? 'S' : 'U';
+                    throw new InvalidOperationException($"act{a}:{coHr:X8}:{hr:X8}");
+                }
 
                 if (!handler.Done.WaitOne(3000)) throw new TimeoutException("process loopback: активация не ответила");
                 Check("res", handler.ResultHr);
@@ -92,7 +123,7 @@ namespace PISMO.Native
                 Marshal.FreeHGlobal(pProp);
             }
 
-            // 2) Формат — задаём сами (GetMixFormat для process loopback = E_NOTIMPL).
+            // Формат задаём сами (GetMixFormat для process loopback = E_NOTIMPL).
             var wf = new WAVEFORMATEX
             {
                 wFormatTag = 1, nChannels = 2, nSamplesPerSec = 48000,
@@ -101,10 +132,7 @@ namespace PISMO.Native
             _blockAlign = wf.nBlockAlign;
 
             const int SHARED = 0;
-            const uint LOOPBACK = 0x00020000;
-            // БЕЗ EVENTCALLBACK: у process-loopback событийный режим капризен
-            // (и мог давать «метод вызван в неожиданное время»); капчур-луп и так
-            // опрашивает буфер по таймеру.
+            const uint LOOPBACK = 0x00020000;   // без EVENTCALLBACK: капчур-луп опрашивает буфер
             IntPtr pWf = Marshal.AllocHGlobal(Marshal.SizeOf<WAVEFORMATEX>());
             try
             {
@@ -122,8 +150,6 @@ namespace PISMO.Native
 
             Check("start", AC_Start(_audioClient));
             _run = true;
-            _thread = new Thread(CaptureLoop) { IsBackground = true, Name = "pismo-proc-loopback" };
-            _thread.Start();
         }
 
         private void CaptureLoop()
