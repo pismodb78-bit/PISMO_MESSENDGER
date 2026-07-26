@@ -120,7 +120,13 @@ namespace PISMO.Native
                 // Разделяем два разных HRESULT: сам вызов GetActivateResult (resC) и
                 // результат активации, который он вернул (resA) — причины разные.
                 Check("resC", handler.CallHr);
-                Check("resA", handler.ActivateHr);
+                if (handler.ActivateHr < 0)
+                {
+                    // + сборка ОС: process-loopback поддерживается только с build >= 20348.
+                    // E_NOINTERFACE тут почти наверняка = ОС не понимает process-loopback.
+                    throw new InvalidOperationException(
+                        $"resA:{handler.ActivateHr:X8}:b{Environment.OSVersion.Version.Build}");
+                }
                 _audioClient = handler.Interface;
                 if (_audioClient == IntPtr.Zero) throw new InvalidOperationException("process loopback: нет IAudioClient");
             }
