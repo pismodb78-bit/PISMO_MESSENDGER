@@ -78,9 +78,16 @@ namespace PISMO.Native
 
         private void ApplyRemoteAudioVolume(RemoteAudioCtx c)
         {
-            // Звук демки слышен ТОЛЬКО когда её смотрят (нажали «Смотреть стрим»).
-            if (c.IsScreen && !_watchedScreenAudio.Contains(c.Pid)) { c.Vol.Volume = 0f; return; }
-            c.Vol.Volume = c.Muted ? 0f : Math.Clamp(c.User * (c.IsScreen ? _globalScreenVol : 1f), 0f, 4f);
+            if (c.IsScreen)
+            {
+                // Звук демки слышен ТОЛЬКО когда её смотрят. Дефен его НЕ глушит —
+                // стрим должно быть слышно даже с выключенными наушниками.
+                if (!_watchedScreenAudio.Contains(c.Pid)) { c.Vol.Volume = 0f; return; }
+                c.Vol.Volume = c.Muted ? 0f : Math.Clamp(c.User * _globalScreenVol, 0f, 4f);
+                return;
+            }
+            // Голос: дефен (_playbackMuted) глушит; демку — нет (ветка выше).
+            c.Vol.Volume = (_playbackMuted || c.Muted) ? 0f : Math.Clamp(c.User, 0f, 4f);
         }
 
         /// <summary>Смотрим/не смотрим демку участника → включаем/глушим её звук.</summary>
@@ -2241,11 +2248,21 @@ namespace PISMO.Native
 
         private void ApplyPlaybackVolume()
         {
-            try { if (_out != null) _out.Volume = _playbackMuted ? 0f : Math.Clamp(_playbackVolume, 0f, 1f); } catch { }
+            // Мастер дефеном НЕ глушим: дефен глушит только голоса (пер-источник, см.
+            // ApplyRemoteAudioVolume), а звук просматриваемой демки должен оставаться.
+            try { if (_out != null) _out.Volume = Math.Clamp(_playbackVolume, 0f, 1f); } catch { }
         }
 
-        /// <summary>Заглушить весь входящий звук («наушники»).</summary>
-        public void SetPlaybackMuted(bool muted) { _playbackMuted = muted; ApplyPlaybackVolume(); }
+        /// <summary>Заглушить весь входящий ГОЛОС («наушники»). Звук демки, которую
+        /// смотрим, продолжает играть.</summary>
+        public void SetPlaybackMuted(bool muted)
+        {
+            _playbackMuted = muted;
+            ApplyPlaybackVolume();
+            lock (_audioLock)
+                foreach (var c in _audioCtxByStream.Values)
+                    if (!c.IsScreen) ApplyRemoteAudioVolume(c);   // дефен — только голоса
+        }
 
         /// <summary>Громкость входящего голоса (0..1; NAudio WaveOut).</summary>
         public void SetPlaybackVolume(float volume) { _playbackVolume = volume; ApplyPlaybackVolume(); }
