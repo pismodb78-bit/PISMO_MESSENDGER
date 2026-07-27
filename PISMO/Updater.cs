@@ -187,9 +187,13 @@ namespace PISMO
                 $"$app='{appDir.Replace("'", "''")}'\r\n" +
                 $"$log='{logPath.Replace("'", "''")}'\r\n" +
                 "function Log($m){ try { Add-Content -LiteralPath $log -Value ((Get-Date).ToString('HH:mm:ss')+' '+$m) } catch {} }\r\n" +
+                // Закрываем и PISMO, и дочерние процессы WebView2 (msedgewebview2) —
+                // именно они держали файлы и не давали их перезаписать (обновление
+                // «зависало»/не применялось).
                 "function Kill-Pismo { \r\n" +
                 "  try { Stop-Process -Id $self -Force -ErrorAction SilentlyContinue } catch {}\r\n" +
                 "  try { Get-Process -Name 'PISMO' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}\r\n" +
+                "  try { Get-Process -Name 'msedgewebview2' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}\r\n" +
                 "}\r\n" +
                 "$ok=$false; $tmp=$null\r\n" +
                 "Log 'updater start'\r\n" +
@@ -197,16 +201,19 @@ namespace PISMO
                 // Даём приложению самому закрыться (Environment.Exit), затем добиваем.
                 "  for($i=0;$i -lt 20;$i++){ if(-not (Get-Process -Name 'PISMO' -ErrorAction SilentlyContinue)){break}; Start-Sleep -Milliseconds 500 }\r\n" +
                 "  Kill-Pismo\r\n" +
-                "  Start-Sleep -Seconds 1\r\n" +   // даём ОС отпустить дескрипторы (WebView2 и т.п.)
+                "  Start-Sleep -Seconds 2\r\n" +   // даём ОС отпустить дескрипторы (WebView2/FFI)
                 "  $tmp=Join-Path $env:TEMP ('pismo_ext_'+[guid]::NewGuid().ToString('N'))\r\n" +
                 "  try { Unblock-File -LiteralPath $zip -ErrorAction SilentlyContinue } catch {}\r\n" +
                 "  Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force\r\n" +
                 "  $exe=Get-ChildItem -Path $tmp -Recurse -Filter 'PISMO.exe' | Select-Object -First 1\r\n" +
                 "  if($exe){\r\n" +
                 "    $src=$exe.Directory.FullName\r\n" +
-                "    for($try=1;$try -le 8;$try++){\r\n" +
-                "      try { Copy-Item -Path (Join-Path $src '*') -Destination $app -Recurse -Force -ErrorAction Stop; $ok=$true; break }\r\n" +
-                "      catch { Log ('copy attempt '+$try+' failed: '+$_.Exception.Message); Kill-Pismo; Start-Sleep -Seconds 2 }\r\n" +
+                // robocopy НАДЁЖНЕЕ Copy-Item: не падает целиком из-за одного занятого
+                // файла, сам повторяет (/R:5 /W:2). Коды выхода 0..7 = успех, 8+ = сбой.
+                "    for($try=1;$try -le 4 -and -not $ok;$try++){\r\n" +
+                "      Kill-Pismo\r\n" +
+                "      robocopy $src $app /E /R:5 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null\r\n" +
+                "      if($LASTEXITCODE -lt 8){ $ok=$true } else { Log ('robocopy code '+$LASTEXITCODE+' (try '+$try+')'); Start-Sleep -Seconds 2 }\r\n" +
                 "    }\r\n" +
                 "  } else { Log 'PISMO.exe not found in archive' }\r\n" +
                 "} catch { Log ('update error: '+$_.Exception.Message) }\r\n" +
