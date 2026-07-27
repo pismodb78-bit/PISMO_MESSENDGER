@@ -173,18 +173,30 @@ namespace PISMO
             }
             catch { canWrite = false; }
 
-            // PowerShell-апдейтер: ждёт закрытия PISMO, распаковывает архив во
-            // временную папку, находит PISMO.exe (устойчиво к вложенным папкам),
-            // копирует поверх приложения С ПОВТОРАМИ (файлы могут быть заняты
-            // пару секунд), проверяет результат и пишет лог в %TEMP%.
+            int selfPid = Process.GetCurrentProcess().Id;
+
+            // PowerShell-апдейтер. Отличия от прежней версии (чинят «не всегда
+            // обновляется / плодятся процессы»):
+            //  • после короткой паузы ПРИНУДИТЕЛЬНО закрываем свой процесс и ВСЕ
+            //    оставшиеся PISMO — иначе файлы заняты, копирование падает, и
+            //    перезапускалась старая версия, снова просившая обновиться;
+            //  • копируем с повторами, между попытками добиваем зависшие PISMO;
+            //  • запускаем РОВНО ОДИН экземпляр и только если ни одного не осталось;
+            //  • при неудаче показываем сообщение (а не молча «старая версия»).
             string ps =
                 $"Start-Transcript -Path '{logPath.Replace("'", "''")}' -Force | Out-Null\r\n" +
                 "$ErrorActionPreference='Continue'\r\n" +
-                "Start-Sleep -Seconds 1\r\n" +
-                "for($i=0;$i -lt 60;$i++){ if(-not (Get-Process -Name 'PISMO' -ErrorAction SilentlyContinue)){break}; Start-Sleep -Milliseconds 700 }\r\n" +
-                "Start-Sleep -Seconds 1\r\n" +   // даём отпустить дескрипторы (WebView2 и т.п.)
+                $"$self={selfPid}\r\n" +
                 $"$zip='{tempZip.Replace("'", "''")}'\r\n" +
                 $"$app='{appDir.Replace("'", "''")}'\r\n" +
+                "function Kill-Pismo { \r\n" +
+                "  try { Stop-Process -Id $self -Force -ErrorAction SilentlyContinue } catch {}\r\n" +
+                "  Get-Process -Name 'PISMO' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue\r\n" +
+                "}\r\n" +
+                // Даём приложению самому закрыться (Environment.Exit), затем добиваем.
+                "for($i=0;$i -lt 20;$i++){ if(-not (Get-Process -Name 'PISMO' -ErrorAction SilentlyContinue)){break}; Start-Sleep -Milliseconds 500 }\r\n" +
+                "Kill-Pismo\r\n" +
+                "Start-Sleep -Seconds 1\r\n" +   // даём ОС отпустить дескрипторы (WebView2 и т.п.)
                 "$tmp=Join-Path $env:TEMP ('pismo_ext_'+[guid]::NewGuid().ToString('N'))\r\n" +
                 "try { Unblock-File -LiteralPath $zip -ErrorAction SilentlyContinue } catch {}\r\n" +
                 "Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force\r\n" +
@@ -192,15 +204,21 @@ namespace PISMO
                 "$ok=$false\r\n" +
                 "if($exe){\r\n" +
                 "  $src=$exe.Directory.FullName\r\n" +
-                "  for($try=1;$try -le 5;$try++){\r\n" +
+                "  for($try=1;$try -le 8;$try++){\r\n" +
                 "    try { Copy-Item -Path (Join-Path $src '*') -Destination $app -Recurse -Force -ErrorAction Stop; $ok=$true; break }\r\n" +
-                "    catch { Write-Output ('copy attempt '+$try+' failed: '+$_.Exception.Message); Start-Sleep -Seconds 2 }\r\n" +
+                "    catch { Write-Output ('copy attempt '+$try+' failed: '+$_.Exception.Message); Kill-Pismo; Start-Sleep -Seconds 2 }\r\n" +
                 "  }\r\n" +
                 "} else { Write-Output 'PISMO.exe not found in archive' }\r\n" +
-                "if($ok){ Write-Output 'update copied OK' } else { Write-Output 'UPDATE FAILED — starting old version' }\r\n" +
-                "Start-Process -FilePath (Join-Path $app 'PISMO.exe')\r\n" +
+                "if($ok){ Write-Output 'update copied OK' } else { Write-Output 'UPDATE FAILED' }\r\n" +
+                // Запускаем ровно ОДИН экземпляр — и только если ни одного не бежит.
+                "if(-not (Get-Process -Name 'PISMO' -ErrorAction SilentlyContinue)){\r\n" +
+                "  Start-Process -FilePath (Join-Path $app 'PISMO.exe')\r\n" +
+                "}\r\n" +
                 "Remove-Item $zip -Force -ErrorAction SilentlyContinue\r\n" +
                 "Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n" +
+                "if(-not $ok){\r\n" +
+                "  try { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Не удалось заменить файлы обновления (папка защищена или файлы заняты). Запущена прежняя версия. Обновите вручную со страницы релизов.','PISMO — обновление') | Out-Null } catch {}\r\n" +
+                "}\r\n" +
                 "Stop-Transcript | Out-Null\r\n";
 
             File.WriteAllText(ps1Path, ps, new System.Text.UTF8Encoding(false));

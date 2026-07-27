@@ -86,8 +86,11 @@ namespace PISMO.Native
                 c.Vol.Volume = c.Muted ? 0f : Math.Clamp(c.User * _globalScreenVol, 0f, 4f);
                 return;
             }
-            // Голос: дефен (_playbackMuted) глушит; демку — нет (ветка выше).
-            c.Vol.Volume = (_playbackMuted || c.Muted) ? 0f : Math.Clamp(c.User, 0f, 4f);
+            // Голос: дефен (_playbackMuted) глушит; общий ползунок громкости голоса
+            // (_playbackVolume) применяем ЗДЕСЬ, пер-источник, а не мастером — иначе
+            // он заодно менял бы громкость демки (общий выход) и не мог усиливать
+            // выше 100% (мастер клампится в 0..1).
+            c.Vol.Volume = (_playbackMuted || c.Muted) ? 0f : Math.Clamp(c.User * _playbackVolume, 0f, 4f);
         }
 
         /// <summary>Смотрим/не смотрим демку участника → включаем/глушим её звук.</summary>
@@ -2248,9 +2251,18 @@ namespace PISMO.Native
 
         private void ApplyPlaybackVolume()
         {
-            // Мастер дефеном НЕ глушим: дефен глушит только голоса (пер-источник, см.
-            // ApplyRemoteAudioVolume), а звук просматриваемой демки должен оставаться.
-            try { if (_out != null) _out.Volume = Math.Clamp(_playbackVolume, 0f, 1f); } catch { }
+            // Мастер держим на 1.0: и дефен, и общий ползунок голоса применяются
+            // ПЕР-ИСТОЧНИК (ApplyRemoteAudioVolume), чтобы не задевать звук демки и
+            // чтобы голос можно было усиливать выше 100%.
+            try { if (_out != null) _out.Volume = 1f; } catch { }
+        }
+
+        // Применить дефен/общую громкость голоса ко всем голосовым источникам.
+        private void ApplyVoiceVolumesToAll()
+        {
+            lock (_audioLock)
+                foreach (var c in _audioCtxByStream.Values)
+                    if (!c.IsScreen) ApplyRemoteAudioVolume(c);
         }
 
         /// <summary>Заглушить весь входящий ГОЛОС («наушники»). Звук демки, которую
@@ -2259,13 +2271,16 @@ namespace PISMO.Native
         {
             _playbackMuted = muted;
             ApplyPlaybackVolume();
-            lock (_audioLock)
-                foreach (var c in _audioCtxByStream.Values)
-                    if (!c.IsScreen) ApplyRemoteAudioVolume(c);   // дефен — только голоса
+            ApplyVoiceVolumesToAll();   // дефен — только голоса
         }
 
-        /// <summary>Громкость входящего голоса (0..1; NAudio WaveOut).</summary>
-        public void SetPlaybackVolume(float volume) { _playbackVolume = volume; ApplyPlaybackVolume(); }
+        /// <summary>Общая громкость входящего ГОЛОСА (0..N). На демку не влияет.</summary>
+        public void SetPlaybackVolume(float volume)
+        {
+            _playbackVolume = volume;
+            ApplyPlaybackVolume();
+            ApplyVoiceVolumesToAll();
+        }
 
         /// <summary>Сменить устройство вывода на лету (пересоздаём WaveOut на общем микшере).</summary>
         public void SetOutputDeviceIndex(int index)

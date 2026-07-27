@@ -569,12 +569,22 @@ namespace PISMO
             _peerScreenSharing = anyWatching;
             _tbScreenAudioVolume.Visible = anyWatching;
             _lblScreenAudioVolume.Visible = anyWatching;
+
+            // Свою демонстрацию бейджит отдельно (OnLocalScreenStarted) — не трогаем.
+            if (_screenSharing) return;
+
             if (_publishedStreams.Count > 0)
             {
-                _lblScreenBadge.Text = "🖥 Идёт демонстрация экрана";
+                // ВАЖНО: именуем, КТО демонстрирует, иначе безымянное «Идёт
+                // демонстрация экрана» выглядит так, будто стримишь ты сам.
+                string who = null;
+                foreach (var v in _publishedStreams.Values) { who = v; break; }
+                _lblScreenBadge.Text = _publishedStreams.Count == 1
+                    ? "🖥 " + who + " демонстрирует экран"
+                    : "🖥 Демонстрируют экран: " + _publishedStreams.Count;
                 _lblScreenBadge.Visible = true;
             }
-            else if (_lblScreenBadge.Visible && _lblScreenBadge.Text.Contains("демонстрац"))
+            else if (_lblScreenBadge.Visible && _lblScreenBadge.Text.Contains("демонстр"))
                 _lblScreenBadge.Visible = false;
         }
 

@@ -45,6 +45,7 @@ namespace PISMO
         // Контейнеры участников «в эфире» под каждым голосовым каналом.
         private readonly Dictionary<int, FlowLayoutPanel> _voiceContainers = new();
         private readonly Dictionary<int, string> _voiceSig = new(); // подпись «кто в эфире» — чтобы не перестраивать каждые 2.5с
+        private readonly ToolTip _voiceMemberTip = new ToolTip();    // полное имя участника (при обрезке «…»)
         private TextBox _serverSearch;
         private TextBox _channelSearch;
 
@@ -791,7 +792,10 @@ namespace PISMO
             var lbl = new Label
             {
                 Text = name,
-                AutoEllipsis = true,
+                // AutoEllipsis НЕ используем: его штатный тултип всплывает прямо
+                // поверх бейджа «В ЭФИРЕ». Обрезаем вручную ниже и показываем полное
+                // имя обычным тултипом у курсора.
+                AutoEllipsis = false,
                 ForeColor = Color.FromArgb(210, 211, 213),
                 Font = new Font("Segoe UI", 8.5f),
                 Location = new Point(28, 0),
@@ -839,6 +843,19 @@ namespace PISMO
 
             // Имя не залезает под значки: ужимаем до свободного пространства.
             lbl.Width = Math.Max(40, rightEdge - lbl.Left);
+
+            // Если имя не влезает — обрезаем вручную с «…», а полное показываем
+            // тултипом (у курсора, не поверх бейджа).
+            string full = name ?? "";
+            if (TextRenderer.MeasureText(full, lbl.Font).Width > lbl.Width)
+            {
+                string shown = full;
+                while (shown.Length > 1 &&
+                       TextRenderer.MeasureText(shown + "…", lbl.Font).Width > lbl.Width)
+                    shown = shown.Substring(0, shown.Length - 1);
+                lbl.Text = shown + "…";
+                _voiceMemberTip.SetToolTip(lbl, full);
+            }
 
             // Аватар может подгрузиться позже — перерисуем кружок.
             AvatarStore.EnsureLoaded(uid);
