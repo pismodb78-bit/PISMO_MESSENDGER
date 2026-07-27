@@ -228,34 +228,31 @@ namespace PISMO
                 "}\r\n";
 
             File.WriteAllText(ps1Path, ps, new System.Text.UTF8Encoding(false));
+            try { File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss} C#: launching updater (appDir={appDir}, canWrite={canWrite})\r\n"); } catch { }
 
+            // UseShellExecute=true (ShellExecute) ВСЕГДА: так powershell стартует ВНЕ
+            // job-объекта родителя и НЕ убивается вместе с PISMO при Environment.Exit
+            // (иначе «качнул, но ничего не заменилось» — апдейтер умирал вместе с нами).
             var psi = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
                 Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{ps1Path}\"",
                 WindowStyle = ProcessWindowStyle.Hidden,
-                CreateNoWindow = true
+                UseShellExecute = true
             };
-            if (canWrite)
-            {
-                psi.UseShellExecute = false;
-            }
-            else
-            {
-                // Папка защищена (например Program Files) → просим повышение прав.
-                psi.UseShellExecute = true;
-                psi.Verb = "runas";
-            }
+            if (!canWrite) psi.Verb = "runas";   // защищённая папка → повышение прав (UAC)
 
             try { Process.Start(psi); }
             catch (Exception ex)
             {
+                try { File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss} C#: Process.Start FAILED: {ex.Message}\r\n"); } catch { }
                 // Пользователь отказал в UAC или PowerShell недоступен.
                 MessageBox.Show("Не удалось запустить установку обновления:\n" + ex.Message +
                     "\n\nПопробуйте запустить PISMO от имени администратора и обновиться снова.",
                     "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return false;
             }
+            try { File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss} C#: updater launched, exiting app\r\n"); } catch { }
             Environment.Exit(0); // закрываем приложение, чтобы апдейтер смог заменить файлы
             return true;         // недостижимо, но нужно компилятору
         }
