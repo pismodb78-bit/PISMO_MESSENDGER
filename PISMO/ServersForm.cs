@@ -120,6 +120,10 @@ namespace PISMO
             catch { }
 
             BuildUi();
+            // Список каналов меняет ширину при ресайзе окна — тянем строки «в эфире»
+            // на всю ширину панели, чтобы бейдж «В ЭФИРЕ» был у ПРАВОГО края поля,
+            // а имя не сжималось под него.
+            if (_pnlChannels != null) _pnlChannels.SizeChanged += (s, e) => StretchVoiceRows();
             Load += (s, e) =>
             {
                 LoadServers();
@@ -768,11 +772,38 @@ namespace PISMO
 
         /// <summary>Строка участника голосового канала: аватар + имя, а бейдж
         /// «В ЭФИРЕ» — только если включена камера или демонстрация экрана.</summary>
+        // Доступная ширина строки участника = вся ширина панели каналов за вычетом
+        // её паддинга и левого отступа контейнера. Так строка (и бейдж на её правом
+        // краю) занимает всё поле, а не фиксированные 178px посреди сайдбара.
+        private int VoiceRowWidth()
+        {
+            int w = 178;
+            try
+            {
+                if (_pnlChannels != null && _pnlChannels.ClientSize.Width > 60)
+                    w = _pnlChannels.ClientSize.Width - _pnlChannels.Padding.Horizontal - 12;
+            }
+            catch { }
+            return Math.Max(120, w);
+        }
+
+        // Перетянуть уже созданные строки «в эфире» под текущую ширину панели.
+        private void StretchVoiceRows()
+        {
+            int w = VoiceRowWidth();
+            foreach (var cont in _voiceContainers.Values)
+            {
+                if (cont == null || cont.IsDisposed) continue;
+                foreach (Control row in cont.Controls)
+                    if (row.Width != w) { row.Width = w; row.Invalidate(); }
+            }
+        }
+
         private Control MakeVoiceMemberRow(int uid, string name, bool streaming,
                                            bool micMuted = false, bool deafened = false)
         {
             string full = name ?? "";
-            var row = new Panel { Width = 178, Height = 30, Margin = new Padding(0, 0, 0, 2), BackColor = Color.Transparent };
+            var row = new Panel { Width = VoiceRowWidth(), Height = 30, Margin = new Padding(0, 0, 0, 2), BackColor = Color.Transparent };
             _voiceMemberTip.SetToolTip(row, full);   // полное имя — тултипом у курсора
 
             // Аватар — отдельным контролом (асинхронная подгрузка картинки).
