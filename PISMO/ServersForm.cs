@@ -46,6 +46,8 @@ namespace PISMO
         private readonly Dictionary<int, FlowLayoutPanel> _voiceContainers = new();
         private readonly Dictionary<int, string> _voiceSig = new(); // подпись «кто в эфире» — чтобы не перестраивать каждые 2.5с
         private readonly ToolTip _voiceMemberTip = new ToolTip();    // полное имя участника (при обрезке «…»)
+        private static readonly Font _vmNameFont = new Font("Segoe UI", 8.5f);
+        private static readonly Font _vmBadgeFont = new Font("Segoe UI Semibold", 7f, FontStyle.Bold);
         private TextBox _serverSearch;
         private TextBox _channelSearch;
 
@@ -769,104 +771,60 @@ namespace PISMO
         private Control MakeVoiceMemberRow(int uid, string name, bool streaming,
                                            bool micMuted = false, bool deafened = false)
         {
+            string full = name ?? "";
             var row = new Panel { Width = 178, Height = 30, Margin = new Padding(0, 0, 0, 2), BackColor = Color.Transparent };
+            _voiceMemberTip.SetToolTip(row, full);   // полное имя — тултипом у курсора
 
+            // Аватар — отдельным контролом (асинхронная подгрузка картинки).
             var av = new Panel { Size = new Size(22, 22), Location = new Point(0, 4), BackColor = Color.Transparent };
             av.Paint += (s, e) =>
             {
                 e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                 if (!AvatarStore.DrawAvatar(e.Graphics, uid, 0, 0, av.Width - 1))
                 {
-                    int h = 0; foreach (char ch in (name ?? "")) h = (h * 31 + ch) & 0x7fffffff;
+                    int h = 0; foreach (char ch in full) h = (h * 31 + ch) & 0x7fffffff;
                     Color[] pal = { Color.FromArgb(88,101,242), Color.FromArgb(235,69,158),
                         Color.FromArgb(59,165,93), Color.FromArgb(250,166,26), Color.FromArgb(0,176,244) };
                     using var br = new SolidBrush(pal[h % pal.Length]);
                     e.Graphics.FillEllipse(br, 0, 0, av.Width - 1, av.Height - 1);
-                    string letter = !string.IsNullOrEmpty(name) ? name.Substring(0, 1).ToUpper() : "?";
+                    string letter = full.Length > 0 ? full.Substring(0, 1).ToUpper() : "?";
                     using var f = new Font("Segoe UI Black", 8f, FontStyle.Bold);
                     using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
                     e.Graphics.DrawString(letter, f, Brushes.White, new RectangleF(0, 0, av.Width, av.Height), sf);
                 }
             };
+            row.Controls.Add(av);
 
-            var lbl = new Label
+            // Имя + бейдж + значок мьюта РИСУЕМ САМИ в Paint строки — по её реальной
+            // ширине. Никаких Label/Anchor/AutoSize: имя гарантированно обрезается «…»
+            // ВНУТРИ прямоугольника, который заканчивается ДО бейджа → наложения нет.
+            row.Paint += (s, e) =>
             {
-                Text = name,
-                // КРИТИЧНО: AutoSize=false. По умолчанию у Label AutoSize=true —
-                // тогда он растягивается по всему имени, ИГНОРИРУЯ заданную ширину, и
-                // залезает под бейдж «В ЭФИРЕ» (это и было наложение). С AutoSize=false
-                // наша ширина/ручная обрезка работают.
-                AutoSize = false,
-                // AutoEllipsis НЕ используем: его штатный тултип всплывает прямо
-                // поверх бейджа. Обрезаем вручную ниже и показываем полное имя
-                // обычным тултипом у курсора.
-                AutoEllipsis = false,
-                ForeColor = Color.FromArgb(210, 211, 213),
-                Font = new Font("Segoe UI", 8.5f),
-                Location = new Point(28, 0),
-                Size = new Size(148, 30),   // ширину уточним ниже с учётом значков/бейджа
-                TextAlign = ContentAlignment.MiddleLeft
+                var g = e.Graphics;
+                int rightEdge = row.ClientSize.Width - 4;
+
+                if (streaming)
+                {
+                    int bw = TextRenderer.MeasureText(g, "В ЭФИРЕ", _vmBadgeFont).Width + 10;
+                    var br = new Rectangle(rightEdge - bw, 6, bw, 18);
+                    using (var b = new SolidBrush(Color.FromArgb(237, 66, 69))) g.FillRectangle(b, br);
+                    TextRenderer.DrawText(g, "В ЭФИРЕ", _vmBadgeFont, br, Color.White,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                    rightEdge = br.Left - 6;
+                }
+                if (deafened || micMuted)
+                {
+                    const int mSz = 22;
+                    var mr = new Rectangle(rightEdge - mSz, (row.Height - mSz) / 2, mSz, mSz);
+                    DrawMemberMuteIcon(g, mr, deafened);
+                    rightEdge = mr.Left - 6;
+                }
+                var nameRect = Rectangle.FromLTRB(28, 0, Math.Max(58, rightEdge), row.Height);
+                TextRenderer.DrawText(g, full, _vmNameFont, nameRect, Color.FromArgb(210, 211, 213),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             };
 
-            row.Controls.Add(av);
-            row.Controls.Add(lbl);
-
-            // Раскладка справа налево: [бейдж «В ЭФИРЕ»] [значок мьюта] … имя.
-            // ВСЁ абсолютными координатами, БЕЗ Anchor/AutoSize — иначе при
-            // раскладке FlowLayoutPanel элементы «плывут» и налезают друг на друга.
-            int rightEdge = row.Width - 4;   // правый край для крайнего элемента
-
-            // Бейдж «В ЭФИРЕ» только при активной камере/демонстрации экрана.
-            if (streaming)
-            {
-                var badgeFont = new Font("Segoe UI Semibold", 7f, FontStyle.Bold);
-                int badgeW = TextRenderer.MeasureText("В ЭФИРЕ", badgeFont).Width + 10; // +паддинг
-                var badge = new Label
-                {
-                    Text = "В ЭФИРЕ",
-                    ForeColor = Color.White,
-                    BackColor = Color.FromArgb(237, 66, 69),
-                    Font = badgeFont,
-                    AutoSize = false,
-                    Size = new Size(badgeW, 18),
-                    Location = new Point(rightEdge - badgeW, 6),
-                    TextAlign = ContentAlignment.MiddleCenter
-                };
-                row.Controls.Add(badge);
-                badge.BringToFront();   // всегда поверх — гарантированно не перекроется именем
-                rightEdge = badge.Left - 6;
-            }
-
-            // Значок мьюта — слева от бейджа (или у правого края, если бейджа нет).
-            if (deafened || micMuted)
-            {
-                const int mSz = 22;
-                var mute = new Panel { Size = new Size(mSz, mSz), BackColor = Color.Transparent };
-                bool deaf = deafened;
-                mute.Paint += (s, e) => DrawMemberMuteIcon(e.Graphics, mute.ClientRectangle, deaf);
-                row.Controls.Add(mute);
-                mute.BringToFront();
-                mute.Location = new Point(rightEdge - mSz, (row.Height - mSz) / 2);
-                rightEdge = mute.Left - 6;
-            }
-
-            // Имя занимает всё, что осталось слева от значков — с явным зазором.
-            lbl.Width = Math.Max(30, rightEdge - lbl.Left);
-
-            // Если имя не влезает — обрезаем вручную с «…», а полное показываем
-            // тултипом (у курсора, не поверх бейджа).
-            string full = name ?? "";
-            if (TextRenderer.MeasureText(full, lbl.Font).Width > lbl.Width)
-            {
-                string shown = full;
-                while (shown.Length > 1 &&
-                       TextRenderer.MeasureText(shown + "…", lbl.Font).Width > lbl.Width)
-                    shown = shown.Substring(0, shown.Length - 1);
-                lbl.Text = shown + "…";
-                _voiceMemberTip.SetToolTip(lbl, full);
-            }
-
-            // Аватар может подгрузиться позже — перерисуем кружок.
             AvatarStore.EnsureLoaded(uid);
             return row;
         }
@@ -876,7 +834,9 @@ namespace PISMO
         private static void DrawMemberMuteIcon(Graphics g, Rectangle r, bool deaf)
         {
             // Фон строки канала — тёмно-серый (47,49,54); используем его для «выреза».
-            MuteGlyph.Draw(g, new RectangleF(1, 1, r.Width - 2, r.Height - 2), deaf,
+            // Рисуем ПО ПОЛОЖЕНИЮ r (раньше было (1,1) — годилось только когда значок
+            // был отдельным контролом; из Paint строки нужно учитывать r.X/r.Y).
+            MuteGlyph.Draw(g, new RectangleF(r.X + 1, r.Y + 1, r.Width - 2, r.Height - 2), deaf,
                            Color.FromArgb(47, 49, 54));
         }
 
