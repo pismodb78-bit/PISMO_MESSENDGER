@@ -230,17 +230,28 @@ namespace PISMO
             File.WriteAllText(ps1Path, ps, new System.Text.UTF8Encoding(false));
             try { File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss} C#: launching updater (appDir={appDir}, canWrite={canWrite})\r\n"); } catch { }
 
-            // UseShellExecute=true (ShellExecute) ВСЕГДА: так powershell стартует ВНЕ
-            // job-объекта родителя и НЕ убивается вместе с PISMO при Environment.Exit
-            // (иначе «качнул, но ничего не заменилось» — апдейтер умирал вместе с нами).
+            // canWrite → UseShellExecute=false: CreateProcess ПОЛНОСТЬЮ создаёт
+            // дочерний powershell ДО возврата, поэтому он гарантированно стартует и
+            // переживает наш Environment.Exit (проверено: так апдейтер реально
+            // копировал). UseShellExecute=true ломал запуск — при мгновенном выходе
+            // shell не успевал породить процесс, и powershell не запускался вовсе.
             var psi = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
                 Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{ps1Path}\"",
                 WindowStyle = ProcessWindowStyle.Hidden,
-                UseShellExecute = true
+                CreateNoWindow = true
             };
-            if (!canWrite) psi.Verb = "runas";   // защищённая папка → повышение прав (UAC)
+            if (canWrite)
+            {
+                psi.UseShellExecute = false;
+            }
+            else
+            {
+                // Защищённая папка (Program Files) → повышение прав (UAC).
+                psi.UseShellExecute = true;
+                psi.Verb = "runas";
+            }
 
             try { Process.Start(psi); }
             catch (Exception ex)
