@@ -812,25 +812,29 @@ namespace PISMO
             row.Controls.Add(lbl);
 
             // Раскладка справа налево: [бейдж «В ЭФИРЕ»] [значок мьюта] … имя.
+            // ВСЁ абсолютными координатами, БЕЗ Anchor/AutoSize — иначе при
+            // раскладке FlowLayoutPanel элементы «плывут» и налезают друг на друга.
             int rightEdge = row.Width - 4;   // правый край для крайнего элемента
 
             // Бейдж «В ЭФИРЕ» только при активной камере/демонстрации экрана.
             if (streaming)
             {
+                var badgeFont = new Font("Segoe UI Semibold", 7f, FontStyle.Bold);
+                int badgeW = TextRenderer.MeasureText("В ЭФИРЕ", badgeFont).Width + 10; // +паддинг
                 var badge = new Label
                 {
                     Text = "В ЭФИРЕ",
                     ForeColor = Color.White,
                     BackColor = Color.FromArgb(237, 66, 69),
-                    Font = new Font("Segoe UI Semibold", 7f, FontStyle.Bold),
-                    AutoSize = true,
-                    Padding = new Padding(4, 1, 4, 1),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    Font = badgeFont,
+                    AutoSize = false,
+                    Size = new Size(badgeW, 18),
+                    Location = new Point(rightEdge - badgeW, 6),
                     TextAlign = ContentAlignment.MiddleCenter
                 };
                 row.Controls.Add(badge);
-                badge.Location = new Point(rightEdge - badge.PreferredWidth, 6);
-                rightEdge = badge.Left - 4;
+                badge.BringToFront();   // всегда поверх — гарантированно не перекроется именем
+                rightEdge = badge.Left - 6;
             }
 
             // Значок мьюта — слева от бейджа (или у правого края, если бейджа нет).
@@ -843,11 +847,11 @@ namespace PISMO
                 row.Controls.Add(mute);
                 mute.BringToFront();
                 mute.Location = new Point(rightEdge - mSz, (row.Height - mSz) / 2);
-                rightEdge = mute.Left - 4;
+                rightEdge = mute.Left - 6;
             }
 
-            // Имя не залезает под значки: ужимаем до свободного пространства.
-            lbl.Width = Math.Max(40, rightEdge - lbl.Left);
+            // Имя занимает всё, что осталось слева от значков — с явным зазором.
+            lbl.Width = Math.Max(30, rightEdge - lbl.Left);
 
             // Если имя не влезает — обрезаем вручную с «…», а полное показываем
             // тултипом (у курсора, не поверх бейджа).
