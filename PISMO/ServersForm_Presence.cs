@@ -24,23 +24,49 @@ namespace PISMO
         private static readonly Color SrvPresenceIdle = Color.FromArgb(240, 178, 50);
         private static readonly Color SrvPresenceOffline = Color.FromArgb(116, 127, 141);
 
-        /// <summary>Привязывает к кнопке участника отрисовку цветной точки статуса
-        /// в левой части (с отступом текста). Вызывается из LoadMembers.</summary>
-        private void AttachPresenceDot(Button b, int uid)
+        /// <summary>Привязывает к кнопке участника аватар (слева) и цветную точку
+        /// статуса бейджем в углу аватара — как в мессенджере/Discord. Вызывается
+        /// из LoadMembers.</summary>
+        private void AttachPresenceDot(Button b, int uid, string name)
         {
-            // Сдвигаем текст вправо, чтобы освободить место под точку.
-            b.Padding = new Padding(16, 0, 0, 0);
+            const int AV = 26;                     // размер аватара
+            int avX = 6, avY = (b.Height - AV) / 2;
+            // Освобождаем слева место под аватар (аватар + отступ).
+            b.Padding = new Padding(avX + AV + 8, 0, 0, 0);
             b.Paint += (s, e) =>
             {
-                if (!_memberPresence.TryGetValue(uid, out int st)) return;
-                Color col = st switch { 2 => SrvPresenceOnline, 1 => SrvPresenceIdle, _ => SrvPresenceOffline };
                 var g = e.Graphics;
                 g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                int d = 9;
-                int x = 5, y = (b.Height - d) / 2;
-                using var br = new SolidBrush(col);
-                g.FillEllipse(br, x, y, d, d);
+
+                // Аватар: картинка из кэша, иначе цветной кружок с инициалом.
+                if (!AvatarStore.DrawAvatar(g, uid, avX, avY, AV))
+                {
+                    string full = name ?? "";
+                    int h = 0; foreach (char ch in full) h = (h * 31 + ch) & 0x7fffffff;
+                    Color[] pal = { Color.FromArgb(88,101,242), Color.FromArgb(235,69,158),
+                        Color.FromArgb(59,165,93), Color.FromArgb(250,166,26), Color.FromArgb(0,176,244) };
+                    using var abr = new SolidBrush(pal[h % pal.Length]);
+                    g.FillEllipse(abr, avX, avY, AV, AV);
+                    string letter = full.Length > 0 ? full.Substring(0, 1).ToUpper() : "?";
+                    using var af = new Font("Segoe UI Black", 9f, FontStyle.Bold);
+                    using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                    g.DrawString(letter, af, Brushes.White, new RectangleF(avX, avY, AV, AV), sf);
+                }
+
+                // Точка статуса — бейджем в правом нижнем углу аватара, с «вырезом»
+                // под цвет кнопки, чтобы читалась поверх картинки.
+                if (_memberPresence.TryGetValue(uid, out int st))
+                {
+                    Color col = st switch { 2 => SrvPresenceOnline, 1 => SrvPresenceIdle, _ => SrvPresenceOffline };
+                    int d = 9, ring = 3;
+                    int bx = avX + AV - d, by = avY + AV - d;
+                    using (var rbr = new SolidBrush(b.BackColor))
+                        g.FillEllipse(rbr, bx - ring / 2, by - ring / 2, d + ring, d + ring);
+                    using var br = new SolidBrush(col);
+                    g.FillEllipse(br, bx, by, d, d);
+                }
             };
+            AvatarStore.EnsureLoaded(uid);
             _memberButtons.Add((uid, b));
         }
 

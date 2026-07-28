@@ -181,6 +181,9 @@ namespace PISMO
                             foreach (Control c in row.Controls)
                                 if (c is Panel) { try { c.Invalidate(); } catch { } }
                     try { _footerAvatar?.Invalidate(); } catch { }
+                    // Список участников справа: перерисовываем кнопку этого uid.
+                    foreach (var (mUid, mBtn) in _memberButtons)
+                        if (mUid == uid) { try { if (!mBtn.IsDisposed) mBtn.Invalidate(); } catch { } }
                 }));
             }
             catch { }
@@ -2539,7 +2542,7 @@ namespace PISMO
                     if (string.IsNullOrWhiteSpace(nm)) nm = r["login"].ToString();
                     string rname = r["rname"] == DBNull.Value ? "" : r["rname"].ToString();
 
-                    var b = MakeSideButton((owner ? "👑 " : "• ") + nm + (string.IsNullOrEmpty(rname) ? "" : $"  [{rname}]"),
+                    var b = MakeSideButton((owner ? "👑 " : "") + nm + (string.IsNullOrEmpty(rname) ? "" : $"  [{rname}]"),
                         Color.FromArgb(54, 57, 63));
                     if (!string.IsNullOrEmpty(rname) && r["rcolor"] != DBNull.Value)
                         try { b.ForeColor = ColorTranslator.FromHtml(r["rcolor"].ToString()); } catch { }
@@ -2564,7 +2567,7 @@ namespace PISMO
                         if (_canBan) menu.Items.Add("Забанить", null, (s, e) => KickMember(uid, true));
                         if (menu.Items.Count > 0) { b.ContextMenuStrip = menu; b.Text += "  ⋮"; }
                     }
-                    AttachPresenceDot(b, uid);
+                    AttachPresenceDot(b, uid, nm);
                     _pnlMembers.Controls.Add(b);
                 }
                 RefreshMemberPresence();
