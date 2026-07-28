@@ -35,23 +35,25 @@ namespace PISMO
                 using var key = Registry.CurrentUser.CreateSubKey(RegPath);
                 if (key == null) return;
 
-                // КРИТИЧНО: главный процесс PISMO.exe НЕ пиним к дискретке для "high".
-                // Ранее пробовали пин=2 в надежде включить NVENC, но выяснилось
-                // (по строкам в самой livekit_ffi.dll: «NVENC support is not compiled
-                // in; falling back to other encoders», фабрика = LibvpxVp8/OpenH264/
-                // AV1/VP9 — только СОФТ), что аппаратного NVENC в FFI НЕТ вообще.
-                // Значит пин к NVIDIA не даёт аппаратного энкода (Video Encode = 0%),
-                // зато зря гоняет процесс на дискретке (батарея/нагрев) и рискует
-                // сломать DXGI-захват на Optimus. Поэтому для главного exe убираем
-                // любой high-perf пин; Quick Sync (=1, Intel) DXGI не мешает и оставлен
-                // на случай, если появится сборка FFI с аппаратным энкодером.
+                // Главный процесс PISMO.exe пиним по выбору пользователя:
+                //  • "high" → дискретная NVIDIA (=2): пользователь явно выбрал
+                //    «Дискретная», процесс уходит на RTX и она реально грузится
+                //    (3D/захват). ВАЖНО: аппаратного энкода это НЕ включает — в
+                //    bundled livekit_ffi.dll NVENC не вкомпилен (фабрика только
+                //    LibvpxVp8/OpenH264/AV1/VP9), поэтому кодирование H264 остаётся
+                //    программным (Video Encode = 0%), а на RTX ложится лишь захват/
+                //    цветоконвертация. Захват идёт через WGC (кросс-GPU, без чёрного
+                //    экрана) + детектор чёрного кадра с откатом на GDI.
+                //  • "integrated" → встроенная Intel (=1, Quick Sync).
+                //  • "auto"/иное → не переопределяем выбор Windows.
                 string mainExe = Environment.ProcessPath;
                 if (!string.IsNullOrWhiteSpace(mainExe))
                 {
                     try
                     {
-                        if (mode == "integrated") SetFor(key, mainExe, 1);
-                        else key.DeleteValue(mainExe, throwOnMissingValue: false);   // high/auto → не пиним
+                        if (mode == "high") SetFor(key, mainExe, 2);
+                        else if (mode == "integrated") SetFor(key, mainExe, 1);
+                        else key.DeleteValue(mainExe, throwOnMissingValue: false);   // auto → не пиним
                     }
                     catch { }
                 }
