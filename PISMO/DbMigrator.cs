@@ -189,6 +189,24 @@ namespace PISMO
                         Exec(conn, "ALTER TABLE voice_presence ADD COLUMN deafened TINYINT NOT NULL DEFAULT 0");
                 }
             }),
+
+            (12, "text-колонки сообщений → LONGTEXT (баг «Data too long for column 'text'»)", conn =>
+            {
+                // На части инсталляций колонка text была создана как VARCHAR(...)
+                // (легаси-схема), из-за чего длинные сообщения и длинные подписи к
+                // файлам падали с «Data too long for column 'text' at row 1».
+                // Приводим к LONGTEXT (4 ГБ) во всех таблицах сообщений. MODIFY
+                // не трогает данные и идемпотентен, поэтому гоняем безусловно, но
+                // только для существующих таблиц с колонкой text.
+                foreach (var t in new[] { "messages", "group_messages", "server_messages" })
+                {
+                    if (TableExists(conn, t) && ColumnExists(conn, t, "text"))
+                    {
+                        try { Exec(conn, $"ALTER TABLE {t} MODIFY text LONGTEXT NOT NULL"); }
+                        catch { Exec(conn, $"ALTER TABLE {t} MODIFY text LONGTEXT NULL"); }
+                    }
+                }
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>

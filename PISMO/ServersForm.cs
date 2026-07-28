@@ -1229,7 +1229,12 @@ namespace PISMO
                     if (dsep != lastDate)
                     {
                         lastDate = dsep;
-                        _pnlMessages.Controls.Add(MainForm.BuildDateSeparatorW(dsep, msgWidth));
+                        // Линия-разделитель тянется на всю ширину чата, а не до
+                        // потолка бабла (900): иначе на широком окне линия
+                        // обрывалась, не доходя до правого края.
+                        int sepWidth = Math.Max(120,
+                            _pnlMessages.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 20);
+                        _pnlMessages.Controls.Add(MainForm.BuildDateSeparatorW(dsep, sepWidth));
                     }
 
                     // Меня упомянули (@логин/@роль/@все) — подсветим бабл зеленоватым.
@@ -2292,8 +2297,39 @@ namespace PISMO
                 string sizeTxt = bytes.Length >= 1024 * 1024
                     ? $"{bytes.Length / 1024.0 / 1024.0:0.0} МБ"
                     : $"{Math.Max(1, bytes.Length / 1024)} КБ";
-                _chPreviewLbl.Text = (isImg ? "🖼  Изображение" : "📄  " + fileName) + $"   ({sizeTxt}) — нажмите «Отправить»";
-                _chPreview.Height = 40;
+
+                // Убираем старую иконку/миниатюру (кроме постоянных label и крестика).
+                for (int i = _chPreview.Controls.Count - 1; i >= 0; i--)
+                {
+                    var c = _chPreview.Controls[i];
+                    if (c != _chPreviewLbl && !(c is Button)) { _chPreview.Controls.Remove(c); c.Dispose(); }
+                }
+
+                // Иконка слева: миниатюра для картинки, иначе цветной бейдж типа файла
+                // (общий с мессенджером MainForm.MakeFileIcon).
+                Control icon = null;
+                string nm = isImg ? "Изображение" : fileName;
+                if (isImg)
+                {
+                    try
+                    {
+                        var pb = new PictureBox { SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(54, 54), Location = new Point(12, 7) };
+                        using var ms = new MemoryStream(bytes);
+                        pb.Image = Image.FromStream(ms);
+                        icon = pb;
+                    }
+                    catch { }
+                }
+                if (icon == null)
+                {
+                    icon = MainForm.MakeFileIcon(isImg ? "image.png" : fileName);
+                    icon.Location = new Point(12, 7);
+                }
+                _chPreview.Controls.Add(icon);
+                icon.SendToBack();
+
+                _chPreviewLbl.Text = $"{nm}  ({sizeTxt}) — нажмите «Отправить»";
+                _chPreview.Height = 68;
                 _chPreview.Visible = true;
                 UpdateBottomHeight();
             }

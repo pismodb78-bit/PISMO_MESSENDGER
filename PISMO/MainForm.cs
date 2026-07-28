@@ -3872,7 +3872,7 @@ namespace PISMO
         }
 
         /// <summary>Универсальная иконка-плейсхолдер для файлов, не являющихся изображением.</summary>
-        private static Panel MakeFileIcon(string fileName)
+        internal static Panel MakeFileIcon(string fileName)
         {
             string ext = Path.GetExtension(fileName).ToLowerInvariant().TrimStart('.');
             Color bg = ext switch
@@ -4517,26 +4517,38 @@ namespace PISMO
 
         private void pnlInputBar_Resize(object sender, EventArgs e)
         {
-            // Поддерживаем корректное расположение/ширину полей при изменении ширины панели ввода.
+            // Раскладка как на сервере: поле ввода слева (Fill), а все иконочные
+            // кнопки собраны СПРАВА единым кластером перед «Отправить»
+            // (справа налево: Отправить, GIF, ⏺ кружок, 🎤 голос, 📎 файл).
             try
             {
-                const int leftOffset = 146; // соответствует расположению txtMessage в Designer
                 const int margin = 12;
-                // Перемещаем кнопку отправки к правому краю панели
                 var btnY = btnSend.Location.Y;
-                btnSend.Location = new Point(Math.Max(margin, pnlInputBar.ClientSize.Width - btnSend.Width - margin), btnY);
+                int x = pnlInputBar.ClientSize.Width - margin;
 
-                // Кнопка GIF — слева от «Отправить».
-                int rightEdge = btnSend.Location.X;
+                // Отправить — у самого правого края.
+                x -= btnSend.Width;
+                btnSend.Location = new Point(Math.Max(margin, x), btnY);
+
+                // GIF — слева от «Отправить».
                 if (btnGif != null)
                 {
-                    btnGif.Location = new Point(btnSend.Location.X - btnGif.Width - 6, btnY);
-                    rightEdge = btnGif.Location.X;
+                    x -= 6 + btnGif.Width;
+                    btnGif.Location = new Point(Math.Max(margin, x), btnY);
                 }
 
-                // Меняем ширину txtMessage так, чтобы не перекрываться с кнопками
-                int newWidth = rightEdge - margin - leftOffset;
+                // Иконочные инструменты справа налево: ⏺ кружок, 🎤 голос, 📎 файл.
+                foreach (var b in new[] { btnVideoCircle, btnVoice, btnAttach })
+                {
+                    if (b == null) continue;
+                    x -= 2 + b.Width;
+                    b.Location = new Point(Math.Max(margin, x), btnY);
+                }
+
+                // Поле ввода занимает всё пространство слева до кластера кнопок.
+                int newWidth = x - margin - margin;
                 if (newWidth < 60) newWidth = 60;
+                txtMessage.Location = new Point(margin, txtMessage.Location.Y);
                 txtMessage.Size = new Size(newWidth, txtMessage.Height);
             }
             catch { }

@@ -84,13 +84,17 @@ namespace PISMO
 
             // Полоска-превью прикреплённого файла/картинки над полем ввода
             // (файл ждёт «Отправить», а не улетает сразу при перетаскивании).
-            _chPreview = new Panel { Dock = DockStyle.Top, Height = 0, BackColor = Color.FromArgb(47, 49, 54), Visible = false, Padding = new Padding(12, 8, 40, 8) };
-            _chPreviewLbl = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI", 9.5f), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
-            var btnPrevCancel = new Button { Dock = DockStyle.Right, Width = 32, Text = "✕", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.White, Cursor = Cursors.Hand };
+            // Карточка-превью как в мессенджере: слева иконка типа файла/миниатюра,
+            // затем «имя (размер)», справа крестик. Наполнение строится динамически
+            // в StageChannelAttachment (иконка зависит от файла).
+            _chPreview = new Panel { Dock = DockStyle.Top, Height = 0, BackColor = Color.FromArgb(47, 49, 54), Visible = false, Padding = new Padding(12, 7, 40, 7) };
+            _chPreviewLbl = new Label { ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI", 9.5f), TextAlign = ContentAlignment.MiddleLeft, AutoSize = true, Location = new Point(78, 26) };
+            var btnPrevCancel = new Button { Width = 28, Height = 28, Anchor = AnchorStyles.Top | AnchorStyles.Right, Text = "✕", FlatStyle = FlatStyle.Flat, BackColor = Color.Transparent, ForeColor = Color.FromArgb(185, 187, 190), Font = new Font("Segoe UI", 10f), Cursor = Cursors.Hand };
             btnPrevCancel.FlatAppearance.BorderSize = 0;
             btnPrevCancel.Click += (s, e) => ClearChannelPending();
             _chPreview.Controls.Add(_chPreviewLbl);
             _chPreview.Controls.Add(btnPrevCancel);
+            _chPreview.Resize += (s, e) => btnPrevCancel.Location = new Point(_chPreview.Width - 36, 18);
 
             // Низ центра: контейнер с полоской ответа над полем ввода.
             var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68 };
