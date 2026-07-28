@@ -397,44 +397,18 @@ namespace PISMO
             _cmbScreenFps.Items.AddRange(new object[] { "60", "45", "30", "15" });
             _cmbScreenFps.SelectedIndex = 0;
 
-            // Видеокарта для КОДИРОВАНИЯ демки/камеры (VideoEncoderBackend хинт
-            // для нативного libwebrtc). Декодер FFI не выбирает — им управляет
-            // сам libwebrtc.
-            var lblGpu = new Label
-            {
-                Text = "Кодирование (GPU):",
-                Font = new Font("Segoe UI", 8.5f),
-                ForeColor = Color.FromArgb(185, 187, 190),
-                AutoSize = false,
-                Size = new Size(150, 26),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Margin = new Padding(0, 4, 0, 0)
-            };
-            _cmbGpu = new ComboBox
-            {
-                BackColor = Color.FromArgb(32, 34, 37),
-                ForeColor = Color.FromArgb(220, 221, 222),
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 9f),
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Size = new Size(190, 24),
-                Margin = new Padding(0, 4, 0, 0)
-            };
-            _cmbGpu.Items.AddRange(new object[]
-                { "Авто", "NVIDIA (NVENC)", "Аппаратный (Intel/AMD)", "Программный (CPU)" });
-            _cmbGpu.SelectedIndex = 0;
+            // Выбор видеокарты для кодирования убран: единственный тумблер —
+            // «Аппаратное ускорение (GPU)» ниже. Вкл → процесс пинится на
+            // дискретную карту + аппаратные пути; выкл → авто (как в Windows).
 
             // Добавляем элементы в таблицу
             tblScreen.Controls.Add(lblRes, 0, 0);
             tblScreen.Controls.Add(_cmbScreenRes, 1, 0);
             tblScreen.Controls.Add(lblFps, 2, 0);
             tblScreen.Controls.Add(_cmbScreenFps, 3, 0);
-            tblScreen.Controls.Add(lblGpu, 0, 1);
-            tblScreen.Controls.Add(_cmbGpu, 1, 1);
-            tblScreen.SetColumnSpan(_cmbGpu, 3);
 
-            // Аппаратное ускорение (GPU) — как в Discord; влияет на демонстрацию
-            // экрана и видео в звонке (WebView2/Chromium).
+            // Аппаратное ускорение (GPU) — ЕДИНСТВЕННЫЙ пункт управления GPU.
+            // Вкл → дискретная карта (пин) + аппаратные пути; выкл → авто.
             _chkHwAccel = new CheckBox
             {
                 Text = "Аппаратное ускорение (GPU)",
@@ -447,7 +421,7 @@ namespace PISMO
             };
             var lblHwHint = new Label
             {
-                Text = "Применится к следующему звонку. Выключите при чёрном экране.",
+                Text = "Вкл → дискретная видеокарта для демонстрации. Требует перезапуска. Выключите при чёрном экране.",
                 Font = new Font("Segoe UI", 8f),
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,

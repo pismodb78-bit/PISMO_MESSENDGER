@@ -50,7 +50,6 @@ namespace PISMO
         // ── Демонстрация экрана ─────────────────────────────────
         private ComboBox _cmbScreenRes;
         private ComboBox _cmbScreenFps;
-        private ComboBox _cmbGpu;           // видеокарта для кодирования демки/камеры
 
         public SettingsForm()
         {
@@ -209,16 +208,7 @@ namespace PISMO
             for (int i = 0; i < _cmbScreenFps.Items.Count; i++)
                 if (_cmbScreenFps.Items[i].ToString() == sf) { _cmbScreenFps.SelectedIndex = i; break; }
 
-            // Видеокарта для кодирования (auto/high/integrated/software).
-            _cmbGpu.SelectedIndex = DeviceSettings.GpuEncodePref switch
-            {
-                "high" => 1,
-                "integrated" => 2,
-                "software" => 3,
-                _ => 0,
-            };
-
-            // Аппаратное ускорение.
+            // Аппаратное ускорение — единственный пункт управления GPU.
             _chkHwAccel.Checked = DeviceSettings.HardwareAcceleration;
             _chkAllMonitors.Checked = DeviceSettings.ScreenCaptureAllMonitors;
 
@@ -495,17 +485,12 @@ namespace PISMO
                     DeviceSettings.ScreenShareFps = Math.Clamp(sfps, 1, 60);
             }
 
+            // Единственный пункт управления GPU — «Аппаратное ускорение»:
+            // вкл → дискретная карта (пин high), выкл → авто (без пина).
             string oldGpuPref = DeviceSettings.GpuEncodePref;
-            DeviceSettings.GpuEncodePref = _cmbGpu.SelectedIndex switch
-            {
-                1 => "high",
-                2 => "integrated",
-                3 => "software",
-                _ => "auto",
-            };
-            bool gpuChanged = !string.Equals(oldGpuPref, DeviceSettings.GpuEncodePref, StringComparison.OrdinalIgnoreCase);
-
             DeviceSettings.HardwareAcceleration = _chkHwAccel.Checked;
+            DeviceSettings.GpuEncodePref = _chkHwAccel.Checked ? "high" : "auto";
+            bool gpuChanged = !string.Equals(oldGpuPref, DeviceSettings.GpuEncodePref, StringComparison.OrdinalIgnoreCase);
             DeviceSettings.ScreenCaptureAllMonitors = _chkAllMonitors.Checked;
             bool newLight = _chkLightTheme.Checked;
             DeviceSettings.ThemeMode = newLight ? "light" : "dark";

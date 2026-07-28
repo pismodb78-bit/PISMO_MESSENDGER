@@ -1065,31 +1065,8 @@ namespace PISMO
             var lblCodecHint = new Label { Text = "(смена кодека применится при следующем запуске демонстрации)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
             _audioPanel.Controls.Add(lblCodecHint); y += 24;
 
-            MkLbl("Видеокарта для кодирования");
-            var cmbGpu = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
-            cmbGpu.Items.AddRange(new object[] { "Авто (как в Windows)", "Дискретная (RTX/GTX, NVENC)", "Встроенная (Intel Quick Sync)" });
-            cmbGpu.SelectedIndex = DeviceSettings.GpuEncodePref == "high" ? 1 : DeviceSettings.GpuEncodePref == "integrated" ? 2 : 0;
-            cmbGpu.SelectedIndexChanged += (s, e) =>
-            {
-                DeviceSettings.GpuEncodePref = cmbGpu.SelectedIndex == 1 ? "high" : cmbGpu.SelectedIndex == 2 ? "integrated" : "auto";
-                try { DeviceSettings.Save(); } catch { }
-                System.Threading.Tasks.Task.Run(() => { try { GpuPreference.Apply(DeviceSettings.GpuEncodePref); } catch { } });
-                // Смена GPU читается только при старте процесса → предлагаем
-                // перезапуск (да/нет). Внутри звонка честно предупреждаем, что
-                // перезапуск завершит текущий звонок.
-                string extra = _transport != null ? "\n\nВнимание: перезапуск завершит текущий звонок." : "";
-                var rg = MessageBox.Show(this,
-                    "Смена видеокарты для кодирования вступит в силу только после перезапуска приложения.\n\nПерезапустить сейчас?" + extra,
-                    "PISMO — требуется перезапуск", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-                if (rg == DialogResult.Yes) { try { MainForm.RestartApplication(); } catch { } }
-            };
-            _audioPanel.Controls.Add(cmbGpu);
-            y += 30;
-            var lblGpuHint = new Label { Text = "(вступит в силу после перезапуска приложения; для MX-карт без NVENC выбирайте «Встроенная»)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = false, Size = new Size(300, 28), Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
-            _audioPanel.Controls.Add(lblGpuHint); y += 32;
-            // (Диагностическое окно нативного NVENC убрано из сборки — потолок
-            //  демонстрации на этой машине определяется частотой ЗАХВАТА экрана
-            //  ~50fps, а не энкодером, поэтому нативный путь fps не поднимает.)
+            // Выбор видеокарты в звонке убран: GPU управляется единственным
+            // пунктом «Аппаратное ускорение (GPU)» в главных настройках приложения.
 
             var chkNs = new CheckBox
             {
