@@ -208,12 +208,12 @@ namespace PISMO
                 "  $exe=Get-ChildItem -Path $tmp -Recurse -Filter 'PISMO.exe' | Select-Object -First 1\r\n" +
                 "  if($exe){\r\n" +
                 "    $src=$exe.Directory.FullName\r\n" +
-                // robocopy НАДЁЖНЕЕ Copy-Item: не падает целиком из-за одного занятого
-                // файла, сам повторяет (/R:5 /W:2). Коды выхода 0..7 = успех, 8+ = сбой.
-                "    for($try=1;$try -le 4 -and -not $ok;$try++){\r\n" +
+                // robocopy надёжнее Copy-Item: не падает из-за одного занятого файла,
+                // сам повторяет (/R:5 /W:2). Коды выхода 0..7 = успех, 8+ = сбой.
+                "    for($attempt=1;$attempt -le 4 -and -not $ok;$attempt++){\r\n" +
                 "      Kill-Pismo\r\n" +
                 "      robocopy $src $app /E /R:5 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null\r\n" +
-                "      if($LASTEXITCODE -lt 8){ $ok=$true } else { Log ('robocopy code '+$LASTEXITCODE+' (try '+$try+')'); Start-Sleep -Seconds 2 }\r\n" +
+                "      if($LASTEXITCODE -lt 8){ $ok=$true } else { Log ('robocopy code '+$LASTEXITCODE+' (attempt '+$attempt+')'); Start-Sleep -Seconds 2 }\r\n" +
                 "    }\r\n" +
                 "  } else { Log 'PISMO.exe not found in archive' }\r\n" +
                 "} catch { Log ('update error: '+$_.Exception.Message) }\r\n" +
@@ -224,10 +224,16 @@ namespace PISMO
                 "  catch { Log ('restart failed: '+$_.Exception.Message) }\r\n" +
                 "  try { Remove-Item $zip -Force -ErrorAction SilentlyContinue } catch {}\r\n" +
                 "  try { if($tmp){ Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue } } catch {}\r\n" +
-                "  if(-not $ok){ try { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Обновление не удалось (файлы заняты или папка защищена). Запущена прежняя версия. Обновите вручную со страницы релизов.','PISMO — обновление') | Out-Null } catch {} }\r\n" +
+                // ВАЖНО: текст ТОЛЬКО ASCII. Кириллица в .ps1 без BOM ломала разбор
+                // всего скрипта в PowerShell 5.1 → он не выполнялся вообще (в логе не
+                // было даже 'updater start'). Именно из-за этого «качает, но не обновляет».
+                "  if(-not $ok){ try { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('PISMO update failed (files busy or folder protected). The previous version was launched. Please update manually from the releases page.','PISMO update') | Out-Null } catch {} }\r\n" +
                 "}\r\n";
 
-            File.WriteAllText(ps1Path, ps, new System.Text.UTF8Encoding(false));
+            // UTF-8 С BOM: чтобы PowerShell 5.1 гарантированно распознал кодировку
+            // (скрипт теперь ASCII, но BOM убирает любую зависимость от системной
+            // кодовой страницы на будущее).
+            File.WriteAllText(ps1Path, ps, new System.Text.UTF8Encoding(true));
             var buildVer = Assembly.GetExecutingAssembly().GetName().Version;
             // В лог пишем ТОЧНУЮ версию сборки, которая запускает апдейтер, и режим
             // запуска — чтобы по логу сразу было видно, та ли это сборка (с фиксом).
