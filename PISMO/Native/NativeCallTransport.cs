@@ -932,7 +932,7 @@ namespace PISMO.Native
                 {
                     Source = TrackSource.SourceScreenshare,
                     VideoCodec = (VideoCodec)MapCodec(_scrCodec),
-                    VideoEncoder = (VideoEncoderBackend)MapGpu(_scrGpuPref),
+                    VideoEncoder = (VideoEncoderBackend)ResolveScreenEncoder(_scrGpuPref),
                     DegradationPreference = (LiveKit.Proto.DegradationPreference)2, // MAINTAIN_RESOLUTION
                     VideoEncoding = new VideoEncoding
                     {
@@ -1800,6 +1800,25 @@ namespace PISMO.Native
             "software" => 1,      // принудительно программный энкодер (CPU)
             _ => 0,               // auto
         };
+
+        // Эффективный энкодер демонстрации: при явном выборе — как задал пользователь;
+        // при "auto"/пусто — если в системе есть NVENC-карта (RTX/GTX/Quadro), берём
+        // NVENC(3), иначе Quick Sync (HARDWARE=2), иначе auto(0). Это и есть фикс
+        // «демонстрация не использует дискретный GPU»: раньше auto→0 давал libwebrtc
+        // право уйти в программный H264 (высокий CPU, низкий fps у зрителя).
+        private static int ResolveScreenEncoder(string pref)
+        {
+            string p = (pref ?? "").ToLowerInvariant();
+            if (p == "high" || p == "integrated" || p == "software") return MapGpu(p);
+            // auto / неизвестно:
+            try
+            {
+                if (GpuCapabilities.HasNvenc) return 3;        // NVENC (дискретная NVIDIA)
+                if (GpuCapabilities.HasIntelQuickSync) return 2; // Quick Sync (встроенная Intel)
+            }
+            catch { }
+            return 0; // auto — пусть решает libwebrtc
+        }
 
         // Битрейт камеры под высоту (лицо/движение — умереннее, чем демка-текст).
         private static ulong CamBitrateFor(int height)
