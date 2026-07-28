@@ -198,12 +198,17 @@ namespace PISMO
                 // Приводим к LONGTEXT (4 ГБ) во всех таблицах сообщений. MODIFY
                 // не трогает данные и идемпотентен, поэтому гоняем безусловно, но
                 // только для существующих таблиц с колонкой text.
+                // strict-режим MySQL превращает предупреждение о конвертации
+                // кодировки в ошибку (#1265) и обрывает ALTER — снимаем его на
+                // текущую сессию. Данные не теряются: шифр это Base64 (ASCII),
+                // старый текст — валидный UTF-8.
+                try { Exec(conn, "SET SESSION sql_mode = ''"); } catch { }
                 foreach (var t in new[] { "messages", "group_messages", "server_messages" })
                 {
                     if (TableExists(conn, t) && ColumnExists(conn, t, "text"))
                     {
-                        try { Exec(conn, $"ALTER TABLE {t} MODIFY text LONGTEXT NOT NULL"); }
-                        catch { Exec(conn, $"ALTER TABLE {t} MODIFY text LONGTEXT NULL"); }
+                        try { Exec(conn, $"ALTER TABLE {t} MODIFY text LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL"); }
+                        catch { Exec(conn, $"ALTER TABLE {t} MODIFY text LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL"); }
                     }
                 }
             }),
