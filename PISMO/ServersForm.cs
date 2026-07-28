@@ -2627,7 +2627,7 @@ namespace PISMO
             using var f = new Form
             {
                 Text = "Роли сервера",
-                ClientSize = new Size(420, 420),
+                ClientSize = new Size(420, 470),
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 StartPosition = FormStartPosition.CenterParent,
                 BackColor = Color.FromArgb(47, 49, 54),
@@ -2639,15 +2639,94 @@ namespace PISMO
 
             var lblN = new Label { Text = "Название роли:", ForeColor = Color.White, Location = new Point(12, 176), AutoSize = true };
             var txtN = new TextBox { Location = new Point(12, 196), Size = new Size(260, 24), BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
-            var lblC = new Label { Text = "Цвет (#RRGGBB):", ForeColor = Color.White, Location = new Point(284, 176), AutoSize = true };
-            var txtC = new TextBox { Location = new Point(284, 196), Size = new Size(124, 24), Text = "#3BA55D", BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            var lblC = new Label { Text = "Цвет:", ForeColor = Color.White, Location = new Point(284, 176), AutoSize = true };
+            var txtC = new TextBox { Location = new Point(284, 196), Size = new Size(94, 24), Text = "#3BA55D", BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            // Живое превью выбранного цвета справа от поля ввода.
+            var swPreview = new Panel { Location = new Point(384, 196), Size = new Size(24, 24), BorderStyle = BorderStyle.FixedSingle };
+            void SyncPreview()
+            {
+                try { swPreview.BackColor = ColorTranslator.FromHtml(txtC.Text.Trim()); }
+                catch { swPreview.BackColor = Color.FromArgb(40, 42, 46); }
+            }
+            txtC.TextChanged += (s, e) => SyncPreview();
+            SyncPreview();
 
-            var cbBan = new CheckBox { Text = "Банить", ForeColor = Color.White, Location = new Point(12, 230), AutoSize = true };
-            var cbKick = new CheckBox { Text = "Выгонять", ForeColor = Color.White, Location = new Point(120, 230), AutoSize = true };
-            var cbMute = new CheckBox { Text = "Мьютить", ForeColor = Color.White, Location = new Point(232, 230), AutoSize = true };
-            var cbManage = new CheckBox { Text = "Управление (каналы/роли)", ForeColor = Color.White, Location = new Point(12, 258), AutoSize = true };
+            // Палитра готовых цветов (как в Discord) — чтобы не вписывать HEX руками.
+            var lblPal = new Label { Text = "Палитра:", ForeColor = Color.White, Location = new Point(12, 230), AutoSize = true };
+            string[] palette =
+            {
+                "#1ABC9C", "#2ECC71", "#3498DB", "#9B59B6", "#E91E63", "#F1C40F",
+                "#E67E22", "#E74C3C", "#95A5A6", "#607D8B", "#3BA55D", "#5865F2",
+            };
+            var swatches = new List<Panel>();
+            int px = 12, py = 250;
+            foreach (var hex in palette)
+            {
+                var sw = new Panel { Location = new Point(px, py), Size = new Size(26, 26), BackColor = ColorTranslator.FromHtml(hex), Cursor = Cursors.Hand, BorderStyle = BorderStyle.FixedSingle };
+                string hexCap = hex;
+                sw.Click += (s, e) => { txtC.Text = hexCap; };
+                swatches.Add(sw);
+                px += 32;
+                if (px + 26 > 408) { px = 12; py += 32; }
+            }
+            // Кнопка системного выбора цвета — для любого оттенка вне палитры.
+            var btnMore = new Button { Text = "🎨 Ещё…", Location = new Point(px, py), Size = new Size(84, 26), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Cursor = Cursors.Hand };
+            btnMore.FlatAppearance.BorderSize = 0;
+            btnMore.Click += (s, e) =>
+            {
+                using var cd = new ColorDialog { FullOpen = true };
+                try { cd.Color = ColorTranslator.FromHtml(txtC.Text.Trim()); } catch { }
+                if (cd.ShowDialog(f) == DialogResult.OK)
+                    txtC.Text = $"#{cd.Color.R:X2}{cd.Color.G:X2}{cd.Color.B:X2}";
+            };
 
-            var btnCreate = new Button { Text = "Создать роль", Location = new Point(12, 296), Size = new Size(140, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(59, 165, 93), ForeColor = Color.White };
+            var cbBan = new CheckBox { Text = "Банить", ForeColor = Color.White, Location = new Point(12, 296), AutoSize = true };
+            var cbKick = new CheckBox { Text = "Выгонять", ForeColor = Color.White, Location = new Point(120, 296), AutoSize = true };
+            var cbMute = new CheckBox { Text = "Мьютить", ForeColor = Color.White, Location = new Point(232, 296), AutoSize = true };
+            var cbManage = new CheckBox { Text = "Управление (каналы/роли)", ForeColor = Color.White, Location = new Point(12, 324), AutoSize = true };
+
+            // Какая роль сейчас редактируется (null — режим создания новой).
+            int? editingId = null;
+            var btnSave = new Button { Text = "Сохранить", Location = new Point(138, 360), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, Enabled = false };
+
+            void ResetForm()
+            {
+                editingId = null;
+                txtN.Clear(); txtC.Text = "#3BA55D";
+                cbBan.Checked = cbKick.Checked = cbMute.Checked = cbManage.Checked = false;
+                btnSave.Enabled = false;
+                try { list.ClearSelected(); } catch { }
+            }
+
+            // Выбор роли в списке → подгружаем её поля для редактирования.
+            list.SelectedIndexChanged += (s, e) =>
+            {
+                if (list.SelectedItem == null) { return; }
+                string sel = list.SelectedItem.ToString();
+                int rid = int.Parse(sel.Substring(0, sel.IndexOf(':')));
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "SELECT name,color,can_ban,can_kick,can_mute,can_manage FROM server_roles WHERE id=@r", conn);
+                    cmd.Parameters.AddWithValue("@r", rid);
+                    using var rd = cmd.ExecuteReader();
+                    if (rd.Read())
+                    {
+                        editingId = rid;
+                        txtN.Text = rd["name"].ToString();
+                        txtC.Text = rd["color"] == DBNull.Value ? "#99AAB5" : rd["color"].ToString();
+                        cbBan.Checked = Convert.ToInt32(rd["can_ban"]) != 0;
+                        cbKick.Checked = Convert.ToInt32(rd["can_kick"]) != 0;
+                        cbMute.Checked = Convert.ToInt32(rd["can_mute"]) != 0;
+                        cbManage.Checked = Convert.ToInt32(rd["can_manage"]) != 0;
+                        btnSave.Enabled = true;
+                    }
+                }
+                catch (Exception ex) { ShowDbError(ex); }
+            };
+
+            var btnCreate = new Button { Text = "Создать роль", Location = new Point(12, 360), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(59, 165, 93), ForeColor = Color.White };
             btnCreate.Click += (s, e) =>
             {
                 string n = txtN.Text.Trim();
@@ -2666,11 +2745,36 @@ namespace PISMO
                     cmd.Parameters.AddWithValue("@mu", cbMute.Checked ? 1 : 0);
                     cmd.Parameters.AddWithValue("@mg", cbManage.Checked ? 1 : 0);
                     cmd.ExecuteNonQuery();
-                    txtN.Clear(); Reload();
+                    ResetForm(); Reload();
                 }
                 catch (Exception ex) { ShowDbError(ex); }
             };
-            var btnDel = new Button { Text = "Удалить выбранную", Location = new Point(164, 296), Size = new Size(160, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(240, 71, 71), ForeColor = Color.White };
+
+            btnSave.Click += (s, e) =>
+            {
+                if (editingId == null) return;
+                string n = txtN.Text.Trim();
+                if (string.IsNullOrEmpty(n)) return;
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "UPDATE server_roles SET name=@n,color=@c,can_ban=@b,can_kick=@k,can_mute=@mu,can_manage=@mg " +
+                        "WHERE id=@r", conn);
+                    cmd.Parameters.AddWithValue("@n", n);
+                    cmd.Parameters.AddWithValue("@c", string.IsNullOrWhiteSpace(txtC.Text) ? "#99AAB5" : txtC.Text.Trim());
+                    cmd.Parameters.AddWithValue("@b", cbBan.Checked ? 1 : 0);
+                    cmd.Parameters.AddWithValue("@k", cbKick.Checked ? 1 : 0);
+                    cmd.Parameters.AddWithValue("@mu", cbMute.Checked ? 1 : 0);
+                    cmd.Parameters.AddWithValue("@mg", cbManage.Checked ? 1 : 0);
+                    cmd.Parameters.AddWithValue("@r", editingId.Value);
+                    cmd.ExecuteNonQuery();
+                    ResetForm(); Reload();
+                }
+                catch (Exception ex) { ShowDbError(ex); }
+            };
+
+            var btnDel = new Button { Text = "Удалить", Location = new Point(264, 360), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(240, 71, 71), ForeColor = Color.White };
             btnDel.Click += (s, e) =>
             {
                 if (list.SelectedItem == null) return;
@@ -2681,12 +2785,15 @@ namespace PISMO
                     using var conn = DBHelper.OpenConnection();
                     using (var c1 = new MySqlCommand("UPDATE server_members SET role_id=NULL WHERE role_id=@r", conn)) { c1.Parameters.AddWithValue("@r", rid); c1.ExecuteNonQuery(); }
                     using (var c2 = new MySqlCommand("DELETE FROM server_roles WHERE id=@r", conn)) { c2.Parameters.AddWithValue("@r", rid); c2.ExecuteNonQuery(); }
-                    Reload();
+                    ResetForm(); Reload();
                 }
                 catch (Exception ex) { ShowDbError(ex); }
             };
 
-            f.Controls.AddRange(new Control[] { list, lblN, txtN, lblC, txtC, cbBan, cbKick, cbMute, cbManage, btnCreate, btnDel });
+            var ctrls = new List<Control> { list, lblN, txtN, lblC, txtC, swPreview, lblPal, btnMore,
+                cbBan, cbKick, cbMute, cbManage, btnCreate, btnSave, btnDel };
+            ctrls.AddRange(swatches);
+            f.Controls.AddRange(ctrls.ToArray());
             f.ShowDialog(this);
             LoadMembers();
         }
