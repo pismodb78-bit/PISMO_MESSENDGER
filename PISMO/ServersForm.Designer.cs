@@ -32,7 +32,9 @@ namespace PISMO
             // поле без рамки слито с фоном бара, иконочные кнопки плоские/серые,
             // акцентная кнопка «➤ Отправить».
             _pnlInput = new Panel { Dock = DockStyle.Bottom, Height = 68, BackColor = Color.FromArgb(64, 68, 75), Visible = false };
-            _txtInput = new TextBox { Dock = DockStyle.Fill, Multiline = false, BorderStyle = BorderStyle.None, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI", 10.5f), PlaceholderText = "Написать сообщение..." };
+            // Multiline+AcceptsReturn: Shift+Enter переносит строку, обычный Enter
+            // отправляет (см. TxtInput_KeyDown).
+            _txtInput = new TextBox { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, BorderStyle = BorderStyle.None, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI", 10.5f), PlaceholderText = "Написать сообщение..." };
             _txtInput.KeyDown += TxtInput_KeyDown;
             _txtInput.TextChanged += (s, e) => UpdateMentionPopup();
             _txtInput.LostFocus += (s, e) =>
@@ -80,10 +82,21 @@ namespace PISMO
             _replyBar.Controls.Add(_lblReply);
             _replyBar.Controls.Add(btnReplyCancel);
 
+            // Полоска-превью прикреплённого файла/картинки над полем ввода
+            // (файл ждёт «Отправить», а не улетает сразу при перетаскивании).
+            _chPreview = new Panel { Dock = DockStyle.Top, Height = 0, BackColor = Color.FromArgb(47, 49, 54), Visible = false, Padding = new Padding(12, 8, 40, 8) };
+            _chPreviewLbl = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI", 9.5f), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+            var btnPrevCancel = new Button { Dock = DockStyle.Right, Width = 32, Text = "✕", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.White, Cursor = Cursors.Hand };
+            btnPrevCancel.FlatAppearance.BorderSize = 0;
+            btnPrevCancel.Click += (s, e) => ClearChannelPending();
+            _chPreview.Controls.Add(_chPreviewLbl);
+            _chPreview.Controls.Add(btnPrevCancel);
+
             // Низ центра: контейнер с полоской ответа над полем ввода.
             var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68 };
             _pnlInput.Dock = DockStyle.Fill;
             bottom.Controls.Add(_pnlInput);
+            bottom.Controls.Add(_chPreview);
             bottom.Controls.Add(_replyBar);
             _bottomDock = bottom;
 

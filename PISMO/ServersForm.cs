@@ -39,6 +39,14 @@ namespace PISMO
         private Panel _pnlInput;
         private TextBox _txtInput;
         private Label _lblTitle;
+
+        // Отложенное вложение канала (файл/картинка ждёт нажатия «Отправить»,
+        // а не улетает сразу при перетаскивании/выборе) — как в мессенджере.
+        private byte[] _chPendingImg;
+        private byte[] _chPendingFile;
+        private string _chPendingFileName;
+        private Panel _chPreview;      // полоска-превью над полем ввода
+        private Label _chPreviewLbl;
         private System.Windows.Forms.Timer _refresh;
         private int _lastMsgCount = -1;
 
@@ -900,6 +908,7 @@ namespace PISMO
             MainForm.DisposeAndClear(_pnlMessages);
             _renderedKey = null; _renderedSig = null; // панель очищена — не пропускать отрисовку
             CancelServerReply();
+            ClearChannelPending();   // не тащим превью вложения между каналами
             try { UpdateForwardNotice(); } catch { }
 
             // И у текстового, И у голосового канала — полноценный чат (как в Discord):
@@ -978,7 +987,7 @@ namespace PISMO
             _lblReply.Text = "↩ Ответ: " + preview;
             _replyBar.Height = 26;
             _replyBar.Visible = true;
-            if (_bottomDock != null) _bottomDock.Height = 52 + 26;
+            UpdateBottomHeight();
             _txtInput.Focus();
         }
 
@@ -986,7 +995,18 @@ namespace PISMO
         {
             _replyToId = -1;
             if (_replyBar != null) { _replyBar.Visible = false; _replyBar.Height = 0; }
-            if (_bottomDock != null) _bottomDock.Height = 52;
+            UpdateBottomHeight();
+        }
+
+        /// <summary>Пересчитывает высоту нижнего дока: база (поле ввода) + полоска
+        /// ответа (если открыта) + превью вложения (если есть).</summary>
+        private void UpdateBottomHeight()
+        {
+            if (_bottomDock == null) return;
+            int h = 68;
+            if (_replyBar != null && _replyBar.Visible) h += _replyBar.Height;
+            if (_chPreview != null && _chPreview.Visible) h += _chPreview.Height;
+            _bottomDock.Height = h;
         }
 
         // ── Сообщения канала ────────────────────────────────────────────
@@ -1185,7 +1205,14 @@ namespace PISMO
                 // -80: у бабла слева отступ под аватар (58) + правый паддинг (12).
                 // Без этого запаса длинное сообщение делало бабл шире панели →
                 // появлялся горизонтальный скроллбар.
-                int msgWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 80);
+                // Ширина «пузыря» = ширина панели − место под вертикальный скролл −
+                // отступы бабла (аватар слева 58 + правый паддинг 12) − запас, иначе
+                // при появлении вертикального скролла бабл вылезает за край и
+                // появляется ГОРИЗОНТАЛЬНЫЙ ползунок. Плюс потолок, как в Discord,
+                // чтобы длинные сообщения не растягивались на весь широкий монитор.
+                int avail = _pnlMessages.ClientSize.Width
+                            - SystemInformation.VerticalScrollBarWidth - 90;
+                int msgWidth = Math.Max(120, Math.Min(avail, 900));
                 string lastDate = null;
                 foreach (DataRow r in dt.Rows)
                 {
@@ -1856,6 +1883,20 @@ namespace PISMO
             }
 
             string text = _txtInput.Text.Trim();
+
+            // Ожидающее вложение (перетащенный/выбранный файл) — уходит именно сейчас,
+            // по «Отправить»; текст, если есть, идёт подписью к нему.
+            if (_chPendingImg != null || _chPendingFile != null)
+            {
+                var img = _chPendingImg; var file = _chPendingFile; var fn = _chPendingFileName;
+                ClearChannelPending();
+                _txtInput.Clear();
+                if (img != null) SendChannelMedia(img, null, null, null, null);
+                else SendChannelMedia(null, null, null, file, fn);
+                if (!string.IsNullOrEmpty(text)) SendChannelRaw(text);
+                return;
+            }
+
             if (string.IsNullOrEmpty(text)) return;
             _txtInput.Clear();
             SendChannelRaw(text);
@@ -1872,7 +1913,9 @@ namespace PISMO
                 if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Tab) { AcceptMention(); e.SuppressKeyPress = true; return; }
                 if (e.KeyCode == Keys.Escape) { HideMentionPopup(); e.SuppressKeyPress = true; return; }
             }
-            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SendChannelMessage(); }
+            // Enter — отправить; Shift+Enter — перенос строки (AcceptsReturn его
+            // вставит сам, мы лишь НЕ перехватываем).
+            if (e.KeyCode == Keys.Enter && !e.Shift) { e.SuppressKeyPress = true; SendChannelMessage(); }
         }
 
         /// <summary>Находит активный токен @… у курсора и показывает/обновляет подсказку.</summary>
@@ -2214,8 +2257,9 @@ namespace PISMO
             LoadMessages();
         }
 
-        /// <summary>Прикрепить файл (или картинку) в канал.</summary>
-        /// <summary>Отправить файл в канал по пути (перетаскивание из проводника).</summary>
+        /// <summary>Прикрепить файл (или картинку) в канал по пути (перетаскивание
+        /// из проводника). НЕ отправляет сразу — кладёт в «ожидание» и показывает
+        /// превью; уходит только по кнопке «Отправить».</summary>
         private void AttachChannelFileByPath(string path)
         {
             if (_channelId <= 0 || string.IsNullOrEmpty(path) || !File.Exists(path)) return;
@@ -2229,13 +2273,49 @@ namespace PISMO
                 }
                 string ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
                 bool isImg = ext is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp";
-                if (isImg) SendChannelMedia(bytes, null, null, null, null);
-                else SendChannelMedia(null, null, null, bytes, Path.GetFileName(path));
+                StageChannelAttachment(bytes, Path.GetFileName(path), isImg);
             }
             catch (Exception ex) { MessageBox.Show("Не удалось прикрепить файл: " + ex.Message, "PISMO"); }
         }
 
-        /// <summary>Включает перетаскивание файлов на контрол → отправка в канал.</summary>
+        /// <summary>Кладёт вложение в ожидание и показывает полоску-превью над вводом.
+        /// Второе вложение заменяет первое (как в мессенджере — одно за раз).</summary>
+        private void StageChannelAttachment(byte[] bytes, string fileName, bool isImg)
+        {
+            if (bytes == null || bytes.Length == 0) return;
+            _chPendingImg = isImg ? bytes : null;
+            _chPendingFile = isImg ? null : bytes;
+            _chPendingFileName = isImg ? null : fileName;
+
+            if (_chPreview != null && _chPreviewLbl != null)
+            {
+                string sizeTxt = bytes.Length >= 1024 * 1024
+                    ? $"{bytes.Length / 1024.0 / 1024.0:0.0} МБ"
+                    : $"{Math.Max(1, bytes.Length / 1024)} КБ";
+                _chPreviewLbl.Text = (isImg ? "🖼  Изображение" : "📄  " + fileName) + $"   ({sizeTxt}) — нажмите «Отправить»";
+                _chPreview.Height = 40;
+                _chPreview.Visible = true;
+                UpdateBottomHeight();
+            }
+            try { _txtInput?.Focus(); } catch { }
+        }
+
+        /// <summary>Сбрасывает ожидающее вложение и прячет полоску-превью.</summary>
+        private void ClearChannelPending()
+        {
+            _chPendingImg = null;
+            _chPendingFile = null;
+            _chPendingFileName = null;
+            if (_chPreview != null)
+            {
+                _chPreview.Visible = false;
+                _chPreview.Height = 0;
+            }
+            UpdateBottomHeight();
+        }
+
+        /// <summary>Включает перетаскивание файлов на контрол → превью в канале
+        /// (без немедленной отправки).</summary>
         private void EnableChannelFileDrop(Control c)
         {
             if (c == null) return;
@@ -2247,8 +2327,9 @@ namespace PISMO
             {
                 try
                 {
-                    if (e.Data?.GetData(DataFormats.FileDrop) is string[] files)
-                        foreach (var f in files) AttachChannelFileByPath(f);
+                    // Только первый файл (одно вложение за раз, как в мессенджере).
+                    if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+                        AttachChannelFileByPath(files[0]);
                 }
                 catch { }
             };
@@ -2273,8 +2354,8 @@ namespace PISMO
                 }
                 string ext = Path.GetExtension(ofd.FileName).TrimStart('.').ToLowerInvariant();
                 bool isImg = ext is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp";
-                if (imageOnly || isImg) SendChannelMedia(bytes, null, null, null, null);
-                else SendChannelMedia(null, null, null, bytes, Path.GetFileName(ofd.FileName));
+                // Как в мессенджере: показываем превью, отправка — по «Отправить».
+                StageChannelAttachment(bytes, Path.GetFileName(ofd.FileName), imageOnly || isImg);
             }
             catch (Exception ex) { MessageBox.Show("Не удалось прикрепить файл: " + ex.Message, "PISMO"); }
         }
