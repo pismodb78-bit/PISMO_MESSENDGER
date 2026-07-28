@@ -228,7 +228,10 @@ namespace PISMO
                 "}\r\n";
 
             File.WriteAllText(ps1Path, ps, new System.Text.UTF8Encoding(false));
-            try { File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss} C#: launching updater (appDir={appDir}, canWrite={canWrite})\r\n"); } catch { }
+            var buildVer = Assembly.GetExecutingAssembly().GetName().Version;
+            // В лог пишем ТОЧНУЮ версию сборки, которая запускает апдейтер, и режим
+            // запуска — чтобы по логу сразу было видно, та ли это сборка (с фиксом).
+            try { File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss} C#: launching updater build={buildVer} mode={(canWrite ? "createproc" : "runas")} (appDir={appDir}, canWrite={canWrite})\r\n"); } catch { }
 
             // canWrite → UseShellExecute=false: CreateProcess ПОЛНОСТЬЮ создаёт
             // дочерний powershell ДО возврата, поэтому он гарантированно стартует и
