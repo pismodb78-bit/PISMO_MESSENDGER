@@ -2627,7 +2627,7 @@ namespace PISMO
             using var f = new Form
             {
                 Text = "Роли сервера",
-                ClientSize = new Size(420, 470),
+                ClientSize = new Size(420, 500),
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 StartPosition = FormStartPosition.CenterParent,
                 BackColor = Color.FromArgb(47, 49, 54),
@@ -2669,8 +2669,9 @@ namespace PISMO
                 px += 32;
                 if (px + 26 > 408) { px = 12; py += 32; }
             }
-            // Кнопка системного выбора цвета — для любого оттенка вне палитры.
-            var btnMore = new Button { Text = "🎨 Ещё…", Location = new Point(px, py), Size = new Size(84, 26), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Cursor = Cursors.Hand };
+            // Кнопка системного выбора цвета — на СВОЕЙ строке под палитрой,
+            // чтобы не наезжать на чекбоксы.
+            var btnMore = new Button { Text = "🎨 Ещё…", Location = new Point(12, 286), Size = new Size(90, 26), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Cursor = Cursors.Hand };
             btnMore.FlatAppearance.BorderSize = 0;
             btnMore.Click += (s, e) =>
             {
@@ -2680,14 +2681,14 @@ namespace PISMO
                     txtC.Text = $"#{cd.Color.R:X2}{cd.Color.G:X2}{cd.Color.B:X2}";
             };
 
-            var cbBan = new CheckBox { Text = "Банить", ForeColor = Color.White, Location = new Point(12, 296), AutoSize = true };
-            var cbKick = new CheckBox { Text = "Выгонять", ForeColor = Color.White, Location = new Point(120, 296), AutoSize = true };
-            var cbMute = new CheckBox { Text = "Мьютить", ForeColor = Color.White, Location = new Point(232, 296), AutoSize = true };
-            var cbManage = new CheckBox { Text = "Управление (каналы/роли)", ForeColor = Color.White, Location = new Point(12, 324), AutoSize = true };
+            var cbBan = new CheckBox { Text = "Банить", ForeColor = Color.White, Location = new Point(12, 324), AutoSize = true };
+            var cbKick = new CheckBox { Text = "Выгонять", ForeColor = Color.White, Location = new Point(120, 324), AutoSize = true };
+            var cbMute = new CheckBox { Text = "Мьютить", ForeColor = Color.White, Location = new Point(232, 324), AutoSize = true };
+            var cbManage = new CheckBox { Text = "Управление (каналы/роли)", ForeColor = Color.White, Location = new Point(12, 352), AutoSize = true };
 
             // Какая роль сейчас редактируется (null — режим создания новой).
             int? editingId = null;
-            var btnSave = new Button { Text = "Сохранить", Location = new Point(138, 360), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, Enabled = false };
+            var btnSave = new Button { Text = "Сохранить", Location = new Point(138, 388), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, Enabled = false };
 
             void ResetForm()
             {
@@ -2726,7 +2727,7 @@ namespace PISMO
                 catch (Exception ex) { ShowDbError(ex); }
             };
 
-            var btnCreate = new Button { Text = "Создать роль", Location = new Point(12, 360), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(59, 165, 93), ForeColor = Color.White };
+            var btnCreate = new Button { Text = "Создать роль", Location = new Point(12, 388), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(59, 165, 93), ForeColor = Color.White };
             btnCreate.Click += (s, e) =>
             {
                 string n = txtN.Text.Trim();
@@ -2774,7 +2775,7 @@ namespace PISMO
                 catch (Exception ex) { ShowDbError(ex); }
             };
 
-            var btnDel = new Button { Text = "Удалить", Location = new Point(264, 360), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(240, 71, 71), ForeColor = Color.White };
+            var btnDel = new Button { Text = "Удалить", Location = new Point(264, 388), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(240, 71, 71), ForeColor = Color.White };
             btnDel.Click += (s, e) =>
             {
                 if (list.SelectedItem == null) return;
