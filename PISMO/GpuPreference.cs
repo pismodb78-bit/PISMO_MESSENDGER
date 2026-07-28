@@ -35,21 +35,26 @@ namespace PISMO
                 using var key = Registry.CurrentUser.CreateSubKey(RegPath);
                 if (key == null) return;
 
-                // КРИТИЧНО: главный процесс PISMO.exe НЕЛЬЗЯ прибивать к дискретке
-                // (GpuPreference=2). Это ломает DXGI Desktop Duplication захвата
-                // демки на Optimus-ноутбуках (монитор ведёт Intel, а процесс на
-                // NVIDIA → DuplicateOutput 0x887A0004 UNSUPPORTED → откат на GDI
-                // ~35fps). NVENC при этом НЕ страдает: в нативном пути кодек берётся
-                // через драйвер NVIDIA независимо от «рендер-GPU» процесса.
-                // Поэтому для главного exe убираем любой high-perf пин, а Quick Sync
-                // (=1, Intel) не мешает DXGI и разрешён.
+                // Главный процесс PISMO.exe:
+                //  • "high" (NVIDIA/NVENC) → ПИНИМ к дискретке (GpuPreference=2).
+                //    Раньше пин снимался из страха сломать DXGI Desktop Duplication
+                //    на Optimus, но нативный энкодер NVENC инициализируется на том
+                //    же адаптере, где «живёт» процесс: без пина процесс идёт на Intel
+                //    → сессия NVENC не создаётся → тихий откат на программный H264
+                //    (RTX Video Encode = 0%, как в диспетчере задач). Захват демки
+                //    сейчас основной через WGC (кросс-GPU, чёрного экрана не даёт), а
+                //    если где-то поднимется DXGI и отдаст чёрные кадры — есть детектор
+                //    чёрного кадра с откатом на GDI. Поэтому пин к NVIDIA безопасен.
+                //  • "integrated" → Quick Sync (Intel), пин=1.
+                //  • "auto"/"software" → не пиним (решает Windows).
                 string mainExe = Environment.ProcessPath;
                 if (!string.IsNullOrWhiteSpace(mainExe))
                 {
                     try
                     {
-                        if (mode == "integrated") SetFor(key, mainExe, 1);
-                        else key.DeleteValue(mainExe, throwOnMissingValue: false);   // high/auto → не пиним
+                        if (mode == "high") SetFor(key, mainExe, 2);         // дискретная NVIDIA (NVENC)
+                        else if (mode == "integrated") SetFor(key, mainExe, 1); // встроенная Intel (QSV)
+                        else key.DeleteValue(mainExe, throwOnMissingValue: false); // auto/software → не пиним
                     }
                     catch { }
                 }
