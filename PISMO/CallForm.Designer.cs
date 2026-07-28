@@ -259,7 +259,9 @@ namespace PISMO
                 _pbRemote, _pbLocal, _pbRemoteCamera,
                 _lblName, _lblStatus, _lblDuration, _lblPing,
                 _lblScreenBadge, _lblZoom,
-                _tbScreenAudioVolume, _lblScreenAudioVolume,
+                // Ползунок «Звук демки» убран из окна звонка (по просьбе): громкость
+                // демонстрации регулируется в настройках и по ПКМ на плитке демки.
+                // _tbScreenAudioVolume, _lblScreenAudioVolume,  ← больше не добавляем
                 _pnlButtons, _pnlParticipants
             });
             _pnlParticipants.BringToFront();

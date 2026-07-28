@@ -980,11 +980,15 @@ namespace PISMO
             _audioPanel = new Form
             {
                 Text = "Звук и устройства",
-                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                // Ресайзабельное окно (+прокрутка), чтобы всё влезало и можно было
+                // растянуть — раньше было FixedToolWindow и низ обрезался.
+                FormBorderStyle = FormBorderStyle.SizableToolWindow,
                 StartPosition = FormStartPosition.Manual,
                 ShowInTaskbar = false,
                 BackColor = Color.FromArgb(40, 42, 46),
-                ClientSize = new Size(310, 570)
+                ClientSize = new Size(310, 570),
+                MinimumSize = new Size(326, 300),
+                AutoScroll = true
             };
             var anchor = PointToScreen(new Point(_pnlButtons.Left, _pnlButtons.Top));
             _audioPanel.Location = new Point(

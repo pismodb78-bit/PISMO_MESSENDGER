@@ -1179,7 +1179,10 @@ namespace PISMO
                 _pnlMessages.SuspendLayout();
                 MainForm.DisposeAndClear(_pnlMessages);
                 _msgControls.Clear();
-                int msgWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 40);
+                // -80: у бабла слева отступ под аватар (58) + правый паддинг (12).
+                // Без этого запаса длинное сообщение делало бабл шире панели →
+                // появлялся горизонтальный скроллбар.
+                int msgWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 80);
                 string lastDate = null;
                 foreach (DataRow r in dt.Rows)
                 {
