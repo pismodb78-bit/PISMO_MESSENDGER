@@ -28,8 +28,11 @@ namespace PISMO
             _lblTitle = new Label { Dock = DockStyle.Top, Height = 36, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 12f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0), Text = "Выберите канал" };
             _pnlMessages = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(54, 57, 63), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(10) };
 
-            _pnlInput = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = Color.FromArgb(64, 68, 75), Visible = false };
-            _txtInput = new TextBox { Dock = DockStyle.Fill, Multiline = false, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(40, 42, 46), ForeColor = Color.White, Font = new Font("Segoe UI", 11f) };
+            // Вид строки ввода перенесён из мессенджера (MainForm): панель повыше,
+            // поле без рамки слито с фоном бара, иконочные кнопки плоские/серые,
+            // акцентная кнопка «➤ Отправить».
+            _pnlInput = new Panel { Dock = DockStyle.Bottom, Height = 68, BackColor = Color.FromArgb(64, 68, 75), Visible = false };
+            _txtInput = new TextBox { Dock = DockStyle.Fill, Multiline = false, BorderStyle = BorderStyle.None, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI", 10.5f), PlaceholderText = "Написать сообщение..." };
             _txtInput.KeyDown += TxtInput_KeyDown;
             _txtInput.TextChanged += (s, e) => UpdateMentionPopup();
             _txtInput.LostFocus += (s, e) =>
@@ -40,23 +43,24 @@ namespace PISMO
                     && !(_mentionPopup.Visible && _mentionPopup.Bounds.Contains(Cursor.Position)))
                     HideMentionPopup();
             };
-            var btnSend = new Button { Dock = DockStyle.Right, Width = 90, Text = "Отправить", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White };
+            var btnSend = new Button { Dock = DockStyle.Right, Width = 130, Text = "➤  Отправить", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnSend.FlatAppearance.BorderSize = 0;
             btnSend.Click += (s, e) => SendChannelMessage();
-            var btnGif = new Button { Dock = DockStyle.Right, Width = 52, Text = "GIF", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
+            var btnGif = new Button { Dock = DockStyle.Right, Width = 46, Text = "GIF", FlatStyle = FlatStyle.Flat, BackColor = Color.Transparent, ForeColor = Color.FromArgb(142, 146, 151), Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnGif.FlatAppearance.BorderSize = 0;
             btnGif.Click += (s, e) => OpenServerGifPicker();
 
             // Те же инструменты, что и в обычном чате: прикрепить файл, картинку,
-            // записать голосовое (зажать), записать видео-кружок.
-            Button ToolBtn(string txt) => new Button { Dock = DockStyle.Right, Width = 40, Text = txt, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI", 12f), Cursor = Cursors.Hand };
+            // записать голосовое (зажать), записать видео-кружок. Стиль иконок —
+            // как в мессенджере: прозрачный фон, серый значок.
+            Button ToolBtn(string txt) => new Button { Dock = DockStyle.Right, Width = 40, Text = txt, FlatStyle = FlatStyle.Flat, BackColor = Color.Transparent, ForeColor = Color.FromArgb(142, 146, 151), Font = new Font("Segoe UI", 14f), Cursor = Cursors.Hand };
             var btnAttach = ToolBtn("📎"); btnAttach.FlatAppearance.BorderSize = 0; btnAttach.Click += (s, e) => AttachChannelFile(false);
             var btnImage = ToolBtn("🖼"); btnImage.FlatAppearance.BorderSize = 0; btnImage.Click += (s, e) => AttachChannelFile(true);
             _btnChVoice = ToolBtn("🎤"); _btnChVoice.FlatAppearance.BorderSize = 0;
             _btnChVoice.MouseDown += ChVoice_MouseDown; _btnChVoice.MouseUp += ChVoice_MouseUp;
             var btnCircle = ToolBtn("⭕"); btnCircle.FlatAppearance.BorderSize = 0; btnCircle.Click += (s, e) => RecordChannelCircle();
 
-            var inputHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10, 10, 10, 10) };
+            var inputHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 20, 6, 12) };
             inputHost.Controls.Add(_txtInput);
             _pnlInput.Controls.Add(inputHost);
             // Порядок (Dock=Right) справа налево: Отправить, GIF, кружок, голос, картинка, файл.
@@ -77,7 +81,7 @@ namespace PISMO
             _replyBar.Controls.Add(btnReplyCancel);
 
             // Низ центра: контейнер с полоской ответа над полем ввода.
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 52 };
+            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68 };
             _pnlInput.Dock = DockStyle.Fill;
             bottom.Controls.Add(_pnlInput);
             bottom.Controls.Add(_replyBar);

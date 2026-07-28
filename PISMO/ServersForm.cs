@@ -144,6 +144,7 @@ namespace PISMO
                 if (!WebSocketSignalingClient.Instance.IsConnected
                     && _channelId > 0) MaybeReloadMessages();
                 RefreshVoicePresence(); // presence нет в WS — обновляем (диффом, дёшево)
+                RefreshMemberPresence(); // статус участников сервера (точки), без пересборки
             };
             _refresh.Start();
 
@@ -2398,6 +2399,7 @@ namespace PISMO
         private void LoadMembers()
         {
             _pnlMembers.Controls.Clear();
+            _memberButtons.Clear();
             _pnlMembers.Controls.Add(MakeHeader("Участники"));
             try
             {
@@ -2445,8 +2447,10 @@ namespace PISMO
                         if (_canBan) menu.Items.Add("Забанить", null, (s, e) => KickMember(uid, true));
                         if (menu.Items.Count > 0) { b.ContextMenuStrip = menu; b.Text += "  ⋮"; }
                     }
+                    AttachPresenceDot(b, uid);
                     _pnlMembers.Controls.Add(b);
                 }
+                RefreshMemberPresence();
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
