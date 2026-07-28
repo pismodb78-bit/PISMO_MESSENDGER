@@ -1074,6 +1074,14 @@ namespace PISMO
                 DeviceSettings.GpuEncodePref = cmbGpu.SelectedIndex == 1 ? "high" : cmbGpu.SelectedIndex == 2 ? "integrated" : "auto";
                 try { DeviceSettings.Save(); } catch { }
                 System.Threading.Tasks.Task.Run(() => { try { GpuPreference.Apply(DeviceSettings.GpuEncodePref); } catch { } });
+                // Смена GPU читается только при старте процесса → предлагаем
+                // перезапуск (да/нет). Внутри звонка честно предупреждаем, что
+                // перезапуск завершит текущий звонок.
+                string extra = _transport != null ? "\n\nВнимание: перезапуск завершит текущий звонок." : "";
+                var rg = MessageBox.Show(this,
+                    "Смена видеокарты для кодирования вступит в силу только после перезапуска приложения.\n\nПерезапустить сейчас?" + extra,
+                    "PISMO — требуется перезапуск", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (rg == DialogResult.Yes) { try { MainForm.RestartApplication(); } catch { } }
             };
             _audioPanel.Controls.Add(cmbGpu);
             y += 30;

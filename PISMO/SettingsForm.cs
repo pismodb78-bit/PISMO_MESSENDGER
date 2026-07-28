@@ -495,6 +495,7 @@ namespace PISMO
                     DeviceSettings.ScreenShareFps = Math.Clamp(sfps, 1, 60);
             }
 
+            string oldGpuPref = DeviceSettings.GpuEncodePref;
             DeviceSettings.GpuEncodePref = _cmbGpu.SelectedIndex switch
             {
                 1 => "high",
@@ -502,6 +503,7 @@ namespace PISMO
                 3 => "software",
                 _ => "auto",
             };
+            bool gpuChanged = !string.Equals(oldGpuPref, DeviceSettings.GpuEncodePref, StringComparison.OrdinalIgnoreCase);
 
             DeviceSettings.HardwareAcceleration = _chkHwAccel.Checked;
             DeviceSettings.ScreenCaptureAllMonitors = _chkAllMonitors.Checked;
@@ -526,6 +528,17 @@ namespace PISMO
                     "Тема применится после перезапуска приложения.\n\nПерезапустить сейчас?",
                     "PISMO — тема", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (r == DialogResult.Yes) { MainForm.RestartApplication(); return; }
+            }
+
+            // Смена видеокарты для кодирования читается при старте процесса —
+            // применяем в реестр и предлагаем перезапуск (да/нет).
+            if (gpuChanged)
+            {
+                try { GpuPreference.Apply(DeviceSettings.GpuEncodePref); } catch { }
+                var rg = MessageBox.Show(this,
+                    "Смена видеокарты для кодирования вступит в силу только после перезапуска приложения.\n\nПерезапустить сейчас?",
+                    "PISMO — требуется перезапуск", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (rg == DialogResult.Yes) { MainForm.RestartApplication(); return; }
             }
 
             DialogResult = DialogResult.OK;
