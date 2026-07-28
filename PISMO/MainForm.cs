@@ -109,6 +109,8 @@ namespace PISMO
             InitializeComponent();
 
             MediaCache.Init();
+            EnableFileDrop(pnlMessages);   // перетаскивание файлов из проводника → прикрепить
+            EnableFileDrop(txtMessage);
             ConnectionGuard.Init(this);   // окно «нет связи с БД» + авто-переподключение
             SetupPolling();
             BuildSidebarSearch();
@@ -3736,10 +3738,23 @@ namespace PISMO
             };
 
             if (dlg.ShowDialog() != DialogResult.OK) return;
+            AttachFileByPath(dlg.FileName);
+        }
 
-            string ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
+        /// <summary>Прикрепить файл по пути (диалог/перетаскивание) — читает, проверяет
+        /// размер, определяет тип и показывает превью над полем ввода.</summary>
+        internal void AttachFileByPath(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
+            if (_currentChatPartnerId < 0 && _currentGroupId < 0)
+            {
+                MessageBox.Show("Сначала выберите собеседника.");
+                return;
+            }
+
+            string ext = Path.GetExtension(path).ToLowerInvariant();
             byte[] bytes;
-            try { bytes = File.ReadAllBytes(dlg.FileName); }
+            try { bytes = File.ReadAllBytes(path); }
             catch (Exception ex)
             {
                 MessageBox.Show("Не удалось прочитать файл:\n" + ex.Message);
@@ -3764,8 +3779,29 @@ namespace PISMO
             if (isImg && bytes.Length > 2 * 1024 * 1024)
                 bytes = CompressImageIfNeeded(bytes);
 
-            _pendingAttach = new PendingAttachment(bytes, Path.GetFileName(dlg.FileName), kind);
+            _pendingAttach = new PendingAttachment(bytes, Path.GetFileName(path), kind);
             ShowPreview(_pendingAttach);
+        }
+
+        /// <summary>Включает перетаскивание файлов из проводника на контрол → прикрепить.</summary>
+        internal void EnableFileDrop(Control c)
+        {
+            if (c == null) return;
+            c.AllowDrop = true;
+            c.DragEnter += (s, e) =>
+            {
+                e.Effect = (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
+                    ? DragDropEffects.Copy : DragDropEffects.None;
+            };
+            c.DragDrop += (s, e) =>
+            {
+                try
+                {
+                    if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+                        AttachFileByPath(files[0]);   // прикрепляем первый файл в превью
+                }
+                catch { }
+            };
         }
 
         /// <summary>Показывает превью прикреплённого файла/изображения/GIF над полем ввода.</summary>

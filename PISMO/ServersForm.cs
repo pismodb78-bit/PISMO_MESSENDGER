@@ -120,6 +120,8 @@ namespace PISMO
             catch { }
 
             BuildUi();
+            EnableChannelFileDrop(_pnlMessages);   // перетаскивание файлов в канал
+            EnableChannelFileDrop(_txtInput);
             // Список каналов меняет ширину при ресайзе окна — тянем строки «в эфире»
             // на всю ширину панели, чтобы бейдж «В ЭФИРЕ» был у ПРАВОГО края поля,
             // а имя не сжималось под него.
@@ -2212,6 +2214,45 @@ namespace PISMO
         }
 
         /// <summary>Прикрепить файл (или картинку) в канал.</summary>
+        /// <summary>Отправить файл в канал по пути (перетаскивание из проводника).</summary>
+        private void AttachChannelFileByPath(string path)
+        {
+            if (_channelId <= 0 || string.IsNullOrEmpty(path) || !File.Exists(path)) return;
+            try
+            {
+                var bytes = File.ReadAllBytes(path);
+                if (bytes.LongLength > 30L * 1024 * 1024)
+                {
+                    MessageBox.Show("Файл слишком большой (>30 МБ).", "PISMO");
+                    return;
+                }
+                string ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+                bool isImg = ext is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp";
+                if (isImg) SendChannelMedia(bytes, null, null, null, null);
+                else SendChannelMedia(null, null, null, bytes, Path.GetFileName(path));
+            }
+            catch (Exception ex) { MessageBox.Show("Не удалось прикрепить файл: " + ex.Message, "PISMO"); }
+        }
+
+        /// <summary>Включает перетаскивание файлов на контрол → отправка в канал.</summary>
+        private void EnableChannelFileDrop(Control c)
+        {
+            if (c == null) return;
+            c.AllowDrop = true;
+            c.DragEnter += (s, e) =>
+                e.Effect = (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
+                    ? DragDropEffects.Copy : DragDropEffects.None;
+            c.DragDrop += (s, e) =>
+            {
+                try
+                {
+                    if (e.Data?.GetData(DataFormats.FileDrop) is string[] files)
+                        foreach (var f in files) AttachChannelFileByPath(f);
+                }
+                catch { }
+            };
+        }
+
         private void AttachChannelFile(bool imageOnly)
         {
             if (_channelId <= 0) return;

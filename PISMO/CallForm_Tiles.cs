@@ -1410,70 +1410,65 @@ namespace PISMO
 
         private void ShowScreenAudioMenu(string pid)
         {
-            if (_userAudioPopup != null && !_userAudioPopup.IsDisposed)
-            { try { _userAudioPopup.Close(); } catch { } _userAudioPopup = null; }
-
             string name = _participants.TryGetValue(pid, out var nm) ? nm : pid;
             float vol = _screenVol.TryGetValue(pid, out var v) ? v : 1.0f;
+            ShowVolumeMenu("🖥 Громкость демки: " + name, vol, false, false,
+                v2 => { _screenVol[pid] = v2; try { _transport?.SetScreenShareVolume(pid, v2); } catch { } },
+                null);
+        }
 
-            _userAudioPopup = new Form
+        // Всплывающее меню громкости прямо в окне (ContextMenuStrip со встроенным
+        // ползунком): закрывается по клику вне, без отдельного окна и крестика.
+        private void ShowVolumeMenu(string title, float vol, bool withMute, bool muted,
+                                    Action<float> onVol, Action<bool> onMute)
+        {
+            var menu = new ContextMenuStrip
             {
-                Text = name,
-                FormBorderStyle = FormBorderStyle.FixedToolWindow,
-                StartPosition = FormStartPosition.Manual,
-                ShowInTaskbar = false,
                 BackColor = Color.FromArgb(40, 42, 46),
-                ClientSize = new Size(240, 84),
-                Location = Cursor.Position
+                ForeColor = Color.White,
+                ShowImageMargin = false,
+                RenderMode = ToolStripRenderMode.System
             };
-            var lbl = new Label { Text = "🖥 Громкость демки: " + name, ForeColor = Color.White, AutoSize = true, Location = new Point(12, 10), Font = new Font("Segoe UI", 9f) };
-            var tb = new TrackBar { Minimum = 0, Maximum = 300, Value = Math.Min(300, (int)(vol * 100)), TickStyle = TickStyle.None, Location = new Point(8, 32), Size = new Size(224, 40) };
-            tb.ValueChanged += (s, e) =>
+            menu.Items.Add(new ToolStripLabel(title)
+            { ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold) });
+
+            var tb = new TrackBar
             {
-                _screenVol[pid] = tb.Value / 100f;
-                try { _transport?.SetScreenShareVolume(pid, _screenVol[pid]); } catch { }
+                Minimum = 0,
+                Maximum = 300,
+                Value = Math.Min(300, Math.Max(0, (int)(vol * 100))),
+                TickStyle = TickStyle.None,
+                Width = 236,
+                Height = 40,
+                BackColor = Color.FromArgb(40, 42, 46)
             };
-            _userAudioPopup.Controls.Add(lbl);
-            _userAudioPopup.Controls.Add(tb);
-            _userAudioPopup.Deactivate += (s, e) => { try { _userAudioPopup?.Close(); } catch { } };
-            _userAudioPopup.FormClosed += (s, e) => _userAudioPopup = null;
-            _userAudioPopup.Show(this);
+            tb.ValueChanged += (s, e) => { try { onVol?.Invoke(tb.Value / 100f); } catch { } };
+            menu.Items.Add(new ToolStripControlHost(tb)
+            { AutoSize = false, Size = new Size(240, 42), Margin = new Padding(2, 2, 2, 2), BackColor = Color.FromArgb(40, 42, 46) });
+
+            if (withMute)
+            {
+                var mute = new ToolStripMenuItem("🔇 Заглушить")
+                { CheckOnClick = true, Checked = muted, ForeColor = Color.White };
+                mute.CheckedChanged += (s, e) => { try { onMute?.Invoke(mute.Checked); } catch { } };
+                menu.Items.Add(mute);
+            }
+            menu.Closed += (s, e) => { try { menu.Dispose(); } catch { } };
+            menu.Show(Cursor.Position);
         }
 
         // ── Индивидуальная громкость/мьют участника (правый клик) ────────
         private void ShowParticipantAudioMenu(string pid)
         {
-            if (_userAudioPopup != null && !_userAudioPopup.IsDisposed)
-            { try { _userAudioPopup.Close(); } catch { } _userAudioPopup = null; }
-
             string name = _participants.TryGetValue(pid, out var nm) ? nm : pid;
-            // Показываем актуальное значение: из текущей сессии, иначе — сохранённое
-            // (для голоса-без-камеры _userVol мог быть не заполнен, но громкость
-            // уже применена через voicePrefs).
             float vol = _userVol.TryGetValue(pid, out var v) ? v
                       : (UserAudioPrefs.Has(pid) ? UserAudioPrefs.GetVolume(pid) : 1.0f);
             bool muted = _userMuted.TryGetValue(pid, out var m) ? m
                        : (UserAudioPrefs.Has(pid) && UserAudioPrefs.GetMuted(pid));
 
-            _userAudioPopup = new Form
-            {
-                Text = name,
-                FormBorderStyle = FormBorderStyle.FixedToolWindow,
-                StartPosition = FormStartPosition.Manual,
-                ShowInTaskbar = false,
-                BackColor = Color.FromArgb(40, 42, 46),
-                ClientSize = new Size(240, 110),
-                Location = Cursor.Position
-            };
-            var lbl = new Label { Text = "🔊 Громкость: " + name, ForeColor = Color.White, AutoSize = true, Location = new Point(12, 10), Font = new Font("Segoe UI", 9f) };
-            var tb = new TrackBar { Minimum = 0, Maximum = 300, Value = Math.Min(300, (int)(vol * 100)), TickStyle = TickStyle.None, Location = new Point(8, 32), Size = new Size(224, 40) };
-            tb.ValueChanged += (s, e) => { _userVol[pid] = tb.Value / 100f; try { _transport?.SetParticipantVolume(pid, _userVol[pid]); } catch { } UserAudioPrefs.SetVolume(pid, _userVol[pid]); };
-            var chk = new CheckBox { Text = "🔇 Заглушить", ForeColor = Color.White, AutoSize = true, Location = new Point(12, 80), Checked = muted, Font = new Font("Segoe UI", 9.5f) };
-            chk.CheckedChanged += (s, e) => { _userMuted[pid] = chk.Checked; try { _transport?.SetParticipantMuted(pid, chk.Checked); } catch { } UserAudioPrefs.SetMuted(pid, chk.Checked); };
-            _userAudioPopup.Controls.AddRange(new Control[] { lbl, tb, chk });
-            _userAudioPopup.Deactivate += (s, e) => { try { _userAudioPopup?.Close(); } catch { } };
-            _userAudioPopup.FormClosed += (s, e) => _userAudioPopup = null;
-            _userAudioPopup.Show(this);
+            ShowVolumeMenu("🔊 Громкость: " + name, vol, true, muted,
+                v2 => { _userVol[pid] = v2; try { _transport?.SetParticipantVolume(pid, v2); } catch { } UserAudioPrefs.SetVolume(pid, v2); },
+                mm => { _userMuted[pid] = mm; try { _transport?.SetParticipantMuted(pid, mm); } catch { } UserAudioPrefs.SetMuted(pid, mm); });
         }
 
         // ── Раскладка сетки ─────────────────────────────────────────────
