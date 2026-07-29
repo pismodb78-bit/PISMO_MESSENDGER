@@ -1257,16 +1257,19 @@ namespace PISMO
         // ── Применение бейджей + уведомления (UI-поток) ───────────────
         private void ApplyUnreadAndNotify(Dictionary<int, int> current)
         {
-            // Уведомления при росте счётчика.
+            // Уведомления при росте счётчика: собираем ВСЕХ отправителей, у кого
+            // за этот тик прибавились сообщения, и показываем ОДНО агрегированное
+            // уведомление (имя+кол-во для одного, кол-во людей+сообщений для нескольких).
+            var grew = new List<(int sid, int delta)>();
             foreach (var kv in current)
             {
                 int sid = kv.Key;
                 int cnt = kv.Value;
                 _prevUnread.TryGetValue(sid, out int prev);
-
                 if (cnt > prev && sid != _currentChatPartnerId)
-                    ShowNewMessageNotification(sid, cnt);
+                    grew.Add((sid, cnt - prev));
             }
+            if (grew.Count > 0) ShowAggregatedNotification(grew);
 
             // Если непрочитанные не изменились с прошлого тика — НЕ трогаем UI вообще
             // (раньше каждые 2.5 c пересоздавались шрифты и перекладывались карточки —
@@ -1316,18 +1319,39 @@ namespace PISMO
             _prevFriendReq = cnt;
         }
 
-        private void ShowNewMessageNotification(int senderId, int unreadCount)
+        /// <summary>Одно уведомление на все пришедшие за тик сообщения:
+        ///  • от одного пользователя → «Имя: N новых сообщений»;
+        ///  • от нескольких → «K пользователей · M сообщений».</summary>
+        private void ShowAggregatedNotification(List<(int sid, int delta)> grew)
         {
-            string senderName = GetNameFromCards(senderId);
             try { Sounds.Message(); } catch { }
-            _trayIcon.ShowBalloonTip(
-                4000,
-                "PISMO — новое сообщение",
-                $"{senderName}: {unreadCount} непрочитанных",
-                ToolTipIcon.Info);
+
+            int totalMsgs = grew.Sum(g => g.delta);
+            string body;
+            if (grew.Count == 1)
+            {
+                string name = GetNameFromCards(grew[0].sid);
+                body = $"{name}: {totalMsgs} {RuPlural(totalMsgs, "новое сообщение", "новых сообщения", "новых сообщений")}";
+            }
+            else
+            {
+                body = $"{grew.Count} {RuPlural(grew.Count, "пользователь", "пользователя", "пользователей")}"
+                     + $" · {totalMsgs} {RuPlural(totalMsgs, "сообщение", "сообщения", "сообщений")}";
+            }
+
+            _trayIcon.ShowBalloonTip(4000, "PISMO — новые сообщения", body, ToolTipIcon.Info);
 
             if (!this.ContainsFocus)
                 FlashWindow(this.Handle, true);
+        }
+
+        /// <summary>Русское склонение по числу: 1 книга / 2 книги / 5 книг.</summary>
+        private static string RuPlural(int n, string one, string few, string many)
+        {
+            int m10 = n % 10, m100 = n % 100;
+            if (m10 == 1 && m100 != 11) return one;
+            if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+            return many;
         }
 
         private string GetNameFromCards(int uid)
