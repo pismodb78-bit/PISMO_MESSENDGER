@@ -854,6 +854,33 @@ namespace PISMO.Native
         // ── Демонстрация экрана / окна ────────────────────────────────────
         // Настройки качества/кодека/энкодера — до старта демки.
         public void SetScreenCodec(string codec) { if (!string.IsNullOrWhiteSpace(codec)) _scrCodec = codec; }
+
+        /// <summary>Горячая смена кодека демки. Если демонстрация идёт — трек
+        /// перепубликуется с новым кодеком, сохранив источник/разрешение/fps/звук
+        /// (в WebRTC кодек фиксируется на публикации, поэтому «бесшовно» = быстрый
+        /// re-publish; звонок и приложение НЕ перезапускаются). Если демка не идёт —
+        /// просто запоминаем кодек до следующего старта.</summary>
+        public void ChangeScreenCodecLive(string codec)
+        {
+            if (string.IsNullOrWhiteSpace(codec)) return;
+            _scrCodec = codec;
+            if (!_scrStarted) return;
+
+            // Сохраняем текущий источник/параметры ДО остановки (StopScreenShare их сбрасывает).
+            var bounds = _scrBounds;
+            var window = _scrWindow;
+            int fps = _scrFps;
+            int resH = _scrTargetHeight;
+            bool audio = _scrHasAudio;
+
+            try
+            {
+                StopScreenShare();
+                if (window != IntPtr.Zero) StartScreenShareWindow(window, fps, resH, audio);
+                else StartScreenShare(bounds, fps, resH, audio);
+            }
+            catch (Exception ex) { ConnectError?.Invoke("смена кодека демки: " + ex.Message); }
+        }
         public void SetScreenEncoderPref(string gpu) { if (!string.IsNullOrWhiteSpace(gpu)) _scrGpuPref = gpu; }
 
         /// <summary>Сменить разрешение/FPS демки «на лету» (петля захвата подхватит).</summary>

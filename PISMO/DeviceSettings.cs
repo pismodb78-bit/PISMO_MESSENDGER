@@ -58,9 +58,11 @@ namespace PISMO
         /// <summary>FPS для демонстрации экрана (1..60). Обычно 60,45,30,15.</summary>
         public static int ScreenShareFps { get; set; } = 30;
 
-        /// <summary>Кодек демонстрации: "h265" (HEVC — чётче при том же битрейте,
-        /// с авто-откатом на H264), "h264" (совместимость), "vp9". По умолчанию H265.</summary>
-        public static string ScreenShareCodec { get; set; } = "h265";
+        /// <summary>Кодек демонстрации: "av1" (чётче при том же битрейте, полностью
+        /// поддержан энкодером+декодером FFI), "h264" (совместимость), "vp8"/"vp9".
+        /// По умолчанию AV1. Старое значение "h265"/"hevc" мигрируется в AV1 при
+        /// загрузке (HEVC в FFI нет — раньше он молча откатывался на H264).</summary>
+        public static string ScreenShareCodec { get; set; } = "av1";
 
         /// <summary>Видеокарта для кодирования демки (через реестр UserGpuPreferences):
         /// "auto" (не трогать выбор Windows), "high" (дискретная RTX/NVENC),
@@ -215,7 +217,12 @@ namespace PISMO
                             if (int.TryParse(val, out int rh)) ScreenShareResolutionHeight = rh;
                             break;
                         case "ScreenShareCodec":
-                            if (!string.IsNullOrWhiteSpace(val)) ScreenShareCodec = val.Trim().ToLowerInvariant();
+                            if (!string.IsNullOrWhiteSpace(val))
+                            {
+                                var c = val.Trim().ToLowerInvariant();
+                                // HEVC в FFI нет (молча откатывался на H264) → мигрируем в AV1.
+                                ScreenShareCodec = (c == "h265" || c == "hevc") ? "av1" : c;
+                            }
                             break;
                         case "GpuEncodePref":
                             if (!string.IsNullOrWhiteSpace(val)) GpuEncodePref = val.Trim().ToLowerInvariant();

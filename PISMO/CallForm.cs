@@ -542,7 +542,7 @@ namespace PISMO
                 if (VoiceState.Deafened) SetAllMutedPublic(true);
                 if (!string.IsNullOrWhiteSpace(DeviceSettings.SpeakerName))
                     _transport?.SetOutputDevice(DeviceSettings.SpeakerName);
-                _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec);   // HEVC c авто-откатом
+                _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec);   // AV1/H264 (до старта демки)
             }
             catch { }
 
@@ -1052,12 +1052,13 @@ namespace PISMO
 
             MkLbl("Кодек демонстрации");
             var cmbCodec = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
-            cmbCodec.Items.AddRange(new object[] { "H.265 / HEVC (чётче, с откатом на H.264)", "H.264 (совместимость)" });
+            cmbCodec.Items.AddRange(new object[] { "AV1 (чётче при том же битрейте)", "H.264 (совместимость)" });
             cmbCodec.SelectedIndex = DeviceSettings.ScreenShareCodec == "h264" ? 1 : 0;
             cmbCodec.SelectedIndexChanged += (s, e) =>
             {
-                DeviceSettings.ScreenShareCodec = cmbCodec.SelectedIndex == 1 ? "h264" : "h265";
+                DeviceSettings.ScreenShareCodec = cmbCodec.SelectedIndex == 1 ? "h264" : "av1";
                 try { DeviceSettings.Save(); } catch { }
+                // Горячая замена: если демка идёт — перепубликуется с новым кодеком.
                 try { _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec); } catch { }
             };
             _audioPanel.Controls.Add(cmbCodec);

@@ -432,7 +432,9 @@ namespace PISMO
         public void SwitchShareToMonitor(Rectangle bounds) { try { _t?.SwitchShareToMonitor(bounds); } catch { } }
         public void SwitchShareToWindow(IntPtr window) { try { _t?.SwitchShareToWindow(window); } catch { } }
         public void SetScreenShareVolume(string pid, float volume) { try { _t?.SetScreenShareVolume(pid, volume); } catch { } }
-        public void SetScreenCodec(string codec) { try { _t?.SetScreenCodec(codec); } catch { } }
+        // Горячая замена: если демка идёт — трек перепубликуется с новым кодеком,
+        // иначе кодек просто запоминается до старта (оба случая внутри метода).
+        public void SetScreenCodec(string codec) { try { _t?.ChangeScreenCodecLive(codec); } catch { } }
         public void SetScreenQualityLive(int resHeight, int fps) { try { _t?.SetScreenQualityLive(resHeight, fps); } catch { } }
         public void SetRemoteScreenAudioVolume(float volume) { try { _t?.SetScreenAudioVolumeAll(volume); } catch { } }
         public void SetParticipantVolume(string pid, float volume) { try { _t?.SetParticipantVolume(pid, volume); } catch { } }
