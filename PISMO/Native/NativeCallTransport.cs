@@ -218,9 +218,12 @@ namespace PISMO.Native
 
         // sid трека → источник (камера/демка), чтобы различать входящее видео.
         private readonly Dictionary<string, TrackSource> _sourceBySid = new();
-        // Кто из участников сейчас демонстрирует экран (identity). Нужен, чтобы
-        // надёжно снять плитку демки, даже если при отписке FFI пришлёт другой sid.
-        private readonly HashSet<string> _screenByIdentity = new();
+        // Активные sid'ы демки на КАЖДОГО участника (identity → набор sid). Набор, а
+        // не флаг: при горячей смене кодека у стримера на миг существуют ДВА трека
+        // демки (новый уже опубликован, старый ещё снимается). Плитку зрителю снимаем
+        // только когда исчезнет ПОСЛЕДНИЙ sid — иначе отписка старого трека сносила
+        // плитку, хотя новый уже шёл (чинилось лишь перезаходом стримера).
+        private readonly Dictionary<string, HashSet<string>> _screenSidsByIdentity = new();
         // handle видеострима → (участник, это ли демка).
         // Контекст входящего видеопотока: кто/что + пул буферов кадров.
         // Пул из 3 буферов вместо new byte[8МБ] на КАЖДЫЙ кадр: на 60fps это
@@ -2167,7 +2170,11 @@ namespace PISMO.Native
             {
                 _sourceBySid[sid] = source;
                 if (source == TrackSource.SourceScreenshare && !string.IsNullOrEmpty(identity))
-                    _screenByIdentity.Add(identity);
+                {
+                    if (!_screenSidsByIdentity.TryGetValue(identity, out var set))
+                        _screenSidsByIdentity[identity] = set = new HashSet<string>();
+                    set.Add(sid);
+                }
             }
         }
 
@@ -2262,18 +2269,38 @@ namespace PISMO.Native
             {
                 if (src == TrackSource.SourceScreenshare)
                 {
-                    lock (_videoLock) _screenByIdentity.Remove(identity);
-                    RemoteVideoRemoved?.Invoke(identity, true);
+                    // Убираем ТОЛЬКО этот sid; плитку сносим, лишь когда у участника
+                    // не осталось ни одного трека демки (иначе горячая смена кодека
+                    // сносила плитку зрителю на новом, уже идущем треке).
+                    bool stillSharing;
+                    lock (_videoLock)
+                    {
+                        if (_screenSidsByIdentity.TryGetValue(identity, out var set))
+                        {
+                            set.Remove(sid);
+                            if (set.Count == 0) _screenSidsByIdentity.Remove(identity);
+                        }
+                        stillSharing = _screenSidsByIdentity.ContainsKey(identity);
+                    }
+                    if (!stillSharing) RemoteVideoRemoved?.Invoke(identity, true);
                 }
                 else if (src == TrackSource.SourceCamera) RemoteVideoRemoved?.Invoke(identity, false);
                 return;
             }
-            // sid неизвестен (FFI при отписке иногда шлёт другой sid) — но если этот
-            // участник демонстрировал экран, считаем это остановкой демки: иначе
-            // плитка «Смотреть стрим» висит вечно.
-            bool wasScreen;
-            lock (_videoLock) wasScreen = _screenByIdentity.Remove(identity);
-            if (wasScreen) RemoteVideoRemoved?.Invoke(identity, true);
+            // sid неизвестен (FFI при отписке иногда шлёт другой sid). Снимаем плитку,
+            // только если у участника РОВНО один трек демки — значит именно он и
+            // завершается. Если треков два (идёт горячая смена кодека) — не гадаем и
+            // плитку не трогаем, иначе снесли бы живой новый трек.
+            bool removeTile = false;
+            lock (_videoLock)
+            {
+                if (_screenSidsByIdentity.TryGetValue(identity, out var set) && set.Count == 1)
+                {
+                    _screenSidsByIdentity.Remove(identity);
+                    removeTile = true;
+                }
+            }
+            if (removeTile) RemoteVideoRemoved?.Invoke(identity, true);
         }
 
         private void HandleAudioStream(AudioStreamEvent ase)
