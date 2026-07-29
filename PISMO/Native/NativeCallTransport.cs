@@ -855,31 +855,93 @@ namespace PISMO.Native
         // Настройки качества/кодека/энкодера — до старта демки.
         public void SetScreenCodec(string codec) { if (!string.IsNullOrWhiteSpace(codec)) _scrCodec = codec; }
 
-        /// <summary>Горячая смена кодека демки. Если демонстрация идёт — трек
-        /// перепубликуется с новым кодеком, сохранив источник/разрешение/fps/звук
-        /// (в WebRTC кодек фиксируется на публикации, поэтому «бесшовно» = быстрый
-        /// re-publish; звонок и приложение НЕ перезапускаются). Если демка не идёт —
-        /// просто запоминаем кодек до следующего старта.</summary>
+        /// <summary>Создаёт FFI-источник + видеотрек демки и публикует его с текущим
+        /// кодеком/энкодером. Общий код для старта и горячей смены кодека.</summary>
+        private void PublishScreenTrack(int pubW, int pubH)
+        {
+            var srcResp = LiveKitFfi.Request(new FfiRequest
+            {
+                NewVideoSource = new NewVideoSourceRequest
+                {
+                    Type = VideoSourceType.VideoSourceNative,
+                    Resolution = new VideoSourceResolution { Width = (uint)pubW, Height = (uint)pubH },
+                    IsScreencast = true
+                }
+            });
+            _scrSource = srcResp.NewVideoSource.Source.Handle.Id;
+
+            var trkResp = LiveKitFfi.Request(new FfiRequest
+            {
+                CreateVideoTrack = new CreateVideoTrackRequest { Name = "screen", SourceHandle = _scrSource }
+            });
+            _scrTrack = trkResp.CreateVideoTrack.Track.Handle.Id;
+
+            var opts = new TrackPublishOptions
+            {
+                Source = TrackSource.SourceScreenshare,
+                VideoCodec = (VideoCodec)MapCodec(_scrCodec),
+                VideoEncoder = (VideoEncoderBackend)ResolveScreenEncoder(_scrGpuPref),
+                DegradationPreference = (LiveKit.Proto.DegradationPreference)2, // MAINTAIN_RESOLUTION
+                VideoEncoding = new VideoEncoding
+                {
+                    MaxBitrate = BitrateFor(pubH),
+                    MaxFramerate = _scrFps
+                }
+            };
+
+            var pubResp = LiveKitFfi.Request(new FfiRequest
+            {
+                PublishTrack = new PublishTrackRequest
+                {
+                    LocalParticipantHandle = _localHandle,
+                    TrackHandle = _scrTrack,
+                    Options = opts
+                }
+            });
+            _scrPublishAsyncId = pubResp.PublishTrack.AsyncId;
+        }
+
+        /// <summary>Горячая смена кодека демки БЕЗ перезапуска захвата. WGC-сессия,
+        /// поток захвата и превью остаются живыми (жёлтая рамка НЕ мигает) — меняется
+        /// только WebRTC-трек: публикуем новый источник/трек с новым кодеком и снимаем
+        /// старый. Зрителю приходит новый трек (в WebRTC кодек фиксируется на
+        /// публикации — иначе никак), но у стримера ничего не перезапускается.
+        /// Если демка не идёт — просто запоминаем кодек до старта.</summary>
         public void ChangeScreenCodecLive(string codec)
         {
             if (string.IsNullOrWhiteSpace(codec)) return;
+            if (string.Equals(_scrCodec, codec, StringComparison.OrdinalIgnoreCase)) return;
             _scrCodec = codec;
-            if (!_scrStarted) return;
-
-            // Сохраняем текущий источник/параметры ДО остановки (StopScreenShare их сбрасывает).
-            var bounds = _scrBounds;
-            var window = _scrWindow;
-            int fps = _scrFps;
-            int resH = _scrTargetHeight;
-            bool audio = _scrHasAudio;
+            if (!_scrStarted || _localHandle == 0) return;
 
             try
             {
-                StopScreenShare();
-                if (window != IntPtr.Zero) StartScreenShareWindow(window, fps, resH, audio);
-                else StartScreenShare(bounds, fps, resH, audio);
+                // Текущее целевое разрешение публикации (как в StartScreenInternal).
+                Rectangle b; lock (_scrSrcLock) b = _scrBounds;
+                int pubH = (_scrTargetHeight > 0 && _scrTargetHeight < b.Height) ? _scrTargetHeight : b.Height;
+                int pubW = (int)Math.Round(b.Width * (pubH / (double)Math.Max(1, b.Height)));
+                pubW &= ~1; pubH &= ~1; if (pubW <= 0) pubW = 2; if (pubH <= 0) pubH = 2;
+
+                string oldSid = _scrTrackSid;   // sid трека, публиковавшегося ранее
+
+                // На миг приостанавливаем пуш кадров, подменяем источник/трек, пускаем снова.
+                _scrSwapping = true;
+                PublishScreenTrack(pubW, pubH);       // ставит новый _scrSource/_scrTrack
+                _scrSwapping = false;
+
+                // Снимаем старый трек (новый уже публикуется).
+                if (!string.IsNullOrEmpty(oldSid))
+                    LiveKitFfi.Request(new FfiRequest
+                    {
+                        UnpublishTrack = new UnpublishTrackRequest
+                        {
+                            LocalParticipantHandle = _localHandle,
+                            TrackSid = oldSid,
+                            StopOnUnpublish = true
+                        }
+                    });
             }
-            catch (Exception ex) { SetScrErr("смена кодека: " + ex.Message); ConnectError?.Invoke("смена кодека демки: " + ex.Message); }
+            catch (Exception ex) { _scrSwapping = false; SetScrErr("смена кодека: " + ex.Message); ConnectError?.Invoke("смена кодека демки: " + ex.Message); }
         }
         public void SetScreenEncoderPref(string gpu) { if (!string.IsNullOrWhiteSpace(gpu)) _scrGpuPref = gpu; }
 
@@ -936,49 +998,7 @@ namespace PISMO.Native
 
             try
             {
-                var srcResp = LiveKitFfi.Request(new FfiRequest
-                {
-                    NewVideoSource = new NewVideoSourceRequest
-                    {
-                        Type = VideoSourceType.VideoSourceNative,
-                        Resolution = new VideoSourceResolution { Width = (uint)pubW, Height = (uint)pubH },
-                        IsScreencast = true
-                    }
-                });
-                _scrSource = srcResp.NewVideoSource.Source.Handle.Id;
-
-                var trkResp = LiveKitFfi.Request(new FfiRequest
-                {
-                    CreateVideoTrack = new CreateVideoTrackRequest { Name = "screen", SourceHandle = _scrSource }
-                });
-                _scrTrack = trkResp.CreateVideoTrack.Track.Handle.Id;
-
-                // Опции публикации: кодек, hint энкодера (аппаратный), битрейт под
-                // разрешение, и «держать разрешение» — для демки важнее чёткость
-                // текста, чем плавность (при нехватке канала падает FPS, а не резкость).
-                var opts = new TrackPublishOptions
-                {
-                    Source = TrackSource.SourceScreenshare,
-                    VideoCodec = (VideoCodec)MapCodec(_scrCodec),
-                    VideoEncoder = (VideoEncoderBackend)ResolveScreenEncoder(_scrGpuPref),
-                    DegradationPreference = (LiveKit.Proto.DegradationPreference)2, // MAINTAIN_RESOLUTION
-                    VideoEncoding = new VideoEncoding
-                    {
-                        MaxBitrate = BitrateFor(pubH),
-                        MaxFramerate = _scrFps
-                    }
-                };
-
-                var pubResp = LiveKitFfi.Request(new FfiRequest
-                {
-                    PublishTrack = new PublishTrackRequest
-                    {
-                        LocalParticipantHandle = _localHandle,
-                        TrackHandle = _scrTrack,
-                        Options = opts
-                    }
-                });
-                _scrPublishAsyncId = pubResp.PublishTrack.AsyncId;
+                PublishScreenTrack(pubW, pubH);
 
                 _scrRun = true;
                 _scrThread = new Thread(ScreenLoop) { IsBackground = true, Name = "pismo-screen-capture" };
@@ -1409,6 +1429,7 @@ namespace PISMO.Native
         private string _capMode = "GDI";   // "DXGI" или "GDI" — реальный путь захвата
         private volatile string _scrLastErr;   // последняя ошибка демки — для плашки
         private long _scrLastErrAt;            // когда (ms) — чтобы гасить старые
+        private volatile bool _scrSwapping;    // идёт горячая смена кодека (пуш на паузе)
 
         private void ReportCaptureFps(int w, int h)
         {
@@ -1774,6 +1795,8 @@ namespace PISMO.Native
                 try { _pushSignal.WaitOne(200); } catch { break; }
                 if (!_scrRun) break;
                 if (System.Threading.Volatile.Read(ref _pushBusy) == 0) continue;
+                // Во время горячей смены кодека источник подменяется — не пушим в него.
+                if (_scrSwapping) { Interlocked.Exchange(ref _pushBusy, 0); continue; }
                 var d = _pushBuf;
                 if (d != null && d.Bits != IntPtr.Zero)
                     try { PushRawPtr(_scrSource, d.Bits, _pushW, _pushH, _pushPreview); } catch { }
