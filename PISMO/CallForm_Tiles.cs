@@ -54,6 +54,10 @@ namespace PISMO
         private readonly Dictionary<string, string> _publishedStreams = new(); // pid -> имя стримера
         private readonly Dictionary<string, string> _watchIntent = new();      // pid -> "theater"|"popout"
         private readonly Dictionary<string, System.Windows.Forms.Timer> _watchTimeouts = new();
+        // Кого зритель смотрел на момент завершения стрима (pid -> intent + когда).
+        // При быстром перезапуске демки (смена кодека) авто-возобновляем просмотр,
+        // чтобы не пришлось повторно жать «Смотреть стрим».
+        private readonly Dictionary<string, (string intent, DateTime at)> _resumeWatch = new();
 
         // ── Стрим в отдельном окне (pop-out) ──
         private sealed class StreamPopout
@@ -385,6 +389,19 @@ namespace PISMO
             _publishedStreams[pid] = name;
             EnsureWatchTile(pid, name);
             RefreshScreenPresence();
+
+            // Авто-возобновление: если только что смотрели этот стрим (демка
+            // перезапустилась из-за смены кодека) — подключаемся сами, без клика.
+            if (_resumeWatch.TryGetValue(pid, out var rw))
+            {
+                _resumeWatch.Remove(pid);
+                if ((DateTime.UtcNow - rw.at).TotalSeconds < 15)
+                {
+                    WatchStream(pid, rw.intent);
+                    return;   // звук «начался стрим» не нужен — просмотр не прерывался
+                }
+            }
+
             if ((DateTime.UtcNow - _tilesReadyAt).TotalMilliseconds > 1500)
                 try { Sounds.ScreenOn(); } catch { }
         }
@@ -394,6 +411,10 @@ namespace PISMO
         {
             if (string.IsNullOrEmpty(pid)) return;
             _publishedStreams.Remove(pid);
+            // Если смотрели этот стрим — запомним, чтобы авто-возобновить при
+            // быстром перезапуске демки (смена кодека), без ручного «Смотреть».
+            if (_watchIntent.TryGetValue(pid, out var wi))
+                _resumeWatch[pid] = (wi, DateTime.UtcNow);
             _watchIntent.Remove(pid);
             CancelWatchTimeout(pid);
             ClosePopout(pid);
