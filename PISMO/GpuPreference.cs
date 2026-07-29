@@ -51,9 +51,14 @@ namespace PISMO
                 {
                     try
                     {
-                        if (mode == "high") SetFor(key, mainExe, 2);
+                        // "high" пиним на дискретку ТОЛЬКО если у неё реально есть
+                        // NVENC (RTX/GTX/Quadro…). У MX-серии (MX150/MX250/MX450)
+                        // NVENC вырезан, а сама карта для захвата слабее встройки —
+                        // пин туда только ухудшил бы демку. Поэтому без NVENC ведём
+                        // себя как auto (не пиним), даже если тумблер включён.
+                        if (mode == "high" && GpuCapabilities.HasNvenc) SetFor(key, mainExe, 2);
                         else if (mode == "integrated") SetFor(key, mainExe, 1);
-                        else key.DeleteValue(mainExe, throwOnMissingValue: false);   // auto → не пиним
+                        else key.DeleteValue(mainExe, throwOnMissingValue: false);   // auto / high-без-NVENC → не пиним
                     }
                     catch { }
                 }
