@@ -54,6 +54,7 @@ namespace PISMO
         private readonly Dictionary<int, FlowLayoutPanel> _voiceContainers = new();
         private readonly Dictionary<int, string> _voiceSig = new(); // подпись «кто в эфире» — чтобы не перестраивать каждые 2.5с
         private readonly ToolTip _voiceMemberTip = new ToolTip();    // полное имя участника (при обрезке «…»)
+        private readonly ToolTip _memberTip = new ToolTip();         // полное имя участника в списке «Участники»
         private static readonly Font _vmNameFont = new Font("Segoe UI", 8.5f);
         private static readonly Font _vmBadgeFont = new Font("Segoe UI Semibold", 7f, FontStyle.Bold);
         private TextBox _serverSearch;
@@ -2547,25 +2548,59 @@ namespace PISMO
                     if (!string.IsNullOrEmpty(rname) && r["rcolor"] != DBNull.Value)
                         try { b.ForeColor = ColorTranslator.FromHtml(r["rcolor"].ToString()); } catch { }
 
-                    bool canManageThis = uid != _me && !owner && (_canKick || _canBan || _canManage);
-                    if (canManageThis)
+                    // Полное имя по наведению (на случай обрезки «…» в узкой колонке).
+                    _memberTip.SetToolTip(b, nm + (string.IsNullOrEmpty(rname) ? "" : $"  [{rname}]"));
+
+                    // ПКМ по участнику — действия, доступные ЛЮБОМУ пользователю
+                    // (не только админу): профиль, в друзья, блокировка ЛС. Ниже —
+                    // модераторские пункты (роль/кик/бан), если есть права.
+                    if (uid != _me)
                     {
+                        int uidCap = uid; string nmCap = nm;
                         var menu = new ContextMenuStrip();
-                        if (_canManage)
+                        menu.Items.Add("👤 Профиль", null, (s, e) =>
+                        { try { using var pf = new ProfileForm(uidCap, readOnly: true); pf.ShowDialog(this); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
+                        menu.Items.Add("➕ Добавить в друзья", null, (s, e) =>
                         {
-                            var roleItem = new ToolStripMenuItem("Выдать роль");
-                            foreach (var (rid, rn) in roles)
+                            try
                             {
-                                int ridCap = rid;
-                                roleItem.DropDownItems.Add(rn, null, (s, e) => AssignRole(uid, ridCap));
+                                bool ok = FriendsRepository.SendRequest(_me, uidCap);
+                                MessageBox.Show(ok ? $"Заявка в друзья отправлена: {nmCap}" : "Не удалось отправить заявку.", "PISMO");
                             }
-                            roleItem.DropDownItems.Add(new ToolStripSeparator());
-                            roleItem.DropDownItems.Add("— Снять роль —", null, (s, e) => AssignRole(uid, null));
-                            menu.Items.Add(roleItem);
+                            catch (Exception ex) { MessageBox.Show(ex.Message); }
+                        });
+                        bool blocked = IsUserBlockedDb(_me, uidCap);
+                        menu.Items.Add(blocked ? "✅ Разблокировать (ЛС)" : "🚫 Заблокировать (ЛС)", null, (s, e) =>
+                        {
+                            try
+                            {
+                                if (IsUserBlockedDb(_me, uidCap)) { SetUserBlockedDb(_me, uidCap, false); MessageBox.Show($"{nmCap} разблокирован.", "PISMO"); }
+                                else { SetUserBlockedDb(_me, uidCap, true); MessageBox.Show($"{nmCap} заблокирован в личных сообщениях.", "PISMO"); }
+                            }
+                            catch (Exception ex) { MessageBox.Show(ex.Message); }
+                        });
+
+                        bool canManageThis = !owner && (_canKick || _canBan || _canManage);
+                        if (canManageThis)
+                        {
+                            menu.Items.Add(new ToolStripSeparator());
+                            if (_canManage)
+                            {
+                                var roleItem = new ToolStripMenuItem("Выдать роль");
+                                foreach (var (rid, rn) in roles)
+                                {
+                                    int ridCap = rid;
+                                    roleItem.DropDownItems.Add(rn, null, (s, e) => AssignRole(uidCap, ridCap));
+                                }
+                                roleItem.DropDownItems.Add(new ToolStripSeparator());
+                                roleItem.DropDownItems.Add("— Снять роль —", null, (s, e) => AssignRole(uidCap, null));
+                                menu.Items.Add(roleItem);
+                            }
+                            if (_canKick) menu.Items.Add("Выгнать", null, (s, e) => KickMember(uidCap, false));
+                            if (_canBan) menu.Items.Add("Забанить", null, (s, e) => KickMember(uidCap, true));
                         }
-                        if (_canKick) menu.Items.Add("Выгнать", null, (s, e) => KickMember(uid, false));
-                        if (_canBan) menu.Items.Add("Забанить", null, (s, e) => KickMember(uid, true));
-                        if (menu.Items.Count > 0) { b.ContextMenuStrip = menu; b.Text += "  ⋮"; }
+                        b.ContextMenuStrip = menu;
+                        b.Text += "  ⋮";
                     }
                     AttachPresenceDot(b, uid, nm);
                     _pnlMembers.Controls.Add(b);
@@ -2857,6 +2892,38 @@ namespace PISMO
             };
             b.FlatAppearance.BorderSize = 0;
             return b;
+        }
+
+        // ── Блокировка ЛС из списка участников сервера (та же таблица user_blocks,
+        //    что и в мессенджере) ──────────────────────────────────────────────
+        private static bool IsUserBlockedDb(int blockerId, int blockedId)
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT 1 FROM user_blocks WHERE blocker_id=@b AND blocked_id=@t LIMIT 1", conn);
+                cmd.Parameters.AddWithValue("@b", blockerId);
+                cmd.Parameters.AddWithValue("@t", blockedId);
+                return cmd.ExecuteScalar() != null;
+            }
+            catch { return false; }
+        }
+
+        private static void SetUserBlockedDb(int blockerId, int blockedId, bool block)
+        {
+            using var conn = DBHelper.OpenConnection();
+            using (var create = new MySqlCommand(
+                "CREATE TABLE IF NOT EXISTS user_blocks (id INT AUTO_INCREMENT PRIMARY KEY, " +
+                "blocker_id INT NOT NULL, blocked_id INT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, " +
+                "UNIQUE KEY ux_block (blocker_id, blocked_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", conn))
+                create.ExecuteNonQuery();
+            using var cmd = new MySqlCommand(block
+                ? "INSERT IGNORE INTO user_blocks (blocker_id, blocked_id) VALUES (@b, @t)"
+                : "DELETE FROM user_blocks WHERE blocker_id=@b AND blocked_id=@t", conn);
+            cmd.Parameters.AddWithValue("@b", blockerId);
+            cmd.Parameters.AddWithValue("@t", blockedId);
+            cmd.ExecuteNonQuery();
         }
 
         private static void ShowDbError(Exception ex)

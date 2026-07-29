@@ -543,13 +543,29 @@ namespace PISMO
             try { _transport?.UnwatchScreen(pid); } catch { }
         }
 
-        // Сторож подключения: если кадры так и не пошли — возвращаем кнопку,
-        // а не оставляем вечное «Подключение…».
+        // Сторож подключения с АВТО-ПЕРЕПОДКЛЮЧЕНИЕМ: если кадры так и не пошли
+        // (сервер поставил трек на паузу после перезапуска демки / смены кодека),
+        // каждые 3 c пере-подписываемся (unwatch+watch) — это «будит» сервер и он
+        // возобновляет отправку. Так до 15 c; если и тогда пусто — возвращаем кнопку.
         private void ArmWatchTimeout(string pid)
         {
             CancelWatchTimeout(pid);
-            var t = new System.Windows.Forms.Timer { Interval = 12000 };
-            t.Tick += (s, e) => { CancelWatchTimeout(pid); OnWatchFailed(pid, "стрим не отвечает (таймаут)"); };
+            var start = DateTime.UtcNow;
+            var t = new System.Windows.Forms.Timer { Interval = 3000 };
+            t.Tick += (s, e) =>
+            {
+                // Кадры пошли — успех, сторож больше не нужен.
+                if (_tiles.TryGetValue(TileKey(pid, "screen"), out var tile) && tile.HasVideo)
+                { CancelWatchTimeout(pid); return; }
+                // Пользователь уже не хочет смотреть — прекращаем.
+                if (!_watchIntent.ContainsKey(pid)) { CancelWatchTimeout(pid); return; }
+                // 15 c без картинки — сдаёмся, откатываем кнопку.
+                if ((DateTime.UtcNow - start).TotalSeconds >= 15)
+                { CancelWatchTimeout(pid); OnWatchFailed(pid, "стрим не отвечает (таймаут)"); return; }
+                // Ещё есть время — переподписываемся, чтобы сервер возобновил трек.
+                try { _transport?.UnwatchScreen(pid); } catch { }
+                try { _transport?.WatchScreen(pid); } catch { }
+            };
             _watchTimeouts[pid] = t;
             t.Start();
         }
