@@ -48,3 +48,14 @@ jobs:
           }
           if ($missing.Count -gt 0) { throw ("В сборке нет файлов: " + ($missing -join ', ')) }
           Write-Host "Все рантайм-файлы на месте."
+          "BUILD_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Готовый билд — артефактом: скачивается со страницы запуска Actions
+      # (вкладка Summary → Artifacts → PISMO-build). Распаковал → запустил PISMO.exe.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PISMO-build
+          path: ${{ env.BUILD_DIR }}
+          if-no-files-found: error
+          retention-days: 30
