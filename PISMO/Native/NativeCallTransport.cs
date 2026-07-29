@@ -925,24 +925,17 @@ namespace PISMO.Native
                 int pubW = (int)Math.Round(b.Width * (pubH / (double)Math.Max(1, b.Height)));
                 pubW &= ~1; pubH &= ~1; if (pubW <= 0) pubW = 2; if (pubH <= 0) pubH = 2;
 
-                string oldSid = _scrTrackSid;   // sid трека, публиковавшегося ранее
+                // Старый трек снимаем НЕ сразу, а только когда новый РЕАЛЬНО
+                // опубликуется (HandlePublishTrack по _scrPublishAsyncId). Иначе
+                // асинхронная публикация нового доходит до сервера позже снятия
+                // старого → зритель на миг остаётся без трека, плитка «Смотреть
+                // стрим» слетает и не возвращается (тот самый сценарий 1).
+                _scrPendingUnpublishSid = _scrTrackSid;
 
                 // На миг приостанавливаем пуш кадров, подменяем источник/трек, пускаем снова.
                 _scrSwapping = true;
                 PublishScreenTrack(pubW, pubH);       // ставит новый _scrSource/_scrTrack
                 _scrSwapping = false;
-
-                // Снимаем старый трек (новый уже публикуется).
-                if (!string.IsNullOrEmpty(oldSid))
-                    LiveKitFfi.Request(new FfiRequest
-                    {
-                        UnpublishTrack = new UnpublishTrackRequest
-                        {
-                            LocalParticipantHandle = _localHandle,
-                            TrackSid = oldSid,
-                            StopOnUnpublish = true
-                        }
-                    });
             }
             catch (Exception ex) { _scrSwapping = false; SetScrErr("смена кодека: " + ex.Message); ConnectError?.Invoke("смена кодека демки: " + ex.Message); }
         }
@@ -1418,7 +1411,7 @@ namespace PISMO.Native
             }
             catch { }
 
-            _scrSource = 0; _scrTrack = 0; _scrTrackSid = null; _scrWindow = IntPtr.Zero; _scrStarted = false;
+            _scrSource = 0; _scrTrack = 0; _scrTrackSid = null; _scrPendingUnpublishSid = null; _scrWindow = IntPtr.Zero; _scrStarted = false;
         }
 
         // Переиспользуемые буферы захвата: new Bitmap 1080p+ на КАЖДЫЙ кадр (а при
@@ -1433,6 +1426,7 @@ namespace PISMO.Native
         private volatile string _scrLastErr;   // последняя ошибка демки — для плашки
         private long _scrLastErrAt;            // когда (ms) — чтобы гасить старые
         private volatile bool _scrSwapping;    // идёт горячая смена кодека (пуш на паузе)
+        private string _scrPendingUnpublishSid; // старый sid, снять когда новый опубликуется
 
         private void ReportCaptureFps(int w, int h)
         {
@@ -2196,7 +2190,30 @@ namespace PISMO.Native
             }
             string sid = cb.Publication.Info.Sid;
             if (cb.AsyncId == _camPublishAsyncId) _camTrackSid = sid;
-            else if (cb.AsyncId == _scrPublishAsyncId) _scrTrackSid = sid;
+            else if (cb.AsyncId == _scrPublishAsyncId)
+            {
+                _scrTrackSid = sid;
+                // Новый трек демки опубликован — ТЕПЕРЬ безопасно снять старый
+                // (порядок гарантирован: зритель уже видит новый трек, плитка не слетит).
+                string old = _scrPendingUnpublishSid;
+                _scrPendingUnpublishSid = null;
+                if (!string.IsNullOrEmpty(old) && old != sid && _localHandle != 0)
+                {
+                    try
+                    {
+                        LiveKitFfi.Request(new FfiRequest
+                        {
+                            UnpublishTrack = new UnpublishTrackRequest
+                            {
+                                LocalParticipantHandle = _localHandle,
+                                TrackSid = old,
+                                StopOnUnpublish = true
+                            }
+                        });
+                    }
+                    catch { }
+                }
+            }
             else if (cb.AsyncId == _scrAudioPublishAsyncId) _scrAudioTrackSid = sid;
         }
 
