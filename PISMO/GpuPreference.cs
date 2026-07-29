@@ -51,14 +51,19 @@ namespace PISMO
                 {
                     try
                     {
-                        // "high" пиним на дискретку ТОЛЬКО если у неё реально есть
-                        // NVENC (RTX/GTX/Quadro…). У MX-серии (MX150/MX250/MX450)
-                        // NVENC вырезан, а сама карта для захвата слабее встройки —
-                        // пин туда только ухудшил бы демку. Поэтому без NVENC ведём
-                        // себя как auto (не пиним), даже если тумблер включён.
-                        if (mode == "high" && GpuCapabilities.HasNvenc) SetFor(key, mainExe, 2);
-                        else if (mode == "integrated") SetFor(key, mainExe, 1);
-                        else key.DeleteValue(mainExe, throwOnMissingValue: false);   // auto / high-без-NVENC → не пиним
+                        // ГЛАВНЫЙ ВЫВОД (по замерам: RTX 3050 пин=15fps, встройка=60fps):
+                        // на ноутбуках-Optimus дисплей и композицию рабочего стола
+                        // ведёт встроенная Intel. Пин процесса на дискретку делает
+                        // захват экрана МЕЖАДАПТЕРНЫМ (кадры гоняются iGPU→dGPU через
+                        // PCIe) → fps захвата падает до ~15. А NVENC в bundled
+                        // livekit_ffi.dll нет, так что у пина на дискретку ноль плюсов
+                        // и большой минус. Поэтому НА ДИСКРЕТКУ НЕ ПИНИМ НИКОГДА —
+                        // захват остаётся на встройке, которая ведёт дисплей → 60fps.
+                        // "integrated" явно закрепляет за встройкой (=1), что и нужно;
+                        // "high"/"auto" — не пиним (Windows и так держит процесс на
+                        // iGPU, который рисует рабочий стол).
+                        if (mode == "integrated") SetFor(key, mainExe, 1);
+                        else key.DeleteValue(mainExe, throwOnMissingValue: false);
                     }
                     catch { }
                 }
