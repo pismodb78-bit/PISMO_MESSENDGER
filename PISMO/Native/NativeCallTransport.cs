@@ -879,7 +879,7 @@ namespace PISMO.Native
                 if (window != IntPtr.Zero) StartScreenShareWindow(window, fps, resH, audio);
                 else StartScreenShare(bounds, fps, resH, audio);
             }
-            catch (Exception ex) { ConnectError?.Invoke("смена кодека демки: " + ex.Message); }
+            catch (Exception ex) { SetScrErr("смена кодека: " + ex.Message); ConnectError?.Invoke("смена кодека демки: " + ex.Message); }
         }
         public void SetScreenEncoderPref(string gpu) { if (!string.IsNullOrWhiteSpace(gpu)) _scrGpuPref = gpu; }
 
@@ -921,6 +921,7 @@ namespace PISMO.Native
             if (_scrStarted || _localHandle == 0) return;
             if (bounds.Width <= 0 || bounds.Height <= 0) return;
             _scrStarted = true;
+            SetScrErr(null);   // новая демка — сбрасываем прошлую ошибку
             _scrBounds = bounds;
             _scrWindow = window;
             _scrFps = Math.Max(1, Math.Min(60, fps));
@@ -992,7 +993,7 @@ namespace PISMO.Native
                 if (withAudio)
                     StartScreenAudioThread();
             }
-            catch (Exception ex) { ConnectError?.Invoke("демонстрация: " + ex.Message); _scrStarted = false; }
+            catch (Exception ex) { SetScrErr("демонстрация: " + ex.Message); ConnectError?.Invoke("демонстрация: " + ex.Message); _scrStarted = false; }
         }
 
         // Захват системного звука (WASAPI-loopback устройства воспроизведения) и
@@ -1406,6 +1407,8 @@ namespace PISMO.Native
         private int _grabCount;       // реально ЗАХВАЧЕНО (успешный кадр из экрана)
         private long _capFpsAt;
         private string _capMode = "GDI";   // "DXGI" или "GDI" — реальный путь захвата
+        private volatile string _scrLastErr;   // последняя ошибка демки — для плашки
+        private long _scrLastErrAt;            // когда (ms) — чтобы гасить старые
 
         private void ReportCaptureFps(int w, int h)
         {
@@ -1421,10 +1424,25 @@ namespace PISMO.Native
             string mode = _capMode == "GDI" && _dxgiErr != null
                 ? "GDI (DXGI: " + Trunc(_dxgiErr, 40) + ")" : _capMode;
             string au = _scrHasAudio ? " · звук " + _scrAudioMode : "";
-            try { ScreenCaptureStats.Invoke($"{sent}/{_scrFps} fps · захват {grab} · {mode} {w}x{h}{au}"); } catch { }
+            string codec = (_scrCodec ?? "").ToUpperInvariant();
+            string baseTxt = $"{sent}/{_scrFps} fps · {codec} · {mode} {w}x{h} · захват {grab}{au}";
+            // Ошибку показываем 15 секунд после возникновения и ВПЕРЕДИ (плашка узкая,
+            // конец усекается «…»), чтобы сбой кодека/публикации точно был виден.
+            string txt = (_scrLastErr != null && now - _scrLastErrAt < 15000)
+                ? "⚠ " + Trunc(_scrLastErr, 60) + " · " + baseTxt
+                : baseTxt;
+            try { ScreenCaptureStats.Invoke(txt); } catch { }
         }
 
         private static string Trunc(string s, int n) => string.IsNullOrEmpty(s) ? "" : (s.Length <= n ? s : s.Substring(0, n));
+
+        /// <summary>Записывает ошибку демки для показа в плашке (и в Debug-лог).</summary>
+        private void SetScrErr(string msg)
+        {
+            _scrLastErr = string.IsNullOrWhiteSpace(msg) ? null : msg;
+            _scrLastErrAt = _clock.ElapsedMilliseconds;
+            if (msg != null) System.Diagnostics.Debug.WriteLine("[SCREEN][err] " + msg);
+        }
 
         private void ScreenLoop()
         {
@@ -2138,7 +2156,14 @@ namespace PISMO.Native
 
         private void HandlePublishTrack(PublishTrackCallback cb)
         {
-            if (cb.MessageCase == PublishTrackCallback.MessageOneofCase.Error) return;
+            if (cb.MessageCase == PublishTrackCallback.MessageOneofCase.Error)
+            {
+                // Публикация трека демки не удалась (напр. сервер отклонил кодек) —
+                // показываем в плашке, чтобы сразу было видно, что AV1/кодек не завёлся.
+                if (cb.AsyncId == _scrPublishAsyncId)
+                    SetScrErr($"публикация демки ({(_scrCodec ?? "").ToUpperInvariant()}) отклонена: " + Trunc(cb.Error, 50));
+                return;
+            }
             string sid = cb.Publication.Info.Sid;
             if (cb.AsyncId == _camPublishAsyncId) _camTrackSid = sid;
             else if (cb.AsyncId == _scrPublishAsyncId) _scrTrackSid = sid;
