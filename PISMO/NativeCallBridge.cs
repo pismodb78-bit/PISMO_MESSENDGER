@@ -135,12 +135,22 @@ namespace PISMO
             _t.LocalCameraFrame += OnLocalCameraFrame;
             _t.LocalScreenFrame += OnLocalScreenFrameNative;
             _t.ScreenCaptureStats += txt => { try { ScreenSendStats?.Invoke(txt); } catch { } };
-            // Опубликован (новый) трек демки участника — снимаем антидребезг остановки,
-            // иначе быстрый перезапуск демки (смена кодека) глушится и плитка
-            // «Смотреть стрим» не возвращается (сценарий 1).
+            // Опубликован (новый) трек демки участника — объявляем плитку ПРОАКТИВНО,
+            // по самому событию публикации, НЕ дожидаясь кадров. Иначе при смене
+            // кодека (перезапуск демки) выходил тупик: плитка снята, id застрял в
+            // _announcedScreens, а адаптивный стрим сервера ставит трек на паузу
+            // (зритель его не смотрит) → кадры не идут → повторного объявления нет
+            // никогда → чинилось только перезаходом стримера (сценарий 1). Теперь
+            // объявление не зависит от кадров.
             _t.ScreenTrackPublished += identity =>
             {
-                lock (_watchLock) { _screenStoppedAt.Remove(identity); }
+                lock (_watchLock)
+                {
+                    _screenStoppedAt.Remove(identity);   // снять антидребезг остановки
+                    _announcedScreens.Add(identity);     // считаем анонсированным
+                }
+                string nm = _names.TryGetValue(identity, out var n) ? n : identity;
+                Ui(() => { try { RemoteStreamPublished?.Invoke(identity, nm); } catch { } });
             };
 
             _t.Connect(livekitUrl, token);
