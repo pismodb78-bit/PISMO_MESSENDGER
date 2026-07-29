@@ -57,7 +57,7 @@ jobs:
       # просто делает git pull и запускает PISMO.exe. Коммит помечен [skip ci],
       # чтобы не зациклить сборку.
       - name: Commit build back to branch
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
