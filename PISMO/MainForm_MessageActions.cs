@@ -366,6 +366,7 @@ namespace PISMO
             _selectMode = false;
             _selectedMsgIds.Clear();
             if (_pnlSelectBar != null) _pnlSelectBar.Visible = false;
+            NotifyChatEdited(_selectIsGroup);
             RerenderCurrentChat();
         }
 
@@ -808,6 +809,22 @@ namespace PISMO
             pop.ShowDialog(this);
         }
 
+        /// <summary>Шлёт собеседнику(ам) WS-сигнал «edit» — правка/удаление
+        /// сообщения должны появляться у него сразу, а не после нового сообщения
+        /// или переоткрытия чата. Для группы sessionId=groupId; для лички
+        /// target=собеседник, sessionId=я.</summary>
+        private void NotifyChatEdited(bool isGroup)
+        {
+            try
+            {
+                if (isGroup)
+                    WebSocketSignalingClient.Instance.SendMessage("edit", 0, _currentGroupId, "group");
+                else
+                    WebSocketSignalingClient.Instance.SendMessage("edit", _currentChatPartnerId, UserSession.EffectiveId, "direct");
+            }
+            catch { }
+        }
+
         public bool TrySaveEdit()
         {
             if (_editMsgId < 0) return false;
@@ -854,6 +871,10 @@ namespace PISMO
                 return false;
             }
 
+            // Сообщаем собеседнику(ам) о правке — чтобы чат обновился в реальном
+            // времени, а не только после нового сообщения/переоткрытия.
+            NotifyChatEdited(_isGroupEdit);
+
             txtMessage.Clear();
             _editMsgId = -1;
             _pnlReplyBar.Visible = false;
@@ -892,6 +913,7 @@ namespace PISMO
                 return;
             }
 
+            NotifyChatEdited(isGroup);
             if (isGroup) LoadGroupMessages();
             else LoadMessages();
         }

@@ -859,6 +859,15 @@ namespace PISMO
                             if (_currentGroupId > 0) LoadGroupMessages();
                             else if (_currentChatPartnerId > 0) LoadMessages();
                         }
+                        else if (type == "edit")
+                        {
+                            // Собеседник отредактировал/удалил сообщение — перегружаем
+                            // открытый чат сразу (раньше правка была видна только после
+                            // нового сообщения или переоткрытия чата).
+                            ForceMessageRerender();
+                            if (_currentGroupId > 0) LoadGroupMessages();
+                            else if (_currentChatPartnerId > 0) LoadMessages();
+                        }
                         else if (type == "typing")
                         {
                             // «печатает…»: для группы sessionId=groupId, для лички
