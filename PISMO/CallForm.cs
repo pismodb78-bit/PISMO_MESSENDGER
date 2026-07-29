@@ -1058,14 +1058,13 @@ namespace PISMO
             {
                 DeviceSettings.ScreenShareCodec = cmbCodec.SelectedIndex == 1 ? "h264" : "av1";
                 try { DeviceSettings.Save(); } catch { }
-                // Запоминаем кодек; применится при следующем запуске демонстрации
-                // (менять кодек у ИДУЩЕГО трека нельзя без перепубликации, а она
-                // роняет плитку у зрителя — сценарий 1).
+                // Смена на лету = перезапуск демки (стоп+старт). Зритель повторно
+                // нажмёт «Смотреть стрим» (сценарий 2).
                 try { _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec); } catch { }
             };
             _audioPanel.Controls.Add(cmbCodec);
             y += 30;
-            var lblCodecHint = new Label { Text = "(смена кодека применится при следующем запуске демонстрации)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
+            var lblCodecHint = new Label { Text = "(смена перезапустит демонстрацию; зритель повторно нажмёт «Смотреть стрим»)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
             _audioPanel.Controls.Add(lblCodecHint); y += 24;
 
             // Выбор видеокарты в звонке убран: GPU управляется единственным

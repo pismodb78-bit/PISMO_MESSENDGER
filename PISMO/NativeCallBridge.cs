@@ -135,6 +135,13 @@ namespace PISMO
             _t.LocalCameraFrame += OnLocalCameraFrame;
             _t.LocalScreenFrame += OnLocalScreenFrameNative;
             _t.ScreenCaptureStats += txt => { try { ScreenSendStats?.Invoke(txt); } catch { } };
+            // Опубликован (новый) трек демки участника — снимаем антидребезг остановки,
+            // иначе быстрый перезапуск демки (смена кодека) глушится и плитка
+            // «Смотреть стрим» не возвращается (сценарий 1).
+            _t.ScreenTrackPublished += identity =>
+            {
+                lock (_watchLock) { _screenStoppedAt.Remove(identity); }
+            };
 
             _t.Connect(livekitUrl, token);
             return Task.CompletedTask;

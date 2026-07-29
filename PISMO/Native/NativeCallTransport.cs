@@ -39,6 +39,7 @@ namespace PISMO.Native
         // Видео: кадры BGRA (packed, stride = width*4). CallForm рисует плитки.
         public event Action<string, bool, byte[], int, int> RemoteVideoFrame; // (identity, isScreen, bgra, w, h)
         public event Action<string, bool> RemoteVideoRemoved;                 // (identity, isScreen)
+        public event Action<string> ScreenTrackPublished;                     // (identity) — опубликован трек демки
         public event Action<byte[], int, int> LocalCameraFrame;               // локальное превью камеры
         public event Action<byte[], int, int> LocalScreenFrame;               // локальное превью демки
         public event Action<string> ScreenCaptureStats;                       // "48 fps · DXGI 1920x1080" для плашки
@@ -904,14 +905,32 @@ namespace PISMO.Native
             _scrPublishAsyncId = pubResp.PublishTrack.AsyncId;
         }
 
-        /// <summary>Смена кодека демки. НЕ перепубликует идущий трек: в WebRTC кодек
-        /// фиксируется на публикации, а любая перепубликация посреди стрима роняет
-        /// подписку/плитку у зрителя (сценарий 1: демка пропадает, чинится только
-        /// перезаходом стримера). Поэтому новый кодек просто запоминаем — он
-        /// применится при СЛЕДУЮЩЕМ запуске демонстрации (стоп/старт демки).</summary>
+        /// <summary>Смена кодека демки на лету = ЧИСТЫЙ перезапуск демонстрации
+        /// (стоп+старт с тем же источником/разрешением/fps/звуком). В WebRTC кодек
+        /// фиксируется на публикации, поэтому иначе никак. Зритель видит корректный
+        /// цикл «стрим завершён → стрим начался» и повторно жмёт «Смотреть стрим»
+        /// (сценарий 2). Важно: антидребезг у зрителя сбрасывается при публикации
+        /// нового трека (ScreenTrackPublished), иначе быстрый перезапуск глушился и
+        /// плитка не возвращалась (сценарий 1). Если демка не идёт — просто запоминаем.</summary>
         public void ChangeScreenCodecLive(string codec)
         {
-            if (!string.IsNullOrWhiteSpace(codec)) _scrCodec = codec;
+            if (string.IsNullOrWhiteSpace(codec)) return;
+            if (string.Equals(_scrCodec, codec, StringComparison.OrdinalIgnoreCase)) { _scrCodec = codec; return; }
+            _scrCodec = codec;
+            if (!_scrStarted) return;
+
+            // Параметры текущей демки сохраняем ДО остановки (StopScreenShare их сбрасывает).
+            Rectangle bounds; lock (_scrSrcLock) bounds = _scrBounds;
+            IntPtr window = _scrWindow;
+            int fps = _scrFps, resH = _scrTargetHeight;
+            bool audio = _scrHasAudio;
+            try
+            {
+                StopScreenShare();
+                if (window != IntPtr.Zero) StartScreenShareWindow(window, fps, resH, audio);
+                else StartScreenShare(bounds, fps, resH, audio);
+            }
+            catch (Exception ex) { SetScrErr("смена кодека: " + ex.Message); ConnectError?.Invoke("смена кодека демки: " + ex.Message); }
         }
         public void SetScreenEncoderPref(string gpu) { if (!string.IsNullOrWhiteSpace(gpu)) _scrGpuPref = gpu; }
 
@@ -2134,6 +2153,7 @@ namespace PISMO.Native
         private void RememberSource(string identity, string sid, TrackSource source)
         {
             if (string.IsNullOrEmpty(sid)) return;
+            bool isScreenPub = false;
             lock (_videoLock)
             {
                 _sourceBySid[sid] = source;
@@ -2142,8 +2162,13 @@ namespace PISMO.Native
                     if (!_screenSidsByIdentity.TryGetValue(identity, out var set))
                         _screenSidsByIdentity[identity] = set = new HashSet<string>();
                     set.Add(sid);
+                    isScreenPub = true;
                 }
             }
+            // Опубликован трек демки — сбрасываем у зрителя антидребезг остановки,
+            // чтобы после перезапуска (смена кодека) плитка «Смотреть стрим»
+            // гарантированно объявилась заново (сценарий 2, а не 1).
+            if (isScreenPub) { try { ScreenTrackPublished?.Invoke(identity); } catch { } }
         }
 
         private bool IsScreenSid(string sid)
