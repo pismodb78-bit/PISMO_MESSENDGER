@@ -407,27 +407,9 @@ namespace PISMO
             tblScreen.Controls.Add(lblFps, 2, 0);
             tblScreen.Controls.Add(_cmbScreenFps, 3, 0);
 
-            // Аппаратное ускорение (GPU) — ЕДИНСТВЕННЫЙ пункт управления GPU.
-            // Вкл → дискретная карта (пин) + аппаратные пути; выкл → авто.
-            _chkHwAccel = new CheckBox
-            {
-                Text = "Аппаратное ускорение (GPU)",
-                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                ForeColor = Color.FromArgb(220, 221, 222),
-                BackColor = Color.FromArgb(47, 49, 54),
-                AutoSize = true,
-                Location = new Point(14, 122),
-                Cursor = Cursors.Hand
-            };
-            var lblHwHint = new Label
-            {
-                Text = "Вкл → дискретная видеокарта для демонстрации. Требует перезапуска. Выключите при чёрном экране.",
-                Font = new Font("Segoe UI", 8f),
-                ForeColor = Color.FromArgb(140, 142, 146),
-                AutoSize = false,
-                Size = new Size(430, 16),
-                Location = new Point(16, 144)
-            };
+            // Пункт «Аппаратное ускорение» убран: захват демки всегда идёт на
+            // встройке, которая ведёт дисплей (пин на дискретку ронял fps 60→15 на
+            // Optimus-ноутбуках, а NVENC в FFI всё равно нет). Управлять нечем.
 
             _chkLightTheme = new CheckBox
             {
@@ -436,7 +418,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
                 AutoSize = true,
-                Location = new Point(14, 166),
+                Location = new Point(14, 122),
                 Cursor = Cursors.Hand
             };
             var lblThemeHint = new Label
@@ -446,7 +428,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,
                 Size = new Size(430, 16),
-                Location = new Point(16, 188)
+                Location = new Point(16, 144)
             };
 
             // Все мониторы в выборе демонстрации (WGC): DXGI-захват на мульти-GPU
@@ -459,7 +441,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
                 AutoSize = true,
-                Location = new Point(14, 210),
+                Location = new Point(14, 166),
                 Cursor = Cursors.Hand
             };
             var lblAllMonHint = new Label
@@ -469,14 +451,12 @@ namespace PISMO
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,
                 Size = new Size(430, 16),
-                Location = new Point(16, 232)
+                Location = new Point(16, 188)
             };
-            pnlScreen.Height = 260;
+            pnlScreen.Height = 216;
 
             pnlScreen.Controls.Add(lblScreenTitle);
             pnlScreen.Controls.Add(tblScreen);
-            pnlScreen.Controls.Add(_chkHwAccel);
-            pnlScreen.Controls.Add(lblHwHint);
             pnlScreen.Controls.Add(_chkLightTheme);
             pnlScreen.Controls.Add(lblThemeHint);
             pnlScreen.Controls.Add(_chkAllMonitors);

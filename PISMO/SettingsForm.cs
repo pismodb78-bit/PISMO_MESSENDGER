@@ -29,7 +29,6 @@ namespace PISMO
         private Label _lblGainValue;
         private CheckBox _chkVoiceAuto;
         private CheckBox _chkNoiseSuppress;
-        private CheckBox _chkHwAccel;
         private CheckBox _chkLightTheme;
         private CheckBox _chkAllMonitors;   // все мониторы в выборе демонстрации (WGC)
         private TrackBar _trkVoiceThreshold;
@@ -209,7 +208,6 @@ namespace PISMO
                 if (_cmbScreenFps.Items[i].ToString() == sf) { _cmbScreenFps.SelectedIndex = i; break; }
 
             // Аппаратное ускорение — единственный пункт управления GPU.
-            _chkHwAccel.Checked = DeviceSettings.HardwareAcceleration;
             _chkAllMonitors.Checked = DeviceSettings.ScreenCaptureAllMonitors;
 
             // Тема оформления.
@@ -485,12 +483,8 @@ namespace PISMO
                     DeviceSettings.ScreenShareFps = Math.Clamp(sfps, 1, 60);
             }
 
-            // Единственный пункт управления GPU — «Аппаратное ускорение»:
-            // вкл → дискретная карта (пин high), выкл → авто (без пина).
-            string oldGpuPref = DeviceSettings.GpuEncodePref;
-            DeviceSettings.HardwareAcceleration = _chkHwAccel.Checked;
-            DeviceSettings.GpuEncodePref = _chkHwAccel.Checked ? "high" : "auto";
-            bool gpuChanged = !string.Equals(oldGpuPref, DeviceSettings.GpuEncodePref, StringComparison.OrdinalIgnoreCase);
+            // Управление GPU из настроек убрано: захват демки всегда на встройке
+            // (пин на дискретку ронял fps на Optimus, NVENC в FFI нет).
             DeviceSettings.ScreenCaptureAllMonitors = _chkAllMonitors.Checked;
             bool newLight = _chkLightTheme.Checked;
             DeviceSettings.ThemeMode = newLight ? "light" : "dark";
@@ -513,17 +507,6 @@ namespace PISMO
                     "Тема применится после перезапуска приложения.\n\nПерезапустить сейчас?",
                     "PISMO — тема", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (r == DialogResult.Yes) { MainForm.RestartApplication(); return; }
-            }
-
-            // Смена видеокарты для кодирования читается при старте процесса —
-            // применяем в реестр и предлагаем перезапуск (да/нет).
-            if (gpuChanged)
-            {
-                try { GpuPreference.Apply(DeviceSettings.GpuEncodePref); } catch { }
-                var rg = MessageBox.Show(this,
-                    "Смена видеокарты для кодирования вступит в силу только после перезапуска приложения.\n\nПерезапустить сейчас?",
-                    "PISMO — требуется перезапуск", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-                if (rg == DialogResult.Yes) { MainForm.RestartApplication(); return; }
             }
 
             DialogResult = DialogResult.OK;
