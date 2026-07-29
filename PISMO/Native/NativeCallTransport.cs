@@ -904,40 +904,14 @@ namespace PISMO.Native
             _scrPublishAsyncId = pubResp.PublishTrack.AsyncId;
         }
 
-        /// <summary>Горячая смена кодека демки БЕЗ перезапуска захвата. WGC-сессия,
-        /// поток захвата и превью остаются живыми (жёлтая рамка НЕ мигает) — меняется
-        /// только WebRTC-трек: публикуем новый источник/трек с новым кодеком и снимаем
-        /// старый. Зрителю приходит новый трек (в WebRTC кодек фиксируется на
-        /// публикации — иначе никак), но у стримера ничего не перезапускается.
-        /// Если демка не идёт — просто запоминаем кодек до старта.</summary>
+        /// <summary>Смена кодека демки. НЕ перепубликует идущий трек: в WebRTC кодек
+        /// фиксируется на публикации, а любая перепубликация посреди стрима роняет
+        /// подписку/плитку у зрителя (сценарий 1: демка пропадает, чинится только
+        /// перезаходом стримера). Поэтому новый кодек просто запоминаем — он
+        /// применится при СЛЕДУЮЩЕМ запуске демонстрации (стоп/старт демки).</summary>
         public void ChangeScreenCodecLive(string codec)
         {
-            if (string.IsNullOrWhiteSpace(codec)) return;
-            if (string.Equals(_scrCodec, codec, StringComparison.OrdinalIgnoreCase)) return;
-            _scrCodec = codec;
-            if (!_scrStarted || _localHandle == 0) return;
-
-            try
-            {
-                // Текущее целевое разрешение публикации (как в StartScreenInternal).
-                Rectangle b; lock (_scrSrcLock) b = _scrBounds;
-                int pubH = (_scrTargetHeight > 0 && _scrTargetHeight < b.Height) ? _scrTargetHeight : b.Height;
-                int pubW = (int)Math.Round(b.Width * (pubH / (double)Math.Max(1, b.Height)));
-                pubW &= ~1; pubH &= ~1; if (pubW <= 0) pubW = 2; if (pubH <= 0) pubH = 2;
-
-                // Старый трек снимаем НЕ сразу, а только когда новый РЕАЛЬНО
-                // опубликуется (HandlePublishTrack по _scrPublishAsyncId). Иначе
-                // асинхронная публикация нового доходит до сервера позже снятия
-                // старого → зритель на миг остаётся без трека, плитка «Смотреть
-                // стрим» слетает и не возвращается (тот самый сценарий 1).
-                _scrPendingUnpublishSid = _scrTrackSid;
-
-                // На миг приостанавливаем пуш кадров, подменяем источник/трек, пускаем снова.
-                _scrSwapping = true;
-                PublishScreenTrack(pubW, pubH);       // ставит новый _scrSource/_scrTrack
-                _scrSwapping = false;
-            }
-            catch (Exception ex) { _scrSwapping = false; SetScrErr("смена кодека: " + ex.Message); ConnectError?.Invoke("смена кодека демки: " + ex.Message); }
+            if (!string.IsNullOrWhiteSpace(codec)) _scrCodec = codec;
         }
         public void SetScreenEncoderPref(string gpu) { if (!string.IsNullOrWhiteSpace(gpu)) _scrGpuPref = gpu; }
 

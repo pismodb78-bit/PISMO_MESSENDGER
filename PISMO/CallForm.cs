@@ -1058,7 +1058,9 @@ namespace PISMO
             {
                 DeviceSettings.ScreenShareCodec = cmbCodec.SelectedIndex == 1 ? "h264" : "av1";
                 try { DeviceSettings.Save(); } catch { }
-                // Горячая замена: если демка идёт — перепубликуется с новым кодеком.
+                // Запоминаем кодек; применится при следующем запуске демонстрации
+                // (менять кодек у ИДУЩЕГО трека нельзя без перепубликации, а она
+                // роняет плитку у зрителя — сценарий 1).
                 try { _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec); } catch { }
             };
             _audioPanel.Controls.Add(cmbCodec);
