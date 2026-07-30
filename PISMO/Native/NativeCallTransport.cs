@@ -335,15 +335,15 @@ namespace PISMO.Native
                     {
                         LocalParticipantHandle = _localHandle,
                         TrackHandle = _micTrack,
-                        // Битрейт Opus 48 кбит/с (по умолчанию libwebrtc ~32) — заметно
-                        // чище голос, при этом трафик остаётся скромным. DTX+RED:
-                        // тишина не шлётся, есть избыточность против потерь пакетов.
+                        // Битрейт Opus 128 кбит/с (по умолчанию libwebrtc ~32) —
+                        // максимально чистый голос. DTX+RED: тишина не шлётся (экономия),
+                        // есть избыточность против потерь пакетов.
                         Options = new TrackPublishOptions
                         {
                             Source = TrackSource.SourceMicrophone,
                             Dtx = true,
                             Red = true,
-                            AudioEncoding = new AudioEncoding { MaxBitrate = 48000 }
+                            AudioEncoding = new AudioEncoding { MaxBitrate = 128000 }
                         }
                     }
                 });

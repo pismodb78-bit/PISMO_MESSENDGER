@@ -562,8 +562,10 @@ namespace PISMO
                 // 15 c без картинки — сдаёмся, откатываем кнопку.
                 if ((DateTime.UtcNow - start).TotalSeconds >= 15)
                 { CancelWatchTimeout(pid); OnWatchFailed(pid, "стрим не отвечает (таймаут)"); return; }
-                // Ещё есть время — переподписываемся, чтобы сервер возобновил трек.
-                try { _transport?.UnwatchScreen(pid); } catch { }
+                // Ещё есть время — ПЕРЕ-ПОДПИСЫВАЕМСЯ (SetSubscribed(true) внутри
+                // WatchScreen), БЕЗ отписки: ничего не рвём, просто «будим» сервер,
+                // чтобы он возобновил паузнутый трек. Срабатывает только пока
+                // картинки нет — с приходом кадров таймер гасится (OnTileStarted).
                 try { _transport?.WatchScreen(pid); } catch { }
             };
             _watchTimeouts[pid] = t;
