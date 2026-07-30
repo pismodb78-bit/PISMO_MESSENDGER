@@ -560,18 +560,27 @@ namespace PISMO.Native
         {
             int s = _nsStrengthPct;
             if (s <= 0) return;                         // выкл — сигнал не трогаем
+            float f = s / 100f;
 
-            // База: RNNoise (хорошо чистит голос от фона/клавиатуры), если поднялся.
-            var rn = _rnnoise;
-            if (rn != null && rn.IsReady) { try { rn.Process(data, offset, len); } catch { } }
+            // RNNoise (мощный нейросетевой шумодав) — «всё или ничего», сам градиента
+            // не даёт и на 100% глушит агрессивно. Чтобы ползунок реально ощущался
+            // от края до края, RNNoise включаем ТОЛЬКО с середины (>=50%). Ниже —
+            // мягкая чистка одним спектральным шумодавом: слабее, но и артефактов
+            // («редкого белого шума») меньше. Это и есть слышимая разница «мало/много».
+            if (s >= 50)
+            {
+                var rn = _rnnoise;
+                if (rn != null && rn.IsReady) { try { rn.Process(data, offset, len); } catch { } }
+            }
 
-            // Регулируемая часть: спектральный Wiener-шумодав. Strength — «сколько
-            // считать шумом»: больше → агрессивнее. 0.25 (щадяще) … 3.5 (максимум).
+            // Спектральный Wiener-шумодав. Strength — «сколько считать шумом» (больше →
+            // агрессивнее), Floor — «пол» подавления (меньше → глубже режет, но выше
+            // риск музыкального шума). Оба тянем по всей длине ползунка, поэтому даже
+            // без RNNoise (на низких значениях) разница слышна.
             if (_spectral != null)
             {
-                float f = s / 100f;
-                _spectral.Strength = 0.25f + f * 5.0f;        // до 5.25 — заметно агрессивнее
-                _spectral.Floor = 0.06f - f * 0.05f;          // 0.06 → 0.01: глубже вырезает шум
+                _spectral.Strength = 0.3f + f * 5.7f;         // 0.3 (едва) … 6.0 (максимум)
+                _spectral.Floor    = 0.22f - f * 0.20f;       // 0.22 (мягко, без «музыки») → 0.02 (глубоко)
                 try { _spectral.Process(data, offset, len); } catch { }
             }
 
@@ -992,11 +1001,28 @@ namespace PISMO.Native
             IntPtr window = _scrWindow;
             int fps = _scrFps, resH = _scrTargetHeight;
             bool audio = _scrHasAudio;
+            int gen = ++_scrCodecGen;
             try
             {
+                // Снимаем старый трек и ЖДЁМ, пока зритель его полностью отпишет,
+                // ПРЕЖДЕ чем публиковать новый. Если публиковать сразу (через ~25мс),
+                // у зрителя старый видео-трек ещё подписан/рендерится — SFU считает
+                // новый трек «вторым» и НЕ шлёт по нему TrackSubscribed, кадры не
+                // идут, картинка застывает на новом кодеке (лечилось только
+                // перезапуском демки). Чистая пауза = как при перезаходе стримера
+                // (этот путь у зрителя всегда срабатывает: свежая подписка на трек).
                 StopScreenShare();
-                if (window != IntPtr.Zero) StartScreenShareWindow(window, fps, resH, audio);
-                else StartScreenShare(bounds, fps, resH, audio);
+                System.Threading.Tasks.Task.Run(async () =>
+                {
+                    try
+                    {
+                        await System.Threading.Tasks.Task.Delay(650).ConfigureAwait(false);
+                        if (gen != _scrCodecGen || _scrStarted) return;   // отменили/переиграли
+                        if (window != IntPtr.Zero) StartScreenShareWindow(window, fps, resH, audio);
+                        else StartScreenShare(bounds, fps, resH, audio);
+                    }
+                    catch (Exception ex) { SetScrErr("смена кодека: " + ex.Message); }
+                });
             }
             catch (Exception ex) { SetScrErr("смена кодека: " + ex.Message); ConnectError?.Invoke("смена кодека демки: " + ex.Message); }
         }
@@ -1497,6 +1523,7 @@ namespace PISMO.Native
         private long _scrLastErrAt;            // когда (ms) — чтобы гасить старые
         private volatile bool _scrSwapping;    // идёт горячая смена кодека (пуш на паузе)
         private string _scrPendingUnpublishSid; // старый sid, снять когда новый опубликуется
+        private volatile int _scrCodecGen;      // поколение смены кодека (отмена устаревшего перезапуска)
 
         private void ReportCaptureFps(int w, int h)
         {

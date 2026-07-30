@@ -24,6 +24,7 @@ namespace PISMO.Native
         private readonly float[] _in = new float[N];        // скользящее окно анализа
         private readonly float[] _overlap = new float[N];   // накопитель overlap-add
         private readonly float[] _noisePow = new float[BINS];
+        private readonly float[] _gainSmooth = new float[BINS];   // сглаживание усиления во времени
         private bool _noiseInit;
 
         // FIFO вход/выход (короткие очереди, ~кадр).
@@ -121,6 +122,12 @@ namespace PISMO.Native
                 if (snr < 0f) snr = 0f;
                 float gain = snr / (snr + Strength);        // Wiener (Strength — «сколько шума»)
                 if (gain < Floor) gain = Floor;             // пол подавления (настраивается силой)
+                // Сглаживание усиления во времени: одиночные бины, скачущие туда-сюда
+                // между кадрами, дают «музыкальный»/редкий белый шум. Быстрый спад
+                // (открываемся сразу на речь), медленный подъём (не выпускаем шум).
+                float pg = _gainSmooth[k];
+                gain = gain < pg ? gain : pg + 0.35f * (gain - pg);
+                _gainSmooth[k] = gain;
                 _re[k] *= gain; _im[k] *= gain;
             }
             // сопряжённая симметрия для вещественного сигнала (Re чёт, Im нечёт)

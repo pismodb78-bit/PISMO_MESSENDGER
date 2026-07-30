@@ -149,13 +149,16 @@ namespace PISMO
             int s = DeviceSettings.NoiseSuppressionStrength;
             if (_noise && s > 0)
             {
-                var rn = _rn;
-                if (rn != null && rn.IsReady) { try { rn.Process(data, 0, len); } catch { } }
+                float f = s / 100f;
+                if (s >= 50)   // RNNoise — только со второй половины ползунка (как в звонке)
+                {
+                    var rn = _rn;
+                    if (rn != null && rn.IsReady) { try { rn.Process(data, 0, len); } catch { } }
+                }
                 if (_spectral != null)
                 {
-                    float f = s / 100f;
-                    _spectral.Strength = 0.25f + f * 5.0f;
-                    _spectral.Floor = 0.06f - f * 0.05f;
+                    _spectral.Strength = 0.3f + f * 5.7f;
+                    _spectral.Floor    = 0.22f - f * 0.20f;
                     try { _spectral.Process(data, 0, len); } catch { }
                 }
                 // Клик-гейт против клавиатуры/мыши — на высокой силе (>=60%), как в звонке.
