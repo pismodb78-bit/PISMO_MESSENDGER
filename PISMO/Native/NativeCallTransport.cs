@@ -1028,11 +1028,45 @@ namespace PISMO.Native
         }
         public void SetScreenEncoderPref(string gpu) { if (!string.IsNullOrWhiteSpace(gpu)) _scrGpuPref = gpu; }
 
-        /// <summary>Сменить разрешение/FPS демки «на лету» (петля захвата подхватит).</summary>
+        /// <summary>Сменить разрешение/FPS демки «на лету». FPS петля захвата
+        /// подхватывает без перепубликации. А вот смена РАЗРЕШЕНИЯ меняет размер
+        /// публикуемого кадра прямо посреди трека — декодер зрителя до ближайшего
+        /// keyframe отдаёт «50 оттенков серого». Поэтому при смене высоты кадра
+        /// перезапускаем трек начисто (та же чистая пауза, что при смене кодека).</summary>
         public void SetScreenQualityLive(int resHeight, int fps)
         {
-            _scrTargetHeight = Math.Max(0, resHeight);
             if (fps > 0) _scrFps = Math.Max(1, Math.Min(60, fps));
+
+            int newTarget = Math.Max(0, resHeight);
+            if (!_scrStarted) { _scrTargetHeight = newTarget; return; }
+
+            // Меняется ли фактически публикуемая высота?
+            int boundsH; lock (_scrSrcLock) boundsH = _scrBounds.Height;
+            int oldPubH = (_scrTargetHeight > 0 && _scrTargetHeight < boundsH) ? _scrTargetHeight : boundsH;
+            int newPubH = (newTarget > 0 && newTarget < boundsH) ? newTarget : boundsH;
+            _scrTargetHeight = newTarget;
+            if (oldPubH == newPubH) return;   // высота та же — ничего не перепубликуем
+
+            Rectangle bounds; lock (_scrSrcLock) bounds = _scrBounds;
+            IntPtr window = _scrWindow;
+            int f = _scrFps; bool audio = _scrHasAudio;
+            int gen = ++_scrCodecGen;
+            try
+            {
+                StopScreenShare();
+                System.Threading.Tasks.Task.Run(async () =>
+                {
+                    try
+                    {
+                        await System.Threading.Tasks.Task.Delay(650).ConfigureAwait(false);
+                        if (gen != _scrCodecGen || _scrStarted) return;
+                        if (window != IntPtr.Zero) StartScreenShareWindow(window, f, newTarget, audio);
+                        else StartScreenShare(bounds, f, newTarget, audio);
+                    }
+                    catch (Exception ex) { SetScrErr("смена качества: " + ex.Message); }
+                });
+            }
+            catch (Exception ex) { SetScrErr("смена качества: " + ex.Message); }
         }
 
         /// <summary>Сменить ИСТОЧНИК демки на лету БЕЗ перепубликации трека: петля

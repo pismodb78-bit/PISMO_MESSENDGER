@@ -19,8 +19,13 @@ namespace PISMO.Native
     {
         private readonly int _sampleRate;
 
-        // Высокочастотный фильтр (однополюсный, ~90 Гц).
-        private float _hpPrevIn, _hpPrevOut;
+        // Высокочастотный фильтр — ДВА однополюсных каскада ~120 Гц (крутизна
+        // 12 дБ/окт). Задувание/поп/ветер — это в основном энергия ниже ~150 Гц;
+        // одиночный полюс её почти не срезал, поэтому «дуть в микрофон» пролезало.
+        // Двойной каскад давит низ куда сильнее, а разборчивость голоса (основной
+        // тон ~150–250 Гц + форманты выше) почти не страдает.
+        private float _hpPrevIn, _hpPrevOut;    // 1-й каскад
+        private float _hpPrevIn2, _hpPrevOut2;  // 2-й каскад
         private readonly float _hpCoef;
 
         // Оценка шумового пола и огибающей сигнала.
@@ -57,7 +62,7 @@ namespace PISMO.Native
         {
             _sampleRate = sampleRate;
             // RC-коэффициент HPF: y = a*(y_prev + x - x_prev).
-            float rc = 1f / (2f * (float)Math.PI * 90f);
+            float rc = 1f / (2f * (float)Math.PI * 120f);
             float dt = 1f / sampleRate;
             _hpCoef = rc / (rc + dt);
             _la = Math.Max(64, sampleRate / 200);   // ~5 мс упреждения
@@ -73,16 +78,22 @@ namespace PISMO.Native
             int n = bytes / 2;
             if (n <= 0) return;
 
-            // 1) HPF + подсчёт RMS блока.
-            double sumSq = 0;
+            // 1) HPF + подсчёт RMS блока (и «сырого» RMS до фильтра — для детектора выдува).
+            double sumSq = 0, sumSqRaw = 0;
             for (int i = 0; i < n; i++)
             {
                 int idx = offset + i * 2;
                 short s = (short)(buffer[idx] | (buffer[idx + 1] << 8));
                 float x = s;
+                sumSqRaw += (double)x * x;
                 float y = _hpCoef * (_hpPrevOut + x - _hpPrevIn);
                 _hpPrevIn = x;
                 _hpPrevOut = y;
+                // 2-й каскад HPF (крутизна ×2) — добивает низкочастотное задувание.
+                float y2 = _hpCoef * (_hpPrevOut2 + y - _hpPrevIn2);
+                _hpPrevIn2 = y;
+                _hpPrevOut2 = y2;
+                y = y2;
 
                 // Де-кликер: гоняем две огибающие ВЧ-сигнала — быструю (реагирует
                 // на всплеск за доли мс) и медленную (устойчивый уровень голоса).
@@ -94,10 +105,10 @@ namespace PISMO.Native
                     float a = y < 0 ? -y : y;
                     _dcFast += (a - _dcFast) * (a > _dcFast ? 0.6f : 0.05f);
                     _dcSlow += (a - _dcSlow) * (a > _dcSlow ? 0.002f : 0.0008f);
-                    if (_dcFast > 400f && _dcFast > _dcSlow * 5f)
+                    if (_dcFast > 350f && _dcFast > _dcSlow * 4f)
                     {
                         float duck = (_dcSlow * 1.5f) / (a + 1f);   // тянем пик к устойчивому уровню
-                        if (duck < 0.25f) duck = 0.25f;             // не в ноль — без «дыр» в звуке
+                        if (duck < 0.12f) duck = 0.12f;             // глубже, чем раньше (0.25) — клик слышно меньше
                         if (duck < 1f) y *= duck;
                     }
                 }
@@ -111,6 +122,11 @@ namespace PISMO.Native
                 sumSq += (double)y * y;
             }
             float rms = (float)Math.Sqrt(sumSq / n);
+            float rmsRaw = (float)Math.Sqrt(sumSqRaw / n);
+            // Детектор задувания/попа: у выдува почти вся энергия ниже ~120 Гц, поэтому
+            // после HPF она обваливается (rms ≪ rmsRaw). У голоса энергия в основном
+            // выше HPF — отношение близко к 1. Громкий блок с малым отношением = выдув.
+            bool blowing = rmsRaw > 1500f && rms < rmsRaw * 0.5f;
 
             // 2) Огибающая (быстрый подъём, медленный спад).
             _envelope = rms > _envelope ? rms * 0.5f + _envelope * 0.5f
@@ -143,6 +159,9 @@ namespace PISMO.Native
                 if (_hangBlocks > 0) _hangBlocks--;
                 // Одиночный громкий всплеск (клик) без подтверждения речи — глушим сильнее.
                 if (!speech) target = 0.02f;
+                // Выдув маскируется под «речь» (сустейн-громкость), поэтому давим его
+                // ЖЁСТКО отдельно, и сбрасываем счётчик речи, чтобы он не «открыл» гейт.
+                if (blowing) { target = 0.02f; _loudRun = 0; _hangBlocks = 0; }
             }
 
             // 5) Сглаживание усиления: быстрое открытие + БЫСТРОЕ закрытие (0.12),
@@ -164,7 +183,7 @@ namespace PISMO.Native
                 {
                     float a = s < 0 ? -s : s;
                     _voiceRef += (a - _voiceRef) * (a > _voiceRef ? 0.0015f : 0.0006f);
-                    float thr = _voiceRef * 3f + 500f;             // порог всплеска
+                    float thr = _voiceRef * 2.5f + 450f;           // порог всплеска (чуть чувствительнее)
                     float laTarget = a > thr ? thr / a : 1f;
                     _laGain += (laTarget - _laGain) * (laTarget < _laGain ? 0.5f : 0.02f);
 
