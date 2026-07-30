@@ -1,298 +1,204 @@
 using System;
-using System.IO;
 using System.Drawing;
 using System.Windows.Forms;
-using Microsoft.Web.WebView2.WinForms;
-using Microsoft.Web.WebView2.Core;
+using NAudio.Wave;
+using PISMO.Native;
 
 namespace PISMO
 {
     /// <summary>
-    /// Тест микрофона на WebView2: тот же конвейер, что в звонке
-    /// (микрофон → Krisp-шумодав → обратно в наушники), плюс индикатор уровня.
-    /// Так слышно ровно то, что услышат собеседники.
-    ///
-    /// Krisp грузится сначала ЛОКАЛЬНО (папка noise рядом с exe, отдаётся через
-    /// virtual host), при отсутствии — с CDN.
+    /// Тест микрофона на ТОМ ЖЕ нативном тракте, что и звонок: микрофон (NAudio) →
+    /// RNNoise + спектральный шумодав (сила = ползунок «Сила шумоподавления») →
+    /// обратно в наушники. Слышно ровно то, что услышат собеседники, и ползунок
+    /// силы регулируется прямо здесь, вживую.
     /// </summary>
     public sealed class MicTestForm : Form
     {
-        private readonly WebView2 _web;
-        private readonly bool _noise;
-        private readonly string _micLabel;
-        private string _tempDir;
+        private const int SR = 48000;
+
+        private WaveInEvent _in;
+        private WaveOutEvent _out;
+        private BufferedWaveProvider _buf;
+        private RnnoiseDenoiser _rn;
+        private SpectralDenoiser _spectral;
+
+        private volatile bool _noise;
+        private volatile string _micLabel;
+        private volatile float _gain;
+        private volatile float _level;   // 0..1 для индикатора
+
+        private readonly Panel _bar;
+        private readonly Panel _fill;
+        private readonly Label _st;
+        private readonly System.Windows.Forms.Timer _ui;
 
         public MicTestForm(bool noiseSuppression, string micLabel = null)
         {
             _noise = noiseSuppression;
             _micLabel = micLabel ?? "";
+            _gain = DeviceSettings.MicrophoneGain > 0 ? DeviceSettings.MicrophoneGain : 1f;
+
             Text = "PISMO — Проверка микрофона";
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             BackColor = Color.FromArgb(30, 31, 34);
             StartPosition = FormStartPosition.CenterParent;
-            ClientSize = new Size(440, 240);
+            ClientSize = new Size(440, 190);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false;
 
-            _web = new WebView2 { Dock = DockStyle.Fill };
-            Controls.Add(_web);
-            Load += async (s, e) => await InitAsync();
+            var title = new Label
+            {
+                Text = "🎤 Говорите — вы слышите себя",
+                ForeColor = Color.FromArgb(220, 221, 222),
+                Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
+                AutoSize = true, Location = new Point(18, 16)
+            };
+            _bar = new Panel { Location = new Point(18, 52), Size = new Size(404, 26), BackColor = Color.FromArgb(32, 34, 37) };
+            _fill = new Panel { Location = new Point(0, 0), Size = new Size(0, 26), BackColor = Color.FromArgb(59, 165, 93) };
+            _bar.Controls.Add(_fill);
+            _st = new Label
+            {
+                Text = "Запуск…", ForeColor = Color.FromArgb(168, 170, 176),
+                Font = new Font("Segoe UI", 8.5f), AutoSize = false,
+                Location = new Point(18, 88), Size = new Size(404, 20)
+            };
+            var hint = new Label
+            {
+                Text = "Сила шумоподавления — в настройках; меняется здесь вживую.\nВключён шумодав — постучите по клавиатуре: в звонке он давится так же.",
+                ForeColor = Color.FromArgb(114, 118, 125), Font = new Font("Segoe UI", 8f),
+                AutoSize = false, Location = new Point(18, 116), Size = new Size(404, 46)
+            };
+            Controls.AddRange(new Control[] { title, _bar, _st, hint });
+
+            _ui = new System.Windows.Forms.Timer { Interval = 33 };
+            _ui.Tick += (s, e) =>
+            {
+                int w = (int)Math.Round(Math.Min(1f, _level * 3f) * _bar.Width);
+                if (_fill.Width != w) _fill.Width = w;
+                _fill.BackColor = _level * 3f > 0.85f ? Color.FromArgb(237, 66, 69)
+                    : _level * 3f > 0.5f ? Color.FromArgb(250, 166, 26) : Color.FromArgb(59, 165, 93);
+            };
+            _ui.Start();
+
+            Load += (s, e) => StartCapture();
         }
 
-        private async System.Threading.Tasks.Task InitAsync()
+        private int FindMicIndex(string label)
         {
+            if (string.IsNullOrWhiteSpace(label)) return 0;
             try
             {
-                // ЕДИНОЕ окружение процесса (WebViewShared) — иначе второе окружение
-                // с другими опциями падает 0x8007139F и потом ломает звонок.
-                await _web.EnsureCoreWebView2Async(await WebViewShared.GetAsync());
-
-                _web.CoreWebView2.NavigationCompleted += (s, e) =>
+                for (int i = 0; i < WaveInEvent.DeviceCount; i++)
                 {
-                    if (!e.IsSuccess)
-                        try { _web.CoreWebView2.NavigateToString("<body style='background:#1e1f22;color:#ed4245;font-family:sans-serif;padding:16px'>Не удалось загрузить тест (" + e.WebErrorStatus + ")</body>"); } catch { }
-                };
-
-                _web.CoreWebView2.PermissionRequested += (s, e) =>
-                {
-                    if (e.PermissionKind == CoreWebView2PermissionKind.Microphone)
-                        e.State = CoreWebView2PermissionState.Allow;
-                };
-
-                _tempDir = Path.Combine(Path.GetTempPath(), "pismo_mictest_" + Guid.NewGuid().ToString("N"));
-                Directory.CreateDirectory(_tempDir);
-                File.WriteAllText(Path.Combine(_tempDir, "index.html"), BuildHtml(), System.Text.Encoding.UTF8);
-                _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
-                    "pismo-mic.local", _tempDir, CoreWebView2HostResourceAccessKind.Allow);
-
-                // Локальная папка noise рядом с exe (для офлайн-Krisp), если есть.
-                try
-                {
-                    string noiseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "noise");
-                    if (Directory.Exists(noiseDir))
-                        _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
-                            "pismo-noise.local", noiseDir, CoreWebView2HostResourceAccessKind.Allow);
+                    var n = WaveInEvent.GetCapabilities(i).ProductName ?? "";
+                    // Имена MME обрезаются до 31 символа — сверяем по вхождению.
+                    if (n.Length > 0 && (label.Contains(n, StringComparison.OrdinalIgnoreCase)
+                                         || n.Contains(label, StringComparison.OrdinalIgnoreCase)))
+                        return i;
                 }
-                catch { }
+            }
+            catch { }
+            return 0;
+        }
 
-                _web.CoreWebView2.Navigate("https://pismo-mic.local/index.html");
+        private void StartCapture()
+        {
+            StopCapture();
+            try
+            {
+                _rn = _noise ? RnnoiseDenoiser.TryCreate() : null;
+                _spectral = new SpectralDenoiser();
+
+                _buf = new BufferedWaveProvider(new WaveFormat(SR, 16, 1))
+                { BufferDuration = TimeSpan.FromSeconds(1), DiscardOnBufferOverflow = true };
+
+                _out = new WaveOutEvent { DesiredLatency = 120 };
+                _out.Init(_buf);
+                _out.Play();
+
+                _in = new WaveInEvent
+                {
+                    DeviceNumber = FindMicIndex(_micLabel),
+                    WaveFormat = new WaveFormat(SR, 16, 1),
+                    BufferMilliseconds = 20
+                };
+                _in.DataAvailable += OnData;
+                _in.StartRecording();
+
+                _st.Text = _noise
+                    ? (_rn != null && _rn.IsReady ? "✓ Нативный шумодав активен (RNNoise + спектральный) — слышите себя"
+                                                  : "✓ Спектральный шумодав активен — слышите себя")
+                    : "Слышите себя (шумодав выключен)";
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Не удалось запустить тест микрофона: " + ex.Message, "PISMO");
-                Close();
+                _st.Text = "Не удалось запустить тест: " + ex.Message;
             }
         }
 
-        private string BuildHtml()
+        private void OnData(object sender, WaveInEventArgs e)
         {
-            string noiseJs = _noise ? "true" : "false";
-            string micJs = System.Text.Json.JsonSerializer.Serialize(_micLabel ?? "");
-            string gainJs = (DeviceSettings.MicrophoneGain > 0 ? DeviceSettings.MicrophoneGain : 1f)
-                .ToString(System.Globalization.CultureInfo.InvariantCulture);
-            return @"<!doctype html><html><head><meta charset='utf-8'><style>
-html,body{margin:0;height:100%;background:#1e1f22;color:#dcddde;font-family:Segoe UI,sans-serif;}
-.wrap{display:flex;flex-direction:column;gap:14px;padding:18px;}
-h3{margin:0;font-size:15px;}
-#st{font-size:12px;color:#a8aab0;min-height:16px;}
-#bar{height:26px;background:#202225;border-radius:6px;overflow:hidden;}
-#fill{height:100%;width:0%;background:linear-gradient(90deg,#3ba55d,#faa61a,#ed4245);transition:width .05s;}
-.hint{font-size:11px;color:#72767d;}
-</style></head><body><div class='wrap'>
-<h3>🎤 Говорите — вы слышите себя</h3>
-<div id='bar'><div id='fill'></div></div>
-<div id='st'>Запуск…</div>
-<div class='hint'>Если включён шумодав — постучите по клавиатуре: в звонке он давится так же.</div>
-</div>
-<audio id='mon' autoplay></audio>
-<script>
-let NOISE=" + noiseJs + @";
-let MICLABEL=" + micJs + @";
-let MICGAIN=" + gainJs + @";
-const st=(t)=>{document.getElementById('st').textContent=t;};
-async function pickDeviceId(){
-  if(!MICLABEL) return undefined;
-  try{
-    const ds = await navigator.mediaDevices.enumerateDevices();
-    const norm = (x)=> (x||'').toLowerCase();
-    const m = ds.find(d=> d.kind==='audioinput' && d.label && (norm(d.label).includes(norm(MICLABEL)) || norm(MICLABEL).includes(norm(d.label))));
-    return m ? m.deviceId : undefined;
-  }catch(e){ return undefined; }
-}
-function withTimeout(p, ms){ return Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('таймаут '+ms+'мс')), ms))]); }
-let _rn=null;
-async function loadRnnoise(){
-  if(_rn) return _rn;
-  // ВАЖНО: esm-модуль, wasm и worklet ДОЛЖНЫ грузиться из ОДНОГО источника/версии,
-  // иначе RnnoiseWorkletNode и workletProcessor.js несовместимы -> узел молчит.
-  const providers=[
-    {esm:'https://pismo-noise.local/wns.mjs', base:'https://pismo-noise.local'},
-    {esm:'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5', base:'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5/dist'},
-    {esm:'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm', base:'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist'},
-    {esm:'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist/index.mjs', base:'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist'}
-  ];
-  let err;
-  for(const p of providers){
-    try{
-      const mod=await withTimeout(import(p.esm),8000);
-      if(!mod||!mod.loadRnnoise||!mod.RnnoiseWorkletNode) throw new Error('нет экспортов');
-      const wasm=await withTimeout(mod.loadRnnoise({url:p.base+'/rnnoise.wasm',simdUrl:p.base+'/rnnoise_simd.wasm'}),8000);
-      const wurl=p.base+'/rnnoise/workletProcessor.js';
-      _rn={mod,wasm,wurl}; return _rn;
-    }catch(e){ err=e; }
-  }
-  throw err||new Error('rnnoise');
-}
+            int len = e.BytesRecorded;
+            if (len <= 0) return;
+            var data = e.Buffer;
 
-// Текущее состояние конвейера (для живой смены устройства/громкости/шумодава).
-let _cur = { ctx:null, stream:null, gainNode:null, gateTimer:null, drawId:0, gen:0 };
-
-// Шумовой гейт: source -> gate -> destination; глушит паузы между речью.
-function buildNoiseGate(ctx, source, destination, gen){
-  const gate = ctx.createGain(); gate.gain.value = 1;
-  const an = ctx.createAnalyser(); an.fftSize = 512;
-  source.connect(an); source.connect(gate); gate.connect(destination);
-  const buf = new Uint8Array(an.fftSize);
-  let openUntil = 0;
-  return setInterval(()=>{
-    if (gen !== _cur.gen) return;
-    an.getByteTimeDomainData(buf);
-    let s=0; for(let i=0;i<buf.length;i++){const x=(buf[i]-128)/128;s+=x*x;}
-    const rms=Math.sqrt(s/buf.length);
-    const now=ctx.currentTime;
-    if (rms>0.02) openUntil = now+0.25;
-    const open = now<openUntil;
-    gate.gain.setTargetAtTime(open?1:0.03, now, open?0.006:0.05);
-  },20);
-}
-
-async function teardown(){
-  try { if(_cur.gateTimer) clearInterval(_cur.gateTimer); } catch(e){}
-  try { if(_cur.drawId) cancelAnimationFrame(_cur.drawId); } catch(e){}
-  try { if(_cur.stream) _cur.stream.getTracks().forEach(t=>t.stop()); } catch(e){}
-  try { if(_cur.ctx) await _cur.ctx.close(); } catch(e){}
-  _cur = { ctx:null, stream:null, gainNode:null, gateTimer:null, drawId:0, gen:_cur.gen+1 };
-}
-
-async function start(){
-  await teardown();
-  const gen = _cur.gen;
-  st('Запрашиваю микрофон…');
-  // Когда наш RNNoise включён — берём СЫРОЙ сигнал (без браузерного шумодава/AGC).
-  const baseAudio = NOISE
-    ? {echoCancellation:true, noiseSuppression:false, autoGainControl:false}
-    : {echoCancellation:true, noiseSuppression:true, autoGainControl:true};
-  let stream;
-  try { stream = await navigator.mediaDevices.getUserMedia({audio:baseAudio}); }
-  catch(e){ st('Нет доступа к микрофону: '+e); return; }
-  try {
-    const id = await pickDeviceId();
-    if (id){
-      stream.getTracks().forEach(t=>t.stop());
-      stream = await navigator.mediaDevices.getUserMedia({audio:Object.assign({}, baseAudio, {deviceId:{exact:id}})});
-    }
-  } catch(e){}
-  if (gen !== _cur.gen){ try{stream.getTracks().forEach(t=>t.stop());}catch(e){} return; }
-  const ctx = new (window.AudioContext||window.webkitAudioContext)({ sampleRate: 48000 });
-  try { if (ctx.state==='suspended') await ctx.resume(); } catch(e){}
-  _cur.ctx = ctx; _cur.stream = stream;
-  let outStream = stream;
-  if (NOISE){
-    st('Загружаю шумодав RNNoise…');
-    try {
-      const r = await loadRnnoise();
-      if (gen !== _cur.gen) return;
-      await ctx.audioWorklet.addModule(r.wurl);
-      const srcN = ctx.createMediaStreamSource(stream);
-      // Два прохода RNNoise — сильнее давит клавиатуру/мышь/фон.
-      const node = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
-      const node2 = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
-      const g = ctx.createGain(); g.gain.value = 1.6 * (MICGAIN || 1); _cur.gainNode = g;
-      const dest = ctx.createMediaStreamDestination();
-      srcN.connect(node).connect(node2).connect(g);
-      _cur.gateTimer = buildNoiseGate(ctx, g, dest, gen);
-      outStream = dest.stream;
-      st('✓ Шумодав RNNoise активен (2 прохода + гейт) — слышите себя');
-      // Защита ""активен, но молчит"": если обработанный поток молчит при сигнале — откат.
-      try{
-        const aIn=ctx.createAnalyser(); aIn.fftSize=512; ctx.createMediaStreamSource(stream).connect(aIn);
-        const aOut=ctx.createAnalyser(); aOut.fftSize=512; ctx.createMediaStreamSource(dest.stream).connect(aOut);
-        const bi=new Uint8Array(aIn.fftSize), bo=new Uint8Array(aOut.fftSize);
-        let inSum=0,outSum=0,n=0; const tm=setInterval(()=>{
-          if(gen!==_cur.gen){clearInterval(tm);return;}
-          aIn.getByteTimeDomainData(bi); aOut.getByteTimeDomainData(bo);
-          let si=0,so=0; for(let i=0;i<bi.length;i++){const x=(bi[i]-128)/128;si+=x*x;} for(let i=0;i<bo.length;i++){const x=(bo[i]-128)/128;so+=x*x;}
-          inSum+=Math.sqrt(si/bi.length); outSum+=Math.sqrt(so/bo.length); n++;
-          if(n>=30){ clearInterval(tm);
-            if(inSum>0.01 && outSum<inSum*0.05){
-              const a=document.getElementById('mon'); a.srcObject=stream;
-              st('⚠ Шумодав молчал — переключился на чистый микрофон');
-            }
-          }
-        },50);
-      }catch(e){}
-    } catch(e){ st('Шумодав недоступен ('+e+') — слышите себя без него'); outStream = stream; }
-  } else { st('Слышите себя (шумодав выключен)'); }
-  if (gen !== _cur.gen) return;
-  const out = outStream;
-  const a = document.getElementById('mon'); a.srcObject = out; try { await a.play(); } catch(e){}
-  const an = ctx.createAnalyser(); an.fftSize=512;
-  ctx.createMediaStreamSource(out).connect(an);
-  const data=new Uint8Array(an.fftSize);
-  const fill=document.getElementById('fill');
-  function draw(){
-    if(gen!==_cur.gen) return;
-    an.getByteTimeDomainData(data);
-    let s=0; for(let i=0;i<data.length;i++){const x=(data[i]-128)/128; s+=x*x;}
-    const rms=Math.sqrt(s/data.length);
-    const pct=Math.min(100, Math.round(rms*300));
-    fill.style.width=pct+'%';
-    _cur.drawId=requestAnimationFrame(draw);
-  }
-  draw();
-}
-
-// Живая смена громкости без перезапуска конвейера.
-window.applyGain=(g)=>{ MICGAIN=g; try{ if(_cur.gainNode) _cur.gainNode.gain.value=1.6*(g||1); }catch(e){} };
-// Смена устройства/шумодава — перезапуск конвейера (но не окна).
-window.applyConfig=(noise, label)=>{ NOISE=noise; MICLABEL=label||''; start(); };
-start();
-</script></body></html>";
-        }
-
-        /// <summary>Живо применить новое усиление (без перезапуска конвейера).</summary>
-        public async void ApplyGain(float gain)
-        {
-            try
+            // Шумодав — тот же тракт, что в звонке: RNNoise + спектральный, сила
+            // спектрального = ползунок «Сила шумоподавления» (0..100 → Strength).
+            int s = DeviceSettings.NoiseSuppressionStrength;
+            if (_noise && s > 0)
             {
-                if (_web?.CoreWebView2 == null) return;
-                string g = (gain > 0 ? gain : 1f).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                await _web.CoreWebView2.ExecuteScriptAsync($"window.applyGain && window.applyGain({g})");
+                var rn = _rn;
+                if (rn != null && rn.IsReady) { try { rn.Process(data, 0, len); } catch { } }
+                if (_spectral != null)
+                {
+                    _spectral.Strength = 0.25f + (s / 100f) * 3.25f;
+                    try { _spectral.Process(data, 0, len); } catch { }
+                }
             }
-            catch { }
-        }
 
-        /// <summary>Сменить устройство/шумодав — перезапускает аудио-конвейер.</summary>
-        public async void ApplyConfig(bool noise, string micLabel)
-        {
-            _noiseRef = noise; _micLabelRef = micLabel ?? "";
-            try
+            // Усиление + уровень (i16 LE, моно).
+            float g = _gain;
+            double sum = 0; int n = len & ~1;
+            for (int i = 0; i < n; i += 2)
             {
-                if (_web?.CoreWebView2 == null) return;
-                string n = noise ? "true" : "false";
-                string l = System.Text.Json.JsonSerializer.Serialize(micLabel ?? "");
-                await _web.CoreWebView2.ExecuteScriptAsync($"window.applyConfig && window.applyConfig({n}, {l})");
+                int v = (short)(data[i] | (data[i + 1] << 8));
+                if (g != 1f) { v = (int)(v * g); if (v > short.MaxValue) v = short.MaxValue; else if (v < short.MinValue) v = short.MinValue; data[i] = (byte)(v & 0xFF); data[i + 1] = (byte)((v >> 8) & 0xFF); }
+                float f = v / 32768f; sum += f * f;
             }
-            catch { }
+            _level = (float)Math.Sqrt(sum / Math.Max(1, n / 2));
+
+            try { _buf?.AddSamples(data, 0, len); } catch { }
         }
 
-        private bool _noiseRef;
-        private string _micLabelRef;
+        private void StopCapture()
+        {
+            try { if (_in != null) { _in.DataAvailable -= OnData; _in.StopRecording(); _in.Dispose(); } } catch { }
+            _in = null;
+            try { _out?.Stop(); _out?.Dispose(); } catch { }
+            _out = null;
+            _buf = null;
+            try { _rn?.Dispose(); } catch { }
+            _rn = null; _spectral = null;
+        }
+
+        /// <summary>Живо применить усиление микрофона (без перезапуска).</summary>
+        public void ApplyGain(float gain) { _gain = gain > 0 ? gain : 1f; }
+
+        /// <summary>Сменить устройство/вкл-выкл шумодава — перезапуск захвата.
+        /// (Сила шумодава читается из настроек на каждом буфере — перезапуск не нужен.)</summary>
+        public void ApplyConfig(bool noise, string micLabel)
+        {
+            bool changed = noise != _noise || !string.Equals(micLabel ?? "", _micLabel ?? "", StringComparison.Ordinal);
+            _noise = noise;
+            _micLabel = micLabel ?? "";
+            if (changed && IsHandleCreated && !IsDisposed)
+                try { BeginInvoke(new Action(StartCapture)); } catch { }
+        }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
-            try { _web.Dispose(); } catch { }
-            try { if (_tempDir != null && Directory.Exists(_tempDir)) Directory.Delete(_tempDir, true); } catch { }
+            try { _ui.Stop(); _ui.Dispose(); } catch { }
+            StopCapture();
             base.OnFormClosed(e);
         }
     }
