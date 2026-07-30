@@ -318,7 +318,7 @@ namespace PISMO.Native
                         {
                             EchoCancellation = echoCancel,
                             NoiseSuppression = noiseSuppress,
-                            AutoGainControl = agc
+                            AutoGainControl = false   // см. ниже: AGC ломает шумодав
                         }
                     }
                 });
@@ -355,7 +355,15 @@ namespace PISMO.Native
                 // 4) Нативный libwebrtc APM: настоящий шумодав + эхоподавление.
                 //    Работает на i16-кадрах по 10 мс: ближний конец в OnMicData,
                 //    дальний (референс эха) — из микшера воспроизведения.
-                _apmEc = echoCancel; _apmAgc = agc;
+                // AGC ПРИНУДИТЕЛЬНО ВЫКЛ. Автогромкость libwebrtc динамически
+                // задирает усиление в тихих местах, поднимая фон ПЕРЕД шумодавом —
+                // а спектральный шумодав оценивает фон по медленно ползущему полу
+                // (*0.995) и, увидев резко «подкачанный» AGC шум, считает его
+                // сигналом и пропускает. Именно поэтому в тесте (там AGC нет)
+                // шумка чистит хорошо, а в звонке — плохо. Отключаем AGC, чтобы
+                // шумодав работал на стабильном по громкости сигнале, как в тесте;
+                // громкость регулирует ручной ползунок (ApplyMicGain).
+                _apmEc = echoCancel; _apmAgc = false;
                 CreateApm(noiseSuppress);
 
                 // Шумодав. Основной — НАСТОЯЩИЙ RNNoise (тот же wasm, что в тесте
@@ -2384,21 +2392,15 @@ namespace PISMO.Native
                 else if (src == TrackSource.SourceCamera) RemoteVideoRemoved?.Invoke(identity, false);
                 return;
             }
-            // sid неизвестен (FFI при отписке иногда шлёт другой sid). Снимаем плитку,
-            // только если у участника РОВНО один трек демки — значит именно он и
-            // завершается. Если треков два (идёт горячая смена кодека) — не гадаем и
-            // плитку не трогаем, иначе снесли бы живой новый трек.
-            bool removeTile = false;
-            lock (_videoLock)
-            {
-                if (_screenSidsByIdentity.TryGetValue(identity, out var set) && set.Count == 1)
-                {
-                    _screenSidsByIdentity.Remove(identity);
-                    removeTile = true;
-                }
-            }
-            ScreenLog.Log($"OnTrackUnsubscribed SCREEN(unknown-sid) id={identity} sid={sid} removeTile={removeTile}");
-            if (removeTile) RemoteVideoRemoved?.Invoke(identity, true);
+            // sid НЕизвестен — это дубль-событие: у каждого трека приходят И
+            // TrackUnsubscribed, И TrackUnpublished; первое уже удалило sid из
+            // _sourceBySid, второе прилетает «unknown». РАНЬШЕ здесь была эвристика
+            // «снять плитку, если у участника 1 трек демки» — и она ЛОЖНО сносила
+            // плитку на дубль-событии старого трека (в т.ч. звука демки) во время
+            // смены кодека, гася новый трек антидребезгом (сценарий 1). Снятие плитки
+            // делает ТОЛЬКО известная ветка при stillSharing=False (реальная
+            // остановка). Здесь — ничего не трогаем.
+            ScreenLog.Log($"OnTrackUnsubscribed SCREEN(dup/unknown-sid) id={identity} sid={sid} -> игнор (плитку не трогаем)");
         }
 
         private void HandleAudioStream(AudioStreamEvent ase)
