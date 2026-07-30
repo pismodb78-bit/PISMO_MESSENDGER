@@ -43,6 +43,16 @@ namespace PISMO.Native
         // всплеск кратно выше устойчивого уровня, приглушаем именно эти отсчёты.
         private float _dcFast, _dcSlow;
 
+        // Look-ahead лимитер: звук задерживается на LA отсчётов, а решение о
+        // приглушении принимается по «будущему» сэмплу — так всплеск громкости
+        // (клавиатура/удар/начало выдува) глушится ДО того, как выйдет в эфир, а
+        // не постфактум. Порог всплеска — относительно медленного «уровня голоса».
+        private readonly int _la;
+        private readonly float[] _laBuf;
+        private int _laPos;
+        private float _laGain = 1f;
+        private float _voiceRef;
+
         public MicDenoiser(int sampleRate)
         {
             _sampleRate = sampleRate;
@@ -50,6 +60,8 @@ namespace PISMO.Native
             float rc = 1f / (2f * (float)Math.PI * 90f);
             float dt = 1f / sampleRate;
             _hpCoef = rc / (rc + dt);
+            _la = Math.Max(64, sampleRate / 200);   // ~5 мс упреждения
+            _laBuf = new float[_la];
         }
 
         /// <summary>Обработать блок 16-бит PCM in-place.</summary>
@@ -141,7 +153,32 @@ namespace PISMO.Native
                 _gain += (target - _gain) * coef;
                 int idx = offset + i * 2;
                 short s = (short)(buffer[idx] | (buffer[idx + 1] << 8));
-                int v = (int)(s * _gain);
+
+                // Look-ahead: сэмпл кладём в линию задержки, на выход берём
+                // задержанный, а решение о приглушении принимаем по ТЕКУЩЕМУ
+                // (будущему относительно выхода). Всплеск выше «уровня голоса» в 3×
+                // → быстро прижимаем _laGain, и к моменту, когда всплеск дойдёт до
+                // выхода, он уже приглушён. Только при TransientGuard (высокая сила).
+                float outSample;
+                if (TransientGuard)
+                {
+                    float a = s < 0 ? -s : s;
+                    _voiceRef += (a - _voiceRef) * (a > _voiceRef ? 0.0015f : 0.0006f);
+                    float thr = _voiceRef * 3f + 500f;             // порог всплеска
+                    float laTarget = a > thr ? thr / a : 1f;
+                    _laGain += (laTarget - _laGain) * (laTarget < _laGain ? 0.5f : 0.02f);
+
+                    float delayed = _laBuf[_laPos];
+                    _laBuf[_laPos] = s;
+                    if (++_laPos >= _la) _laPos = 0;
+                    outSample = delayed * _gain * _laGain;
+                }
+                else
+                {
+                    outSample = s * _gain;
+                }
+
+                int v = (int)outSample;
                 if (v > short.MaxValue) v = short.MaxValue;
                 else if (v < short.MinValue) v = short.MinValue;
                 buffer[idx] = (byte)(v & 0xFF);
