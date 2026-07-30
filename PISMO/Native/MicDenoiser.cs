@@ -57,6 +57,7 @@ namespace PISMO.Native
         private int _laPos;
         private float _laGain = 1f;
         private float _voiceRef;
+        private int _laHold;       // сколько отсчётов ещё держать приглушение (пока пик идёт по линии задержки)
 
         public MicDenoiser(int sampleRate)
         {
@@ -185,7 +186,14 @@ namespace PISMO.Native
                     _voiceRef += (a - _voiceRef) * (a > _voiceRef ? 0.0015f : 0.0006f);
                     float thr = _voiceRef * 2.5f + 450f;           // порог всплеска (чуть чувствительнее)
                     float laTarget = a > thr ? thr / a : 1f;
-                    _laGain += (laTarget - _laGain) * (laTarget < _laGain ? 0.5f : 0.02f);
+                    // Обнаружили всплеск на ВХОДЕ (будущий сэмпл) — надо держать
+                    // приглушение, пока этот пик проходит по линии задержки до
+                    // ВЫХОДА (_la отсчётов) плюс длительность самого клика. Иначе
+                    // усиление успевает восстановиться раньше, чем громкий сэмпл
+                    // выйдет в эфир, и пик проскакивает — это и был «первый клик».
+                    if (laTarget < _laGain) { _laGain = laTarget; _laHold = _la + _sampleRate / 200; } // +~5мс
+                    else if (_laHold > 0) { _laHold--; }                 // держим приглушение
+                    else { _laGain += (1f - _laGain) * 0.01f; }          // всё прошло — плавный релиз
 
                     float delayed = _laBuf[_laPos];
                     _laBuf[_laPos] = s;
