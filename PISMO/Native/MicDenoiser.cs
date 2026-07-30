@@ -57,7 +57,16 @@ namespace PISMO.Native
         private int _laPos;
         private float _laGain = 1f;
         private float _voiceRef;
-        private int _laHold;       // сколько отсчётов ещё держать приглушение (пока пик идёт по линии задержки)
+        private float _laMax;      // текущий максимум |сэмпла| в линии задержки (look-ahead окно)
+        private int _laMaxAge;     // сколько сэмплов назад был установлен _laMax
+
+        // Пересчёт максимума по всей линии задержки (когда прежний максимум «вышел»).
+        private float RescanMax()
+        {
+            float m = 0f;
+            for (int i = 0; i < _laBuf.Length; i++) { float v = _laBuf[i]; if (v < 0) v = -v; if (v > m) m = v; }
+            return m;
+        }
 
         public MicDenoiser(int sampleRate)
         {
@@ -184,20 +193,24 @@ namespace PISMO.Native
                 {
                     float a = s < 0 ? -s : s;
                     _voiceRef += (a - _voiceRef) * (a > _voiceRef ? 0.0015f : 0.0006f);
-                    float thr = _voiceRef * 2.5f + 450f;           // порог всплеска (чуть чувствительнее)
-                    float laTarget = a > thr ? thr / a : 1f;
-                    // Обнаружили всплеск на ВХОДЕ (будущий сэмпл) — надо держать
-                    // приглушение, пока этот пик проходит по линии задержки до
-                    // ВЫХОДА (_la отсчётов) плюс длительность самого клика. Иначе
-                    // усиление успевает восстановиться раньше, чем громкий сэмпл
-                    // выйдет в эфир, и пик проскакивает — это и был «первый клик».
-                    if (laTarget < _laGain) { _laGain = laTarget; _laHold = _la + _sampleRate / 200; } // +~5мс
-                    else if (_laHold > 0) { _laHold--; }                 // держим приглушение
-                    else { _laGain += (1f - _laGain) * 0.01f; }          // всё прошло — плавный релиз
+                    float thr = _voiceRef * 2.5f + 450f;           // порог всплеска
 
+                    // Кладём текущий сэмпл в линию задержки, забираем задержанный.
                     float delayed = _laBuf[_laPos];
                     _laBuf[_laPos] = s;
                     if (++_laPos >= _la) _laPos = 0;
+
+                    // НАСТОЯЩИЙ look-ahead: усиление считаем по МАКСИМУМУ во ВСЕЙ линии
+                    // задержки (в ней лежат _la «будущих» относительно выхода сэмплов).
+                    // Значит пик клика виден и приглушён ЗАРАНЕЕ, а приглушение само
+                    // держится, пока пик не выйдет из буфера. Старый код смотрел лишь
+                    // на текущий сэмпл и успевал восстановиться до выхода пика —
+                    // отсюда «первый клик слышно». bufMax обновляем инкрементально.
+                    if (a >= _laMax) { _laMax = a; _laMaxAge = 0; }
+                    else if (++_laMaxAge >= _la) { _laMax = RescanMax(); _laMaxAge = 0; }  // старый максимум вышел — пересканируем
+                    float laTarget = _laMax > thr ? thr / _laMax : 1f;
+                    _laGain += (laTarget - _laGain) * (laTarget < _laGain ? 0.6f : 0.01f);  // быстро вниз, медленно вверх
+
                     outSample = delayed * _gain * _laGain;
                 }
                 else
