@@ -105,6 +105,25 @@ namespace PISMO.Native
             }
         }
 
+        /// <summary>Явно (пере)подписаться/отписаться на трек демки участника.
+        /// Нужно, чтобы «разбудить» сервер после перезапуска демки (смена кодека):
+        /// при adaptive stream он ставит трек на паузу, если зритель его не смотрит,
+        /// и новые кадры не идут — повторный SetSubscribed(true) возобновляет их.</summary>
+        public void SetScreenSubscribed(string identity, bool subscribe)
+        {
+            ulong handle;
+            lock (_videoLock)
+                if (!_screenPubHandleByIdentity.TryGetValue(identity, out handle) || handle == 0) return;
+            try
+            {
+                LiveKitFfi.Request(new FfiRequest
+                {
+                    SetSubscribed = new SetSubscribedRequest { Subscribe = subscribe, PublicationHandle = handle }
+                });
+            }
+            catch { }
+        }
+
         /// <summary>Громкость ГОЛОСА конкретного участника (ПКМ по плитке).</summary>
         public void SetParticipantVolume(string pid, float volume)
         {
@@ -225,6 +244,8 @@ namespace PISMO.Native
         // только когда исчезнет ПОСЛЕДНИЙ sid — иначе отписка старого трека сносила
         // плитку, хотя новый уже шёл (чинилось лишь перезаходом стримера).
         private readonly Dictionary<string, HashSet<string>> _screenSidsByIdentity = new();
+        // identity → handle последней публикации демки (для явной пере-подписки).
+        private readonly Dictionary<string, ulong> _screenPubHandleByIdentity = new();
         // handle видеострима → (участник, это ли демка).
         // Контекст входящего видеопотока: кто/что + пул буферов кадров.
         // Пул из 3 буферов вместо new byte[8МБ] на КАЖДЫЙ кадр: на 60fps это
@@ -314,7 +335,16 @@ namespace PISMO.Native
                     {
                         LocalParticipantHandle = _localHandle,
                         TrackHandle = _micTrack,
-                        Options = new TrackPublishOptions { Source = TrackSource.SourceMicrophone, Dtx = true, Red = true }
+                        // Битрейт Opus 48 кбит/с (по умолчанию libwebrtc ~32) — заметно
+                        // чище голос, при этом трафик остаётся скромным. DTX+RED:
+                        // тишина не шлётся, есть избыточность против потерь пакетов.
+                        Options = new TrackPublishOptions
+                        {
+                            Source = TrackSource.SourceMicrophone,
+                            Dtx = true,
+                            Red = true,
+                            AudioEncoding = new AudioEncoding { MaxBitrate = 48000 }
+                        }
                     }
                 });
                 _publishAsyncId = pubResp.PublishTrack.AsyncId;
@@ -1126,7 +1156,15 @@ namespace PISMO.Native
                     {
                         LocalParticipantHandle = _localHandle,
                         TrackHandle = _scrAudioTrack,
-                        Options = new TrackPublishOptions { Source = TrackSource.SourceScreenshareAudio }
+                        // Звук демки — это музыка/игра (стерео), поэтому битрейт выше
+                        // голоса: 128 кбит/с даёт чистый звук без «бульканья». DTX off:
+                        // непрерывный звук не должен обрезаться на тихих участках.
+                        Options = new TrackPublishOptions
+                        {
+                            Source = TrackSource.SourceScreenshareAudio,
+                            Dtx = false,
+                            AudioEncoding = new AudioEncoding { MaxBitrate = 128000 }
+                        }
                     }
                 });
                 _scrAudioPublishAsyncId = pubResp.PublishTrack.AsyncId;
@@ -2023,7 +2061,7 @@ namespace PISMO.Native
                 ParticipantJoined?.Invoke(info.Identity, info.Name);
                 EmitVoiceAttrsFromMap(info.Identity, info.Attributes);
                 foreach (var pub in pwt.Publications)   // запоминаем источник по sid
-                    RememberSource(info.Identity, pub.Info.Sid, pub.Info.Source);
+                    RememberSource(info.Identity, pub.Info.Sid, pub.Info.Source, pub.Handle.Id);
             }
 
             // КРИТИЧНО: сообщаем FFI, что готовы принимать события комнаты. Без
@@ -2098,7 +2136,8 @@ namespace PISMO.Native
                     break;
                 case RoomEvent.MessageOneofCase.TrackPublished:
                     RememberSource(re.TrackPublished.ParticipantIdentity,
-                        re.TrackPublished.Publication.Info.Sid, re.TrackPublished.Publication.Info.Source);
+                        re.TrackPublished.Publication.Info.Sid, re.TrackPublished.Publication.Info.Source,
+                        re.TrackPublished.Publication.Handle.Id);
                     break;
                 case RoomEvent.MessageOneofCase.TrackSubscribed:
                     OnTrackSubscribed(re.TrackSubscribed.ParticipantIdentity, re.TrackSubscribed.Track);
@@ -2150,7 +2189,7 @@ namespace PISMO.Native
             if (hasDeaf) ParticipantDeafened?.Invoke(identity, deaf);
         }
 
-        private void RememberSource(string identity, string sid, TrackSource source)
+        private void RememberSource(string identity, string sid, TrackSource source, ulong pubHandle = 0)
         {
             if (string.IsNullOrEmpty(sid)) return;
             bool isScreenPub = false;
@@ -2163,6 +2202,9 @@ namespace PISMO.Native
                         _screenSidsByIdentity[identity] = set = new HashSet<string>();
                     set.Add(sid);
                     isScreenPub = true;
+                    // handle публикации нужен, чтобы явно (пере)подписаться на трек
+                    // демки у зрителя — форсит сервер возобновить отправку кадров.
+                    if (pubHandle != 0) _screenPubHandleByIdentity[identity] = pubHandle;
                 }
             }
             // Опубликован трек демки — сбрасываем у зрителя антидребезг остановки,

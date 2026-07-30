@@ -2086,9 +2086,13 @@ namespace PISMO
                 // Дополнительно: пункты блокировки/очистки переписки в админской таблице
                 ctxMenu.Items.Add(new ToolStripSeparator());
 
-                bool alreadyBlocked = IsUserBlocked(UserSession.EffectiveId, uid);
                 var itemBlock = new ToolStripMenuItem(
-                    alreadyBlocked ? "✅ Разблокировать пользователя" : "🚫 Заблокировать пользователя");
+                    IsUserBlocked(UserSession.EffectiveId, uid) ? "✅ Разблокировать пользователя" : "🚫 Заблокировать пользователя");
+                // Надпись пересчитываем при КАЖДОМ открытии меню — иначе после
+                // блокировки пункт оставался «Заблокировать».
+                ctxMenu.Opening += (s, ev) =>
+                    itemBlock.Text = IsUserBlocked(UserSession.EffectiveId, uid)
+                        ? "✅ Разблокировать пользователя" : "🚫 Заблокировать пользователя";
                 itemBlock.Click += (s, ev) =>
                 {
                     try

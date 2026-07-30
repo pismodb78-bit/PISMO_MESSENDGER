@@ -2569,8 +2569,12 @@ namespace PISMO
                             }
                             catch (Exception ex) { MessageBox.Show(ex.Message); }
                         });
-                        bool blocked = IsUserBlockedDb(_me, uidCap);
-                        menu.Items.Add(blocked ? "✅ Разблокировать (ЛС)" : "🚫 Заблокировать (ЛС)", null, (s, e) =>
+                        var blockItem = new ToolStripMenuItem(
+                            IsUserBlockedDb(_me, uidCap) ? "✅ Разблокировать (ЛС)" : "🚫 Заблокировать (ЛС)");
+                        // Надпись пересчитываем при открытии меню (иначе стухала).
+                        menu.Opening += (s, e) => blockItem.Text =
+                            IsUserBlockedDb(_me, uidCap) ? "✅ Разблокировать (ЛС)" : "🚫 Заблокировать (ЛС)";
+                        blockItem.Click += (s, e) =>
                         {
                             try
                             {
@@ -2578,7 +2582,8 @@ namespace PISMO
                                 else { SetUserBlockedDb(_me, uidCap, true); MessageBox.Show($"{nmCap} заблокирован в личных сообщениях.", "PISMO"); }
                             }
                             catch (Exception ex) { MessageBox.Show(ex.Message); }
-                        });
+                        };
+                        menu.Items.Add(blockItem);
 
                         bool canManageThis = !owner && (_canKick || _canBan || _canManage);
                         if (canManageThis)

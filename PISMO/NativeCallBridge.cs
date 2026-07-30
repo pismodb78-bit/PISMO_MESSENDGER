@@ -423,6 +423,9 @@ namespace PISMO
         {
             if (string.IsNullOrEmpty(pid)) return;
             lock (_watchLock) { _watchedScreens.Add(pid); }
+            // Явно (пере)подписываемся на трек демки — «будит» сервер, если он
+            // поставил трек на паузу после перезапуска демки (смена кодека).
+            try { _t?.SetScreenSubscribed(pid, true); } catch { }
             try { _t?.SetScreenAudioWatched(pid, true); } catch { }   // звук демки — только при просмотре
         }
 
