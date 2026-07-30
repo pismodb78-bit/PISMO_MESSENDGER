@@ -153,7 +153,9 @@ namespace PISMO
                 if (rn != null && rn.IsReady) { try { rn.Process(data, 0, len); } catch { } }
                 if (_spectral != null)
                 {
-                    _spectral.Strength = 0.25f + (s / 100f) * 3.25f;
+                    float f = s / 100f;
+                    _spectral.Strength = 0.25f + f * 5.0f;
+                    _spectral.Floor = 0.06f - f * 0.05f;
                     try { _spectral.Process(data, 0, len); } catch { }
                 }
                 // Клик-гейт против клавиатуры/мыши — на высокой силе (>=60%), как в звонке.

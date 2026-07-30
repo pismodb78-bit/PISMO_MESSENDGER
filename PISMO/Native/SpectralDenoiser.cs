@@ -40,6 +40,11 @@ namespace PISMO.Native
         /// <summary>0..1: агрессивность (0 = мягко, 1 = сильно). По умолчанию ~0.85.</summary>
         public float Strength = 0.85f;
 
+        /// <summary>Минимальный коэффициент усиления полосы («пол» подавления):
+        /// чем меньше, тем глубже вырезается шум (но выше риск «музыкального» шума).
+        /// Регулируется силой шумодава: на максимуме глушим глубже.</summary>
+        public float Floor = 0.06f;
+
         public SpectralDenoiser()
         {
             for (int n = 0; n < N; n++) _hann[n] = 0.5f - 0.5f * (float)Math.Cos(2.0 * Math.PI * n / N);
@@ -115,7 +120,7 @@ namespace PISMO.Native
                 float snr = noise > 1e-6f ? pow / noise - 1f : 10f;
                 if (snr < 0f) snr = 0f;
                 float gain = snr / (snr + Strength);        // Wiener (Strength — «сколько шума»)
-                if (gain < 0.06f) gain = 0.06f;             // пол — без «музыкального» шума
+                if (gain < Floor) gain = Floor;             // пол подавления (настраивается силой)
                 _re[k] *= gain; _im[k] *= gain;
             }
             // сопряжённая симметрия для вещественного сигнала (Re чёт, Im нечёт)

@@ -559,7 +559,9 @@ namespace PISMO.Native
             // считать шумом»: больше → агрессивнее. 0.25 (щадяще) … 3.5 (максимум).
             if (_spectral != null)
             {
-                _spectral.Strength = 0.25f + (s / 100f) * 3.25f;
+                float f = s / 100f;
+                _spectral.Strength = 0.25f + f * 5.0f;        // до 5.25 — заметно агрессивнее
+                _spectral.Floor = 0.06f - f * 0.05f;          // 0.06 → 0.01: глубже вырезает шум
                 try { _spectral.Process(data, offset, len); } catch { }
             }
 

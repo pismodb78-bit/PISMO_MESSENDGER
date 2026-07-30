@@ -115,26 +115,27 @@ namespace PISMO.Native
             float closeLevel = _noiseFloor * 2.2f;   // порог «шум»
             float target;
             if (_envelope >= openLevel) target = 1f;
-            else if (_envelope <= closeLevel) target = 0.02f;   // тише глушим фон между словами
-            else target = 0.02f + 0.98f * (_envelope - closeLevel) / (openLevel - closeLevel);
+            else if (_envelope <= closeLevel) target = 0.008f;  // глубже глушим фон между словами
+            else target = 0.008f + 0.992f * (_envelope - closeLevel) / (openLevel - closeLevel);
 
             if (TransientGuard)
             {
                 // Блоки по 10-20мс: считаем подряд идущие громкие блоки.
                 int msPerBlock = Math.Max(1, n * 1000 / _sampleRate);
                 int needBlocks = Math.Max(1, 30 / msPerBlock);          // ~30мс до открытия
-                int hangTotal = Math.Max(1, 350 / msPerBlock);          // ~350мс удержания
+                int hangTotal = Math.Max(1, 180 / msPerBlock);          // ~180мс удержания (быстрее закрывается)
 
                 if (_envelope >= openLevel) _loudRun++; else _loudRun = 0;
                 if (_loudRun >= needBlocks) _hangBlocks = hangTotal;    // речь подтверждена
                 bool speech = _hangBlocks > 0;
                 if (_hangBlocks > 0) _hangBlocks--;
-                // Одиночный громкий всплеск (клик) без подтверждения речи — глушим.
-                if (!speech) target = 0.06f;
+                // Одиночный громкий всплеск (клик) без подтверждения речи — глушим сильнее.
+                if (!speech) target = 0.02f;
             }
 
-            // 5) Сглаживание усиления (без щелчков): быстрое открытие, мягкое закрытие.
-            float coef = target > _gain ? 0.4f : 0.03f;
+            // 5) Сглаживание усиления: быстрое открытие + БЫСТРОЕ закрытие (0.12),
+            // чтобы фон/шум давился сразу, а не «постепенно и долго».
+            float coef = target > _gain ? 0.4f : 0.12f;
             for (int i = 0; i < n; i++)
             {
                 _gain += (target - _gain) * coef;
