@@ -149,6 +149,7 @@ namespace PISMO
                     _screenStoppedAt.Remove(identity);   // снять антидребезг остановки
                     _announcedScreens.Add(identity);     // считаем анонсированным
                 }
+                ScreenLog.Log($"[viewer] ScreenTrackPublished id={identity} -> проактивное объявление плитки (RemoteStreamPublished)");
                 string nm = _names.TryGetValue(identity, out var n) ? n : identity;
                 Ui(() => { try { RemoteStreamPublished?.Invoke(identity, nm); } catch { } });
             };
@@ -236,6 +237,15 @@ namespace PISMO
             catch (InvalidOperationException) { }
         }
 
+        // Логируем изменение состояния приёма демки без спама (60fps).
+        private readonly System.Collections.Generic.Dictionary<string, string> _dbgScr = new();
+        private void DbgScr(string identity, string state)
+        {
+            lock (_dbgScr) { if (_dbgScr.TryGetValue(identity, out var p) && p == state) return; _dbgScr[identity] = state; }
+            Native.ScreenLog.Log($"[viewer] id={identity} state={state}");
+        }
+        private void DbgScrReset(string identity) { lock (_dbgScr) _dbgScr.Remove(identity); }
+
         // ── Приём видео (камера/демка собеседников) ──────────────────────
         private void OnRemoteVideo(string identity, bool isScreen, byte[] bgra, int w, int h)
         {
@@ -255,12 +265,13 @@ namespace PISMO
                     // должен воскрешать плитку (иначе она висит после стопа демки).
                     if (_screenStoppedAt.TryGetValue(identity, out var stoppedAt)
                         && (DateTime.UtcNow - stoppedAt).TotalMilliseconds < 1500)
-                        return;
+                    { DbgScr(identity, "кадр ОТБРОШЕН антидребезгом (после стопа)"); return; }
                     if (_announcedScreens.Add(identity))
-                        Ui(() => { try { RemoteStreamPublished?.Invoke(identity, name); } catch { } });
+                    { ScreenLog.Log($"[viewer] id={identity} ПЕРВЫЙ кадр -> announce RemoteStreamPublished"); Ui(() => { try { RemoteStreamPublished?.Invoke(identity, name); } catch { } }); }
                     watching = _watchedScreens.Contains(identity);
                 }
-                if (!watching) return;   // ждём нажатия «Смотреть стрим»
+                if (!watching) { DbgScr(identity, "кадры ИДУТ, но НЕ смотрим (ждём «Смотреть стрим»)"); return; }
+                DbgScr(identity, "ДОСТАВЛЯЕМ кадры в плитку");
             }
 
             string key = identity + "|" + source;
@@ -292,6 +303,7 @@ namespace PISMO
             string source = isScreen ? "screen" : "camera";
             if (isScreen)
             {
+                ScreenLog.Log($"[viewer] OnRemoteVideoRemoved id={identity} -> снять плитку (RemoteStreamUnpublished), выставлен антидребезг 1.5с");
                 lock (_watchLock)
                 {
                     _announcedScreens.Remove(identity);
@@ -423,7 +435,9 @@ namespace PISMO
         public void WatchScreen(string pid)
         {
             if (string.IsNullOrEmpty(pid)) return;
+            ScreenLog.Log($"[viewer] WatchScreen(pid={pid}) — пользователь/авто подключился, форс SetSubscribed(true)");
             lock (_watchLock) { _watchedScreens.Add(pid); }
+            DbgScrReset(pid);
             // Явно (пере)подписываемся на трек демки — «будит» сервер, если он
             // поставил трек на паузу после перезапуска демки (смена кодека).
             try { _t?.SetScreenSubscribed(pid, true); } catch { }

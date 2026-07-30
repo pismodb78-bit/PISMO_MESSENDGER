@@ -113,7 +113,9 @@ namespace PISMO.Native
         {
             ulong handle;
             lock (_videoLock)
-                if (!_screenPubHandleByIdentity.TryGetValue(identity, out handle) || handle == 0) return;
+                if (!_screenPubHandleByIdentity.TryGetValue(identity, out handle) || handle == 0)
+                { ScreenLog.Log($"SetScreenSubscribed id={identity} sub={subscribe} -> НЕТ handle (пропуск)"); return; }
+            ScreenLog.Log($"SetScreenSubscribed id={identity} sub={subscribe} handle={handle}");
             try
             {
                 LiveKitFfi.Request(new FfiRequest
@@ -121,7 +123,7 @@ namespace PISMO.Native
                     SetSubscribed = new SetSubscribedRequest { Subscribe = subscribe, PublicationHandle = handle }
                 });
             }
-            catch { }
+            catch (Exception ex) { ScreenLog.Log("SetScreenSubscribed FFI err: " + ex.Message); }
         }
 
         /// <summary>Громкость ГОЛОСА конкретного участника (ПКМ по плитке).</summary>
@@ -959,6 +961,7 @@ namespace PISMO.Native
                 }
             });
             _scrPublishAsyncId = pubResp.PublishTrack.AsyncId;
+            ScreenLog.Log($"[STREAMER] PublishScreenTrack codec={_scrCodec} {pubW}x{pubH} asyncId={_scrPublishAsyncId}");
         }
 
         /// <summary>Смена кодека демки на лету = ЧИСТЫЙ перезапуск демонстрации
@@ -972,6 +975,7 @@ namespace PISMO.Native
         {
             if (string.IsNullOrWhiteSpace(codec)) return;
             if (string.Equals(_scrCodec, codec, StringComparison.OrdinalIgnoreCase)) { _scrCodec = codec; return; }
+            ScreenLog.Log($"[STREAMER] ChangeScreenCodecLive -> {codec} (перезапуск демки)");
             _scrCodec = codec;
             if (!_scrStarted) return;
 
@@ -1446,6 +1450,7 @@ namespace PISMO.Native
 
         public void StopScreenShare()
         {
+            ScreenLog.Log($"[STREAMER] StopScreenShare (снимаю трек sid={_scrTrackSid})");
             _forceDeviceLoopback = false;   // следующая демка снова попробует process-loopback
             _procFailReason = null;
             StopScreenAudio();
@@ -2079,6 +2084,7 @@ namespace PISMO.Native
             var res = cb.Result;
             _roomHandle = res.Room.Handle.Id;
             _localHandle = res.LocalParticipant.Handle.Id;
+            ScreenLog.Session("Подключён к комнате (демка-лог)");
             EnsurePlayback();
             Connected?.Invoke();
             foreach (var pwt in res.Participants)
@@ -2161,19 +2167,23 @@ namespace PISMO.Native
                     ParticipantLeftById?.Invoke(re.ParticipantDisconnected.ParticipantIdentity);
                     break;
                 case RoomEvent.MessageOneofCase.TrackPublished:
+                    ScreenLog.Log($"RoomEvent TrackPublished id={re.TrackPublished.ParticipantIdentity} sid={re.TrackPublished.Publication.Info.Sid} source={re.TrackPublished.Publication.Info.Source} pubHandle={re.TrackPublished.Publication.Handle.Id}");
                     RememberSource(re.TrackPublished.ParticipantIdentity,
                         re.TrackPublished.Publication.Info.Sid, re.TrackPublished.Publication.Info.Source,
                         re.TrackPublished.Publication.Handle.Id);
                     break;
                 case RoomEvent.MessageOneofCase.TrackSubscribed:
+                    ScreenLog.Log($"RoomEvent TrackSubscribed id={re.TrackSubscribed.ParticipantIdentity} sid={re.TrackSubscribed.Track.Info.Sid} kind={re.TrackSubscribed.Track.Info.Kind}");
                     OnTrackSubscribed(re.TrackSubscribed.ParticipantIdentity, re.TrackSubscribed.Track);
                     break;
                 case RoomEvent.MessageOneofCase.TrackUnsubscribed:
+                    ScreenLog.Log($"RoomEvent TrackUnsubscribed id={re.TrackUnsubscribed.ParticipantIdentity} sid={re.TrackUnsubscribed.TrackSid}");
                     OnTrackUnsubscribed(re.TrackUnsubscribed.ParticipantIdentity, re.TrackUnsubscribed.TrackSid);
                     break;
                 case RoomEvent.MessageOneofCase.TrackUnpublished:
                     // Собеседник ВЫКЛЮЧИЛ демку/камеру: unpublish может прийти без
                     // TrackUnsubscribed — без этой ветки плитка висела вечно.
+                    ScreenLog.Log($"RoomEvent TrackUnpublished id={re.TrackUnpublished.ParticipantIdentity} sid={re.TrackUnpublished.PublicationSid}");
                     OnTrackUnsubscribed(re.TrackUnpublished.ParticipantIdentity, re.TrackUnpublished.PublicationSid);
                     break;
                 case RoomEvent.MessageOneofCase.ParticipantAttributesChanged:
@@ -2236,7 +2246,7 @@ namespace PISMO.Native
             // Опубликован трек демки — сбрасываем у зрителя антидребезг остановки,
             // чтобы после перезапуска (смена кодека) плитка «Смотреть стрим»
             // гарантированно объявилась заново (сценарий 2, а не 1).
-            if (isScreenPub) { try { ScreenTrackPublished?.Invoke(identity); } catch { } }
+            if (isScreenPub) { ScreenLog.Log($"RememberSource SCREEN id={identity} sid={sid} pubHandle={pubHandle} -> fire ScreenTrackPublished"); try { ScreenTrackPublished?.Invoke(identity); } catch { } }
         }
 
         private bool IsScreenSid(string sid)
@@ -2260,6 +2270,7 @@ namespace PISMO.Native
             else if (cb.AsyncId == _scrPublishAsyncId)
             {
                 _scrTrackSid = sid;
+                ScreenLog.Log($"[STREAMER] мой новый screen-трек опубликован sid={sid}; снять старый={_scrPendingUnpublishSid}");
                 // Новый трек демки опубликован — ТЕПЕРЬ безопасно снять старый
                 // (порядок гарантирован: зритель уже видит новый трек, плитка не слетит).
                 string old = _scrPendingUnpublishSid;
@@ -2335,6 +2346,7 @@ namespace PISMO.Native
                 });
                 ulong streamHandle = resp.NewVideoStream.Stream.Handle.Id;
                 lock (_videoLock) _videoStreamMeta[streamHandle] = new VideoStreamCtx { Identity = identity, IsScreen = isScreen };
+                ScreenLog.Log($"OnTrackSubscribed VIDEO id={identity} sid={track.Info.Sid} isScreen={isScreen} streamHandle={streamHandle} (открыт видеопоток)");
             }
         }
 
@@ -2366,6 +2378,7 @@ namespace PISMO.Native
                         }
                         stillSharing = _screenSidsByIdentity.ContainsKey(identity);
                     }
+                    ScreenLog.Log($"OnTrackUnsubscribed SCREEN(known) id={identity} sid={sid} stillSharing={stillSharing} -> {(stillSharing ? "плитку НЕ трогаем" : "RemoteVideoRemoved (снять плитку)")}");
                     if (!stillSharing) RemoteVideoRemoved?.Invoke(identity, true);
                 }
                 else if (src == TrackSource.SourceCamera) RemoteVideoRemoved?.Invoke(identity, false);
@@ -2384,6 +2397,7 @@ namespace PISMO.Native
                     removeTile = true;
                 }
             }
+            ScreenLog.Log($"OnTrackUnsubscribed SCREEN(unknown-sid) id={identity} sid={sid} removeTile={removeTile}");
             if (removeTile) RemoteVideoRemoved?.Invoke(identity, true);
         }
 
