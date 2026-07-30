@@ -315,6 +315,7 @@ namespace PISMO
             };
             _chkNoiseSuppress.CheckedChanged += (s, e) =>
             {
+                if (_loadingSettings) return;   // во время загрузки не трогаем ползунок/настройки
                 // Чекбокс = быстрый вкл/выкл: тянет ползунок в 0 или 100.
                 if (_chkNoiseSuppress.Checked && _trkNoiseStrength.Value == 0) _trkNoiseStrength.Value = 100;
                 else if (!_chkNoiseSuppress.Checked && _trkNoiseStrength.Value > 0) _trkNoiseStrength.Value = 0;
@@ -325,6 +326,7 @@ namespace PISMO
             {
                 int v = _trkNoiseStrength.Value;
                 _lblNoiseStrengthValue.Text = v + "%";
+                if (_loadingSettings) return;   // во время загрузки не пишем в настройки/звонок
                 // Синхронизируем чекбокс без рекурсии.
                 if ((v > 0) != _chkNoiseSuppress.Checked) _chkNoiseSuppress.Checked = v > 0;
                 // Применяем ЖИВО: тест микрофона + идущий звонок.

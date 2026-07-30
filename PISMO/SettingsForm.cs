@@ -30,6 +30,7 @@ namespace PISMO
         private CheckBox _chkVoiceAuto;
         private CheckBox _chkNoiseSuppress;
         private TrackBar _trkNoiseStrength;   // сила шумодава 0..100
+        internal bool _loadingSettings;       // подавляет побочные эффекты обработчиков во время загрузки
         private Label _lblNoiseStrengthValue;
         private CheckBox _chkLightTheme;
         private CheckBox _chkAllMonitors;   // все мониторы в выборе демонстрации (WGC)
@@ -190,9 +191,21 @@ namespace PISMO
             _lblGainValue.Text = $"{_trkGain.Value}%";
             _gainCached = _trkGain.Value / 100f;
 
-            // Шумоподавление.
-            _chkNoiseSuppress.Checked = DeviceSettings.NoiseSuppression;
-            try { _trkNoiseStrength.Value = Math.Clamp(DeviceSettings.NoiseSuppressionStrength, 0, 100); } catch { }
+            // Шумоподавление. ВАЖНО: значение силы читаем в локальную ДО того, как
+            // трогаем контролы — иначе CheckedChanged чекбокса (реагирует на строку
+            // ниже) видит ползунок в дефолтном 0 и «услужливо» тянет его в 100,
+            // перезаписывая сохранённую силу. Флаг _loadingSettings глушит побочные
+            // эффекты обработчиков на время загрузки, значение восстанавливаем в конце.
+            int savedNs = Math.Clamp(DeviceSettings.NoiseSuppressionStrength, 0, 100);
+            _loadingSettings = true;
+            try
+            {
+                _chkNoiseSuppress.Checked = DeviceSettings.NoiseSuppression;
+                _trkNoiseStrength.Value = savedNs;
+            }
+            catch { }
+            finally { _loadingSettings = false; }
+            DeviceSettings.NoiseSuppressionStrength = savedNs;   // восстановить на случай перезаписи
             _lblNoiseStrengthValue.Text = _trkNoiseStrength.Value + "%";
 
             // Активация голоса (порог в дБ).
