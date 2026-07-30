@@ -116,7 +116,7 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, 322),
-                Size = new Size(456, 196)
+                Size = new Size(456, 252)
             };
 
             var lblMicTitle = new Label
@@ -285,6 +285,28 @@ namespace PISMO
                 Cursor = Cursors.Hand
             };
 
+            // Ползунок СИЛЫ шумодава (0..100 %). Регулирует wet/dry-микс денойзера и
+            // применяется на лету — в т.ч. к идущему звонку.
+            var lblNoiseHint = new Label
+            {
+                Text = "Сила шумоподавления",
+                Font = new Font("Segoe UI", 8f),
+                ForeColor = Color.FromArgb(140, 142, 146),
+                AutoSize = true,
+                Location = new Point(14, 186)
+            };
+            _trkNoiseStrength = new TrackBar
+            {
+                Minimum = 0, Maximum = 100, TickFrequency = 10, SmallChange = 5, LargeChange = 10,
+                Location = new Point(12, 204), Size = new Size(260, 40),
+                BackColor = Color.FromArgb(47, 49, 54)
+            };
+            _lblNoiseStrengthValue = new Label
+            {
+                Text = "100%", Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222), AutoSize = true, Location = new Point(280, 212)
+            };
+
             // Живо применяем смену устройства/шумодава к открытому тесту микрофона.
             _cmbMic.SelectedIndexChanged += (s, e) =>
             {
@@ -293,13 +315,28 @@ namespace PISMO
             };
             _chkNoiseSuppress.CheckedChanged += (s, e) =>
             {
+                // Чекбокс = быстрый вкл/выкл: тянет ползунок в 0 или 100.
+                if (_chkNoiseSuppress.Checked && _trkNoiseStrength.Value == 0) _trkNoiseStrength.Value = 100;
+                else if (!_chkNoiseSuppress.Checked && _trkNoiseStrength.Value > 0) _trkNoiseStrength.Value = 0;
                 if (_micTest != null && !_micTest.IsDisposed)
                     _micTest.ApplyConfig(_chkNoiseSuppress.Checked, _cmbMic.SelectedItem?.ToString());
+            };
+            _trkNoiseStrength.ValueChanged += (s, e) =>
+            {
+                int v = _trkNoiseStrength.Value;
+                _lblNoiseStrengthValue.Text = v + "%";
+                // Синхронизируем чекбокс без рекурсии.
+                if ((v > 0) != _chkNoiseSuppress.Checked) _chkNoiseSuppress.Checked = v > 0;
+                // Применяем ЖИВО: тест микрофона + идущий звонок.
+                DeviceSettings.NoiseSuppressionStrength = v;
+                if (_micTest != null && !_micTest.IsDisposed)
+                    _micTest.ApplyConfig(v > 0, _cmbMic.SelectedItem?.ToString());
+                try { MainForm.Current?.ActiveCallFormPublic()?.SetNoiseStrengthLive(v); } catch { }
             };
 
             pnlMic.Controls.AddRange(new Control[]
             {
-                _chkNoiseSuppress,
+                _chkNoiseSuppress, lblNoiseHint, _trkNoiseStrength, _lblNoiseStrengthValue,
                 lblMicTitle, lblMicHint, _cmbMic, _btnMicTest,
                 lblGainHint, _trkGain, _lblGainValue,
                 lblLevelHint, _lblDbValue, _pnlLevelBar, _lblMicStatus,

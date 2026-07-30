@@ -29,6 +29,8 @@ namespace PISMO
         private Label _lblGainValue;
         private CheckBox _chkVoiceAuto;
         private CheckBox _chkNoiseSuppress;
+        private TrackBar _trkNoiseStrength;   // сила шумодава 0..100
+        private Label _lblNoiseStrengthValue;
         private CheckBox _chkLightTheme;
         private CheckBox _chkAllMonitors;   // все мониторы в выборе демонстрации (WGC)
         private TrackBar _trkVoiceThreshold;
@@ -190,6 +192,8 @@ namespace PISMO
 
             // Шумоподавление.
             _chkNoiseSuppress.Checked = DeviceSettings.NoiseSuppression;
+            try { _trkNoiseStrength.Value = Math.Clamp(DeviceSettings.NoiseSuppressionStrength, 0, 100); } catch { }
+            _lblNoiseStrengthValue.Text = _trkNoiseStrength.Value + "%";
 
             // Активация голоса (порог в дБ).
             _chkVoiceAuto.Checked = DeviceSettings.VoiceAutoSensitivity;
@@ -469,6 +473,7 @@ namespace PISMO
 
             DeviceSettings.VoiceAutoSensitivity = _chkVoiceAuto.Checked;
             DeviceSettings.VoiceThreshold = _trkVoiceThreshold.Value;
+            DeviceSettings.NoiseSuppressionStrength = _trkNoiseStrength.Value;   // сила (0 = выкл)
             DeviceSettings.NoiseSuppressMode = _chkNoiseSuppress.Checked ? "standard" : "off";
 
             if (_cmbScreenRes.SelectedIndex >= 0)
@@ -497,6 +502,7 @@ namespace PISMO
             // и шумодав в идущем звонке обязаны отражать новую настройку сразу.
             try { MainForm.Current?.RefreshVoiceEqState(); } catch { }
             try { MainForm.Current?.ActiveCallFormPublic()?.SetNoiseSuppressionLive(DeviceSettings.NoiseSuppression); } catch { }
+            try { MainForm.Current?.ActiveCallFormPublic()?.SetNoiseStrengthLive(DeviceSettings.NoiseSuppressionStrength); } catch { }
 
             // Тема зафиксирована на старте приложения (Theme.IsLight) — если
             // выбор изменился, честно предупреждаем и предлагаем перезапуск

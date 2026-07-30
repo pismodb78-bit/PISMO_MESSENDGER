@@ -174,6 +174,7 @@ namespace PISMO.Native
         private SpectralDenoiser _spectral;       // частотный шумодав (постоянный фон) — откат
         private RnnoiseDenoiser _rnnoise;         // НАСТОЯЩИЙ RNNoise (как в тесте) — основной
         private volatile bool _nsEnabled;
+        private volatile int _nsStrengthPct = 100;   // сила шумодава 0..100 (wet/dry-микс)
         // Ручная громкость микрофона (ползунок настроек). Множитель поверх APM/AGC —
         // применяется ПОСЛЕ обработки, финальным масштабом, поэтому AGC его не гасит.
         private volatile float _micGain = 1f;
@@ -531,23 +532,53 @@ namespace PISMO.Native
             SendCapturedAudio(e.Buffer, 0, e.BytesRecorded);
         }
 
+        /// <summary>Устанавливает силу шумодава 0..100 (%) на лету (wet/dry-микс).</summary>
+        public void SetNoiseStrength(int pct)
+        {
+            _nsStrengthPct = Math.Clamp(pct, 0, 100);
+            _nsEnabled = _nsStrengthPct > 0;
+        }
+
         // Единый шумодав in-place. Если поднялся нативный RNNoise (как в тесте) —
         // используем ТОЛЬКО его (он давит и фон, и клавиатуру). Иначе — программный
         // откат: частотный spectral (фон) + клик-гейт (транзиенты).
+        // Сила регулируется wet/dry-миксом: сохраняем «сухой» сигнал, обрабатываем
+        // копию и подмешиваем результат на _nsStrengthPct процентов. 100% — полный
+        // шумодав, 0% — оригинал (выкл), между — частичное подавление.
+        private byte[] _dryTmp;
         private void DenoiseInPlace(byte[] data, int offset, int len)
         {
-            var rn = _rnnoise;
-            if (rn != null && rn.IsReady)
+            int strength = _nsStrengthPct;
+            if (strength <= 0) return;                 // выкл — не трогаем сигнал
+
+            // Полная сила и RNNoise — как раньше, без лишних копий.
+            bool full = strength >= 100;
+            byte[] dry = null;
+            if (!full)
             {
-                // ТОЛЬКО RNNoise + его встроенный VAD-гейт остаточного шума. Клик-гейт
-                // (MicDenoiser) поверх УБРАН: его де-кликер давит быстрые транзиенты, а
-                // согласные (с/ф/т/к/п) — тоже транзиенты, поэтому он резал их и голос
-                // «резал по ушам». RNNoise клавиатуру/фон давит и сам.
-                try { rn.Process(data, offset, len); } catch { }
-                return;
+                if (_dryTmp == null || _dryTmp.Length < len) _dryTmp = new byte[len];
+                dry = _dryTmp;
+                System.Buffer.BlockCopy(data, offset, dry, 0, len);
             }
-            try { _spectral?.Process(data, offset, len); } catch { }
-            try { _denoiser?.Process(data, offset, len); } catch { }
+
+            var rn = _rnnoise;
+            if (rn != null && rn.IsReady) { try { rn.Process(data, offset, len); } catch { } }
+            else { try { _spectral?.Process(data, offset, len); } catch { } try { _denoiser?.Process(data, offset, len); } catch { } }
+
+            if (full) return;
+
+            // Микс dry/wet по силе (сэмплы i16, little-endian).
+            float w = strength / 100f, d = 1f - w;
+            int n = len & ~1;
+            for (int i = 0; i < n; i += 2)
+            {
+                short wet = (short)(data[offset + i] | (data[offset + i + 1] << 8));
+                short dcy = (short)(dry[i] | (dry[i + 1] << 8));
+                int mix = (int)(wet * w + dcy * d);
+                if (mix > short.MaxValue) mix = short.MaxValue; else if (mix < short.MinValue) mix = short.MinValue;
+                data[offset + i] = (byte)(mix & 0xFF);
+                data[offset + i + 1] = (byte)((mix >> 8) & 0xFF);
+            }
         }
 
         // Один 10-мс кадр: AEC → шумодав → отправка в FFI. ПОРЯДОК ВАЖЕН: сначала

@@ -97,6 +97,20 @@ namespace PISMO
             set { if (value) { if (_nsMode == "off") _nsMode = "standard"; } else _nsMode = "off"; }
         }
 
+        /// <summary>Сила шумоподавления 0..100 (%): 0 — выкл, 100 — максимум.
+        /// Реализована как wet/dry-микс денойзера, поэтому регулируется на лету.</summary>
+        private static int _nsStrength = 100;
+        public static int NoiseSuppressionStrength
+        {
+            get => _nsStrength;
+            set
+            {
+                _nsStrength = Math.Clamp(value, 0, 100);
+                // Синхронизируем булев режим: 0% = выкл, иначе включён.
+                NoiseSuppression = _nsStrength > 0;
+            }
+        }
+
         /// <summary>Ручной порог активации голоса в дБ (−60..0): звук тише порога
         /// не передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
         public static int VoiceThreshold { get; set; } = -40;
@@ -239,6 +253,9 @@ namespace PISMO
                         case "NoiseSuppressMode":
                             NoiseSuppressMode = val;   // применяется ПОСЛЕ булевого флага — режим главнее
                             break;
+                        case "NoiseSuppressionStrength":
+                            if (int.TryParse(val, out int nss)) NoiseSuppressionStrength = nss;
+                            break;
                         case "VoiceThreshold":
                             if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, -60, 0);
                             break;
@@ -290,6 +307,7 @@ namespace PISMO
                     $"VoiceAutoSensitivity={(VoiceAutoSensitivity ? 1 : 0)}\n" +
                     $"NoiseSuppression={(NoiseSuppression ? 1 : 0)}\n" +
                     $"NoiseSuppressMode={NoiseSuppressMode}\n" +
+                    $"NoiseSuppressionStrength={NoiseSuppressionStrength}\n" +
                     $"VoiceThreshold={VoiceThreshold}\n" +
                     $"HardwareAcceleration={(HardwareAcceleration ? 1 : 0)}\n" +
                     $"ThemeMode={ThemeMode}\n" +

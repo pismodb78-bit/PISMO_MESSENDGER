@@ -878,6 +878,9 @@ namespace PISMO
 
         /// <summary>Вкл/выкл шумодав на лету (из дока, «эквалайзер»).</summary>
         public void SetNoiseSuppressionLive(bool on) { try { _transport?.SetNoiseMode(on ? DeviceSettings.NoiseSuppressMode : "off"); } catch { } }
+        /// <summary>Живая смена СИЛЫ шумодава (ползунок в настройках) — применяется
+        /// к идущему звонку сразу, без перезахода.</summary>
+        public void SetNoiseStrengthLive(int pct) { try { _transport?.SetNoiseStrength(pct); } catch { } }
 
         /// <summary>Попап с живым графиком задержки (клик по плашке 📶, как в Discord).</summary>
         private void TogglePingGraph()
