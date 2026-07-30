@@ -21,6 +21,7 @@ namespace PISMO
         private BufferedWaveProvider _buf;
         private RnnoiseDenoiser _rn;
         private SpectralDenoiser _spectral;
+        private MicDenoiser _gate;   // клик-гейт против клавиатуры/мыши (на высокой силе)
 
         private volatile bool _noise;
         private volatile string _micLabel;
@@ -108,6 +109,7 @@ namespace PISMO
             {
                 _rn = _noise ? RnnoiseDenoiser.TryCreate() : null;
                 _spectral = new SpectralDenoiser();
+                _gate = new MicDenoiser(SR);
 
                 _buf = new BufferedWaveProvider(new WaveFormat(SR, 16, 1))
                 { BufferDuration = TimeSpan.FromSeconds(1), DiscardOnBufferOverflow = true };
@@ -154,6 +156,12 @@ namespace PISMO
                     _spectral.Strength = 0.25f + (s / 100f) * 3.25f;
                     try { _spectral.Process(data, 0, len); } catch { }
                 }
+                // Клик-гейт против клавиатуры/мыши — на высокой силе (>=60%), как в звонке.
+                if (s >= 60 && _gate != null)
+                {
+                    _gate.TransientGuard = true;
+                    try { _gate.Process(data, 0, len); } catch { }
+                }
             }
 
             // Усиление + уровень (i16 LE, моно).
@@ -178,7 +186,7 @@ namespace PISMO
             _out = null;
             _buf = null;
             try { _rn?.Dispose(); } catch { }
-            _rn = null; _spectral = null;
+            _rn = null; _spectral = null; _gate = null;
         }
 
         /// <summary>Живо применить усиление микрофона (без перезапуска).</summary>
