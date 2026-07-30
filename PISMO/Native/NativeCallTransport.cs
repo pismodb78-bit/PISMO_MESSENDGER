@@ -539,45 +539,28 @@ namespace PISMO.Native
             _nsEnabled = _nsStrengthPct > 0;
         }
 
-        // Единый шумодав in-place. Если поднялся нативный RNNoise (как в тесте) —
-        // используем ТОЛЬКО его (он давит и фон, и клавиатуру). Иначе — программный
-        // откат: частотный spectral (фон) + клик-гейт (транзиенты).
-        // Сила регулируется wet/dry-миксом: сохраняем «сухой» сигнал, обрабатываем
-        // копию и подмешиваем результат на _nsStrengthPct процентов. 100% — полный
-        // шумодав, 0% — оригинал (выкл), между — частичное подавление.
-        private byte[] _dryTmp;
+        // Единый шумодав in-place. Сила (ползунок 0..100) регулирует АГРЕССИВНОСТЬ
+        // спектрального шумодава (у него непрерывный параметр Strength), а он идёт
+        // ПОВЕРХ RNNoise. Так получается и плавная регулировка (RNNoise «всё-или-
+        // ничего», сам градиента не даёт), и более сильное подавление фона на
+        // чувствительном микрофоне при высоких значениях. Никакого wet/dry-микса:
+        // RNNoise буферизует кадры (задержка), и микс «сухого» с задержанным
+        // «мокрым» ломал фазу (артефакты/стерео-странности).
         private void DenoiseInPlace(byte[] data, int offset, int len)
         {
-            int strength = _nsStrengthPct;
-            if (strength <= 0) return;                 // выкл — не трогаем сигнал
+            int s = _nsStrengthPct;
+            if (s <= 0) return;                         // выкл — сигнал не трогаем
 
-            // Полная сила и RNNoise — как раньше, без лишних копий.
-            bool full = strength >= 100;
-            byte[] dry = null;
-            if (!full)
-            {
-                if (_dryTmp == null || _dryTmp.Length < len) _dryTmp = new byte[len];
-                dry = _dryTmp;
-                System.Buffer.BlockCopy(data, offset, dry, 0, len);
-            }
-
+            // База: RNNoise (хорошо чистит голос от фона/клавиатуры), если поднялся.
             var rn = _rnnoise;
             if (rn != null && rn.IsReady) { try { rn.Process(data, offset, len); } catch { } }
-            else { try { _spectral?.Process(data, offset, len); } catch { } try { _denoiser?.Process(data, offset, len); } catch { } }
 
-            if (full) return;
-
-            // Микс dry/wet по силе (сэмплы i16, little-endian).
-            float w = strength / 100f, d = 1f - w;
-            int n = len & ~1;
-            for (int i = 0; i < n; i += 2)
+            // Регулируемая часть: спектральный Wiener-шумодав. Strength — «сколько
+            // считать шумом»: больше → агрессивнее. 0.25 (щадяще) … 3.5 (максимум).
+            if (_spectral != null)
             {
-                short wet = (short)(data[offset + i] | (data[offset + i + 1] << 8));
-                short dcy = (short)(dry[i] | (dry[i + 1] << 8));
-                int mix = (int)(wet * w + dcy * d);
-                if (mix > short.MaxValue) mix = short.MaxValue; else if (mix < short.MinValue) mix = short.MinValue;
-                data[offset + i] = (byte)(mix & 0xFF);
-                data[offset + i + 1] = (byte)((mix >> 8) & 0xFF);
+                _spectral.Strength = 0.25f + (s / 100f) * 3.25f;
+                try { _spectral.Process(data, offset, len); } catch { }
             }
         }
 
