@@ -62,7 +62,7 @@ namespace PISMO.Native
                 else if (++_maxAge >= _la) { _max = RescanMax(); _maxAge = 0; }
 
                 // Порог всплеска: заметно выше уровня голоса. Пик выше — прижимаем к порогу.
-                float thr = _voiceRef * 2.2f + 500f;
+                float thr = _voiceRef * 2.0f + 400f;
                 float target = _max > thr ? thr / _max : 1f;
                 target = 1f - (1f - target) * str;   // сила регулирует глубину подавления
                 _gain += (target - _gain) * (target < _gain ? 0.6f : 0.02f);

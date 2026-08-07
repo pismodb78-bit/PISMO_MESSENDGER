@@ -55,7 +55,7 @@ namespace PISMO.Native
         // Держим 0.6 как компромисс — с grace-периодом ниже это надёжно ловит речь и
         // не рубит тихие/глухие согласные (их VAD-провалы закрывает hangover).
         private const float VAD_SPEECH = 0.6f;    // выше — речь → взводим hangover
-        private const int HANG_FRAMES = 30;       // 30*10мс = 300мс grace (не режем концы слов)
+        private const int HANG_FRAMES = 26;       // 26*10мс = 260мс grace (чуть раньше уходим в тишину)
         private int _vadHang;
         private float _gain = 1f;
 
@@ -242,7 +242,7 @@ namespace PISMO.Native
                 // Быстрое открытие; закрытие ускорено (0.04→0.18): раньше в паузу
                 // уходило ~0.5с и фон/клава «проскакивали». Grace-период (300мс)
                 // защищает концы слов, поэтому быстрое закрытие их не режет.
-                _gain += (target > _gain ? 0.6f : 0.25f) * (target - _gain);
+                _gain += (target > _gain ? 0.6f : 0.32f) * (target - _gain);
 
                 // Плавный вход первых кадров (рампа 0→1) — глушит стартовый «скрежет».
                 float fade = 1f;
