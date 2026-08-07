@@ -881,6 +881,8 @@ namespace PISMO
         /// <summary>Живая смена СИЛЫ шумодава (ползунок в настройках) — применяется
         /// к идущему звонку сразу, без перезахода.</summary>
         public void SetNoiseStrengthLive(int pct) { try { _transport?.SetNoiseStrength(pct); } catch { } }
+        // Порог чувствительности на горячую в звонке (без ожидания таймера настроек).
+        public void SetVoiceThresholdLive(int db) { try { _transport?.SetVoiceGate(true, db); } catch { } }
 
         /// <summary>Попап с живым графиком задержки (клик по плашке 📶, как в Discord).</summary>
         private void TogglePingGraph()

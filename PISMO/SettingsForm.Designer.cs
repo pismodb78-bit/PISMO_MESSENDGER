@@ -269,9 +269,10 @@ namespace PISMO
             {
                 _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value} дБ";
                 _pnlLevelBar.Invalidate(); // переносим метку порога на градуснике
-                // Живо в память (идущий звонок подхватит через таймер настроек; на
-                // диск попадёт по «Сохранить»). Так значение не теряется и применяется.
+                // Живо в память + СРАЗУ в идущий звонок (на горячую, без ожидания
+                // таймера). На диск — по «Сохранить».
                 DeviceSettings.VoiceThreshold = _trkVoiceThreshold.Value;
+                try { MainForm.Current?.ActiveCallFormPublic()?.SetVoiceThresholdLive(_trkVoiceThreshold.Value); } catch { }
             };
             _chkVoiceAuto.CheckedChanged += (s, e) =>
             {
