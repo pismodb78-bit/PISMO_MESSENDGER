@@ -508,6 +508,10 @@ namespace PISMO
             if (string.IsNullOrWhiteSpace(codec)) return;
             try { _t?.SetScreenCodec(codec); } catch { }
         }
+
+        /// <summary>Кодек реально идущей демки (null, если демка не идёт) — для решения,
+        /// нужен ли перезаход при смене кодека.</summary>
+        public string ScreenCodecInUse { get { try { return _t?.PublishedScreenCodec; } catch { return null; } } }
         public void SetScreenQualityLive(int resHeight, int fps) { try { _t?.SetScreenQualityLive(resHeight, fps); } catch { } }
         public void SetRemoteScreenAudioVolume(float volume) { try { _t?.SetScreenAudioVolumeAll(volume); } catch { } }
         public void SetParticipantVolume(string pid, float volume) { try { _t?.SetParticipantVolume(pid, volume); } catch { } }

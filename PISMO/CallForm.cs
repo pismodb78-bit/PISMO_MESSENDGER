@@ -1061,19 +1061,25 @@ namespace PISMO
             cmbCodec.SelectedIndex = DeviceSettings.ScreenShareCodec == "h264" ? 1 : 0;
             cmbCodec.SelectedIndexChanged += (s, e) =>
             {
-                DeviceSettings.ScreenShareCodec = cmbCodec.SelectedIndex == 1 ? "h264" : "av1";
+                string chosen = cmbCodec.SelectedIndex == 1 ? "h264" : "av1";
+                DeviceSettings.ScreenShareCodec = chosen;
                 try { DeviceSettings.Save(); } catch { }
-                // Горячая смена кодека невозможна (сессия LiveKit залипает на кодеке
-                // первого трека). Запоминаем выбор и предупреждаем: применится после
-                // перезахода в звонок; текущий звонок продолжается на прежнем кодеке.
-                try { _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec); } catch { }
+                // Горячая смена невозможна (сессия LiveKit залипает на кодеке первого
+                // трека). Запоминаем выбор; сообщение зависит от того, что реально идёт.
+                try { _transport?.SetScreenCodec(chosen); } catch { }
                 try
                 {
-                    string cn = cmbCodec.SelectedIndex == 1 ? "H.264" : "AV1";
-                    MessageBox.Show(this,
-                        $"Кодек демонстрации ({cn}) применится после перезахода в звонок.\n" +
-                        "Текущий звонок продолжается на прежнем кодеке.",
-                        "Смена кодека", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    string cn = chosen == "h264" ? "H.264" : "AV1";
+                    string inUse = _transport?.ScreenCodecInUse;   // кодек реально идущей демки (null — не идёт)
+                    string msg;
+                    if (string.IsNullOrEmpty(inUse))
+                        msg = $"Кодек демонстрации: {cn}.\nПрименится при запуске демонстрации.";
+                    else if (string.Equals(inUse, chosen, StringComparison.OrdinalIgnoreCase))
+                        msg = $"Кодек демонстрации возвращён к текущему ({cn}).\nПерезаход не требуется — демонстрация уже идёт на нём.";
+                    else
+                        msg = $"Кодек ({cn}) применится после перезахода в звонок.\n" +
+                              $"Текущая демонстрация продолжается на прежнем ({inUse.ToUpperInvariant()}).";
+                    MessageBox.Show(this, msg, "Смена кодека", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch { }
             };

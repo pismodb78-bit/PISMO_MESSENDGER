@@ -223,7 +223,8 @@ namespace PISMO.Native
         private IntPtr _scrWindow;
         private int _scrFps = 15;
         private volatile int _scrTargetHeight;   // 0 = родное разрешение, иначе даунскейл до этой высоты
-        private string _scrCodec = "h264";       // предпочтительный кодек демки
+        private string _scrCodec = "h264";       // ВЫБРАННЫЙ кодек (применится при следующей публикации)
+        private string _scrPublishedCodec;       // кодек РЕАЛЬНО идущего трека (для плашки)
         private string _scrGpuPref = "auto";     // hint энкодера (auto/high/integrated)
         private string _scrTrackSid;
         private bool _scrStarted;
@@ -1024,6 +1025,8 @@ namespace PISMO.Native
         // ── Демонстрация экрана / окна ────────────────────────────────────
         // Настройки качества/кодека/энкодера — до старта демки.
         public void SetScreenCodec(string codec) { if (!string.IsNullOrWhiteSpace(codec)) _scrCodec = codec; }
+        /// <summary>Кодек РЕАЛЬНО идущего трека демки (null, если демка не публикуется).</summary>
+        public string PublishedScreenCodec => _scrStarted ? _scrPublishedCodec : null;
 
         /// <summary>Создаёт FFI-источник + видеотрек демки и публикует его с текущим
         /// кодеком/энкодером. Общий код для старта и горячей смены кодека.</summary>
@@ -1069,6 +1072,7 @@ namespace PISMO.Native
                 }
             });
             _scrPublishAsyncId = pubResp.PublishTrack.AsyncId;
+            _scrPublishedCodec = _scrCodec;   // плашка показывает РЕАЛЬНО идущий кодек
             ScreenLog.Log($"[STREAMER] PublishScreenTrack codec={_scrCodec} {pubW}x{pubH} asyncId={_scrPublishAsyncId}");
         }
 
@@ -1663,7 +1667,7 @@ namespace PISMO.Native
             string mode = _capMode == "GDI" && _dxgiErr != null
                 ? "GDI (DXGI: " + Trunc(_dxgiErr, 40) + ")" : _capMode;
             string au = _scrHasAudio ? " · звук " + _scrAudioMode : "";
-            string codec = (_scrCodec ?? "").ToUpperInvariant();
+            string codec = (_scrPublishedCodec ?? _scrCodec ?? "").ToUpperInvariant();
             string baseTxt = $"{sent}/{_scrFps} fps · {codec} · {mode} {w}x{h} · захват {grab}{au}";
             // Ошибку показываем 15 секунд после возникновения и ВПЕРЕДИ (плашка узкая,
             // конец усекается «…»), чтобы сбой кодека/публикации точно был виден.
