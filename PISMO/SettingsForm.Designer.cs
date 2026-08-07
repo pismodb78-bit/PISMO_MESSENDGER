@@ -208,7 +208,15 @@ namespace PISMO
             // невидимыми, чтобы не трогать остальную раскладку/код.
             var lblLevelHint = new Label { Visible = false };
             _lblDbValue = new Label { Visible = false };
-            _pnlLevelBar = new Panel { Visible = false, Size = new Size(0, 0) };
+            // Живой индикатор уровня микрофона под ползунком порога: заполняется по
+            // мере речи, метка порога совпадает по шкале с положением ползунка (дБ).
+            _pnlLevelBar = new Panel
+            {
+                Location = new Point(14, 312),
+                Size = new Size(300, 8),
+                BackColor = Color.FromArgb(45, 47, 52)
+            };
+            _pnlLevelBar.Paint += PnlLevelBar_Paint;
 
             _lblMicStatus = new Label
             {
@@ -233,11 +241,11 @@ namespace PISMO
             };
             var lblVoiceHint = new Label
             {
-                Text = "Ниже порога звук с микрофона не передаётся.",
-                Font = new Font("Segoe UI", 8f),
-                ForeColor = Color.FromArgb(150, 152, 158),
+                Text = "ПОРОГ РЕГИСТРАЦИИ ЗВУКА  ·  ниже порога звук не передаётся",
+                Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(185, 187, 190),
                 AutoSize = true,
-                Location = new Point(14, 278)
+                Location = new Point(14, 258)
             };
             _trkVoiceThreshold = new TrackBar
             {
@@ -245,7 +253,7 @@ namespace PISMO
                 Maximum = 0,     // дБ: громко
                 Value = -40,
                 TickStyle = TickStyle.None,
-                Location = new Point(14, 296),
+                Location = new Point(14, 278),
                 Size = new Size(300, 30),
                 BackColor = Color.FromArgb(47, 49, 54)
             };
@@ -255,7 +263,7 @@ namespace PISMO
                 Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 AutoSize = true,
-                Location = new Point(326, 300)
+                Location = new Point(326, 282)
             };
             _trkVoiceThreshold.ValueChanged += (s, e) =>
             {
@@ -269,17 +277,16 @@ namespace PISMO
                 _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
             };
 
-            // Порог регистрации звука (voice gate) снова доступен: теперь он честно
-            // реализован в нативном тракте звонка (гейт «полный сигнал / тишина», без
-            // приглушения голоса). Сильно режет клавиатуру/фон в паузах.
-            _chkVoiceAuto.Visible = true;
+            // Порог регистрации звука (voice gate): гейт «полный сигнал / тишина» в
+            // нативном тракте звонка, без приглушения голоса. Режет клаву/фон в паузах.
+            // Автоопределение УБРАНО по просьбе — всегда ручной порог, чекбокс скрыт.
+            _chkVoiceAuto.Visible = false;
+            _chkVoiceAuto.Checked = false;   // фиксируем ручной режим (авто выключено навсегда)
             lblVoiceHint.Visible = true;
             _trkVoiceThreshold.Visible = true;
             _lblVoiceThresholdValue.Visible = true;
-            // По умолчанию — ручной порог (автоопределение выключено), чтобы ползунок
-            // сразу работал; пользователь сам решит, включать ли авто.
-            _trkVoiceThreshold.Enabled = !_chkVoiceAuto.Checked;
-            _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
+            _trkVoiceThreshold.Enabled = true;
+            _lblVoiceThresholdValue.Enabled = true;
 
             _chkNoiseSuppress = new CheckBox
             {

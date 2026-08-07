@@ -56,6 +56,10 @@ namespace PISMO
         public SettingsForm()
         {
             this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
+            // Живой индикатор уровня микрофона у порога регистрации — запускаем при
+            // открытии настроек и перезапускаем при смене устройства.
+            this.Load += (s, e) => StartLevelMeter();
+            _cmbMic.SelectedIndexChanged += (s, e) => { StopMicTest(); StartLevelMeter(); };
             BuildUi();
             LoadDevices();
             ApplySavedSelection();
@@ -208,12 +212,13 @@ namespace PISMO
             DeviceSettings.NoiseSuppressionStrength = savedNs;   // восстановить на случай перезаписи
             _lblNoiseStrengthValue.Text = _trkNoiseStrength.Value + "%";
 
-            // Активация голоса (порог в дБ).
-            _chkVoiceAuto.Checked = DeviceSettings.VoiceAutoSensitivity;
+            // Порог регистрации в дБ. Авто убрано — всегда ручной режим (даже если в
+            // старом конфиге сохранено auto=1), ползунок всегда активен.
+            _chkVoiceAuto.Checked = false;
             _trkVoiceThreshold.Value = Math.Clamp(DeviceSettings.VoiceThreshold, -60, 0);
             _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value} дБ";
-            _trkVoiceThreshold.Enabled = !_chkVoiceAuto.Checked;
-            _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
+            _trkVoiceThreshold.Enabled = true;
+            _lblVoiceThresholdValue.Enabled = true;
 
             // ScreenShare
             string sh = DeviceSettings.ScreenShareResolutionHeight > 0
@@ -439,6 +444,44 @@ namespace PISMO
                 using var tri = new SolidBrush(Color.White);
                 g.FillPolygon(tri, new[] { new Point(mx - 4, 0), new Point(mx + 4, 0), new Point(mx, 5) });
             }
+        }
+
+        /// <summary>Запускает лёгкий замер уровня микрофона (без монитора-воспроизведения)
+        /// для живого индикатора у порога регистрации. Идёт, пока открыты настройки.</summary>
+        private void StartLevelMeter()
+        {
+            try
+            {
+                if (!IsHandleCreated) return;  // до создания хэндла не стартуем (событие combo при загрузке)
+                if (WaveInEvent.DeviceCount == 0) return;
+                if (_waveIn != null) return;   // уже идёт
+
+                if (_levelTimer == null)
+                {
+                    _levelTimer = new System.Windows.Forms.Timer { Interval = 33 };
+                    _levelTimer.Tick += (s, e) => UpdateLevelBar();
+                }
+                _levelTimer.Start();
+
+                int dev = 0;
+                try
+                {
+                    if (_cmbMic.Enabled && _cmbMic.SelectedIndex >= 0 && _cmbMic.SelectedIndex < WaveInEvent.DeviceCount)
+                        dev = _cmbMic.SelectedIndex;
+                }
+                catch { }
+
+                _monitorBuf = null;   // только уровень, без «слышу себя»
+                _waveIn = new WaveInEvent
+                {
+                    DeviceNumber = dev,
+                    WaveFormat = new WaveFormat(48000, 16, 1),
+                    BufferMilliseconds = 33
+                };
+                _waveIn.DataAvailable += WaveIn_DataAvailable;
+                _waveIn.StartRecording();
+            }
+            catch { }
         }
 
         private void StopMicTest()
