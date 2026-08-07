@@ -150,22 +150,15 @@ namespace PISMO
             if (_noise && s > 0)
             {
                 float f = s / 100f;
-                if (s >= 50)   // RNNoise — только со второй половины ползунка (как в звонке)
+                // ТОЛЬКО RNNoise (сила = сухой/мокрый микс) — тот же чистый тракт,
+                // что в звонке. Никаких наслоений спектрального/гейта (давали «рацию»).
+                var rn = _rn;
+                if (rn != null && rn.IsReady) { rn.Mix = f; try { rn.Process(data, 0, len); } catch { } }
+                else if (_spectral != null)   // fallback без RNNoise — мягкий спектральный
                 {
-                    var rn = _rn;
-                    if (rn != null && rn.IsReady) { try { rn.Process(data, 0, len); } catch { } }
-                }
-                if (_spectral != null)
-                {
-                    _spectral.Strength = 0.3f + f * 5.7f;
-                    _spectral.Floor    = 0.22f - f * 0.20f;
+                    _spectral.Strength = 0.4f + f * 1.4f;
+                    _spectral.Floor    = 0.18f - f * 0.08f;
                     try { _spectral.Process(data, 0, len); } catch { }
-                }
-                // Клик-гейт против клавиатуры/мыши — на высокой силе (>=60%), как в звонке.
-                if (s >= 60 && _gate != null)
-                {
-                    _gate.TransientGuard = true;
-                    try { _gate.Process(data, 0, len); } catch { }
                 }
             }
 

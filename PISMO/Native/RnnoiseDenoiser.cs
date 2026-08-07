@@ -63,6 +63,13 @@ namespace PISMO.Native
 
         public bool IsReady => _ok;
 
+        /// <summary>Сила шумодава 0..1 как сухой/мокрый микс на УРОВНЕ КАДРА (dry и wet —
+        /// один и тот же кадр, фазово выровнены, без «музыки» и стерео-артефактов):
+        /// 1 = чистый RNNoise (максимум подавления), 0.5 = половина фона остаётся, и т.д.
+        /// Регулирует силу БЕЗ добавления искажений — в отличие от наслоения
+        /// спектрального/гейта поверх (те давали «рацию»).</summary>
+        public volatile float Mix = 1f;
+
         /// <summary>Пытается поднять RNNoise на указанном .wasm. Бросков не делает —
         /// при любой ошибке IsReady останется false.</summary>
         public RnnoiseDenoiser(string wasmPath)
@@ -231,9 +238,15 @@ namespace PISMO.Native
                 // память могла переехать при вызове — берём span заново
                 var span2 = _memory.GetSpan<byte>(0);
                 var outF = MemoryMarshal.Cast<byte, float>(span2.Slice(_outPtr, FRAME * 4));
+                float mix = Mix; if (mix < 0f) mix = 0f; else if (mix > 1f) mix = 1f;
                 for (int i = 0; i < FRAME; i++)
                 {
-                    float v = outF[i] * g;
+                    float wet = outF[i] * g;
+                    // Сухой/мокрый микс НА УРОВНЕ КАДРА: dry и wet — один кадр (out[i]
+                    // соответствует in[i]), поэтому фаза сохраняется, комбов/«музыки»
+                    // нет. mix=1 → чистый RNNoise; меньше → часть исходного фона.
+                    float dry = _inFifo[inOffset + i];
+                    float v = dry + (wet - dry) * mix;
                     if (v > 32767f) v = 32767f; else if (v < -32768f) v = -32768f;
                     PushOut((short)v);
                 }
