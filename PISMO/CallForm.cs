@@ -1063,9 +1063,19 @@ namespace PISMO
             {
                 DeviceSettings.ScreenShareCodec = cmbCodec.SelectedIndex == 1 ? "h264" : "av1";
                 try { DeviceSettings.Save(); } catch { }
-                // Смена на лету = перезапуск демки (стоп+старт). Зритель повторно
-                // нажмёт «Смотреть стрим» (сценарий 2).
+                // Горячая смена кодека невозможна (сессия LiveKit залипает на кодеке
+                // первого трека). Запоминаем выбор и предупреждаем: применится после
+                // перезахода в звонок; текущий звонок продолжается на прежнем кодеке.
                 try { _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec); } catch { }
+                try
+                {
+                    string cn = cmbCodec.SelectedIndex == 1 ? "H.264" : "AV1";
+                    MessageBox.Show(this,
+                        $"Кодек демонстрации ({cn}) применится после перезахода в звонок.\n" +
+                        "Текущий звонок продолжается на прежнем кодеке.",
+                        "Смена кодека", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch { }
             };
             _audioPanel.Controls.Add(cmbCodec);
             y += 30;
