@@ -164,8 +164,16 @@ namespace PISMO
             return Task.CompletedTask;
         }
 
+        // Кодек демки ФИКСИРУЕТСЯ на весь звонок (сессия LiveKit залипает на первом
+        // кодеке). Задаётся при подключении из настроек; смена в списке меняет только
+        // настройку для СЛЕДУЮЩЕГО входа — текущий звонок (и рестарт демки) держит этот.
+        private string _sessionCodec;
+        public string SessionScreenCodec => _sessionCodec ?? DeviceSettings.ScreenShareCodec;
+
         private void OnNativeConnected()
         {
+            _sessionCodec = DeviceSettings.ScreenShareCodec;   // фиксируем кодек на весь звонок
+            try { _t.SetScreenCodec(_sessionCodec); } catch { }
             // Микрофон стартуем сразу (мьютом рулит CallForm через SetMicrophoneEnabled).
             try
             {
@@ -401,7 +409,7 @@ namespace PISMO
             try
             {
                 _screenPreviewActive = true;
-                _t.SetScreenCodec(DeviceSettings.ScreenShareCodec);
+                _t.SetScreenCodec(SessionScreenCodec);   // кодек ЗВОНКА, а не текущий выбор в списке
                 _t.SetScreenEncoderPref(DeviceSettings.GpuEncodePref);
                 _t.StartScreenShare(bounds, fps > 0 ? fps : 15, height, withAudio);
                 LocalScreenStarted?.Invoke();
@@ -415,7 +423,7 @@ namespace PISMO
             try
             {
                 _screenPreviewActive = true;
-                _t.SetScreenCodec(DeviceSettings.ScreenShareCodec);
+                _t.SetScreenCodec(SessionScreenCodec);   // кодек ЗВОНКА, а не текущий выбор в списке
                 _t.SetScreenEncoderPref(DeviceSettings.GpuEncodePref);
                 _t.StartScreenShareWindow(window, fps > 0 ? fps : 15, DeviceSettings.ScreenShareResolutionHeight, withAudio);
                 LocalScreenStarted?.Invoke();
@@ -503,15 +511,11 @@ namespace PISMO
         // на кодеке первого видео-трека, поэтому новый кодек применяется только при
         // ПЕРЕЗАХОДЕ в звонок. Здесь просто запоминаем выбор; текущий звонок/демка
         // продолжаются на прежнем кодеке. Предупреждение пользователю показывает UI.
-        public void SetScreenCodec(string codec)
-        {
-            if (string.IsNullOrWhiteSpace(codec)) return;
-            try { _t?.SetScreenCodec(codec); } catch { }
-        }
-
-        /// <summary>Кодек реально идущей демки (null, если демка не идёт) — для решения,
-        /// нужен ли перезаход при смене кодека.</summary>
-        public string ScreenCodecInUse { get { try { return _t?.PublishedScreenCodec; } catch { return null; } } }
+        // Смена кодека в списке НЕ трогает текущий звонок: кодек звонка зафиксирован
+        // (_sessionCodec) до перезахода. Здесь только сохраняем выбор для следующего
+        // входа (DeviceSettings пишет CallForm). Транспорт текущей сессии не меняем —
+        // иначе рестарт демки подхватил бы новый кодек без перезахода.
+        public void SetScreenCodec(string codec) { /* применится при следующем входе (SessionScreenCodec) */ }
         public void SetScreenQualityLive(int resHeight, int fps) { try { _t?.SetScreenQualityLive(resHeight, fps); } catch { } }
         public void SetRemoteScreenAudioVolume(float volume) { try { _t?.SetScreenAudioVolumeAll(volume); } catch { } }
         public void SetParticipantVolume(string pid, float volume) { try { _t?.SetParticipantVolume(pid, volume); } catch { } }

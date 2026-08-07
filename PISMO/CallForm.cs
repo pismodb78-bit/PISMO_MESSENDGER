@@ -1070,15 +1070,12 @@ namespace PISMO
                 try
                 {
                     string cn = chosen == "h264" ? "H.264" : "AV1";
-                    string inUse = _transport?.ScreenCodecInUse;   // кодек реально идущей демки (null — не идёт)
-                    string msg;
-                    if (string.IsNullOrEmpty(inUse))
-                        msg = $"Кодек демонстрации: {cn}.\nПрименится при запуске демонстрации.";
-                    else if (string.Equals(inUse, chosen, StringComparison.OrdinalIgnoreCase))
-                        msg = $"Кодек демонстрации возвращён к текущему ({cn}).\nПерезаход не требуется — демонстрация уже идёт на нём.";
-                    else
-                        msg = $"Кодек ({cn}) применится после перезахода в звонок.\n" +
-                              $"Текущая демонстрация продолжается на прежнем ({inUse.ToUpperInvariant()}).";
+                    // Кодек ЗАФИКСИРОВАН на весь звонок; сравниваем выбор с кодеком сессии.
+                    string session = _transport?.SessionScreenCodec ?? chosen;
+                    string msg = string.Equals(session, chosen, StringComparison.OrdinalIgnoreCase)
+                        ? $"Кодек демонстрации ({cn}) — тот же, что в текущем звонке.\nПерезаход не требуется."
+                        : $"Кодек ({cn}) применится после перезахода в звонок.\n" +
+                          $"Текущий звонок (и рестарт демонстрации) продолжается на прежнем ({session.ToUpperInvariant()}).";
                     MessageBox.Show(this, msg, "Смена кодека", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch { }
