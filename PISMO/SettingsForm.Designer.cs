@@ -116,7 +116,9 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, 322),
-                Size = new Size(456, 252)
+                // Высота увеличена, чтобы вместить блок «порог регистрации звука»
+                // (раньше он был скрыт и панель была короче — отсюда наложение).
+                Size = new Size(456, 344)
             };
 
             var lblMicTitle = new Label
@@ -226,7 +228,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(220, 221, 222),
                 BackColor = Color.FromArgb(47, 49, 54),
                 AutoSize = true,
-                Location = new Point(14, 236),
+                Location = new Point(14, 256),
                 Cursor = Cursors.Hand
             };
             var lblVoiceHint = new Label
@@ -235,7 +237,7 @@ namespace PISMO
                 Font = new Font("Segoe UI", 8f),
                 ForeColor = Color.FromArgb(150, 152, 158),
                 AutoSize = true,
-                Location = new Point(14, 258)
+                Location = new Point(14, 278)
             };
             _trkVoiceThreshold = new TrackBar
             {
@@ -243,7 +245,7 @@ namespace PISMO
                 Maximum = 0,     // дБ: громко
                 Value = -40,
                 TickStyle = TickStyle.None,
-                Location = new Point(14, 276),
+                Location = new Point(14, 296),
                 Size = new Size(300, 30),
                 BackColor = Color.FromArgb(47, 49, 54)
             };
@@ -253,7 +255,7 @@ namespace PISMO
                 Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 AutoSize = true,
-                Location = new Point(326, 280)
+                Location = new Point(326, 300)
             };
             _trkVoiceThreshold.ValueChanged += (s, e) =>
             {
@@ -354,7 +356,7 @@ namespace PISMO
             var pnlScreen = new Panel
             {
                 BackColor = Color.FromArgb(47, 49, 54),
-                Location = new Point(20, 538),
+                Location = new Point(20, pnlMic.Bottom + 16),   // ниже панели микрофона (без наложения)
                 Size = new Size(456, 186)
             };
 
