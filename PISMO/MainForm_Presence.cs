@@ -95,6 +95,7 @@ namespace PISMO
             {
                 int idle = SystemIdleSeconds();
                 _ = Task.Run(() => WriteHeartbeat(idle));
+                try { UpdateChatHeaderPresence(); } catch { }   // обновляем статус собеседника в шапке
                 // Дешёвая перерисовка своего кружка в футере: если аватар не успел
                 // загрузиться к первому показу (или загрузка сорвалась), очередная
                 // отрисовка подхватит его из кэша / повторит загрузку.
@@ -211,6 +212,105 @@ namespace PISMO
         private static readonly Color PresenceOnline = Color.FromArgb(59, 165, 93);
         private static readonly Color PresenceIdle = Color.FromArgb(240, 178, 50);
         private static readonly Color PresenceOffline = Color.FromArgb(116, 127, 141);
+
+        // ── Статус собеседника в шапке чата (в сети / бездействует N / был в сети N) ──
+        private Label _lblChatPresence;
+
+        private void EnsureChatPresenceLabel()
+        {
+            if (_lblChatPresence != null) return;
+            _lblChatPresence = new Label
+            {
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9f),
+                ForeColor = PresenceOffline,
+                BackColor = pnlChatHeader.BackColor,   // сплошной фон шапки — без артефактов прозрачности
+                Visible = false
+            };
+            pnlChatHeader.Controls.Add(_lblChatPresence);
+            _lblChatPresence.BringToFront();
+        }
+
+        private static string HumanDur(int s)
+        {
+            if (s < 60) return "меньше минуты";
+            int m = s / 60; if (m < 60) return $"{m} мин";
+            int h = m / 60; if (h < 24) return $"{h} ч";
+            int d = h / 24; return $"{d} дн";
+        }
+
+        private static string HumanAgo(int s)
+        {
+            if (s < 60) return "только что";
+            int m = s / 60; if (m < 60) return $"{m} мин назад";
+            int h = m / 60; if (h < 24) return $"{h} ч назад";
+            int d = h / 24; return $"{d} дн назад";
+        }
+
+        private (string text, Color color)? ReadPeerPresenceText(int uid)
+        {
+            if (!_presenceColumnsOk || uid <= 0) return null;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT TIMESTAMPDIFF(SECOND, last_seen, NOW()) AS seen_ago, " +
+                    "TIMESTAMPDIFF(SECOND, last_active, NOW()) AS active_ago FROM users WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", uid);
+                using var r = cmd.ExecuteReader();
+                if (!r.Read()) return null;
+                int seenAgo = r["seen_ago"] == DBNull.Value ? int.MaxValue : Convert.ToInt32(r["seen_ago"]);
+                int activeAgo = r["active_ago"] == DBNull.Value ? int.MaxValue : Convert.ToInt32(r["active_ago"]);
+                if (seenAgo > 40) return ($"был(а) в сети {HumanAgo(seenAgo)}", PresenceOffline);
+                if (activeAgo > 90) return ($"● бездействует {HumanDur(activeAgo)}", PresenceIdle);
+                return ("● в сети", PresenceOnline);
+            }
+            catch { _presenceColumnsOk = false; return null; }
+        }
+
+        /// <summary>Позиционирует ярлык статуса сразу за текстом заголовка чата.</summary>
+        private void PositionChatPresence()
+        {
+            if (_lblChatPresence == null) return;
+            Size sz = TextRenderer.MeasureText(lblChatTitle.Text, lblChatTitle.Font);
+            int x = 16 + sz.Width + 12;                 // заголовок начинается с x=16
+            int maxX = pnlChatHeader.Width - 300;       // не залезаем на кнопки справа
+            if (maxX > 16 && x > maxX) x = maxX;
+            _lblChatPresence.Location = new Point(x, 18);
+        }
+
+        /// <summary>Обновляет статус собеседника в шапке (для ЛС). Для групп/пустого
+        /// выбора прячет. Читает БД в фоне, применяет на UI. Вызывается из OpenChat и
+        /// по таймеру присутствия.</summary>
+        private void UpdateChatHeaderPresence()
+        {
+            EnsureChatPresenceLabel();
+            int peer = _currentChatPartnerId;
+            if (peer <= 0 || !_presenceColumnsOk)
+            {
+                if (_lblChatPresence != null) _lblChatPresence.Visible = false;
+                return;
+            }
+            _ = Task.Run(() =>
+            {
+                var info = ReadPeerPresenceText(peer);
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (_currentChatPartnerId != peer) return;   // чат уже переключили
+                        if (info == null) { _lblChatPresence.Visible = false; return; }
+                        _lblChatPresence.Text = info.Value.text;
+                        _lblChatPresence.ForeColor = info.Value.color;
+                        PositionChatPresence();
+                        _lblChatPresence.Visible = true;
+                        _lblChatPresence.BringToFront();
+                    }));
+                }
+                catch { }
+            });
+        }
 
         /// <summary>Рисует цветную точку статуса в правом нижнем углу аватара.
         /// Если статус для uid неизвестен (миграция не выполнена) — ничего не рисует.</summary>

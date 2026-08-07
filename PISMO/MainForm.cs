@@ -2212,6 +2212,7 @@ namespace PISMO
             _lastMsgCount = 0;
 
             lblChatTitle.Text = "@ " + partnerName;
+            UpdateChatHeaderPresence();   // статус собеседника (в сети / бездействует / был в сети)
 
             foreach (var p in _userPanels)
                 p.BackColor = (p.Tag is int id && id == partnerId)
@@ -2235,6 +2236,7 @@ namespace PISMO
             _lastGroupMsgCount = 0;
 
             lblChatTitle.Text = "👥 " + groupName;
+            UpdateChatHeaderPresence();   // группа — статус собеседника прячется
 
             foreach (var p in _groupPanels)
                 p.BackColor = (p.Tag is int id && id == groupId)
@@ -2433,6 +2435,7 @@ namespace PISMO
             _lastMsgCount = 0;
             _lastGroupMsgCount = 0;
             lblChatTitle.Text = "# Выберите диалог";
+            if (_lblChatPresence != null) _lblChatPresence.Visible = false;
             DisposeAndClear(pnlMessages);
             _renderedChatKey = null; _renderedChatSig = null;
         }
