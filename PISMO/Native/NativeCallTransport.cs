@@ -49,6 +49,14 @@ namespace PISMO.Native
         private System.Threading.Timer _statsTimer;
         private ulong _roomHandle;
         private ulong _localHandle;      // OwnedParticipant локального участника
+        private string _localIdentity;   // identity локального участника (для своей рамки «говорит»)
+        // Индикатор «говорит»: LiveKit шлёт удалённых говорящих, а СВОЮ активность
+        // детектим локально по уровню отправляемого звука (серверный детект может не
+        // включать себя / не срабатывать при выключенном AGC на тихом микрофоне).
+        private readonly object _speakLock = new();
+        private readonly HashSet<string> _remoteSpeakers = new();
+        private volatile bool _localSpeaking;
+        private int _localSpeakHold;
         private bool _disposed;
 
         // Аудио 48 кГц моно — общий формат FFI-источника/стрима.
@@ -469,7 +477,12 @@ namespace PISMO.Native
         private volatile bool _gateEnabled;   // программный гейт ПОВЕРХ APM (aggressive)
 
         /// <summary>Мьют микрофона: трек остаётся опубликованным, кадры не шлём.</summary>
-        public void SetMicMuted(bool muted) => _micMuted = muted;
+        public void SetMicMuted(bool muted)
+        {
+            _micMuted = muted;
+            // При мьюте кадры не идут — гасим свою рамку «говорит» вручную, иначе застрянет.
+            if (muted && _localSpeaking) { _localSpeakHold = 0; _localSpeaking = false; EmitSpeakers(); }
+        }
 
         private bool _selfMicMuted, _selfDeafened;
 
@@ -564,6 +577,42 @@ namespace PISMO.Native
         {
             _voiceGateOn = on;
             _voiceThrDb = Math.Clamp(thrDb, -90, 0);
+        }
+
+        // Объединяет удалённых говорящих (от LiveKit) со своей локальной активностью
+        // и шлёт итоговый список в UI (рамка «говорит»).
+        private void EmitSpeakers()
+        {
+            string[] list;
+            lock (_speakLock)
+            {
+                int extra = (_localSpeaking && !string.IsNullOrEmpty(_localIdentity)) ? 1 : 0;
+                list = new string[_remoteSpeakers.Count + extra];
+                int i = 0;
+                foreach (var id in _remoteSpeakers) list[i++] = id;
+                if (extra == 1) list[i] = _localIdentity;
+            }
+            ActiveSpeakersChanged?.Invoke(list);
+        }
+
+        // Локальный детектор «говорю»: по уровню отправляемого кадра. Гейт уже занулил
+        // тишину/паузы, так что заметная энергия = речь. Hold, чтобы рамка не мигала.
+        private void UpdateLocalSpeaking(byte[] data, int offset, int len)
+        {
+            if (string.IsNullOrEmpty(_localIdentity)) return;
+            int n = len / 2; if (n <= 0) return;
+            double sum = 0;
+            for (int i = 0; i < n; i++)
+            {
+                short s = (short)(data[offset + i * 2] | (data[offset + i * 2 + 1] << 8));
+                sum += (double)s * s;
+            }
+            double rms = Math.Sqrt(sum / n);
+            double db = rms > 1.0 ? 20.0 * Math.Log10(rms / 32768.0) : -100.0;
+            if (db > -50.0) _localSpeakHold = 25;              // ~250мс удержания
+            else if (_localSpeakHold > 0) _localSpeakHold--;
+            bool speaking = _localSpeakHold > 0;
+            if (speaking != _localSpeaking) { _localSpeaking = speaking; EmitSpeakers(); }
         }
 
         // Ручной voice gate на кадре (i16, managed). Идёт ПЕРЕД RNNoise: режет сырой
@@ -667,6 +716,9 @@ namespace PISMO.Native
                 //    ПОТОМ RNNoise (чистит то, что прошло порог). Порядок по просьбе.
                 ApplyVoiceGate(data, offset, len);
                 if (_nsEnabled) DenoiseInPlace(data, offset, len);
+
+                // Своя рамка «говорит» — по уровню обработанного (отправляемого) звука.
+                UpdateLocalSpeaking(data, offset, len);
 
                 // 4) Обратно в unmanaged для отправки.
                 Marshal.Copy(data, offset, buf, len);
@@ -2191,6 +2243,7 @@ namespace PISMO.Native
             var res = cb.Result;
             _roomHandle = res.Room.Handle.Id;
             _localHandle = res.LocalParticipant.Handle.Id;
+            try { _localIdentity = res.LocalParticipant.Info.Identity; } catch { }
             ScreenLog.Session("Подключён к комнате (демка-лог)");
             EnsurePlayback();
             Connected?.Invoke();
@@ -2303,7 +2356,12 @@ namespace PISMO.Native
                 {
                     var ids = new string[re.ActiveSpeakersChanged.ParticipantIdentities.Count];
                     re.ActiveSpeakersChanged.ParticipantIdentities.CopyTo(ids, 0);
-                    ActiveSpeakersChanged?.Invoke(ids);
+                    lock (_speakLock)
+                    {
+                        _remoteSpeakers.Clear();
+                        foreach (var id in ids) if (id != _localIdentity) _remoteSpeakers.Add(id);
+                    }
+                    EmitSpeakers();
                     break;
                 }
                 case RoomEvent.MessageOneofCase.Disconnected:
