@@ -369,11 +369,21 @@ namespace PISMO
         public void SwitchCameraDevice(string deviceLabel) { try { _t.SwitchCameraDevice(ResolveCam(deviceLabel)); } catch { } }
 
         // ── Демонстрация экрана / окна ───────────────────────────────────
+        // Кэш параметров текущей демки — чтобы перезапустить с тем же источником при
+        // смене кодека.
+        private bool _shareActive, _shareIsWindow, _shareAudio;
+        private IntPtr _shareWindow;
+        private Rectangle _shareBounds;
+        private int _shareHeight, _shareFps;
+        private int _codecGen;   // поколение смены кодека (отмена устаревшего перезапуска)
+
         public void StartMonitorShare(Rectangle bounds, int height, int fps, bool withAudio = false)
         {
             try
             {
                 _screenPreviewActive = true;
+                _shareActive = true; _shareIsWindow = false; _shareBounds = bounds;
+                _shareHeight = height; _shareFps = fps; _shareAudio = withAudio;
                 _t.SetScreenCodec(DeviceSettings.ScreenShareCodec);
                 _t.SetScreenEncoderPref(DeviceSettings.GpuEncodePref);
                 _t.StartScreenShare(bounds, fps > 0 ? fps : 15, height, withAudio);
@@ -388,6 +398,8 @@ namespace PISMO
             try
             {
                 _screenPreviewActive = true;
+                _shareActive = true; _shareIsWindow = true; _shareWindow = window;
+                _shareFps = fps; _shareAudio = withAudio;
                 _t.SetScreenCodec(DeviceSettings.ScreenShareCodec);
                 _t.SetScreenEncoderPref(DeviceSettings.GpuEncodePref);
                 _t.StartScreenShareWindow(window, fps > 0 ? fps : 15, DeviceSettings.ScreenShareResolutionHeight, withAudio);
@@ -397,8 +409,8 @@ namespace PISMO
             catch (Exception ex) { LocalScreenError?.Invoke(ex.Message); }
         }
 
-        public void StopScreenShareTrack() { try { _t.StopScreenShare(); } catch { } LocalScreenStopped?.Invoke(); }
-        public void CancelScreenPreview() { try { _t.StopScreenShare(); } catch { } LocalScreenStopped?.Invoke(); }
+        public void StopScreenShareTrack() { _shareActive = false; _codecGen++; try { _t.StopScreenShare(); } catch { } LocalScreenStopped?.Invoke(); }
+        public void CancelScreenPreview() { _shareActive = false; _codecGen++; try { _t.StopScreenShare(); } catch { } LocalScreenStopped?.Invoke(); }
         public void ConfirmScreenShare() { /* уже публикуется с момента StartMonitorShare */ }
         public void SetScreenPreviewActive(bool on) => _screenPreviewActive = on;
 
@@ -472,7 +484,46 @@ namespace PISMO
         public void SetScreenShareVolume(string pid, float volume) { try { _t?.SetScreenShareVolume(pid, volume); } catch { } }
         // Горячая замена: если демка идёт — трек перепубликуется с новым кодеком,
         // иначе кодек просто запоминается до старта (оба случая внутри метода).
-        public void SetScreenCodec(string codec) { try { _t?.ChangeScreenCodecLive(codec); } catch { } }
+        // Смена кодека демки. Если демка идёт — ЗАКРЫВАЕМ её у стримера (событие в UI),
+        // ставим новый кодек, и через 3с открываем заново с тем же источником. Пауза
+        // даёт сессии LiveKit отпустить старый кодек (иначе Pion залипает на первом).
+        public void SetScreenCodec(string codec)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(codec)) return;
+                if (!_shareActive)
+                {
+                    // Демка не идёт — просто запоминаем кодек для следующего старта.
+                    try { _t?.SetScreenCodec(codec); } catch { }
+                    return;
+                }
+
+                // Запоминаем параметры и закрываем демку у стримера.
+                bool isWin = _shareIsWindow; IntPtr wnd = _shareWindow; Rectangle b = _shareBounds;
+                int h = _shareHeight, fps = _shareFps; bool au = _shareAudio;
+                DeviceSettings.ScreenShareCodec = codec;   // новый кодек для перезапуска
+                int gen = ++_codecGen;
+
+                _shareActive = false;
+                try { _t?.SetScreenCodec(codec); } catch { }
+                try { _t?.StopScreenShare(); } catch { }
+                LocalScreenStopped?.Invoke();   // демка ЗАКРЫВАЕТСЯ у стримера
+
+                System.Threading.Tasks.Task.Run(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(3000).ConfigureAwait(false);
+                    if (gen != _codecGen) return;   // за это время сменили снова/остановили
+                    Ui(() =>
+                    {
+                        if (gen != _codecGen) return;
+                        if (isWin) StartWindowShare(wnd, fps, au);
+                        else StartMonitorShare(b, h, fps, au);
+                    });
+                });
+            }
+            catch { }
+        }
         public void SetScreenQualityLive(int resHeight, int fps) { try { _t?.SetScreenQualityLive(resHeight, fps); } catch { } }
         public void SetRemoteScreenAudioVolume(float volume) { try { _t?.SetScreenAudioVolumeAll(volume); } catch { } }
         public void SetParticipantVolume(string pid, float volume) { try { _t?.SetParticipantVolume(pid, volume); } catch { } }
