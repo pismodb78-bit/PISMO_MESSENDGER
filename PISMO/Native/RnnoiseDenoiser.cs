@@ -65,6 +65,11 @@ namespace PISMO.Native
 
         public bool IsReady => _ok;
 
+        /// <summary>Идёт ли сейчас речь по мнению RNNoise (VAD + grace-период). Нужно
+        /// порогу чувствительности: он режет то, что RNNoise не считает голосом
+        /// (например громкий клик клавиши в паузе), даже если оно громче порога.</summary>
+        public bool SpeechActive => _vadHang > 0;
+
         /// <summary>Сила шумодава 0..1 = ГЛУБИНА глушения фона В ПАУЗАХ (как VAD-гейт
         /// эталонного голосового RNNoise werman/noise-suppression-for-voice). Ядро
         /// RNNoise всегда работает на полную и чистит стационарный шум во время речи;

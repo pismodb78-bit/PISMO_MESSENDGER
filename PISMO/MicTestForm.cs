@@ -143,15 +143,23 @@ namespace PISMO
             int len = e.BytesRecorded;
             if (len <= 0) return;
             var data = e.Buffer;
+            int n = len & ~1;
 
-            // Шумодав — тот же тракт, что в звонке: RNNoise + спектральный, сила
-            // спектрального = ползунок «Сила шумоподавления» (0..100 → Strength).
+            // 1) СНАЧАЛА порог регистрации (по сырому уровню, как в звонке): ниже
+            //    порога — тишина. Hangover, чтобы не рубить паузы между словами.
+            double sumRaw = 0;
+            for (int i = 0; i < n; i += 2) { short s0 = (short)(data[i] | (data[i + 1] << 8)); sumRaw += (double)s0 * s0; }
+            double rmsRaw = Math.Sqrt(sumRaw / Math.Max(1, n / 2));
+            double db = rmsRaw > 1.0 ? 20.0 * Math.Log10(rmsRaw / 32768.0) : -100.0;
+            if (db >= DeviceSettings.VoiceThreshold) _vgHang = 8;   // ~160мс (буфер 20мс)
+            else if (_vgHang > 0) _vgHang--;
+            if (_vgHang <= 0) Array.Clear(data, 0, len);           // ниже порога — тишина
+
+            // 2) ПОТОМ шумодав RNNoise (чистит то, что прошло порог). Сила = ползунок.
             int s = DeviceSettings.NoiseSuppressionStrength;
             if (_noise && s > 0)
             {
                 float f = s / 100f;
-                // ТОЛЬКО RNNoise (сила = сухой/мокрый микс) — тот же чистый тракт,
-                // что в звонке. Никаких наслоений спектрального/гейта (давали «рацию»).
                 var rn = _rn;
                 if (rn != null && rn.IsReady) { rn.Strength = f; try { rn.Process(data, 0, len); } catch { } }
                 else if (_spectral != null)   // fallback без RNNoise — мягкий спектральный
@@ -162,9 +170,9 @@ namespace PISMO
                 }
             }
 
-            // Усиление + уровень (i16 LE, моно).
+            // 3) Усиление + уровень для индикатора (i16 LE, моно).
             float g = _gain;
-            double sum = 0; int n = len & ~1;
+            double sum = 0;
             for (int i = 0; i < n; i += 2)
             {
                 int v = (short)(data[i] | (data[i + 1] << 8));
@@ -172,14 +180,6 @@ namespace PISMO
                 float f = v / 32768f; sum += f * f;
             }
             _level = (float)Math.Sqrt(sum / Math.Max(1, n / 2));
-
-            // Порог регистрации звука — как в звонке: ниже порога сигнал не проходит
-            // (тишина). Гейт с hangover, чтобы не рубить паузы между словами. Так тест
-            // честно отражает поведение звонка (раньше ползунок в тесте не влиял).
-            double db = _level > 0.0001f ? 20.0 * Math.Log10(_level) : -100.0;
-            if (db >= DeviceSettings.VoiceThreshold) _vgHang = 8;   // ~160мс (буфер 20мс)
-            else if (_vgHang > 0) _vgHang--;
-            if (_vgHang <= 0) Array.Clear(data, 0, len);            // ниже порога — тишина
 
             try { _buf?.AddSamples(data, 0, len); } catch { }
         }

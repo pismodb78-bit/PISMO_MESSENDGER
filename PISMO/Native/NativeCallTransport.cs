@@ -188,7 +188,6 @@ namespace PISMO.Native
         private volatile int _voiceThrDb = -40;
         private int _voiceGateHang;
         private const int VoiceGateHangFrames = 15;   // 15*10мс = 150мс удержания (снапово режет паузы)
-        private short[] _gateTmp = new short[480];
         // Нативный libwebrtc APM: шумодав + эхоподавление + ВЧ-фильтр + AGC.
         // ProcessStream = ближний конец (микрофон), ProcessReverseStream = дальний
         // конец (то, что играем в колонки) — референс для AEC.
@@ -565,26 +564,25 @@ namespace PISMO.Native
             _voiceThrDb = Math.Clamp(thrDb, -80, 0);
         }
 
-        // Ручной voice gate на итоговом кадре (i16, unmanaged). Тише порога и после
-        // hangover — глушим в ноль (не передаём). Порог в dBFS относительно full-scale.
-        private void ApplyVoiceGateUnmanaged(IntPtr buf, int len)
+        // Ручной voice gate на кадре (i16, managed). Идёт ПЕРЕД RNNoise: режет сырой
+        // сигнал по порогу, а RNNoise затем чистит то, что прошло. Тише порога и после
+        // hangover — глушим в ноль. Порог в dBFS относительно full-scale.
+        private void ApplyVoiceGate(byte[] data, int offset, int len)
         {
             if (!_voiceGateOn) return;
             int n = len / 2;
             if (n <= 0) return;
-            if (_gateTmp.Length < n) _gateTmp = new short[n];
-            Marshal.Copy(buf, _gateTmp, 0, n);
             double sum = 0;
-            for (int i = 0; i < n; i++) { double v = _gateTmp[i]; sum += v * v; }
+            for (int i = 0; i < n; i++)
+            {
+                short s = (short)(data[offset + i * 2] | (data[offset + i * 2 + 1] << 8));
+                sum += (double)s * s;
+            }
             double rms = Math.Sqrt(sum / n);
             double db = rms > 1.0 ? 20.0 * Math.Log10(rms / 32768.0) : -100.0;
             if (db >= _voiceThrDb) _voiceGateHang = VoiceGateHangFrames;   // открыт
             else if (_voiceGateHang > 0) _voiceGateHang--;
-            if (_voiceGateHang <= 0)
-            {
-                for (int i = 0; i < n; i++) _gateTmp[i] = 0;
-                Marshal.Copy(_gateTmp, 0, buf, n);
-            }
+            if (_voiceGateHang <= 0) Array.Clear(data, offset, len);       // ниже порога — тишина
         }
 
         // Единый шумодав in-place, реально градуированный ползунком 0..100:
@@ -653,19 +651,19 @@ namespace PISMO.Native
                 }
                 catch { }
 
-                // 2) Шумодав (RNNoise + гейт) ПОСЛЕ AEC.
-                if (_nsEnabled)
-                {
-                    Marshal.Copy(buf, data, offset, len);   // результат AEC → managed
-                    DenoiseInPlace(data, offset, len);
-                    Marshal.Copy(data, offset, buf, len);   // и обратно в unmanaged для отправки
-                }
+                // 2) Результат AEC → managed для дальнейшей обработки.
+                Marshal.Copy(buf, data, offset, len);
 
-                // 3) Ручная громкость (ползунок) — финальным масштабом, после AGC.
+                // 3) СНАЧАЛА порог чувствительности (режет сырой сигнал по громкости),
+                //    ПОТОМ RNNoise (чистит то, что прошло порог). Порядок по просьбе.
+                ApplyVoiceGate(data, offset, len);
+                if (_nsEnabled) DenoiseInPlace(data, offset, len);
+
+                // 4) Обратно в unmanaged для отправки.
+                Marshal.Copy(data, offset, buf, len);
+
+                // 5) Ручная громкость (ползунок) — финальным масштабом, после AGC.
                 ApplyMicGainUnmanaged(buf, len);
-
-                // 4) Ручной порог чувствительности (voice gate) на итоговом кадре.
-                ApplyVoiceGateUnmanaged(buf, len);
 
                 LiveKitFfi.Request(new FfiRequest
                 {
