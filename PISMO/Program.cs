@@ -18,9 +18,15 @@ namespace PISMO
             // анимации гифок) не роняли приложение жёстким диалогом.
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (s, e) =>
+            {
                 System.Diagnostics.Debug.WriteLine("[UI EXCEPTION] " + e.Exception.Message);
+                LogCrash("UI", e.Exception);
+            };
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
                 System.Diagnostics.Debug.WriteLine("[FATAL] " + (e.ExceptionObject as Exception)?.Message);
+                LogCrash("FATAL(background)", e.ExceptionObject as Exception);
+            };
 
             ApplicationConfiguration.Initialize();
 
@@ -34,6 +40,19 @@ namespace PISMO
             var ctx = new ApplicationContext();
             new SplashForm(ctx).Show();
             Application.Run(ctx);
+        }
+
+        // Пишет полное исключение (со стеком) в pismo_crash.txt рядом с exe, чтобы
+        // «тихие» падения (фоновый поток аудио/таймеры) можно было диагностировать.
+        private static void LogCrash(string where, Exception ex)
+        {
+            try
+            {
+                string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "pismo_crash.txt");
+                string txt = $"\n===== {DateTime.Now:yyyy-MM-dd HH:mm:ss} [{where}] =====\n{ex}\n";
+                System.IO.File.AppendAllText(path, txt);
+            }
+            catch { }
         }
     }
 }

@@ -111,6 +111,11 @@ namespace PISMO
             }
         }
 
+        /// <summary>Усиление голоса НА ВЫХОДЕ цепи обработки (после шумодава/порога),
+        /// 0..300 (%). Makeup-gain: шумодав приглушает голос — этим добираем громкость.
+        /// Регулируется на лету.</summary>
+        public static int VoiceOutputGain { get; set; } = 100;
+
         /// <summary>Ручной порог активации голоса в дБ (−60..0): звук тише порога
         /// не передаётся. Действует только при VoiceAutoSensitivity=false.</summary>
         public static int VoiceThreshold { get; set; } = -40;
@@ -256,6 +261,9 @@ namespace PISMO
                         case "NoiseSuppressionStrength":
                             if (int.TryParse(val, out int nss)) NoiseSuppressionStrength = nss;
                             break;
+                        case "VoiceOutputGain":
+                            if (int.TryParse(val, out int vog)) VoiceOutputGain = Math.Clamp(vog, 0, 300);
+                            break;
                         case "VoiceThreshold":
                             if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, -90, 0);
                             break;
@@ -308,6 +316,7 @@ namespace PISMO
                     $"NoiseSuppression={(NoiseSuppression ? 1 : 0)}\n" +
                     $"NoiseSuppressMode={NoiseSuppressMode}\n" +
                     $"NoiseSuppressionStrength={NoiseSuppressionStrength}\n" +
+                    $"VoiceOutputGain={VoiceOutputGain}\n" +
                     $"VoiceThreshold={VoiceThreshold}\n" +
                     $"HardwareAcceleration={(HardwareAcceleration ? 1 : 0)}\n" +
                     $"ThemeMode={ThemeMode}\n" +

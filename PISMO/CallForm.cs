@@ -883,6 +883,8 @@ namespace PISMO
         public void SetNoiseStrengthLive(int pct) { try { _transport?.SetNoiseStrength(pct); } catch { } }
         // Порог чувствительности на горячую в звонке (без ожидания таймера настроек).
         public void SetVoiceThresholdLive(int db) { try { _transport?.SetVoiceGate(true, db); } catch { } }
+        // Усиление голоса на выходе цепи обработки — на горячую.
+        public void SetOutputGainLive(int pct) { try { _transport?.SetOutputGain(pct); } catch { } }
 
         /// <summary>Попап с живым графиком задержки (клик по плашке 📶, как в Discord).</summary>
         private void TogglePingGraph()

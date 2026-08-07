@@ -189,6 +189,7 @@ namespace PISMO
                     agc: true);
                 _t.SetNoiseMode(DeviceSettings.NoiseSuppressMode);   // режим (в т.ч. aggressive-гейт)
                 _t.SetNoiseStrength(DeviceSettings.NoiseSuppressionStrength); // сила шумодава (ползунок)
+                _t.SetOutputGain(DeviceSettings.VoiceOutputGain);   // makeup-усиление на выходе цепи
                 // Ручной порог чувствительности всегда активен (авто убрано). При
                 // пороге −60 дБ гейт пропускает всё — то есть слайдер полностью решает.
                 _t.SetVoiceGate(true, DeviceSettings.VoiceThreshold);
@@ -525,6 +526,7 @@ namespace PISMO
         public void SetNoiseSuppression(bool on) { try { _t?.SetNoiseSuppression(on); } catch { } }
         public void SetNoiseMode(string mode) { try { _t?.SetNoiseMode(mode); } catch { } }
         public void SetNoiseStrength(int pct) { try { _t?.SetNoiseStrength(pct); } catch { } }
+        public void SetOutputGain(int pct) { try { _t?.SetOutputGain(pct); } catch { } }
         public void SetMicGain(float gain) { try { _t?.SetMicGain(gain); } catch { } }
         public void SetDisplayName(string name) { }
 

@@ -189,6 +189,7 @@ namespace PISMO.Native
         // Ручная громкость микрофона (ползунок настроек). Множитель поверх APM/AGC —
         // применяется ПОСЛЕ обработки, финальным масштабом, поэтому AGC его не гасит.
         private volatile float _micGain = 1f;
+        private volatile float _outGain = 1f;   // makeup-усиление НА ВЫХОДЕ цепи обработки (0..3)
         private short[] _gainTmp = new short[480];
         // Ручной порог чувствительности (voice gate): сигнал тише порога (в dBFS) не
         // передаётся. Включается, когда автоопределение выключено. Hangover, чтобы не
@@ -537,6 +538,17 @@ namespace PISMO.Native
 
         private void OnMicData(object sender, WaveInEventArgs e)
         {
+            try { OnMicDataCore(e); }
+            catch (Exception ex)
+            {
+                // Исключение на аудио-потоке НЕ должно ронять процесс (иначе «тихий»
+                // краш). Логируем в screenlog и продолжаем.
+                try { ScreenLog.Log("[MIC] исключение в обработке аудио: " + ex); } catch { }
+            }
+        }
+
+        private void OnMicDataCore(WaveInEventArgs e)
+        {
             if (_micSource == 0 || _micMuted || e.BytesRecorded <= 0) return;
 
             // APM обрабатывает строго 10-мс кадры — копим и режем на куски по 960 байт.
@@ -560,8 +572,9 @@ namespace PISMO.Native
                 return;
             }
 
-            // Резервный путь без APM: шумодав → отправка.
+            // Резервный путь без APM: шумодав → makeup-усиление → отправка.
             if (_nsEnabled) DenoiseInPlace(e.Buffer, 0, e.BytesRecorded);
+            ApplyGainManaged(e.Buffer, 0, e.BytesRecorded, _outGain);
             SendCapturedAudio(e.Buffer, 0, e.BytesRecorded);
         }
 
@@ -570,6 +583,25 @@ namespace PISMO.Native
         {
             _nsStrengthPct = Math.Clamp(pct, 0, 100);
             _nsEnabled = _nsStrengthPct > 0;
+        }
+
+        /// <summary>Усиление голоса на выходе цепи обработки (0..300 %) — на лету.</summary>
+        public void SetOutputGain(int pct) => _outGain = Math.Clamp(pct, 0, 300) / 100f;
+
+        // Умножение i16-кадра на коэффициент (makeup-gain) с ограничением.
+        private static void ApplyGainManaged(byte[] data, int offset, int len, float g)
+        {
+            if (g == 1f) return;
+            int n = len / 2;
+            for (int i = 0; i < n; i++)
+            {
+                int idx = offset + i * 2;
+                int v = (short)(data[idx] | (data[idx + 1] << 8));
+                v = (int)(v * g);
+                if (v > short.MaxValue) v = short.MaxValue; else if (v < short.MinValue) v = short.MinValue;
+                data[idx] = (byte)(v & 0xFF);
+                data[idx + 1] = (byte)((v >> 8) & 0xFF);
+            }
         }
 
         /// <summary>Ручной порог чувствительности ввода: on=true (автоопределение
@@ -717,6 +749,9 @@ namespace PISMO.Native
                 //    ПОТОМ RNNoise (чистит то, что прошло порог). Порядок по просьбе.
                 ApplyVoiceGate(data, offset, len);
                 if (_nsEnabled) DenoiseInPlace(data, offset, len);
+
+                // Makeup-усиление на выходе цепи обработки голоса (после шумодава).
+                ApplyGainManaged(data, offset, len, _outGain);
 
                 // Своя рамка «говорит» — по уровню обработанного (отправляемого) звука.
                 UpdateLocalSpeaking(data, offset, len);

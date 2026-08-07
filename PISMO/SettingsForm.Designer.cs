@@ -116,9 +116,8 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, 322),
-                // Высота увеличена, чтобы вместить блок «порог регистрации звука»
-                // (раньше он был скрыт и панель была короче — отсюда наложение).
-                Size = new Size(456, 344)
+                // Высота вмещает блоки порога и усиления на выходе.
+                Size = new Size(456, 400)
             };
 
             var lblMicTitle = new Label
@@ -292,6 +291,35 @@ namespace PISMO
             _trkVoiceThreshold.Enabled = true;
             _lblVoiceThresholdValue.Enabled = true;
 
+            // Усиление голоса на ВЫХОДЕ цепи обработки (makeup-gain после шумодава), 0..300%.
+            var lblOutGainHint = new Label
+            {
+                Text = "УСИЛЕНИЕ ГОЛОСА НА ВЫХОДЕ (после шумодава)",
+                Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(185, 187, 190),
+                AutoSize = true,
+                Location = new Point(14, 328)
+            };
+            _trkOutGain = new TrackBar
+            {
+                Minimum = 0, Maximum = 300, Value = 100, TickStyle = TickStyle.None,
+                Location = new Point(14, 348), Size = new Size(300, 30),
+                BackColor = Color.FromArgb(47, 49, 54)
+            };
+            _lblOutGainValue = new Label
+            {
+                Text = "100%", Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222), AutoSize = true, Location = new Point(326, 352)
+            };
+            _trkOutGain.ValueChanged += (s, e) =>
+            {
+                int v = _trkOutGain.Value;
+                _lblOutGainValue.Text = v + "%";
+                if (_loadingSettings) return;
+                DeviceSettings.VoiceOutputGain = v;   // живо в память
+                try { MainForm.Current?.ActiveCallFormPublic()?.SetOutputGainLive(v); } catch { }  // на горячую в звонок
+            };
+
             _chkNoiseSuppress = new CheckBox
             {
                 Text = "Шумоподавление",
@@ -360,7 +388,8 @@ namespace PISMO
                 lblMicTitle, lblMicHint, _cmbMic, _btnMicTest,
                 lblGainHint, _trkGain, _lblGainValue,
                 lblLevelHint, _lblDbValue, _pnlLevelBar, _lblMicStatus,
-                _chkVoiceAuto, lblVoiceHint, _trkVoiceThreshold, _lblVoiceThresholdValue
+                _chkVoiceAuto, lblVoiceHint, _trkVoiceThreshold, _lblVoiceThresholdValue,
+                lblOutGainHint, _trkOutGain, _lblOutGainValue
             });
 
             // ── Демонстрация экрана ─────────────────────────────────
