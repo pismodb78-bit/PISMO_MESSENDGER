@@ -294,7 +294,7 @@ namespace PISMO
             // Усиление голоса на ВЫХОДЕ цепи обработки (makeup-gain после шумодава), 0..300%.
             var lblOutGainHint = new Label
             {
-                Text = "УСИЛЕНИЕ ГОЛОСА НА ВЫХОДЕ (после шумодава)",
+                Text = "УСИЛЕНИЕ ГОЛОСА НА ВЫХОДЕ",
                 Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(185, 187, 190),
                 AutoSize = true,

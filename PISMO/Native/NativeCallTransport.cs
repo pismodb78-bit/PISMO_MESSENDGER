@@ -588,7 +588,10 @@ namespace PISMO.Native
         /// <summary>Усиление голоса на выходе цепи обработки (0..300 %) — на лету.</summary>
         public void SetOutputGain(int pct) => _outGain = Math.Clamp(pct, 0, 300) / 100f;
 
-        // Умножение i16-кадра на коэффициент (makeup-gain) с ограничением.
+        // Makeup-усиление i16-кадра с МЯГКИМ лимитером (tanh). Обычный клип при
+        // усилении «в потолок» не добавляет громкости (только режет пики), поэтому
+        // ползунок казался бесполезным. tanh загоняет пики плавно → растёт средняя
+        // громкость (RMS), усиление реально слышно, без жёсткого искажения.
         private static void ApplyGainManaged(byte[] data, int offset, int len, float g)
         {
             if (g == 1f) return;
@@ -596,8 +599,9 @@ namespace PISMO.Native
             for (int i = 0; i < n; i++)
             {
                 int idx = offset + i * 2;
-                int v = (short)(data[idx] | (data[idx + 1] << 8));
-                v = (int)(v * g);
+                float x = (short)(data[idx] | (data[idx + 1] << 8)) * g / 32768f;
+                if (x > 0.7f || x < -0.7f) x = (float)Math.Tanh(x);   // мягко ограничиваем только пики
+                int v = (int)(x * 32767f);
                 if (v > short.MaxValue) v = short.MaxValue; else if (v < short.MinValue) v = short.MinValue;
                 data[idx] = (byte)(v & 0xFF);
                 data[idx + 1] = (byte)((v >> 8) & 0xFF);

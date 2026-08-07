@@ -1492,7 +1492,14 @@ namespace PISMO
                 mute.CheckedChanged += (s, e) => { try { onMute?.Invoke(mute.Checked); } catch { } };
                 menu.Items.Add(mute);
             }
-            menu.Closed += (s, e) => { try { menu.Dispose(); } catch { } };
+            // Dispose ОТЛОЖЕННО (через очередь сообщений формы), а НЕ прямо в Closed:
+            // ModalMenuFilter ещё держит меню как активный dropdown в момент Closed, и
+            // синхронный Dispose оставлял ему ссылку на удалённый объект → следующий
+            // клик мышью падал с ObjectDisposedException (вылет из цикла сообщений).
+            menu.Closed += (s, e) =>
+            {
+                try { BeginInvoke(new Action(() => { try { menu.Dispose(); } catch { } })); } catch { }
+            };
             menu.Show(Cursor.Position);
         }
 
