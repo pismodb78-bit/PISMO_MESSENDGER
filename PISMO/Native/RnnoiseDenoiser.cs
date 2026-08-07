@@ -51,9 +51,11 @@ namespace PISMO.Native
         // по ушам». Поэтому держим hangover: после речевого кадра оставляем gain=1
         // ещё ~250мс, чтобы короткие провалы VAD внутри слов НЕ приглушались; в
         // затухание уходим только на настоящей паузе (устойчивый низкий VAD).
-        private const float VAD_SPEECH = 0.5f;    // выше — речь → взводим hangover
-        private const float GAIN_FLOOR = 0.16f;   // остаточный фон в паузе (~-16дБ)
-        private const int HANG_FRAMES = 25;       // 25*10мс = 250мс удержания «речь»
+        // Порог речи по VAD: эталонный голосовой RNNoise (werman) рекомендует 85–95%.
+        // Держим 0.6 как компромисс — с grace-периодом ниже это надёжно ловит речь и
+        // не рубит тихие/глухие согласные (их VAD-провалы закрывает hangover).
+        private const float VAD_SPEECH = 0.6f;    // выше — речь → взводим hangover
+        private const int HANG_FRAMES = 30;       // 30*10мс = 300мс grace (не режем концы слов)
         private int _vadHang;
         private float _gain = 1f;
 
@@ -63,12 +65,13 @@ namespace PISMO.Native
 
         public bool IsReady => _ok;
 
-        /// <summary>Сила шумодава 0..1 как сухой/мокрый микс на УРОВНЕ КАДРА (dry и wet —
-        /// один и тот же кадр, фазово выровнены, без «музыки» и стерео-артефактов):
-        /// 1 = чистый RNNoise (максимум подавления), 0.5 = половина фона остаётся, и т.д.
-        /// Регулирует силу БЕЗ добавления искажений — в отличие от наслоения
-        /// спектрального/гейта поверх (те давали «рацию»).</summary>
-        public volatile float Mix = 1f;
+        /// <summary>Сила шумодава 0..1 = ГЛУБИНА глушения фона В ПАУЗАХ (как VAD-гейт
+        /// эталонного голосового RNNoise werman/noise-suppression-for-voice). Ядро
+        /// RNNoise всегда работает на полную и чистит стационарный шум во время речи;
+        /// ползунок задаёт, насколько давить остаточный фон/клаву между словами:
+        /// 1 = тишина в паузах, 0.5 = ~-6 дБ, и т.д. Голос (пока идёт речь) не
+        /// трогается вовсе — поэтому нет искажений/«рации».</summary>
+        public volatile float Strength = 1f;
 
         /// <summary>Пытается поднять RNNoise на указанном .wasm. Бросков не делает —
         /// при любой ошибке IsReady останется false.</summary>
@@ -222,11 +225,15 @@ namespace PISMO.Native
                 // вероятность речи (VAD), ей дожимаем остаточный фон в паузах.
                 float vad = _rnProcess(_st, _outPtr, _inPtr);   // in -> out
 
-                // Речевой кадр взводит hangover; пока он не истёк — держим полный
-                // сигнал (короткие провалы VAD на согласных не приглушаются).
+                // Речевой кадр взводит hangover (grace period); пока он не истёк —
+                // держим полный сигнал (короткие провалы VAD на согласных не режутся).
                 if (vad >= VAD_SPEECH) _vadHang = HANG_FRAMES;
                 else if (_vadHang > 0) _vadHang--;
-                float target = _vadHang > 0 ? 1f : GAIN_FLOOR;
+                // Глубина глушения паузы задаётся ползунком силы: 1 → тишина, меньше →
+                // часть фона остаётся. Во время речи (hangover) всегда полный сигнал.
+                float str = Strength; if (str < 0f) str = 0f; else if (str > 1f) str = 1f;
+                float floor = 0.30f * (1f - str);            // сила 1 = 0 (тишина), 0.5 ≈ 0.15
+                float target = _vadHang > 0 ? 1f : floor;
                 // Быстрое открытие, мягкое закрытие (в паузу уходим плавно).
                 _gain += (target > _gain ? 0.6f : 0.04f) * (target - _gain);
 
@@ -238,15 +245,9 @@ namespace PISMO.Native
                 // память могла переехать при вызове — берём span заново
                 var span2 = _memory.GetSpan<byte>(0);
                 var outF = MemoryMarshal.Cast<byte, float>(span2.Slice(_outPtr, FRAME * 4));
-                float mix = Mix; if (mix < 0f) mix = 0f; else if (mix > 1f) mix = 1f;
                 for (int i = 0; i < FRAME; i++)
                 {
-                    float wet = outF[i] * g;
-                    // Сухой/мокрый микс НА УРОВНЕ КАДРА: dry и wet — один кадр (out[i]
-                    // соответствует in[i]), поэтому фаза сохраняется, комбов/«музыки»
-                    // нет. mix=1 → чистый RNNoise; меньше → часть исходного фона.
-                    float dry = _inFifo[inOffset + i];
-                    float v = dry + (wet - dry) * mix;
+                    float v = outF[i] * g;   // чистый выход RNNoise с VAD-гейтом паузы
                     if (v > 32767f) v = 32767f; else if (v < -32768f) v = -32768f;
                     PushOut((short)v);
                 }

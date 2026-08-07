@@ -153,7 +153,7 @@ namespace PISMO
                 // ТОЛЬКО RNNoise (сила = сухой/мокрый микс) — тот же чистый тракт,
                 // что в звонке. Никаких наслоений спектрального/гейта (давали «рацию»).
                 var rn = _rn;
-                if (rn != null && rn.IsReady) { rn.Mix = f; try { rn.Process(data, 0, len); } catch { } }
+                if (rn != null && rn.IsReady) { rn.Strength = f; try { rn.Process(data, 0, len); } catch { } }
                 else if (_spectral != null)   // fallback без RNNoise — мягкий спектральный
                 {
                     _spectral.Strength = 0.4f + f * 1.4f;

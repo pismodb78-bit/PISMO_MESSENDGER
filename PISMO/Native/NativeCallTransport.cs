@@ -571,7 +571,7 @@ namespace PISMO.Native
             var rn = _rnnoise;
             if (rn != null && rn.IsReady)
             {
-                rn.Mix = f;
+                rn.Strength = f;   // сила = глубина глушения фона в паузах (VAD-гейт)
                 try { rn.Process(data, offset, len); } catch { }
                 return;
             }
