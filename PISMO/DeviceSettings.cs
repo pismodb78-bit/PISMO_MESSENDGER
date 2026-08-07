@@ -72,7 +72,7 @@ namespace PISMO
         /// <summary>Автоопределение чувствительности микрофона (как в Discord).
         /// true = звук передаётся всегда (без порога), false = используется
         /// ручной порог VoiceThreshold.</summary>
-        public static bool VoiceAutoSensitivity { get; set; } = true;
+        public static bool VoiceAutoSensitivity { get; set; } = false;
 
         /// <summary>Шумоподавление RNNoise (давит клавиатуру/мышь/шум). По умолчанию
         /// ВЫКЛ — оно тянется с CDN и на части систем глушит голос; включается

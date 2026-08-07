@@ -267,12 +267,17 @@ namespace PISMO
                 _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
             };
 
-            // Самописный порог активации убран (ломал mute). Шум давит Krisp —
-            // прячем эти контролы, чтобы не путать.
-            _chkVoiceAuto.Visible = false;
-            lblVoiceHint.Visible = false;
-            _trkVoiceThreshold.Visible = false;
-            _lblVoiceThresholdValue.Visible = false;
+            // Порог регистрации звука (voice gate) снова доступен: теперь он честно
+            // реализован в нативном тракте звонка (гейт «полный сигнал / тишина», без
+            // приглушения голоса). Сильно режет клавиатуру/фон в паузах.
+            _chkVoiceAuto.Visible = true;
+            lblVoiceHint.Visible = true;
+            _trkVoiceThreshold.Visible = true;
+            _lblVoiceThresholdValue.Visible = true;
+            // По умолчанию — ручной порог (автоопределение выключено), чтобы ползунок
+            // сразу работал; пользователь сам решит, включать ли авто.
+            _trkVoiceThreshold.Enabled = !_chkVoiceAuto.Checked;
+            _lblVoiceThresholdValue.Enabled = !_chkVoiceAuto.Checked;
 
             _chkNoiseSuppress = new CheckBox
             {

@@ -187,7 +187,7 @@ namespace PISMO.Native
         private volatile bool _voiceGateOn;
         private volatile int _voiceThrDb = -40;
         private int _voiceGateHang;
-        private const int VoiceGateHangFrames = 20;   // 20*10мс = 200мс удержания
+        private const int VoiceGateHangFrames = 15;   // 15*10мс = 150мс удержания (снапово режет паузы)
         private short[] _gateTmp = new short[480];
         // Нативный libwebrtc APM: шумодав + эхоподавление + ВЧ-фильтр + AGC.
         // ProcessStream = ближний конец (микрофон), ProcessReverseStream = дальний
