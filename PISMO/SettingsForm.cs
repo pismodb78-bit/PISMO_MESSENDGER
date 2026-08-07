@@ -30,8 +30,6 @@ namespace PISMO
         private CheckBox _chkVoiceAuto;
         private CheckBox _chkNoiseSuppress;
         private TrackBar _trkNoiseStrength;   // сила шумодава 0..100
-        private TrackBar _trkOutGain;         // усиление голоса на выходе 0..300%
-        private Label _lblOutGainValue;
         internal bool _loadingSettings;       // подавляет побочные эффекты обработчиков во время загрузки
         private Label _lblNoiseStrengthValue;
         private CheckBox _chkLightTheme;
@@ -225,8 +223,6 @@ namespace PISMO
             _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value} дБ";
             _trkVoiceThreshold.Enabled = true;
             _lblVoiceThresholdValue.Enabled = true;
-            try { _trkOutGain.Value = Math.Clamp(DeviceSettings.VoiceOutputGain, 0, 300); } catch { }
-            _lblOutGainValue.Text = _trkOutGain.Value + "%";
 
             // ScreenShare
             string sh = DeviceSettings.ScreenShareResolutionHeight > 0
@@ -543,7 +539,6 @@ namespace PISMO
             DeviceSettings.VoiceAutoSensitivity = _chkVoiceAuto.Checked;
             DeviceSettings.VoiceThreshold = _trkVoiceThreshold.Value;
             DeviceSettings.NoiseSuppressionStrength = _trkNoiseStrength.Value;   // сила (0 = выкл)
-            DeviceSettings.VoiceOutputGain = _trkOutGain.Value;                 // усиление на выходе
             DeviceSettings.NoiseSuppressMode = _chkNoiseSuppress.Checked ? "standard" : "off";
 
             if (_cmbScreenRes.SelectedIndex >= 0)

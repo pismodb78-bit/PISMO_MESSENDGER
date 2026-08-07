@@ -174,26 +174,21 @@ namespace PISMO
                 if (_tl != null) { _tl.Strength = 0.5f + f * 0.5f; try { _tl.Process(data, 0, len); } catch { } }
             }
 
-            // Makeup-усиление на выходе цепи обработки — как в звонке: мягкий лимитер
-            // (tanh), чтобы усиление добавляло громкости, а не только резало пики.
-            float og = Math.Clamp(DeviceSettings.VoiceOutputGain, 0, 300) / 100f;
-            if (og != 1f)
-                for (int i = 0; i < n; i += 2)
-                {
-                    float x = (short)(data[i] | (data[i + 1] << 8)) * og / 32768f;
-                    if (x > 0.7f || x < -0.7f) x = (float)Math.Tanh(x);
-                    int v = (int)(x * 32767f);
-                    if (v > short.MaxValue) v = short.MaxValue; else if (v < short.MinValue) v = short.MinValue;
-                    data[i] = (byte)(v & 0xFF); data[i + 1] = (byte)((v >> 8) & 0xFF);
-                }
-
-            // 3) Усиление + уровень для индикатора (i16 LE, моно).
+            // 3) Усиление НА ВЫХОДЕ цепи (после порога+шумодава) + уровень. Мягкий
+            //    лимитер (tanh): усиление до 500% добавляет громкости, не только клип.
             float g = _gain;
             double sum = 0;
             for (int i = 0; i < n; i += 2)
             {
                 int v = (short)(data[i] | (data[i + 1] << 8));
-                if (g != 1f) { v = (int)(v * g); if (v > short.MaxValue) v = short.MaxValue; else if (v < short.MinValue) v = short.MinValue; data[i] = (byte)(v & 0xFF); data[i + 1] = (byte)((v >> 8) & 0xFF); }
+                if (g != 1f)
+                {
+                    float x = v * g / 32768f;
+                    if (x > 0.7f || x < -0.7f) x = (float)Math.Tanh(x);   // мягкий лимитер (как в звонке)
+                    v = (int)(x * 32767f);
+                    if (v > short.MaxValue) v = short.MaxValue; else if (v < short.MinValue) v = short.MinValue;
+                    data[i] = (byte)(v & 0xFF); data[i + 1] = (byte)((v >> 8) & 0xFF);
+                }
                 float f = v / 32768f; sum += f * f;
             }
             _level = (float)Math.Sqrt(sum / Math.Max(1, n / 2));

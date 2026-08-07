@@ -529,7 +529,11 @@ namespace PISMO.Native
             Marshal.Copy(buf, _gainTmp, 0, n);
             for (int i = 0; i < n; i++)
             {
-                int v = (int)(_gainTmp[i] * g);
+                // Мягкий лимитер (tanh) вместо жёсткого клипа: на большом усилении
+                // (до 500%) громкость реально растёт, а не только режутся пики.
+                float x = _gainTmp[i] * g / 32768f;
+                if (x > 0.7f || x < -0.7f) x = (float)Math.Tanh(x);
+                int v = (int)(x * 32767f);
                 if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
                 _gainTmp[i] = (short)v;
             }
@@ -572,9 +576,8 @@ namespace PISMO.Native
                 return;
             }
 
-            // Резервный путь без APM: шумодав → makeup-усиление → отправка.
+            // Резервный путь без APM: шумодав → отправка (усиление внутри SendCapturedAudio).
             if (_nsEnabled) DenoiseInPlace(e.Buffer, 0, e.BytesRecorded);
-            ApplyGainManaged(e.Buffer, 0, e.BytesRecorded, _outGain);
             SendCapturedAudio(e.Buffer, 0, e.BytesRecorded);
         }
 
@@ -751,11 +754,8 @@ namespace PISMO.Native
 
                 // 3) СНАЧАЛА порог чувствительности (режет сырой сигнал по громкости),
                 //    ПОТОМ RNNoise (чистит то, что прошло порог). Порядок по просьбе.
-                ApplyVoiceGate(data, offset, len);
-                if (_nsEnabled) DenoiseInPlace(data, offset, len);
-
-                // Makeup-усиление на выходе цепи обработки голоса (после шумодава).
-                ApplyGainManaged(data, offset, len, _outGain);
+                ApplyVoiceGate(data, offset, len);       // 1) порог: отсекаем тихое
+                if (_nsEnabled) DenoiseInPlace(data, offset, len);   // 2) шумодав
 
                 // Своя рамка «говорит» — по уровню обработанного (отправляемого) звука.
                 UpdateLocalSpeaking(data, offset, len);
