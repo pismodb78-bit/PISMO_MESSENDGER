@@ -57,12 +57,16 @@ namespace PISMO
         {
             this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
             // Живой индикатор уровня микрофона у порога регистрации — запускаем при
-            // открытии настроек и перезапускаем при смене устройства.
+            // открытии настроек.
             this.Load += (s, e) => StartLevelMeter();
-            _cmbMic.SelectedIndexChanged += (s, e) => { StopMicTest(); StartLevelMeter(); };
             BuildUi();
             LoadDevices();
             ApplySavedSelection();
+            // ПОСЛЕ создания контролов (_cmbMic существует): перезапуск замера уровня
+            // при смене микрофона. Раньше подписка стояла до BuildUi() → _cmbMic был
+            // null → окно настроек не открывалось.
+            if (_cmbMic != null)
+                _cmbMic.SelectedIndexChanged += (s, e) => { StopMicTest(); StartLevelMeter(); };
         }
 
 
