@@ -174,12 +174,15 @@ namespace PISMO
                 if (_tl != null) { _tl.Strength = 0.5f + f * 0.5f; try { _tl.Process(data, 0, len); } catch { } }
             }
 
-            // Makeup-усиление на выходе цепи обработки (как в звонке) — 0..300%.
+            // Makeup-усиление на выходе цепи обработки — как в звонке: мягкий лимитер
+            // (tanh), чтобы усиление добавляло громкости, а не только резало пики.
             float og = Math.Clamp(DeviceSettings.VoiceOutputGain, 0, 300) / 100f;
             if (og != 1f)
                 for (int i = 0; i < n; i += 2)
                 {
-                    int v = (int)((short)(data[i] | (data[i + 1] << 8)) * og);
+                    float x = (short)(data[i] | (data[i + 1] << 8)) * og / 32768f;
+                    if (x > 0.7f || x < -0.7f) x = (float)Math.Tanh(x);
+                    int v = (int)(x * 32767f);
                     if (v > short.MaxValue) v = short.MaxValue; else if (v < short.MinValue) v = short.MinValue;
                     data[i] = (byte)(v & 0xFF); data[i + 1] = (byte)((v >> 8) & 0xFF);
                 }
