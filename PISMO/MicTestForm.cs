@@ -173,8 +173,18 @@ namespace PISMO
             }
             _level = (float)Math.Sqrt(sum / Math.Max(1, n / 2));
 
+            // Порог регистрации звука — как в звонке: ниже порога сигнал не проходит
+            // (тишина). Гейт с hangover, чтобы не рубить паузы между словами. Так тест
+            // честно отражает поведение звонка (раньше ползунок в тесте не влиял).
+            double db = _level > 0.0001f ? 20.0 * Math.Log10(_level) : -100.0;
+            if (db >= DeviceSettings.VoiceThreshold) _vgHang = 8;   // ~160мс (буфер 20мс)
+            else if (_vgHang > 0) _vgHang--;
+            if (_vgHang <= 0) Array.Clear(data, 0, len);            // ниже порога — тишина
+
             try { _buf?.AddSamples(data, 0, len); } catch { }
         }
+
+        private int _vgHang;   // остаток удержания voice gate (в буферах)
 
         private void StopCapture()
         {
