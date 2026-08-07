@@ -175,6 +175,7 @@ namespace PISMO.Native
         private MicDenoiser _denoiser;            // клик-гейт (транзиенты) — откат
         private SpectralDenoiser _spectral;       // частотный шумодав (постоянный фон) — откат
         private RnnoiseDenoiser _rnnoise;         // НАСТОЯЩИЙ RNNoise (как в тесте) — основной
+        private TransientLimiter _transientLimiter; // давит клики клавиш/мыши после RNNoise
         private volatile bool _nsEnabled;
         private volatile int _nsStrengthPct = 100;   // сила шумодава 0..100 (wet/dry-микс)
         // Ручная громкость микрофона (ползунок настроек). Множитель поверх APM/AGC —
@@ -381,6 +382,7 @@ namespace PISMO.Native
                 _rnnoise = RnnoiseDenoiser.TryCreate();
                 _denoiser = new MicDenoiser(SR) { TransientGuard = noiseSuppress };
                 _spectral = new SpectralDenoiser();
+                _transientLimiter = new TransientLimiter(SR);
 
                 // 5) Захват микрофона: 48 кГц / 16 бит / моно → CaptureAudioFrame.
                 StartMicCapture();
@@ -561,7 +563,7 @@ namespace PISMO.Native
         public void SetVoiceGate(bool on, int thrDb)
         {
             _voiceGateOn = on;
-            _voiceThrDb = Math.Clamp(thrDb, -80, 0);
+            _voiceThrDb = Math.Clamp(thrDb, -90, 0);
         }
 
         // Ручной voice gate на кадре (i16, managed). Идёт ПЕРЕД RNNoise: режет сырой
@@ -609,6 +611,13 @@ namespace PISMO.Native
             {
                 rn.Strength = f;   // сила = глубина глушения фона в паузах (VAD-гейт)
                 try { rn.Process(data, offset, len); } catch { }
+                // Транзиент-лимитер ПОСЛЕ RNNoise: давит клики клавиш/мыши, которые
+                // на чувствительном микрофоне громче голоса и проскакивают.
+                if (_transientLimiter != null)
+                {
+                    _transientLimiter.Strength = 0.5f + f * 0.5f;   // 0.5..1.0
+                    try { _transientLimiter.Process(data, offset, len); } catch { }
+                }
                 return;
             }
 

@@ -219,7 +219,7 @@ namespace PISMO
             // Порог регистрации в дБ. Авто убрано — всегда ручной режим (даже если в
             // старом конфиге сохранено auto=1), ползунок всегда активен.
             _chkVoiceAuto.Checked = false;
-            _trkVoiceThreshold.Value = Math.Clamp(DeviceSettings.VoiceThreshold, -60, 0);
+            _trkVoiceThreshold.Value = Math.Clamp(DeviceSettings.VoiceThreshold, -90, 0);
             _lblVoiceThresholdValue.Text = $"{_trkVoiceThreshold.Value} дБ";
             _trkVoiceThreshold.Enabled = true;
             _lblVoiceThresholdValue.Enabled = true;
@@ -352,12 +352,13 @@ namespace PISMO
             int samples = e.BytesRecorded / 2;
             if (samples == 0) return;
 
+            // Уровень мерим по СЫРОМУ сигналу (без усиления) — ровно как voice gate в
+            // звонке/тесте. Иначе при усилении ≠100% индикатор показывал бы одно, а
+            // гейт срабатывал по другому (рассинхрон маркера и реального порога).
             for (int i = 0; i < e.BytesRecorded; i += 2)
             {
                 short sample = (short)((e.Buffer[i + 1] << 8) | e.Buffer[i]);
-                int amplified = (int)(sample * gain);
-                amplified = Math.Clamp(amplified, short.MinValue, short.MaxValue);
-                sum += (long)amplified * amplified;
+                sum += (long)sample * sample;
             }
 
             double rms = Math.Sqrt(sum / (double)samples);
@@ -365,7 +366,7 @@ namespace PISMO
             _currentLevel = Math.Clamp(level, 0f, 1f);
 
             _currentDb = rms > 1 ? 20.0 * Math.Log10(rms / 32768.0) : -100.0;
-            _currentDb = Math.Max(_currentDb, -60.0);
+            _currentDb = Math.Max(_currentDb, -90.0);
 
             // Воспроизводим микрофон обратно (с усилением) — «слышу себя».
             // Без обращения к UI-контролам из фонового потока (это вызывало
@@ -415,8 +416,8 @@ namespace PISMO
             const int gap = 2;
             float segWidth = (float)(w - gap * (segCount - 1)) / segCount;
 
-            // Заполнение по дБ-шкале (−60..0 дБ → 0..1), чтобы совпадать с меткой порога.
-            double lvlNorm = _currentLevel <= 0.0001f ? 0 : Math.Clamp((_currentDb + 60) / 60.0, 0, 1);
+            // Заполнение по дБ-шкале (−90..0 дБ → 0..1), совпадает со шкалой ползунка.
+            double lvlNorm = _currentLevel <= 0.0001f ? 0 : Math.Clamp((_currentDb + 90) / 90.0, 0, 1);
             int activeSegments = (int)Math.Round(lvlNorm * segCount);
 
             for (int i = 0; i < segCount; i++)
@@ -440,9 +441,13 @@ namespace PISMO
             // Метка порога активации (только в ручном режиме): вертикальная линия.
             if (_trkVoiceThreshold != null && _trkVoiceThreshold.Visible && !_chkVoiceAuto.Checked)
             {
-                // Порог в дБ (−60..0) → доля шкалы 0..1 (как уровень: ~ -60дБ→0, 0дБ→1).
-                double norm = Math.Clamp((_trkVoiceThreshold.Value + 60) / 60.0, 0, 1);
-                int mx = (int)(norm * w);
+                // Позиция маркера считается ТАК ЖЕ, как бегунок TrackBar позиционирует
+                // ползунок: доля (V-Min)/(Max-Min) внутри трека с отступом под бегунок
+                // (~9px с краёв), иначе маркер уезжал влево и не стоял под ползунком.
+                var trk = _trkVoiceThreshold;
+                double frac = (trk.Value - trk.Minimum) / (double)Math.Max(1, trk.Maximum - trk.Minimum);
+                const int inset = 9;   // половина ширины бегунка WinForms TrackBar
+                int mx = inset + (int)Math.Round(frac * (w - 2 * inset));
                 using var pen = new Pen(Color.White, 2);
                 g.DrawLine(pen, mx, 0, mx, h);
                 using var tri = new SolidBrush(Color.White);

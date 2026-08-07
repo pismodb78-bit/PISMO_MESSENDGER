@@ -249,7 +249,7 @@ namespace PISMO
             };
             _trkVoiceThreshold = new TrackBar
             {
-                Minimum = -60,   // дБ: тихо
+                Minimum = -90,   // дБ: очень тихо (больше запас снизу)
                 Maximum = 0,     // дБ: громко
                 Value = -40,
                 TickStyle = TickStyle.None,

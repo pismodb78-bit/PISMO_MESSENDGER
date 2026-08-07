@@ -257,7 +257,7 @@ namespace PISMO
                             if (int.TryParse(val, out int nss)) NoiseSuppressionStrength = nss;
                             break;
                         case "VoiceThreshold":
-                            if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, -60, 0);
+                            if (int.TryParse(val, out int vt)) VoiceThreshold = Math.Clamp(vt, -90, 0);
                             break;
                         case "HardwareAcceleration":
                             HardwareAcceleration = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
