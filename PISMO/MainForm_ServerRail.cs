@@ -182,7 +182,6 @@ namespace PISMO
         {
             if (_serverRail == null) return;
             int me = UserSession.EffectiveId;
-            string role = UserSession.Role ?? "";
             System.Threading.Tasks.Task.Run(() =>
             {
                 try
@@ -198,23 +197,28 @@ namespace PISMO
                         }
                         catch { _railMyLogin = ""; }
                     }
-                    var badges = ServerReads.GetBadges(me, _railMyLogin, role);
+                    var badges = ServerReads.GetBadges(me, _railMyLogin);
                     var agg = new System.Collections.Generic.Dictionary<int, (int unread, int mentions)>();
+                    var muted = new System.Collections.Generic.HashSet<int>();
                     foreach (var b in badges)
                     {
                         agg.TryGetValue(b.ServerId, out var cur);
                         agg[b.ServerId] = (cur.unread + b.Unread, cur.mentions + b.Mentions);
+                        if (b.Muted) muted.Add(b.ServerId);
                     }
                     if (IsDisposed || !IsHandleCreated) return;
                     BeginInvoke(new Action(() =>
                     {
-                        // Пуш при приросте упоминаний (кроме сервера, открытого прямо сейчас).
+                        // Пуш при приросте упоминаний. НЕ шлём, если сервер заглушён
+                        // ЭТИМ пользователем (muted_notifs по его user_id — на других не
+                        // влияет) или сервер открыт прямо сейчас.
                         if (_railBadgesInit)
                         {
                             foreach (var kv in agg)
                             {
                                 _prevServerMentions.TryGetValue(kv.Key, out int prev);
-                                if (kv.Value.mentions > prev && kv.Key != _railSelectedServerId)
+                                if (kv.Value.mentions > prev && kv.Key != _railSelectedServerId
+                                    && !muted.Contains(kv.Key))
                                 {
                                     string nm = _railServerNames.TryGetValue(kv.Key, out var n) ? n : "сервер";
                                     try { _trayIcon?.ShowBalloonTip(4000, "PISMO — упоминание",

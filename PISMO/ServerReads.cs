@@ -27,35 +27,38 @@ namespace PISMO
             catch { }
         }
 
-        public struct Badge { public int ServerId; public int ChannelId; public int Unread; public int Mentions; }
+        public struct Badge { public int ServerId; public int ChannelId; public int Unread; public int Mentions; public bool Muted; }
 
         /// <summary>Непрочитанные и упоминания по КАЖДОМУ каналу всех серверов
-        /// пользователя (одним запросом). Упоминание = @login / @роль / @все|@all|
-        /// @everyone в тексте, ИЛИ ответ на моё сообщение. Учитываются только чужие
-        /// неудалённые сообщения новее last_read_id.</summary>
-        public static List<Badge> GetBadges(int userId, string myLogin, string myRoleName)
+        /// пользователя (одним запросом). Упоминание = @login / @роль-на-ЭТОМ-сервере /
+        /// @все|@all|@everyone в тексте, ИЛИ ответ на моё сообщение. Роль берётся из
+        /// server_members.role_id → server_roles.name (индивидуально по серверу).
+        /// Muted = заглушён ли сервер ДЛЯ ЭТОГО пользователя (server_members.muted_notifs,
+        /// строго по user_id — не влияет на других). Учитываются чужие неудалённые
+        /// сообщения новее last_read_id.</summary>
+        public static List<Badge> GetBadges(int userId, string myLogin)
         {
             var list = new List<Badge>();
             try
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT sc.server_id, sm.channel_id, COUNT(*) AS unread, " +
+                    "SELECT sc.server_id, sm.channel_id, mm.muted_notifs, COUNT(*) AS unread, " +
                     "SUM(CASE WHEN LOWER(sm.text) LIKE CONCAT('%@', @login, '%') " +
-                    "  OR (@role <> '' AND LOWER(sm.text) LIKE CONCAT('%@', @role, '%')) " +
+                    "  OR (rr.name IS NOT NULL AND rr.name <> '' AND LOWER(sm.text) LIKE CONCAT('%@', LOWER(rr.name), '%')) " +
                     "  OR LOWER(sm.text) LIKE '%@все%' OR LOWER(sm.text) LIKE '%@all%' OR LOWER(sm.text) LIKE '%@everyone%' " +
                     "  OR EXISTS(SELECT 1 FROM server_messages p WHERE p.id = sm.reply_to_id AND p.sender_id = @me) " +
                     "  THEN 1 ELSE 0 END) AS mentions " +
                     "FROM server_messages sm " +
                     "JOIN server_channels sc ON sc.id = sm.channel_id " +
                     "JOIN server_members mm ON mm.server_id = sc.server_id AND mm.user_id = @me " +
+                    "LEFT JOIN server_roles rr ON rr.id = mm.role_id " +
                     "LEFT JOIN server_reads r ON r.user_id = @me AND r.channel_id = sm.channel_id " +
                     "WHERE sm.sender_id <> @me AND sm.is_deleted = 0 " +
                     "  AND sm.id > COALESCE(r.last_read_id, 0) " +
-                    "GROUP BY sc.server_id, sm.channel_id", conn);
+                    "GROUP BY sc.server_id, sm.channel_id, mm.muted_notifs", conn);
                 cmd.Parameters.AddWithValue("@me", userId);
                 cmd.Parameters.AddWithValue("@login", (myLogin ?? "").ToLowerInvariant());
-                cmd.Parameters.AddWithValue("@role", (myRoleName ?? "").ToLowerInvariant());
                 using var r = cmd.ExecuteReader();
                 while (r.Read())
                     list.Add(new Badge
@@ -63,7 +66,8 @@ namespace PISMO
                         ServerId = Convert.ToInt32(r["server_id"]),
                         ChannelId = Convert.ToInt32(r["channel_id"]),
                         Unread = Convert.ToInt32(r["unread"]),
-                        Mentions = r["mentions"] == DBNull.Value ? 0 : Convert.ToInt32(r["mentions"])
+                        Mentions = r["mentions"] == DBNull.Value ? 0 : Convert.ToInt32(r["mentions"]),
+                        Muted = r["muted_notifs"] != DBNull.Value && Convert.ToInt32(r["muted_notifs"]) == 1
                     });
             }
             catch { }

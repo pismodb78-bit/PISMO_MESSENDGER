@@ -748,11 +748,11 @@ namespace PISMO
         private void RefreshChannelBadges()
         {
             if (_serverId <= 0 || _channelBadgeLabels.Count == 0) return;
-            int me = _me; string login = _myLogin ?? ""; string role = _myRoleName ?? "";
+            int me = _me; string login = _myLogin ?? "";
             System.Threading.Tasks.Task.Run(() =>
             {
                 var map = new System.Collections.Generic.Dictionary<int, (int unread, int mentions)>();
-                foreach (var b in ServerReads.GetBadges(me, login, role))
+                foreach (var b in ServerReads.GetBadges(me, login))
                     if (b.ServerId == _serverId) map[b.ChannelId] = (b.Unread, b.Mentions);
                 try
                 {
