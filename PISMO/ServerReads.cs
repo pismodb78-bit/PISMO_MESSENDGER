@@ -36,25 +36,57 @@ namespace PISMO
         /// Muted = заглушён ли сервер ДЛЯ ЭТОГО пользователя (server_members.muted_notifs,
         /// строго по user_id — не влияет на других). Учитываются чужие неудалённые
         /// сообщения новее last_read_id.</summary>
+        // Кэш наличия необязательных колонок server_messages (миграции применены
+        // не на всех БД: reply_to_id может отсутствовать, is_deleted в текущей схеме
+        // нет вовсе). Раньше запрос жёстко ссылался на обе колонки — при их
+        // отсутствии он падал, catch{} возвращал пустой список, и ВСЕ бейджи
+        // (и упоминания, и непрочитанные) пропадали.
+        private static bool? _hasReplyCol;
+        private static bool? _hasDeletedCol;
+
+        private static bool ColumnExists(MySqlConnection conn, string table, string col)
+        {
+            try
+            {
+                using var c = new MySqlCommand(
+                    "SELECT COUNT(*) FROM information_schema.columns " +
+                    "WHERE table_schema = DATABASE() AND table_name=@t AND column_name=@c", conn);
+                c.Parameters.AddWithValue("@t", table);
+                c.Parameters.AddWithValue("@c", col);
+                return Convert.ToInt32(c.ExecuteScalar()) > 0;
+            }
+            catch { return false; }
+        }
+
         public static List<Badge> GetBadges(int userId, string myLogin)
         {
             var list = new List<Badge>();
             try
             {
                 using var conn = DBHelper.OpenConnection();
+                _hasReplyCol ??= ColumnExists(conn, "server_messages", "reply_to_id");
+                _hasDeletedCol ??= ColumnExists(conn, "server_messages", "is_deleted");
+
+                // Клаузу «ответ на моё сообщение» подключаем только если колонка есть.
+                string replyClause = _hasReplyCol == true
+                    ? "  OR EXISTS(SELECT 1 FROM server_messages p WHERE p.id = sm.reply_to_id AND p.sender_id = @me) "
+                    : "";
+                // Фильтр удалённых — только если колонка есть.
+                string notDeleted = _hasDeletedCol == true ? "AND sm.is_deleted = 0 " : "";
+
                 using var cmd = new MySqlCommand(
                     "SELECT sc.server_id, sm.channel_id, mm.muted_notifs, COUNT(*) AS unread, " +
                     "SUM(CASE WHEN LOWER(sm.text) LIKE CONCAT('%@', @login, '%') " +
                     "  OR (rr.name IS NOT NULL AND rr.name <> '' AND LOWER(sm.text) LIKE CONCAT('%@', LOWER(rr.name), '%')) " +
                     "  OR LOWER(sm.text) LIKE '%@все%' OR LOWER(sm.text) LIKE '%@all%' OR LOWER(sm.text) LIKE '%@everyone%' " +
-                    "  OR EXISTS(SELECT 1 FROM server_messages p WHERE p.id = sm.reply_to_id AND p.sender_id = @me) " +
+                    replyClause +
                     "  THEN 1 ELSE 0 END) AS mentions " +
                     "FROM server_messages sm " +
                     "JOIN server_channels sc ON sc.id = sm.channel_id " +
                     "JOIN server_members mm ON mm.server_id = sc.server_id AND mm.user_id = @me " +
                     "LEFT JOIN server_roles rr ON rr.id = mm.role_id " +
                     "LEFT JOIN server_reads r ON r.user_id = @me AND r.channel_id = sm.channel_id " +
-                    "WHERE sm.sender_id <> @me AND sm.is_deleted = 0 " +
+                    "WHERE sm.sender_id <> @me " + notDeleted +
                     "  AND sm.id > COALESCE(r.last_read_id, 0) " +
                     "GROUP BY sc.server_id, sm.channel_id, mm.muted_notifs", conn);
                 cmd.Parameters.AddWithValue("@me", userId);
