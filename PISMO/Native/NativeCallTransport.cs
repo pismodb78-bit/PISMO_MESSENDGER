@@ -520,6 +520,24 @@ namespace PISMO.Native
 
         /// <summary>Масштаб i16-сэмплов в unmanaged-буфере на _micGain (с ограничением
         /// по клиппингу). len — в байтах. При gain≈1 — почти no-op (ранний выход).</summary>
+        /// <summary>Усиление одного i16-сэмпла: линейно до 0.9 полной шкалы, мягкое
+        /// ограничение выше (0.9..∞ → 0.9..1.0). Даёт настоящий рост громкости на
+        /// больших усилениях (500% ≈ ×5) без жёсткого клипа. Общая кривая для звонка
+        /// и теста микрофона.</summary>
+        internal static short SoftGainSample(short sample, float g)
+        {
+            float x = sample * g / 32768f;
+            float a = x < 0 ? -x : x;
+            if (a > 0.9f)
+            {
+                a = 0.9f + 0.1f * (float)Math.Tanh((a - 0.9f) / 0.1f);
+                x = x < 0 ? -a : a;
+            }
+            int v = (int)(x * 32767f);
+            if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+            return (short)v;
+        }
+
         private void ApplyMicGainUnmanaged(IntPtr buf, int len)
         {
             float g = _micGain;
@@ -529,13 +547,10 @@ namespace PISMO.Native
             Marshal.Copy(buf, _gainTmp, 0, n);
             for (int i = 0; i < n; i++)
             {
-                // Мягкий лимитер (tanh) вместо жёсткого клипа: на большом усилении
-                // (до 500%) громкость реально растёт, а не только режутся пики.
-                float x = _gainTmp[i] * g / 32768f;
-                if (x > 0.7f || x < -0.7f) x = (float)Math.Tanh(x);
-                int v = (int)(x * 32767f);
-                if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
-                _gainTmp[i] = (short)v;
+                // ЛИНЕЙНОЕ усиление до 0.9 полной шкалы (громкость растёт по-настоящему,
+                // 500% ≈ ×5), и мягкое ограничение только у самого потолка (0.9..∞ →
+                // 0.9..1.0), чтобы пики не хрипели жёстким клипом.
+                _gainTmp[i] = SoftGainSample(_gainTmp[i], g);
             }
             Marshal.Copy(_gainTmp, 0, buf, n);
         }

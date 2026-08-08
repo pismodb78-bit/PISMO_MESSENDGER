@@ -183,10 +183,7 @@ namespace PISMO
                 int v = (short)(data[i] | (data[i + 1] << 8));
                 if (g != 1f)
                 {
-                    float x = v * g / 32768f;
-                    if (x > 0.7f || x < -0.7f) x = (float)Math.Tanh(x);   // мягкий лимитер (как в звонке)
-                    v = (int)(x * 32767f);
-                    if (v > short.MaxValue) v = short.MaxValue; else if (v < short.MinValue) v = short.MinValue;
+                    v = PISMO.Native.NativeCallTransport.SoftGainSample((short)v, g);   // та же кривая, что в звонке
                     data[i] = (byte)(v & 0xFF); data[i + 1] = (byte)((v >> 8) & 0xFF);
                 }
                 float f = v / 32768f; sum += f * f;
