@@ -94,9 +94,13 @@ namespace PISMO
             _presenceTimer = new System.Windows.Forms.Timer { Interval = 15000 };
             _presenceTimer.Tick += (s, e) =>
             {
-                int idle = SystemIdleSeconds();
-                _ = Task.Run(() => WriteHeartbeat(idle));
-                try { UpdateChatHeaderPresence(); } catch { }   // обновляем статус собеседника в шапке
+                // PresenceTick = heartbeat + чтение ЧУЖИХ статусов + перерисовка точек
+                // в списке (как ручное «Обновить»). Раньше по таймеру писался только
+                // heartbeat, а точки в списке освежались лишь в PollTick, который при
+                // живом WS выходит рано — отсюда рассинхрон: в шапке «бездействует», а
+                // кружок в списке ещё зелёный до ручного обновления.
+                PresenceTick();
+                try { UpdateChatHeaderPresence(); } catch { }   // статус собеседника в шапке — та же частота
                 try { RefreshServerBadges(); } catch { }        // бейджи/пуши упоминаний на серверах
                 // Дешёвая перерисовка своего кружка в футере: если аватар не успел
                 // загрузиться к первому показу (или загрузка сорвалась), очередная
