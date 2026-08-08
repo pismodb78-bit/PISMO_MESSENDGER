@@ -1289,9 +1289,17 @@ namespace PISMO
 
             try
             {
+                // Скролл вниз ТОЛЬКО при открытии канала или появлении новых
+                // сообщений; при перерисовке того же канала (выделение/правка/
+                // реакции) сохраняем текущую позицию — иначе список «прыгал» вниз.
+                bool channelChanged = _lastScrollChannel != channel;
+                bool newMsgs = dt.Rows.Count > _lastMsgCount;
+                int savedScrollY = -_pnlMessages.AutoScrollPosition.Y;
+
                 _pnlMessages.SuspendLayout();
                 MainForm.DisposeAndClear(_pnlMessages);
                 _msgControls.Clear();
+                _srvSelMark.Clear();
                 // -80: у бабла слева отступ под аватар (58) + правый паддинг (12).
                 // Без этого запаса длинное сообщение делало бабл шире панели →
                 // появлялся горизонтальный скроллбар.
@@ -1583,7 +1591,11 @@ namespace PISMO
                 }
                 _lastMsgCount = dt.Rows.Count;
                 _pnlMessages.ResumeLayout();
-                _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);
+                if (channelChanged || newMsgs)
+                    _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);
+                else
+                    try { _pnlMessages.AutoScrollPosition = new Point(0, savedScrollY); } catch { }
+                _lastScrollChannel = channel;
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
@@ -1716,6 +1728,7 @@ namespace PISMO
                 mark.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ToggleSrvSelect(id); };
                 holder.Controls.Add(mark);
                 mark.BringToFront();
+                _srvSelMark[id] = mark;   // для in-place переключения без перерисовки
                 // Ставим кружок к правому краю чата (бабл авторазмерный — ждём layout).
                 void Place(object s, EventArgs e)
                 {
@@ -1763,6 +1776,8 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         private bool _srvSelectMode;
         private readonly HashSet<int> _srvSelected = new HashSet<int>();
+        private readonly Dictionary<int, Label> _srvSelMark = new();   // id → кружок выделения (для in-place)
+        private int _lastScrollChannel = -1;                            // канал прошлого рендера (скролл вниз только при смене)
         private readonly Dictionary<int, (string sender, string text, int senderId)> _srvMsgMeta
             = new Dictionary<int, (string, string, int)>();
         private Panel _srvSelectBar;
@@ -1863,10 +1878,20 @@ namespace PISMO
         private void ToggleSrvSelect(int id)
         {
             if (id <= 0) return;
-            if (!_srvSelected.Add(id)) _srvSelected.Remove(id);
+            bool sel = _srvSelected.Add(id);   // true — добавили, false — уже был → снимаем
+            if (!sel) _srvSelected.Remove(id);
+
+            // Обновляем ТОЛЬКО кружок и подсветку конкретного сообщения — без
+            // LoadMessages (раньше он перерисовывал весь чат и прокручивал вниз).
+            if (_srvSelMark.TryGetValue(id, out var mark) && mark != null && !mark.IsDisposed)
+            {
+                mark.Text = sel ? "✔" : "○";
+                mark.ForeColor = sel ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158);
+            }
+            if (_msgControls.TryGetValue(id, out var holder) && holder != null && !holder.IsDisposed)
+                holder.BackColor = sel ? Color.FromArgb(58, 62, 70) : Color.FromArgb(54, 57, 63);
+
             UpdateSrvSelectBar();
-            _renderedKey = null; _renderedSig = null;
-            LoadMessages();
         }
 
         private void UpdateSrvSelectBar()
