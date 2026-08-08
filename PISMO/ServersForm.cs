@@ -1989,9 +1989,11 @@ namespace PISMO
                 var img = _chPendingImg; var file = _chPendingFile; var fn = _chPendingFileName;
                 ClearChannelPending();
                 _txtInput.Clear();
-                if (img != null) SendChannelMedia(img, null, null, null, null);
-                else SendChannelMedia(null, null, null, file, fn);
-                if (!string.IsNullOrEmpty(text)) SendChannelRaw(text);
+                // Текст идёт ПОДПИСЬЮ к вложению — одним сообщением (раньше уходило
+                // двумя: медиа + отдельный текст, из-за чего тег в подписи попадал
+                // во второе сообщение).
+                if (img != null) SendChannelMedia(img, null, null, null, null, text);
+                else SendChannelMedia(null, null, null, file, fn, text);
                 return;
             }
 
@@ -2266,7 +2268,7 @@ namespace PISMO
         }
 
         /// <summary>Отправляет медиа-сообщение в канал (картинка/голос/видео/файл).</summary>
-        private void SendChannelMedia(byte[] image, byte[] audio, byte[] video, byte[] file, string fileName)
+        private void SendChannelMedia(byte[] image, byte[] audio, byte[] video, byte[] file, string fileName, string caption = "")
         {
             if (_channelId <= 0) return;
             if (!MediaColumnsExist())
@@ -2322,7 +2324,7 @@ namespace PISMO
                     using var cmd = new MySqlCommand($"INSERT INTO server_messages ({cols}) VALUES ({vals})", conn);
                     cmd.Parameters.AddWithValue("@c", channel);
                     cmd.Parameters.AddWithValue("@s", _me);
-                    cmd.Parameters.AddWithValue("@t", Crypto.Enc(""));
+                    cmd.Parameters.AddWithValue("@t", Crypto.Enc(caption ?? ""));
                     AddBlobParam(cmd, "@img", image);
                     AddBlobParam(cmd, "@aud", audio);
                     AddBlobParam(cmd, "@vid", video);
@@ -2347,11 +2349,13 @@ namespace PISMO
             dlg.ShowDialog(this);
 
             if (cancelled) return;
-            if (retryNoReply) { SendChannelMedia(image, audio, video, file, fileName); return; }
+            if (retryNoReply) { SendChannelMedia(image, audio, video, file, fileName, caption); return; }
             if (!ok) { if (err != null) MessageBox.Show(err, "PISMO"); return; }
 
             CancelServerReply();
             WebSocketSignalingClient.Instance.SendMessage("new_message", 0, channel, "server");
+            // Подпись к вложению может содержать @тег/@роль/@все — уведомляем.
+            if (!string.IsNullOrWhiteSpace(caption)) NotifyMentions(caption);
             // Медиа-сообщение как ОТВЕТ — уведомляем автора исходного (как в тексте;
             // раньше этот путь пуш вообще не слал → ответы файлом/гс/кружком не
             // приходили). У медиа нет текста, поэтому @-упоминаний тут не бывает.
