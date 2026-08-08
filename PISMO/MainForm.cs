@@ -1440,7 +1440,12 @@ namespace PISMO
             if (grew.Count == 1)
             {
                 string name = GetNameFromCards(grew[0].sid);
-                body = $"{name}: {totalMsgs} {RuPlural(totalMsgs, "новое сообщение", "новых сообщения", "новых сообщений")}";
+                // Тип последнего вложения — чтобы уведомление на гс/гиф/файл/кружок/
+                // фото было осмысленным, а не «пустым» (текста у медиа нет).
+                string kind = LatestUnreadKind(grew[0].sid);
+                body = string.IsNullOrEmpty(kind)
+                    ? $"{name}: {totalMsgs} {RuPlural(totalMsgs, "новое сообщение", "новых сообщения", "новых сообщений")}"
+                    : $"{name}: {kind}" + (totalMsgs > 1 ? $" (+{totalMsgs - 1})" : "");
             }
             else
             {
@@ -1452,6 +1457,40 @@ namespace PISMO
 
             if (!this.ContainsFocus)
                 FlashWindow(this.Handle, true);
+        }
+
+        /// <summary>Тип последнего непрочитанного сообщения от отправителя для
+        /// осмысленного текста уведомления (гс/гиф/файл/кружок/фото). Для обычного
+        /// текста возвращает "" (тогда показываем счётчик сообщений).</summary>
+        private string LatestUnreadKind(int sid)
+        {
+            try
+            {
+                int me = UserSession.EffectiveId;
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT text, (audio_data IS NOT NULL) AS a, (video_data IS NOT NULL) AS v, " +
+                    "(image_data IS NOT NULL) AS i, (file_data IS NOT NULL) AS f, file_name " +
+                    "FROM messages WHERE sender_id=@s AND receiver_id=@me AND is_read=0 " +
+                    "ORDER BY id DESC LIMIT 1", conn);
+                cmd.Parameters.AddWithValue("@s", sid);
+                cmd.Parameters.AddWithValue("@me", me);
+                using var r = cmd.ExecuteReader();
+                if (!r.Read()) return "";
+                bool a = r["a"] != DBNull.Value && Convert.ToInt32(r["a"]) == 1;
+                bool v = r["v"] != DBNull.Value && Convert.ToInt32(r["v"]) == 1;
+                bool i = r["i"] != DBNull.Value && Convert.ToInt32(r["i"]) == 1;
+                bool f = r["f"] != DBNull.Value && Convert.ToInt32(r["f"]) == 1;
+                string txt = "";
+                try { txt = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString()); } catch { }
+                if (a) return "🎤 Голосовое сообщение";
+                if (v) return "⭕ Видео-кружок";
+                if (i) return txt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase) ? "🎞 GIF" : "🖼 Фото";
+                if (f) return "📎 Файл";
+                if (txt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)) return "🎞 GIF";
+                return "";
+            }
+            catch { return ""; }
         }
 
         /// <summary>Русское склонение по числу: 1 книга / 2 книги / 5 книг.</summary>

@@ -2352,6 +2352,24 @@ namespace PISMO
 
             CancelServerReply();
             WebSocketSignalingClient.Instance.SendMessage("new_message", 0, channel, "server");
+            // Медиа-сообщение как ОТВЕТ — уведомляем автора исходного (как в тексте;
+            // раньше этот путь пуш вообще не слал → ответы файлом/гс/кружком не
+            // приходили). У медиа нет текста, поэтому @-упоминаний тут не бывает.
+            if (replyId > 0)
+            {
+                try
+                {
+                    using var nconn = DBHelper.OpenConnection();
+                    using var q = new MySqlCommand("SELECT sender_id FROM server_messages WHERE id=@id", nconn);
+                    q.Parameters.AddWithValue("@id", replyId);
+                    var o = q.ExecuteScalar();
+                    int author = o == null || o == DBNull.Value ? 0 : Convert.ToInt32(o);
+                    if (author > 0 && author != _me)
+                        WebSocketSignalingClient.Instance.SendMessage(
+                            "reply", author, channel, $"{_serverId}|{_serverName}|{_channelName}");
+                }
+                catch { }
+            }
             LoadMessages();
         }
 
