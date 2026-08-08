@@ -130,7 +130,9 @@ namespace PISMO
                     string name = r["name"].ToString();
                     var c = MakeRailCircle(ServerInitials(name), ServerColor(sid), Color.White);
                     c.Tag = sid;
-                    c.Click += (s, e) => OpenServerFromRail(sid);
+                    // ТОЛЬКО левый клик заходит на сервер. Раньше был Click (срабатывал
+                    // и на ПКМ) → правый клик и меню открывал, и заходил в каналы.
+                    c.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) OpenServerFromRail(sid); };
                     // ПКМ: «прочитать всё» на сервере — без захода в каналы.
                     int capSid = sid; string capName = name;
                     c.MouseUp += (s, e) =>

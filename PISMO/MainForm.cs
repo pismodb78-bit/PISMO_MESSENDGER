@@ -4413,7 +4413,9 @@ namespace PISMO
                 _trayIcon.Visible = false;
                 UserSession.Clear();
                 LoginForm.InvalidateSavedToken(); // чтобы при перезапуске не вошло само
-                this.Close();
+                // Выход из аккаунта = перезапуск на экран входа (не полный выход, как
+                // делает крестик через OnFormClosed→Environment.Exit).
+                RestartApplication();
             });
 
             var a = anchor ?? btnSettings;
@@ -4513,10 +4515,14 @@ namespace PISMO
             _pollTimer?.Stop();
             _presenceTimer?.Stop();
             MarkSelfOffline();
-            _trayIcon.Visible = false;
+            try { _trayIcon.Visible = false; _trayIcon.Dispose(); } catch { }
             _waveIn?.Dispose();
             _waveOut?.Dispose();
             base.OnFormClosed(e);
+            // Приложение живёт на ApplicationContext (Splash→Login→Main), поэтому
+            // закрытие главного окна крестиком НЕ завершало процесс — оставался
+            // висеть в фоне. Явно завершаем процесс (фоновые потоки/иконка трея).
+            Environment.Exit(0);
         }
 
         /// <summary>Помечает себя «не в сети» при выходе (best-effort), чтобы
