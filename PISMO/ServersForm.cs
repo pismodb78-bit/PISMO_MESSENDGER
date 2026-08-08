@@ -1378,8 +1378,11 @@ namespace PISMO
                         if (rt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)) rt = "[GIF]";
                         var quote = new Label
                         {
-                            AutoSize = false,
-                            Size = new Size(msgWidth - 14, 16),
+                            AutoSize = true,
+                            // По содержимому, но не шире потолка бабла — иначе пузырь
+                            // с ответом растягивался на всю ширину (AutoSize-holder
+                            // подгонялся под жёсткую ширину цитаты).
+                            MaximumSize = new Size(msgWidth - 14, 0),
                             Location = new Point(LEFT, y),
                             ForeColor = Color.FromArgb(0, 176, 244),
                             Font = new Font("Segoe UI", 8f),
@@ -1389,7 +1392,7 @@ namespace PISMO
                         int targetId = replyToId;
                         quote.Click += (s, e) => ScrollToServerMessage(targetId);
                         holder.Controls.Add(quote);
-                        y += 18;
+                        y += quote.Height + 2;
                     }
 
                     // Ник цветной (стабильный цвет по имени, как в Discord), фон прозрачный —
