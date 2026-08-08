@@ -49,7 +49,7 @@ namespace PISMO
             //    то темнее и в светлой. ──
             Add(20, 21, 23, 212, 214, 218);   Add(20, 21, 24, 212, 214, 218);
             Add(24, 25, 28, 220, 222, 226);   Add(28, 29, 34, 220, 222, 226);
-            Add(30, 31, 34, 224, 226, 230);   Add(32, 34, 37, 224, 226, 230);
+            Add(30, 31, 34, 236, 238, 242);   Add(32, 34, 37, 236, 238, 242);   // контентная область — чище/светлее для глубины
             Add(36, 37, 42, 214, 216, 220);   // шапка сайдбара («Все пользователи») — была не в карте
             Add(40, 42, 46, 232, 234, 238);   Add(43, 45, 49, 230, 232, 236);
             Add(47, 49, 54, 226, 228, 232);   Add(49, 51, 56, 222, 224, 228);
@@ -86,6 +86,24 @@ namespace PISMO
             try { Recolor(root); } catch { }
         }
 
+        // ── Яркость / насыщенность для эвристик читаемости ──
+        private static double Brightness(Color c) => (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) / 255.0;
+        private static int Sat(Color c) => Math.Max(c.R, Math.Max(c.G, c.B)) - Math.Min(c.R, Math.Min(c.G, c.B));
+        // Светлый нейтральный фон = яркий и малонасыщенный (серый/белый, не акцент).
+        private static bool IsLightNeutral(Color c) => c.A > 0 && Brightness(c) > 0.62 && Sat(c) <= 42;
+
+        // Реальный фон под контролом: если у самого фон прозрачный — идём вверх по
+        // родителям до первого непрозрачного (к этому моменту он уже перекрашен).
+        private static Color EffectiveBack(Control c)
+        {
+            for (var cur = c; cur != null; cur = cur.Parent)
+                if (cur.BackColor.A > 0 && cur.BackColor != Color.Transparent) return cur.BackColor;
+            return Color.FromArgb(224, 226, 230);
+        }
+
+        // Тёмный основной текст светлой темы (совпадает с картой текста).
+        private static readonly Color LightText = Color.FromArgb(46, 48, 53);
+
         private static void Recolor(Control c)
         {
             // Не трогаем контролы, которые сами рисуют текст на насыщенном фоне и
@@ -95,6 +113,14 @@ namespace PISMO
             if (nb != c.BackColor) c.BackColor = nb;
             var nf = Map(c.ForeColor);
             if (nf != c.ForeColor) c.ForeColor = nf;
+
+            // Защита «белым по белому»: если после перекраски текст остался светлым
+            // (белый / почти белый, малонасыщенный), а фактический фон под ним —
+            // светлый нейтральный, то текст нечитаем → делаем его тёмным. Цветной
+            // (насыщенный) текст и текст на акцентном фоне не трогаем.
+            if (Brightness(c.ForeColor) > 0.70 && Sat(c.ForeColor) <= 42
+                && IsLightNeutral(EffectiveBack(c)))
+                c.ForeColor = LightText;
 
             // Контуры (просили «серый с контурами потемнее»): плоским НЕакцентным
             // кнопкам в светлой теме включаем тонкую серую рамку — элементы не
