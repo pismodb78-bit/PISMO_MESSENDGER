@@ -688,19 +688,21 @@ namespace PISMO
 
         private void TrayMenuOpen_Click(object sender, EventArgs e)
         {
-            // Показать окно и восстановить, если свернуто
+            // Показать окно и восстановить из трея.
+            ShowInTaskbar = true;
             if (!this.Visible) this.Show();
             if (this.WindowState == FormWindowState.Minimized)
                 this.WindowState = FormWindowState.Normal;
-            try { this.Activate(); } catch { }
+            try { this.Activate(); this.BringToFront(); } catch { }
         }
 
         private void TrayMenuExit_Click(object sender, EventArgs e)
         {
-            // Корректно остановим процессы и выйдем
+            // Полный выход из трея.
+            _reallyExit = true;
             try { _pollTimer?.Stop(); } catch { }
             try { _trayIcon.Visible = false; } catch { }
-            Application.Exit();
+            this.Close();   // OnFormClosing пропустит (см. _reallyExit) → OnFormClosed → Environment.Exit
         }
 
         private void pnlUserList_Resize(object sender, EventArgs e)
@@ -4508,6 +4510,32 @@ namespace PISMO
                 Color.FromArgb(156, 89,  182),
             };
             return palette[Math.Abs(uid) % palette.Length];
+        }
+
+        private bool _reallyExit;               // true — реальный выход (из трея/logout), а не сворачивание
+        private bool _trayHintShown;            // подсказку про трей показываем один раз
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // Крестик = свернуть в трей (приложение продолжает ловить уведомления).
+            // Реальный выход — только из меню трея (_reallyExit) или системного
+            // завершения (Windows shutdown). Из трея можно развернуть или закрыть.
+            if (!_reallyExit && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+                ShowInTaskbar = false;
+                try { if (_trayIcon != null) _trayIcon.Visible = true; } catch { }
+                if (!_trayHintShown)
+                {
+                    _trayHintShown = true;
+                    try { _trayIcon?.ShowBalloonTip(3000, "PISMO свёрнут в трей",
+                        "Приложение работает и получает уведомления. Правый клик по иконке — закрыть.", ToolTipIcon.Info); }
+                    catch { }
+                }
+                return;
+            }
+            base.OnFormClosing(e);
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)

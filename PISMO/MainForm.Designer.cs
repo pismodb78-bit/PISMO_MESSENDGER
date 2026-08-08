@@ -372,7 +372,9 @@ namespace PISMO
             // 
             _trayMenu.ImageScalingSize = new Size(20, 20);
             _trayMenu.Name = "_trayMenu";
-            _trayMenu.Size = new Size(61, 4);
+            _trayMenu.Items.Add("Открыть PISMO", null, TrayMenuOpen_Click);
+            _trayMenu.Items.Add(new ToolStripSeparator());
+            _trayMenu.Items.Add("Выход", null, TrayMenuExit_Click);
             // 
             // _trayIcon
             // 
