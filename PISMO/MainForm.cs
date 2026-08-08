@@ -709,11 +709,12 @@ namespace PISMO
 
         private void TrayMenuOpen_Click(object sender, EventArgs e)
         {
-            // Показать окно и восстановить из трея.
-            ShowInTaskbar = true;
-            if (!this.Visible) this.Show();
+            // Показать окно и восстановить из трея. НЕ трогаем ShowInTaskbar
+            // (его присвоение пересоздаёт хендл окна и ломало последующий крестик).
+            // Порядок: сперва нормальное состояние, затем показ и активация.
             if (this.WindowState == FormWindowState.Minimized)
                 this.WindowState = FormWindowState.Normal;
+            if (!this.Visible) this.Show();
             try { this.Activate(); this.BringToFront(); } catch { }
         }
 
@@ -4607,8 +4608,11 @@ namespace PISMO
             if (!_reallyExit && e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
+                // ВАЖНО: не трогаем ShowInTaskbar — присвоение пересоздаёт хендл
+                // окна, и у скрытой формы это давало рассинхрон (первый крестик
+                // после разворота из трея срабатывал криво). Скрытая форма
+                // (Visible=false) и так не висит в таскбаре — Hide() достаточно.
                 Hide();
-                ShowInTaskbar = false;
                 try { if (_trayIcon != null) _trayIcon.Visible = true; } catch { }
                 if (!_trayHintShown)
                 {
