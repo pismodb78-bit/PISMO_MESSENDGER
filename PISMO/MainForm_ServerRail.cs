@@ -26,6 +26,14 @@ namespace PISMO
         private const int RailWidth = 72;
         private const int RailCircle = 48;
 
+        // Бейджи серверов: serverId → (непрочитанные, упоминания). Рисуются на иконке
+        // рейла; красный кружок с числом = упоминания/ответы, синий = просто непрочит.
+        private readonly System.Collections.Generic.Dictionary<int, (int unread, int mentions)> _serverBadges = new();
+        private readonly System.Collections.Generic.Dictionary<int, int> _prevServerMentions = new();
+        private readonly System.Collections.Generic.Dictionary<int, string> _railServerNames = new();
+        private string _railMyLogin;
+        private bool _railBadgesInit;   // первый проход — без пушей (только заполнить базу)
+
         /// <summary>Создаёт левый рейл и встраивает его левее списка диалогов.</summary>
         private void BuildServerRail()
         {
@@ -128,6 +136,7 @@ namespace PISMO
                 {
                     int sid = Convert.ToInt32(r["id"]);
                     string name = r["name"].ToString();
+                    _railServerNames[sid] = name;
                     var c = MakeRailCircle(ServerInitials(name), ServerColor(sid), Color.White);
                     c.Tag = sid;
                     // ТОЛЬКО левый клик заходит на сервер. Раньше был Click (срабатывал
@@ -167,6 +176,63 @@ namespace PISMO
         private readonly ToolTip _tooltip = new ToolTip();
 
         /// <summary>Круглая «иконка» рейла (Panel с собственной отрисовкой).</summary>
+        /// <summary>Пересчитывает бейджи серверов (непрочит./упоминания) в фоне и
+        /// шлёт пуш при новых упоминаниях/ответах. Вызывается из PollTick.</summary>
+        internal void RefreshServerBadges()
+        {
+            if (_serverRail == null) return;
+            int me = UserSession.EffectiveId;
+            string role = UserSession.Role ?? "";
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    if (_railMyLogin == null)
+                    {
+                        try
+                        {
+                            using var conn = DBHelper.OpenConnection();
+                            using var cmd = new MySqlCommand("SELECT login FROM users WHERE id=@id", conn);
+                            cmd.Parameters.AddWithValue("@id", me);
+                            _railMyLogin = cmd.ExecuteScalar()?.ToString() ?? "";
+                        }
+                        catch { _railMyLogin = ""; }
+                    }
+                    var badges = ServerReads.GetBadges(me, _railMyLogin, role);
+                    var agg = new System.Collections.Generic.Dictionary<int, (int unread, int mentions)>();
+                    foreach (var b in badges)
+                    {
+                        agg.TryGetValue(b.ServerId, out var cur);
+                        agg[b.ServerId] = (cur.unread + b.Unread, cur.mentions + b.Mentions);
+                    }
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        // Пуш при приросте упоминаний (кроме сервера, открытого прямо сейчас).
+                        if (_railBadgesInit)
+                        {
+                            foreach (var kv in agg)
+                            {
+                                _prevServerMentions.TryGetValue(kv.Key, out int prev);
+                                if (kv.Value.mentions > prev && kv.Key != _railSelectedServerId)
+                                {
+                                    string nm = _railServerNames.TryGetValue(kv.Key, out var n) ? n : "сервер";
+                                    try { _trayIcon?.ShowBalloonTip(4000, "PISMO — упоминание",
+                                        $"Новые упоминания/ответы на сервере «{nm}»", ToolTipIcon.Info); } catch { }
+                                }
+                            }
+                        }
+                        _serverBadges.Clear();
+                        _prevServerMentions.Clear();
+                        foreach (var kv in agg) { _serverBadges[kv.Key] = kv.Value; _prevServerMentions[kv.Key] = kv.Value.mentions; }
+                        _railBadgesInit = true;
+                        try { foreach (Control c in _serverRail.Controls) c.Invalidate(); } catch { }
+                    }));
+                }
+                catch { }
+            });
+        }
+
         private Panel MakeRailCircle(string text, Color back, Color fore,
             bool isHome = false, bool isAdd = false, Image icon = null)
         {
@@ -245,6 +311,29 @@ namespace PISMO
                     using var pb = new SolidBrush(Color.White);
                     using var pp = RoundedRect(new Rectangle(0, y + (d - ph) / 2, 8, ph), 4);
                     g.FillPath(pb, pp);
+                }
+
+                // Бейдж непрочитанных/упоминаний в правом нижнем углу иконки сервера.
+                if (!isAdd && pnl.Tag is int sidBadge && sidBadge > 0
+                    && _serverBadges.TryGetValue(sidBadge, out var bdg) && (bdg.unread > 0 || bdg.mentions > 0))
+                {
+                    bool men = bdg.mentions > 0;
+                    int count = men ? bdg.mentions : bdg.unread;
+                    string btxt = count > 99 ? "99+" : count.ToString();
+                    using var bf = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+                    Size ts = TextRenderer.MeasureText(g, btxt, bf);
+                    int bh = 18, bw = Math.Max(bh, ts.Width + 10);
+                    int bx = rect.Right - bw + 6, by = rect.Bottom - bh + 4;
+                    var brect = new Rectangle(bx, by, bw, bh);
+                    // Обводка цветом фона рейла — чтобы бейдж «отрезался» от иконки.
+                    using (var ring = new SolidBrush(_serverRail?.BackColor ?? Color.FromArgb(30, 31, 34)))
+                    using (var rp = RoundedRect(Rectangle.Inflate(brect, 3, 3), (bh + 6) / 2))
+                        g.FillPath(ring, rp);
+                    using (var bb = new SolidBrush(men ? Color.FromArgb(237, 66, 69) : Color.FromArgb(88, 101, 242)))
+                    using (var bp = RoundedRect(brect, bh / 2))
+                        g.FillPath(bb, bp);
+                    TextRenderer.DrawText(g, btxt, bf, brect, Color.White,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
             };
             return pnl;

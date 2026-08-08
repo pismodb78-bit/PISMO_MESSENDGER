@@ -34,6 +34,8 @@ namespace PISMO
 
         private FlowLayoutPanel _pnlServers;
         private FlowLayoutPanel _pnlChannels;
+        // Бейджи каналов: channelId → ярлык с числом непрочит./упоминаний.
+        private readonly System.Collections.Generic.Dictionary<int, Label> _channelBadgeLabels = new();
         private FlowLayoutPanel _pnlMembers;
         private FlowLayoutPanel _pnlMessages;
         private Panel _pnlInput;
@@ -154,6 +156,7 @@ namespace PISMO
                     && _channelId > 0) MaybeReloadMessages();
                 RefreshVoicePresence(); // presence нет в WS — обновляем (диффом, дёшево)
                 RefreshMemberPresence(); // статус участников сервера (точки), без пересборки
+                RefreshChannelBadges();  // цифры непрочит./упоминаний у каналов
             };
             _refresh.Start();
 
@@ -605,6 +608,7 @@ namespace PISMO
         private void LoadChannels()
         {
             _pnlChannels.Controls.Clear();
+            _channelBadgeLabels.Clear();   // ярлыки бейджей пересоздаются вместе с кнопками
             _pnlChannels.Controls.Add(MakeHeader("Каналы"));
 
             // Заглушение сервера (для всех участников).
@@ -664,6 +668,42 @@ namespace PISMO
             b.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowChannelMenu(cid, ctype, cname); };
             _pnlChannels.Controls.Add(b);
 
+            // Бейдж непрочитанных/упоминаний канала (число). Красный = упоминания/
+            // ответы, синий = просто непрочитанные. У голосового — левее значка 💬.
+            var badge = new Label
+            {
+                AutoSize = false, Size = new Size(22, 18), Visible = false,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI", 8f, FontStyle.Bold),
+                ForeColor = Color.White, BackColor = Color.FromArgb(88, 101, 242),
+                Cursor = Cursors.Hand
+            };
+            try
+            {
+                using var gp = new System.Drawing.Drawing2D.GraphicsPath();
+                gp.AddArc(0, 0, 16, 16, 90, 180);
+                gp.AddArc(badge.Width - 16, 0, 16, 16, 270, 180);
+                gp.CloseFigure();
+                badge.Region = new Region(gp);
+            }
+            catch { }
+            int capCid = cid; string capType = ctype, capName = cname;
+            badge.Click += (s, e) => SelectChannel(capCid, capType, capName, joinVoice: false);
+            b.Controls.Add(badge);
+            _channelBadgeLabels[cid] = badge;
+            void PlaceBadge(object s, EventArgs e)
+            {
+                try
+                {
+                    int rightPad = ctype == "voice" ? 34 : 8;   // у голосового не залезаем на 💬
+                    badge.Location = new Point(b.Width - badge.Width - rightPad, (b.Height - badge.Height) / 2);
+                }
+                catch { }
+            }
+            b.Resize += PlaceBadge;
+            PlaceBadge(null, null);
+            badge.BringToFront();
+
             if (ctype == "voice")
             {
                 // Значок 💬 справа (как в Discord): открыть чат канала БЕЗ входа в звонок.
@@ -701,6 +741,43 @@ namespace PISMO
                 _voiceContainers[cid] = cont;
                 _pnlChannels.Controls.Add(cont);
             }
+        }
+
+        /// <summary>Обновляет цифры непрочитанных/упоминаний у каналов текущего сервера
+        /// (фоновый запрос, применяется на UI без пересборки списка).</summary>
+        private void RefreshChannelBadges()
+        {
+            if (_serverId <= 0 || _channelBadgeLabels.Count == 0) return;
+            int me = _me; string login = _myLogin ?? ""; string role = _myRoleName ?? "";
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var map = new System.Collections.Generic.Dictionary<int, (int unread, int mentions)>();
+                foreach (var b in ServerReads.GetBadges(me, login, role))
+                    if (b.ServerId == _serverId) map[b.ChannelId] = (b.Unread, b.Mentions);
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        foreach (var kv in _channelBadgeLabels)
+                        {
+                            var lbl = kv.Value;
+                            if (lbl == null || lbl.IsDisposed) continue;
+                            if (kv.Key == _channelId) { lbl.Visible = false; continue; }   // открытый канал читается
+                            if (map.TryGetValue(kv.Key, out var c) && (c.unread > 0 || c.mentions > 0))
+                            {
+                                bool men = c.mentions > 0;
+                                int n = men ? c.mentions : c.unread;
+                                lbl.Text = n > 99 ? "99+" : n.ToString();
+                                lbl.BackColor = men ? Color.FromArgb(237, 66, 69) : Color.FromArgb(88, 101, 242);
+                                lbl.Visible = true; lbl.BringToFront();
+                            }
+                            else lbl.Visible = false;
+                        }
+                    }));
+                }
+                catch { }
+            });
         }
 
         /// <summary>Разовое обновление сервера (вместо периодического опроса).</summary>
