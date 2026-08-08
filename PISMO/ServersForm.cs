@@ -672,21 +672,30 @@ namespace PISMO
             // ответы, синий = просто непрочитанные. У голосового — левее значка 💬.
             var badge = new Label
             {
-                AutoSize = false, Size = new Size(22, 18), Visible = false,
+                AutoSize = false, Size = new Size(26, 22), Visible = false,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Segoe UI", 8f, FontStyle.Bold),
+                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
                 ForeColor = Color.White, BackColor = Color.FromArgb(88, 101, 242),
                 Cursor = Cursors.Hand
             };
-            try
+            // Ровная пилюля: диаметр дуг = высоте бейджа (полукруглые торцы),
+            // регион пересобираем при смене размера — иначе при изменении ширины
+            // (2 цифры / «99+») скругление «съезжало» и выглядело криво.
+            void ShapeBadge()
             {
-                using var gp = new System.Drawing.Drawing2D.GraphicsPath();
-                gp.AddArc(0, 0, 16, 16, 90, 180);
-                gp.AddArc(badge.Width - 16, 0, 16, 16, 270, 180);
-                gp.CloseFigure();
-                badge.Region = new Region(gp);
+                try
+                {
+                    int d = badge.Height;
+                    using var gp = new System.Drawing.Drawing2D.GraphicsPath();
+                    gp.AddArc(0, 0, d, d, 90, 180);
+                    gp.AddArc(badge.Width - d, 0, d, d, 270, 180);
+                    gp.CloseFigure();
+                    badge.Region = new Region(gp);
+                }
+                catch { }
             }
-            catch { }
+            badge.Resize += (s, e) => ShapeBadge();
+            ShapeBadge();
             int capCid = cid; string capType = ctype, capName = cname;
             badge.Click += (s, e) => SelectChannel(capCid, capType, capName, joinVoice: false);
             b.Controls.Add(badge);
