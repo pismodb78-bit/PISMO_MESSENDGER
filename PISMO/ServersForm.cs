@@ -1225,7 +1225,7 @@ namespace PISMO
                     string nm = r["nm"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(nm)) nm = r["login"].ToString();
                     string text = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString());
-                    DateTime dtMsg = Convert.ToDateTime(r["created_at"]);
+                    DateTime dtMsg = MainForm.ToViewerLocal(Convert.ToDateTime(r["created_at"]));
                     string time = dtMsg.ToString("HH:mm");
 
                     // Разделитель по датам (как в ЛС): «13 июля 2026» между днями.

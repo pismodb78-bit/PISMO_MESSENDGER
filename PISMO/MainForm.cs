@@ -62,6 +62,27 @@ namespace PISMO
         /// (нужно, когда изменились реакции/закрепления — данные сообщений те же).</summary>
         private void ForceMessageRerender() { _renderedChatKey = null; _renderedChatSig = null; }
 
+        // created_at хранится во времени СЕРВЕРА БД (CURRENT_TIMESTAMP). Показываем во
+        // времени ЗРИТЕЛЯ: сдвигаем на разницу поясов (смещение зрителя минус смещение
+        // сервера от UTC). Смещение сервера узнаём один раз и кэшируем.
+        private static int? _serverUtcOffsetSec;
+        internal static DateTime ToViewerLocal(DateTime dbServerTime)
+        {
+            try
+            {
+                if (_serverUtcOffsetSec == null)
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySql.Data.MySqlClient.MySqlCommand(
+                        "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())", conn);
+                    _serverUtcOffsetSec = Convert.ToInt32(cmd.ExecuteScalar());
+                }
+                int viewerOffsetSec = (int)DateTimeOffset.Now.Offset.TotalSeconds;
+                return dbServerTime.AddSeconds(viewerOffsetSec - _serverUtcOffsetSec.Value);
+            }
+            catch { return dbServerTime; }
+        }
+
         /// <summary>Дешёвая «подпись» переписки (без создания контролов) для сравнения.</summary>
         internal static string SigOf(DataTable dt)
         {
@@ -2319,7 +2340,7 @@ namespace PISMO
                     string text = Crypto.Dec(row["text"].ToString());
                     string sname = row["sender_name"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(sname)) sname = row["login"].ToString();
-                    DateTime dt2 = Convert.ToDateTime(row["created_at"]);
+                    DateTime dt2 = ToViewerLocal(Convert.ToDateTime(row["created_at"]));
                     string time = dt2.ToString("HH:mm");
                     string date = dt2.ToString("d MMMM yyyy",
                                         new System.Globalization.CultureInfo("ru-RU"));
@@ -2582,7 +2603,7 @@ namespace PISMO
                     string text = Crypto.Dec(row["text"].ToString());
                     string sname = row["sender_name"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(sname)) sname = row["login"].ToString();
-                    DateTime dt2 = Convert.ToDateTime(row["created_at"]);
+                    DateTime dt2 = ToViewerLocal(Convert.ToDateTime(row["created_at"]));
                     string time = dt2.ToString("HH:mm");
                     string date = dt2.ToString("d MMMM yyyy",
                                         new System.Globalization.CultureInfo("ru-RU"));
