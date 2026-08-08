@@ -20,6 +20,10 @@ namespace PISMO
         private byte[] _pendingImageBytes = null;
         private PendingAttachment _pendingAttach = null;
 
+        // true, когда открыт встроенный вид сервера (ЛС-панель скрыта). Тогда
+        // входящие ЛС не помечаем прочитанными и уведомляем обо всех — чат не виден.
+        private bool OnServerView => _railSelectedServerId > 0;
+
         // Групповые чаты
         private int _currentGroupId = -1;
         private string _currentGroupName = "";
@@ -863,8 +867,14 @@ namespace PISMO
                             // Пришло событие — открытый чат перезагружаем напрямую
                             // (без сверки COUNT: при медленной удалённой БД она
                             // промахивалась и сообщение появлялось лишь при переоткрытии).
-                            if (_currentGroupId >= 0) LoadGroupMessages();
-                            else if (_currentChatPartnerId >= 0) LoadMessages();
+                            // НО не трогаем ЛС-чат, если сейчас открыт встроенный вид
+                            // сервера: иначе скрытый чат перезагружался и помечал
+                            // входящие прочитанными → пуш в трей по ЛС не приходил.
+                            if (!OnServerView)
+                            {
+                                if (_currentGroupId >= 0) LoadGroupMessages();
+                                else if (_currentChatPartnerId >= 0) LoadMessages();
+                            }
                             PollTick(null, null); // непрочитанные/бейджи
                         }
                         else if (type == "auth_error")
@@ -1209,7 +1219,7 @@ namespace PISMO
                     {
                         try
                         {
-                            if (forced || openChanged)
+                            if ((forced || openChanged) && !OnServerView)
                             {
                                 if (_currentGroupId >= 0) LoadGroupMessages();
                                 else if (_currentChatPartnerId >= 0) LoadMessages();
@@ -1362,7 +1372,10 @@ namespace PISMO
                 int sid = kv.Key;
                 int cnt = kv.Value;
                 _prevUnread.TryGetValue(sid, out int prev);
-                if (cnt > prev && sid != _currentChatPartnerId)
+                // Когда открыт встроенный вид сервера, ЛС-чат не виден — уведомляем
+                // обо ВСЕХ входящих ЛС, включая «текущего» собеседника.
+                int openPartner = OnServerView ? -1 : _currentChatPartnerId;
+                if (cnt > prev && sid != openPartner)
                     grew.Add((sid, cnt - prev));
             }
             if (grew.Count > 0) ShowAggregatedNotification(grew);
