@@ -6,7 +6,7 @@
   "compilationOptions": {},
   "targets": {
     ".NETCoreApp,Version=v8.0": {
-      "PISMO/2.7.20": {
+      "PISMO/2.7.21": {
         "dependencies": {
           "AForge": "2.2.5",
           "AForge.Video": "2.2.5",
@@ -329,7 +329,7 @@
     }
   },
   "libraries": {
-    "PISMO/2.7.20": {
+    "PISMO/2.7.21": {
       "type": "project",
       "serviceable": false,
       "sha512": ""
