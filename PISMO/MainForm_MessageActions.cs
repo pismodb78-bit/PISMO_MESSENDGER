@@ -52,6 +52,11 @@ namespace PISMO
         private bool _selectIsGroup;
         private readonly System.Collections.Generic.HashSet<int> _selectedMsgIds = new();
         private readonly System.Collections.Generic.Dictionary<int, (string sender, string text, int scope)> _msgMeta = new();
+        // Для мгновенного переключения выделения БЕЗ перезагрузки чата (иначе скролл
+        // прыгал вниз и шла полная перерисовка на каждый клик).
+        private readonly System.Collections.Generic.Dictionary<int, Label> _selMark = new();
+        private readonly System.Collections.Generic.Dictionary<int, Control> _selBubble = new();
+        private readonly System.Collections.Generic.Dictionary<int, Color> _selBase = new();
         private readonly System.Collections.Generic.List<(string sender, string text, int scope, int id)> _forwardBatch = new();
         private int _forwardSrcScope;      // 0=ЛС, 1=группа, 2=сервер — откуда пересылаем
         private int _forwardSrcId;         // id исходного сообщения (для копии медиа)
@@ -304,8 +309,10 @@ namespace PISMO
             _selectMode = true;
             _selectIsGroup = isGroup;
             _selectedMsgIds.Clear();
+            _selMark.Clear(); _selBubble.Clear(); _selBase.Clear();
             if (_pnlSelectBar != null) { _pnlSelectBar.Visible = true; _pnlSelectBar.BringToFront(); }
             UpdateSelectBar();
+            RerenderCurrentChat();   // один раз: показать кружки ○ у всех сообщений
         }
 
         private void ExitSelectMode()
@@ -321,7 +328,20 @@ namespace PISMO
             if (msgId <= 0) return;
             if (!_selectedMsgIds.Add(msgId)) _selectedMsgIds.Remove(msgId);
             UpdateSelectBar();
-            RerenderCurrentChat();
+
+            // ТОЧЕЧНОЕ обновление вида выбранного пузыря — БЕЗ перезагрузки чата
+            // (раньше LoadMessages на каждый клик прокручивал чат вниз и тормозил).
+            bool sel = _selectedMsgIds.Contains(msgId);
+            if (_selMark.TryGetValue(msgId, out var mk) && mk != null && !mk.IsDisposed)
+            {
+                mk.Text = sel ? "✔" : "○";
+                mk.ForeColor = sel ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158);
+            }
+            if (_selBubble.TryGetValue(msgId, out var bb) && bb != null && !bb.IsDisposed
+                && _selBase.TryGetValue(msgId, out var baseColor))
+            {
+                bb.BackColor = sel ? ControlPaint.Light(baseColor, 0.15f) : baseColor;
+            }
         }
 
         private void UpdateSelectBar()
@@ -331,6 +351,8 @@ namespace PISMO
 
         private void RerenderCurrentChat()
         {
+            int savedScroll = 0;
+            try { savedScroll = -pnlMessages.AutoScrollPosition.Y; } catch { }
             try
             {
                 ForceMessageRerender();
@@ -338,6 +360,9 @@ namespace PISMO
                 else if (_currentChatPartnerId >= 0) LoadMessages();
             }
             catch { }
+            // LoadMessages форсит скролл вниз — возвращаем позицию, чтобы вход в режим
+            // выделения / правка не прыгали к последнему сообщению.
+            try { pnlMessages.AutoScrollPosition = new Point(0, savedScroll); } catch { }
         }
 
         private void DeleteSelected()
@@ -534,9 +559,16 @@ namespace PISMO
                 else c.MouseClick += ShowMenu;
             }
 
-            // Подсветка выбранного сообщения в режиме выделения.
-            if (_selectMode && msgId > 0 && _selectedMsgIds.Contains(msgId))
-                bubble.BackColor = ControlPaint.Light(bubble.BackColor, 0.15f);
+            // Подсветка выбранного сообщения в режиме выделения. Запоминаем пузырь и
+            // его БАЗОВЫЙ цвет, чтобы ToggleSelect мог точечно тонировать/снимать
+            // подсветку без перезагрузки чата.
+            if (_selectMode && msgId > 0)
+            {
+                _selBubble[msgId] = bubble;
+                _selBase[msgId] = bubble.BackColor;
+                if (_selectedMsgIds.Contains(msgId))
+                    bubble.BackColor = ControlPaint.Light(bubble.BackColor, 0.15f);
+            }
         }
 
         /// <summary>Кружок выделения СПРАВА от сообщения (как в Telegram) — сосед
@@ -563,6 +595,7 @@ namespace PISMO
             mark.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ToggleSelect(mid); };
             pnlMessages.Controls.Add(mark);
             mark.BringToFront();
+            _selMark[msgId] = mark;   // для точечного обновления без перезагрузки чата
         }
 
         // ════════════════════════════════════════════════════════════════
