@@ -1189,6 +1189,7 @@ namespace PISMO
                 try
                 {
                     var unread = ReadUnreadCounts();
+                    var groupNew = ReadGroupNew();
                     var presence = ReadPresence(ids);
                     int friendReq = -1;
                     try { friendReq = FriendsRepository.CountIncoming(UserSession.EffectiveId); } catch { }
@@ -1213,6 +1214,7 @@ namespace PISMO
                                 else if (_currentChatPartnerId >= 0) LoadMessages();
                             }
                             if (unread != null) ApplyUnreadAndNotify(unread);
+                            if (groupNew != null) ApplyGroupNotify(groupNew);
                             ApplyPresence(presence);
                             if (friendReq >= 0) ApplyFriendRequests(friendReq);
                         }
@@ -1284,6 +1286,67 @@ namespace PISMO
             }
             catch { return null; }
             return current;
+        }
+
+        // Максимальный id чужого сообщения по каждой группе, где я состою.
+        // Служит для пуша из трея при новом сообщении в групповом чате
+        // (у групп нет per-user метки прочтения — базовую точку держим в памяти).
+        private readonly Dictionary<int, (int maxId, string name)> _prevGroupMax = new();
+        private bool _groupMaxInit;
+
+        private Dictionary<int, (int maxId, string name)> ReadGroupNew()
+        {
+            int myId = UserSession.EffectiveId;
+            var current = new Dictionary<int, (int, string)>();
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT gc.id, gc.name, COALESCE(MAX(gm.id),0) AS max_id " +
+                    "FROM group_chats gc " +
+                    "JOIN group_members mem ON mem.group_id = gc.id AND mem.user_id = @me " +
+                    "LEFT JOIN group_messages gm ON gm.group_id = gc.id AND gm.sender_id <> @me AND gm.is_deleted = 0 " +
+                    "GROUP BY gc.id, gc.name", conn);
+                cmd.Parameters.AddWithValue("@me", myId);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                    current[Convert.ToInt32(r["id"])] =
+                        (Convert.ToInt32(r["max_id"]), r["name"]?.ToString() ?? "группа");
+            }
+            catch { return null; }
+            return current;
+        }
+
+        // Пуш из трея при новом сообщении в группе (кроме открытой группы).
+        // Первый вызов только фиксирует базовую точку — без уведомления.
+        private void ApplyGroupNotify(Dictionary<int, (int maxId, string name)> current)
+        {
+            if (current == null) return;
+            if (_groupMaxInit)
+            {
+                int totalNew = 0; string lastName = null;
+                foreach (var kv in current)
+                {
+                    if (kv.Key == _currentGroupId) continue;
+                    _prevGroupMax.TryGetValue(kv.Key, out var prev);
+                    if (kv.Value.maxId > prev.maxId && prev.maxId >= 0)
+                    {
+                        totalNew++; lastName = kv.Value.name;
+                    }
+                }
+                if (totalNew > 0)
+                {
+                    try { Sounds.Message(); } catch { }
+                    string body = totalNew == 1
+                        ? $"Новое сообщение в группе «{lastName}»"
+                        : $"Новые сообщения в {totalNew} {RuPlural(totalNew, "группе", "группах", "группах")}";
+                    try { _trayIcon?.ShowBalloonTip(4000, "PISMO — сообщение", body, ToolTipIcon.Info); } catch { }
+                    if (!this.ContainsFocus) { try { FlashWindow(this.Handle, true); } catch { } }
+                }
+            }
+            _prevGroupMax.Clear();
+            foreach (var kv in current) _prevGroupMax[kv.Key] = kv.Value;
+            _groupMaxInit = true;
         }
 
         // ── Применение бейджей + уведомления (UI-поток) ───────────────
