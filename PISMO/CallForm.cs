@@ -292,6 +292,7 @@ namespace PISMO
             _transport.ParticipantLeftById += pid => UiInvoke(() => RemoveParticipant(pid));
             _transport.RemoteTileStarted += (pid, name, source) => UiInvoke(() => OnTileStarted(pid, name, source));
             _transport.RemoteTileStopped += (pid, source) => UiInvoke(() => OnTileStopped(pid, source));
+            _transport.RemoteCameraLost += pid => UiInvoke(() => OnRemoteCameraLost(pid));
             _transport.RemoteTileFrame += (pid, source, frame) => OnTileFrameOffThread(pid, source, frame);
             // «Последний кадр побеждает»: на 60fps BeginInvoke-очередь копит кадры
             // быстрее, чем UI их рисует → растущий лаг и рваное превью. Храним

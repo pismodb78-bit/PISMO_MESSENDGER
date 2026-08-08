@@ -682,6 +682,16 @@ namespace PISMO
             }
         }
 
+        /// <summary>Камера участника замерла (аварийный обрыв без «участник вышел»
+        /// и без «камера выкл») — снимаем плитку камеры ЦЕЛИКОМ, а не оставляем
+        /// аватар: участника фактически нет, иначе висит чёрная плитка-призрак.</summary>
+        private void OnRemoteCameraLost(string pid)
+        {
+            if (string.IsNullOrEmpty(pid) || pid == SelfPid) return;
+            RemoveTile(TileKey(pid, "camera"));
+            LayoutTiles();
+        }
+
         private void OnTileFrame(string pid, string source, byte[] jpeg)
         {
             string key = TileKey(pid, source);

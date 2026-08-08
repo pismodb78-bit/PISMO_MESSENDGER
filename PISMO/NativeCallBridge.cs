@@ -41,6 +41,7 @@ namespace PISMO
         private readonly HashSet<string> _watchedScreens = new();         // pid чьи демки пользователь смотрит
         private readonly Dictionary<string, DateTime> _screenStoppedAt = new(); // когда демка остановлена (антидребезг «хвоста» кадров)
         private readonly Dictionary<string, DateTime> _lastScreenFrameAt = new(); // последний кадр демки на участника (watchdog зависшей плитки)
+        private readonly Dictionary<string, DateTime> _lastCamFrameAt = new();  // последний кадр камеры (watchdog плитки-призрака при аварийном выходе)
         private System.Threading.Timer _screenWatchdog;
         private readonly object _watchLock = new();
         private bool _screenPreviewActive = true;
@@ -59,6 +60,7 @@ namespace PISMO
         public event Action<string> ParticipantLeftById;
         public event Action<string, string, string> RemoteTileStarted;   // (pid, name, source)
         public event Action<string, string> RemoteTileStopped;           // (pid, source)
+        public event Action<string> RemoteCameraLost;                    // (pid) — камера замерла (аварийный выход) → снять плитку целиком
         public event Action<string, string, byte[]> RemoteTileFrame;     // (pid, source, image bytes)
         public event Action<string, string, byte[], int, int> RemoteTileRawFrame; // (pid, source, BGRA, w, h) — GPU-рендер демок
         public event Action<byte[], int, int> LocalScreenRawFrame;               // своя демка (BGRA) — GPU-рендер превью
@@ -121,6 +123,7 @@ namespace PISMO
                 }
                 _startedTiles.Remove(id + "|screen");
                 _startedTiles.Remove(id + "|camera");
+                lock (_watchLock) _lastCamFrameAt.Remove(id);
                 ParticipantLeftById?.Invoke(id);
                 RemoteParticipantLeft?.Invoke();
             };
@@ -305,6 +308,9 @@ namespace PISMO
                 return;
             }
 
+            // КАМЕРА: отметка времени кадра для watchdog плитки-призрака.
+            lock (_watchLock) _lastCamFrameAt[identity] = DateTime.UtcNow;
+
             // КАМЕРА: прежний путь (маленькие плитки) — BMP вне FFI-потока.
             Task.Run(() =>
             {
@@ -328,13 +334,33 @@ namespace PISMO
                     if (_lastScreenFrameAt.TryGetValue(id, out var t) && (now - t).TotalMilliseconds > 2500)
                         (stale ??= new List<string>()).Add(id);
             }
-            if (stale == null) return;
-            foreach (var id in stale)
+            if (stale != null)
+                foreach (var id in stale)
+                {
+                    ScreenLog.Log($"[viewer] watchdog: нет кадров демки >2.5с id={id} -> снимаем зависшую плитку");
+                    lock (_watchLock) _lastScreenFrameAt.Remove(id);
+                    OnRemoteVideoRemoved(id, true);   // очистит состояние + RemoteStreamUnpublished (плитка снимется)
+                }
+
+            // КАМЕРА: живая камера всегда шлёт кадры. Если поток замер надолго,
+            // а ни «камера выкл» (TrackUnpublished), ни «участник вышел»
+            // (ParticipantDisconnected) не долетели (аварийный обрыв, напр. телефон
+            // убили) — плитка зависает чёрной. Снимаем её целиком по таймауту.
+            List<string> camStale = null;
+            lock (_watchLock)
             {
-                ScreenLog.Log($"[viewer] watchdog: нет кадров демки >2.5с id={id} -> снимаем зависшую плитку");
-                lock (_watchLock) _lastScreenFrameAt.Remove(id);
-                OnRemoteVideoRemoved(id, true);   // очистит состояние + RemoteStreamUnpublished (плитка снимется)
+                foreach (var kv in _lastCamFrameAt)
+                    if ((now - kv.Value).TotalMilliseconds > 6000)
+                        (camStale ??= new List<string>()).Add(kv.Key);
             }
+            if (camStale != null)
+                foreach (var id in camStale)
+                {
+                    ScreenLog.Log($"[viewer] watchdog: нет кадров камеры >6с id={id} -> снимаем зависшую плитку");
+                    lock (_watchLock) _lastCamFrameAt.Remove(id);
+                    _startedTiles.Remove(id + "|camera");
+                    Ui(() => { try { RemoteCameraLost?.Invoke(id); } catch { } });
+                }
         }
 
         private void OnRemoteVideoRemoved(string identity, bool isScreen)
@@ -351,6 +377,12 @@ namespace PISMO
                 }
                 try { _t?.SetScreenAudioWatched(identity, false); } catch { }
                 Ui(() => { try { RemoteStreamUnpublished?.Invoke(identity); } catch { } });
+            }
+            else
+            {
+                // Камера выключена штатно (TrackUnpublished) — снимаем с watchdog,
+                // чтобы он не удалял плитку-аватар как «зависшую».
+                lock (_watchLock) _lastCamFrameAt.Remove(identity);
             }
             if (_startedTiles.Remove(identity + "|" + source))
                 RemoteTileStopped?.Invoke(identity, source);
