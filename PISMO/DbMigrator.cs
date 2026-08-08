@@ -212,6 +212,19 @@ namespace PISMO
                     }
                 }
             }),
+
+            (13, "server_messages.reply_to_id: ответы в каналах серверов", conn =>
+            {
+                // На части инсталляций колонки нет (в т.ч. в текущей БД) — из-за
+                // этого ответы в каналах не хранились, а красная цифра «ответ на
+                // моё сообщение» на сервере не могла считаться. Добавляем, если
+                // таблица есть и колонки ещё нет; индекс — для быстрого поиска ответов.
+                if (TableExists(conn, "server_messages") && !ColumnExists(conn, "server_messages", "reply_to_id"))
+                {
+                    Exec(conn, "ALTER TABLE server_messages ADD COLUMN reply_to_id INT UNSIGNED NULL");
+                    try { Exec(conn, "ALTER TABLE server_messages ADD KEY idx_reply (reply_to_id)"); } catch { }
+                }
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>
