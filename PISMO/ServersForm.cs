@@ -2816,9 +2816,24 @@ namespace PISMO
                     if (uid != _me)
                     {
                         int uidCap = uid; string nmCap = nm;
+                        string loginCap = r["login"] == DBNull.Value ? nm : r["login"].ToString();
                         var menu = new ContextMenuStrip();
                         menu.Items.Add("👤 Профиль", null, (s, e) =>
                         { try { using var pf = new ProfileForm(uidCap, readOnly: true); pf.ShowDialog(this); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
+                        // Упомянуть — вставляет @логин в поле ввода (без отправки).
+                        menu.Items.Add("＠ Упомянуть", null, (s, e) =>
+                        {
+                            try
+                            {
+                                if (_txtInput == null) return;
+                                string tag = "@" + loginCap + " ";
+                                int pos = _txtInput.SelectionStart;
+                                _txtInput.Text = _txtInput.Text.Insert(Math.Min(pos, _txtInput.TextLength), tag);
+                                _txtInput.SelectionStart = pos + tag.Length;
+                                _txtInput.Focus();
+                            }
+                            catch { }
+                        });
                         menu.Items.Add("➕ Добавить в друзья", null, (s, e) =>
                         {
                             try
