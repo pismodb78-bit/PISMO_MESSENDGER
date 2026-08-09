@@ -1673,6 +1673,8 @@ namespace PISMO
                 }
                 if (_convSearch != null) FilterConversations(_convSearch.Text);
                 try { pnlUserList_Resize(null, null); } catch { }   // подогнать ширину карточек → без гор.скролла
+                try { ChatScroll.ApplyDarkScrollbar(pnlUserList); } catch { }   // тёмная полоса и в списке контактов
+                try { BeginInvoke(new Action(() => ChatScroll.ApplyDarkScrollbar(pnlUserList))); } catch { }
                 try { PresenceTick(); } catch { } // разово обновить статусы под список
             }
             catch (Exception ex)
@@ -1800,6 +1802,9 @@ namespace PISMO
                     string role = row["role"].ToString();
                     AddAdminUserCard(uid, name, role);
                 }
+                try { pnlUserList_Resize(null, null); } catch { }
+                try { ChatScroll.ApplyDarkScrollbar(pnlUserList); } catch { }   // тёмная полоса в списке пользователей
+                try { BeginInvoke(new Action(() => ChatScroll.ApplyDarkScrollbar(pnlUserList))); } catch { }
             }
             catch (Exception ex)
             {

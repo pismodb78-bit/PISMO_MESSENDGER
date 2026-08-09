@@ -85,18 +85,7 @@ namespace PISMO
             p.MouseWheel += (s, e) => p.Invalidate(true);
 
             EnableAppDarkMode();
-            void ApplyTheme()
-            {
-                try
-                {
-                    if (!p.IsHandleCreated) return;
-                    bool light = false;
-                    try { light = Theme.IsLight; } catch { }
-                    // В тёмной теме — тёмная полоса; в светлой — стандартная светлая.
-                    SetWindowTheme(p.Handle, light ? "Explorer" : "DarkMode_Explorer", null);
-                }
-                catch { }
-            }
+            void ApplyTheme() => ApplyDarkScrollbar(p);
             p.HandleCreated += (s, e) => ApplyTheme();
             // Переприменяем при ресайзе/разворачивании — иначе на весь экран
             // нативная полоса иногда возвращалась к светлому стилю.
@@ -107,6 +96,21 @@ namespace PISMO
 
         /// <summary>Совместимость: то же, что <see cref="Attach(Panel)"/>.</summary>
         public static void AttachChat(Panel p) => Attach(p);
+
+        /// <summary>Принудительно переводит нативную полосу контрола в тёмный стиль
+        /// (или обратно в светлый в светлой теме). Можно звать повторно — например
+        /// после перезагрузки списка, если стиль не подхватился по таймингу.</summary>
+        public static void ApplyDarkScrollbar(Control c)
+        {
+            try
+            {
+                if (c == null || !c.IsHandleCreated) return;
+                bool light = false;
+                try { light = Theme.IsLight; } catch { }
+                SetWindowTheme(c.Handle, light ? "Explorer" : "DarkMode_Explorer", null);
+            }
+            catch { }
+        }
 
         /// <summary>Замораживает отрисовку контрола (перед массовой пересборкой ленты),
         /// чтобы не было мигания «загрузки заново».</summary>
