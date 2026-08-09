@@ -92,6 +92,32 @@ namespace PISMO
             p.Resize += (s, e) => Apply();
             p.VisibleChanged += (s, e) => Apply();
             Apply();
+
+            // Артефакты при быстрой прокрутке = отставание перерисовки: Invalidate лишь
+            // ставит WM_PAINT в очередь, и следующий шаг прокрутки приходит раньше, чем
+            // очередь разгребётся («не успевает отрисоваться»). RedrawWindow с
+            // UPDATENOW|ALLCHILDREN перерисовывает панель И все пузыри СИНХРОННО.
+            p.Scroll += (s, e) => RepaintNow(p);
+            p.MouseWheel += (s, e) => RepaintNow(p);
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprc, IntPtr hrgn, uint flags);
+        private const uint RDW_INVALIDATE = 0x0001;
+        private const uint RDW_ERASE = 0x0004;
+        private const uint RDW_ALLCHILDREN = 0x0080;
+        private const uint RDW_UPDATENOW = 0x0100;
+
+        /// <summary>Немедленная (синхронная) перерисовка контрола вместе со всеми дочерними.</summary>
+        public static void RepaintNow(Control c)
+        {
+            try
+            {
+                if (c == null || !c.IsHandleCreated) return;
+                RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            }
+            catch { }
         }
 
         /// <summary>Для панелей сообщений: как Attach + двойная буферизация.
