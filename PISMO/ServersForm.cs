@@ -17,14 +17,6 @@ namespace PISMO
     /// </summary>
     public sealed partial class ServersForm : Form
     {
-        // WS_EX_COMPOSITED — против смаза пузырей при прокрутке серверного чата
-        // (см. пояснение в MainForm). Форма встроенная (TopLevel=false), но стиль
-        // применяется к её окну и дочерним контролам.
-        protected override CreateParams CreateParams
-        {
-            get { var cp = base.CreateParams; cp.ExStyle |= 0x02000000; return cp; }
-        }
-
         private int _serverId = -1;
         private int _pendingOpenServerId = -1;   // сервер, который надо открыть сразу после загрузки (из рейла)
         private string _serverName = "";
