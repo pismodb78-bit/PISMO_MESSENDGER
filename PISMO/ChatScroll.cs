@@ -93,7 +93,8 @@ namespace PISMO
             _pretty.Add(p);
             KillHorizontal(p);
             EnableDoubleBuffer(p);
-            EnableComposited(p);   // главный фикс смаза: буферизация вместе с дочерними
+            // WS_EX_COMPOSITED убран: он давал светлые полосы-артефакты между
+            // соседними панелями (шапка/чат/сайдбар) и от смаза не спасал.
             // Перерисовка ВМЕСТЕ С дочерними (true) при скролле убирает «хвосты» сообщений.
             p.Scroll += (s, e) => p.Invalidate(true);
 
@@ -118,6 +119,9 @@ namespace PISMO
                 try
                 {
                     if (p.IsDisposed || bar.IsDisposed) return;
+                    // Панель ещё не разложена (bounds 0/0) — прячем оверлей, иначе он
+                    // приземляется в левый край родителя и светится полоской.
+                    if (p.Width < 20 || p.Height < 20) { bar.Visible = false; return; }
                     int x = p.Right - bw;
                     int y = p.Top;
                     int h = p.Height;

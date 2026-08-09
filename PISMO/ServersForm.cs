@@ -1731,9 +1731,14 @@ namespace PISMO
         private void PositionSrvScrollDownButton()
         {
             if (_srvBtnScrollDown == null) return;
-            int cx = _pnlMessages.Right - 97;
-            int cy = _pnlMessages.Bottom - 111;
-            _srvBtnScrollDown.Location = new Point(cx - _srvBtnScrollDown.Width / 2, cy - _srvBtnScrollDown.Height / 2);
+            // Прижимаем к правому нижнему углу поля сообщений с небольшим отступом.
+            // Раньше центр считался как Right-97 — на широком серверном чате это
+            // визуально смещало кнопку слишком далеко влево.
+            int rightMargin = 20;
+            int bottomMargin = 24;
+            _srvBtnScrollDown.Location = new Point(
+                _pnlMessages.Right - _srvBtnScrollDown.Width - rightMargin,
+                _pnlMessages.Bottom - _srvBtnScrollDown.Height - bottomMargin);
             _srvBtnScrollDown.BringToFront();
         }
 
