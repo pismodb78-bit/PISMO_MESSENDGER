@@ -352,7 +352,7 @@ namespace PISMO
             pnlChatHeader.Location = new Point(0, 0);
             pnlChatHeader.Name = "pnlChatHeader";
             pnlChatHeader.Padding = new Padding(16, 0, 0, 0);
-            pnlChatHeader.Size = new Size(810, 48);
+            pnlChatHeader.Size = new Size(810, 54);   // +6px: чуть опускаем область сообщений, чтобы верх скролла не упирался в кнопку звонка
             pnlChatHeader.TabIndex = 3;
             pnlChatHeader.Paint += pnlChatHeader_Paint;
             // 
