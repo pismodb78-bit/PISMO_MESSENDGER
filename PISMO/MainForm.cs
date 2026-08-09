@@ -3796,6 +3796,18 @@ namespace PISMO
 
                     if (cancelled) { DeleteMsgRow(conn, table, newId); return; }
 
+                    // Ранний пуш: строка уже есть (is_read=0), уведомляем получателя
+                    // СРАЗУ, не дожидаясь заливки больших данных (для файла в десятки
+                    // МБ new_message раньше уходил только в конце — пуш приходил очень
+                    // поздно или терялся). Финальный new_message после заливки обновит
+                    // карточку файла у получателя.
+                    try
+                    {
+                        if (isGroup) WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "group");
+                        else WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "direct");
+                    }
+                    catch { }
+
                     // 2) Пытаемся записать файл ОДНИМ запросом (быстро, O(n)).
                     try
                     {
