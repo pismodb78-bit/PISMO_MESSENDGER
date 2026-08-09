@@ -746,21 +746,23 @@ namespace PISMO
 
         private void pnlUserList_Resize(object sender, EventArgs e)
         {
-            // Подгоняем ширину карточек и бейджей при изменении размеров панели
+            // Подгоняем ширину карточек ПОД клиентскую область панели (уже без
+            // вертикальной полосы) — тогда горизонтального скролла не возникает.
             try
             {
+                int w = Math.Max(80, pnlUserList.ClientSize.Width);
                 foreach (Control ctrl in pnlUserList.Controls)
                 {
                     if (ctrl is Button btn)   // кнопка «Друзья» (+ бейдж заявок на ней)
                     {
-                        btn.Width = CardWidth;
+                        btn.Width = w - btn.Margin.Horizontal;
                         foreach (Control c in btn.Controls)
                             if (c is Label lb && lb.BackColor == Color.FromArgb(240, 71, 71))
                                 lb.Location = new Point(Math.Max(0, btn.Width - 32), 8);
                     }
                     if (ctrl is Panel pnl)
                     {
-                        pnl.Width = CardWidth;
+                        pnl.Width = w - pnl.Margin.Horizontal;
                         foreach (Control c in pnl.Controls)
                         {
                             // бейджи с красным фоном — корректируем позицию
@@ -1658,6 +1660,7 @@ namespace PISMO
                     AddUserCard(uid, name, lastMsg, unread, pinned: ChatPins.IsPinned(uid));
                 }
                 if (_convSearch != null) FilterConversations(_convSearch.Text);
+                try { pnlUserList_Resize(null, null); } catch { }   // подогнать ширину карточек → без гор.скролла
                 try { PresenceTick(); } catch { } // разово обновить статусы под список
             }
             catch (Exception ex)
