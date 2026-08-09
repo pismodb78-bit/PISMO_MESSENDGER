@@ -14,6 +14,15 @@ namespace PISMO
 {
     public partial class MainForm : Form
     {
+        // ── Постраничная загрузка переписки (слабое железо / длинные чаты) ──
+        // На открытии грузим ПОСЛЕДНИЕ MsgPageSize сообщений; при прокрутке вверх
+        // догружаем ещё страницу, сохраняя позицию (не скидывая вниз).
+        private const int MsgPageSize = 40;
+        private int _dmLimit = MsgPageSize;         // сколько последних ЛС грузим сейчас
+        private bool _dmHasMore;                     // есть ли более старые сообщения
+        private bool _dmLoadingOlder;                // идёт догрузка вверх
+        private int _dmRestoreFromBottom = -1;       // держим позицию: расстояние от низа
+
         // ── Состояние ──────────────────────────────────────────────────────
         private int _currentChatPartnerId = -1;
         private string _currentChatPartnerName = "";
@@ -2349,6 +2358,11 @@ namespace PISMO
             _currentGroupId = -1;
             _currentGroupName = "";
             _lastMsgCount = 0;
+            _dmLimit = MsgPageSize;          // при открытии — только последняя страница
+            _dmHasMore = false;
+            _dmLoadingOlder = false;
+            _dmRestoreFromBottom = -1;
+            EnsureDmScrollHook();
 
             lblChatTitle.Text = "@ " + partnerName;
             UpdateChatHeaderPresence();   // статус собеседника (в сети / бездействует / был в сети)
@@ -2596,7 +2610,9 @@ namespace PISMO
                 cachedDt = MessageCache.Load(MessageCache.DirectKey(myId, partner));
                 if (cachedDt != null) _msgMetaCache[partner] = cachedDt;
             }
-            if (cachedDt != null)
+            // При догрузке вверх кеш (последняя страница) НЕ рисуем — иначе мигало бы
+            // и сбивало позицию; ждём свежую большую выборку из БД.
+            if (cachedDt != null && !_dmLoadingOlder)
             {
                 var (cib, ctb) = _blockCache.TryGetValue(partner, out var bc) ? bc : (false, false);
                 RenderMessages(cachedDt, myId, partner, cib, ctb);
@@ -2612,10 +2628,11 @@ namespace PISMO
                 {
                     iB = IsUserBlocked(myId, partner);
                     tB = IsUserBlocked(partner, myId);
-                    dt = LoadMessagesMetaOnly(myId, partner);
+                    dt = LoadMessagesMetaOnly(myId, partner, _dmLimit);
                 }
                 catch { }
                 if (dt == null) return;
+                _dmHasMore = dt.Rows.Count >= _dmLimit;   // набрали полную страницу → возможно есть ещё
                 // Сохраняем в постоянный кеш переписки (текст зашифрован, как в БД).
                 try { MessageCache.Save(MessageCache.DirectKey(myId, partner), dt); } catch { }
 
@@ -2779,14 +2796,56 @@ namespace PISMO
                 _lastMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
 
-                // Прокручиваем в конец ПОСЛЕ ResumeLayout
-                pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                if (_dmRestoreFromBottom >= 0)
+                {
+                    // Догрузка старых сообщений сверху: держим позицию — видимые
+                    // сообщения остаются на месте (не скидываем вниз). Восстанавливаем
+                    // прежнее расстояние от низа контента (DisplayRectangle = полная
+                    // высота контента у AutoScroll-панели).
+                    pnlMessages.PerformLayout();
+                    int viewport = pnlMessages.ClientSize.Height;
+                    int newTop = pnlMessages.DisplayRectangle.Height - viewport - _dmRestoreFromBottom;
+                    try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
+                    _dmRestoreFromBottom = -1;
+                }
+                else
+                {
+                    // Прокручиваем в конец ПОСЛЕ ResumeLayout
+                    pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                }
+                _dmLoadingOlder = false;
             }
             catch (Exception ex)
             {
                 pnlMessages.ResumeLayout();
                 MessageBox.Show("Ошибка загрузки сообщений: " + ex.Message);
             }
+        }
+
+        // Подписка на прокрутку панели ЛС — для догрузки старых сообщений у верха.
+        private bool _dmScrollHooked;
+        private void EnsureDmScrollHook()
+        {
+            if (_dmScrollHooked || pnlMessages == null) return;
+            _dmScrollHooked = true;
+            pnlMessages.Scroll += (s, e) => MaybeLoadOlderDm();
+            pnlMessages.MouseWheel += (s, e) => MaybeLoadOlderDm();
+        }
+
+        /// <summary>У верха списка и есть более старые сообщения — догружаем ещё
+        /// страницу, сохраняя позицию просмотра (чат не скидывается вниз).</summary>
+        private void MaybeLoadOlderDm()
+        {
+            if (_currentChatPartnerId < 0 || _currentGroupId >= 0) return;
+            if (_dmLoadingOlder || !_dmHasMore) return;
+            if (-pnlMessages.AutoScrollPosition.Y > 60) return;   // ещё не у верха
+
+            _dmLoadingOlder = true;
+            int viewport = pnlMessages.ClientSize.Height;
+            int curTop = -pnlMessages.AutoScrollPosition.Y;
+            _dmRestoreFromBottom = pnlMessages.DisplayRectangle.Height - (curTop + viewport);
+            _dmLimit += MsgPageSize;
+            LoadMessages(markRead: false);
         }
 
         private Panel BuildDateSeparator(string dateText)

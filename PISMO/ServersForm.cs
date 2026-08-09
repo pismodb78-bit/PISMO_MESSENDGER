@@ -25,6 +25,15 @@ namespace PISMO
         private string _channelType = "text";
         private string _channelName = "";
 
+        // Постраничная загрузка канала (как в ЛС): последняя страница на открытии,
+        // догрузка вверх с сохранением позиции.
+        private const int ChanPageSize = 40;
+        private int _srvLimit = ChanPageSize;
+        private bool _srvHasMore;
+        private bool _srvLoadingOlder;
+        private int _srvRestoreFromBottom = -1;
+        private bool _srvScrollHooked;
+
         // Права текущего пользователя на выбранном сервере и заглушение.
         private bool _canBan, _canKick, _canMute, _canManage, _serverMuted;
 
@@ -994,6 +1003,8 @@ namespace PISMO
         private void SelectChannel(int cid, string type, string name, bool joinVoice = true)
         {
             _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1;
+            _srvLimit = ChanPageSize; _srvHasMore = false; _srvLoadingOlder = false; _srvRestoreFromBottom = -1;
+            EnsureSrvScrollHook();
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
             MainForm.DisposeAndClear(_pnlMessages);
             _renderedKey = null; _renderedSig = null; // панель очищена — не пропускать отрисовку
@@ -1140,14 +1151,17 @@ namespace PISMO
                 cachedDt = MessageCache.Load(MessageCache.ChannelKey(channel));
                 if (cachedDt != null) _chanMetaCache[channel] = cachedDt;
             }
-            if (cachedDt != null) RenderMessages(cachedDt, channel);
+            // При догрузке вверх кеш (последняя страница) не рисуем — ждём большую выборку.
+            if (cachedDt != null && !_srvLoadingOlder) RenderMessages(cachedDt, channel);
 
             // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в канале.
             System.Threading.Tasks.Task.Run(() =>
             {
                 var media = new Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)>();
-                DataTable dt = FetchChannelMessages(channel, media);
+                int lim = _srvLimit;
+                DataTable dt = FetchChannelMessages(channel, media, lim);
                 if (dt == null) return;
+                _srvHasMore = dt.Rows.Count >= lim;   // полная страница → возможно есть ещё старые
                 // В кеш на диск пишем только метаданные (без тяжёлых BLOB).
                 try { MessageCache.Save(MessageCache.ChannelKey(channel), dt); } catch { }
                 if (IsDisposed || !IsHandleCreated) return;
@@ -1169,7 +1183,8 @@ namespace PISMO
         /// а из возвращаемой таблицы BLOB-колонки убирает (чтобы кеш оставался лёгким).
         /// Сам обрабатывает отсутствие колонок reply_to_id / медиа (старая БД).</summary>
         private DataTable FetchChannelMessages(int channel,
-            Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut)
+            Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut,
+            int limit = 0)
         {
             try
             {
@@ -1186,11 +1201,16 @@ namespace PISMO
                     ? ", sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video, (sm.file_data IS NOT NULL) AS has_file"
                     : "";
 
-                using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand(
+                // Постранично: последние `limit` (по id DESC), затем вернуть ASC.
+                string baseSql =
                     "SELECT sm.id, sm.sender_id, sm.text, sm.created_at, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login" +
                     replyCols + mediaCols +
-                    " FROM server_messages sm JOIN users u ON u.id=sm.sender_id WHERE sm.channel_id=@c ORDER BY sm.id ASC", conn);
+                    " FROM server_messages sm JOIN users u ON u.id=sm.sender_id WHERE sm.channel_id=@c ORDER BY sm.id " +
+                    (limit > 0 ? "DESC LIMIT " + limit : "ASC");
+                string finalSql = limit > 0 ? "SELECT * FROM (" + baseSql + ") sub ORDER BY id ASC" : baseSql;
+
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(finalSql, conn);
                 cmd.Parameters.AddWithValue("@c", channel);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
 
@@ -1201,7 +1221,7 @@ namespace PISMO
             catch (MySqlException mex) when (mex.Number == 1054)
             {
                 // Нет колонки reply_to_id (медиа определяем отдельно через information_schema).
-                if (_replyColOk) { _replyColOk = false; return FetchChannelMessages(channel, mediaOut); }
+                if (_replyColOk) { _replyColOk = false; return FetchChannelMessages(channel, mediaOut, limit); }
                 throw;
             }
             catch (Exception ex)
@@ -1591,13 +1611,46 @@ namespace PISMO
                 }
                 _lastMsgCount = dt.Rows.Count;
                 _pnlMessages.ResumeLayout();
-                if (channelChanged || newMsgs)
+                if (_srvRestoreFromBottom >= 0)
+                {
+                    // Догрузка старых сообщений вверх — держим позицию (не вниз).
+                    _pnlMessages.PerformLayout();
+                    int viewport = _pnlMessages.ClientSize.Height;
+                    int newTop = _pnlMessages.DisplayRectangle.Height - viewport - _srvRestoreFromBottom;
+                    try { _pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
+                    _srvRestoreFromBottom = -1;
+                }
+                else if (channelChanged || newMsgs)
                     _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);
                 else
                     try { _pnlMessages.AutoScrollPosition = new Point(0, savedScrollY); } catch { }
                 _lastScrollChannel = channel;
+                _srvLoadingOlder = false;
             }
             catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        private void EnsureSrvScrollHook()
+        {
+            if (_srvScrollHooked || _pnlMessages == null) return;
+            _srvScrollHooked = true;
+            _pnlMessages.Scroll += (s, e) => MaybeLoadOlderSrv();
+            _pnlMessages.MouseWheel += (s, e) => MaybeLoadOlderSrv();
+        }
+
+        /// <summary>У верха канала и есть более старые сообщения — догружаем ещё
+        /// страницу с сохранением позиции (канал не скидывается вниз).</summary>
+        private void MaybeLoadOlderSrv()
+        {
+            if (_channelId <= 0 || _srvLoadingOlder || !_srvHasMore) return;
+            if (-_pnlMessages.AutoScrollPosition.Y > 60) return;   // ещё не у верха
+            _srvLoadingOlder = true;
+            int viewport = _pnlMessages.ClientSize.Height;
+            int curTop = -_pnlMessages.AutoScrollPosition.Y;
+            _srvRestoreFromBottom = _pnlMessages.DisplayRectangle.Height - (curTop + viewport);
+            _srvLimit += ChanPageSize;
+            _renderedKey = null; _renderedSig = null;   // форсим перерисовку с большей выборкой
+            LoadMessages();
         }
 
         /// <summary>Прокручивает к исходному сообщению (по клику на цитату) и подсвечивает.</summary>

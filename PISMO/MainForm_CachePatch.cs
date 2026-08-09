@@ -152,10 +152,12 @@ namespace PISMO
         /// <summary>
         /// Шаг 1: Загружаем все сообщения БЕЗ BLOB-данных (быстро).
         /// </summary>
-        public static DataTable LoadMessagesMetaOnly(int myId, int themId)
+        public static DataTable LoadMessagesMetaOnly(int myId, int themId, int limit = 0)
         {
             using var conn = DBHelper.OpenConnection();
-            const string sql = @"
+            // Постранично: берём ПОСЛЕДНИЕ `limit` сообщений (по id DESC), затем
+            // возвращаем в хронологическом порядке (ASC). limit<=0 — без лимита (всё).
+            string inner = @"
                 SELECT m.id, m.sender_id, m.text,
                        NULL AS image_data, NULL AS audio_data,
                        NULL AS video_data, NULL AS file_data,
@@ -173,7 +175,8 @@ namespace PISMO
                 JOIN users u ON u.id = m.sender_id
                 WHERE (m.sender_id=@me AND m.receiver_id=@them)
                    OR (m.sender_id=@them AND m.receiver_id=@me)
-                ORDER BY m.created_at ASC";
+                ORDER BY m.id " + (limit > 0 ? "DESC LIMIT " + limit : "ASC");
+            string sql = limit > 0 ? "SELECT * FROM (" + inner + ") sub ORDER BY id ASC" : inner;
 
             using var cmd = new MySqlCommand(sql, conn);
             cmd.Parameters.AddWithValue("@me",   myId);
