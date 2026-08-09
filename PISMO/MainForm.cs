@@ -2998,10 +2998,12 @@ namespace PISMO
             if (_btnScrollDown == null) return;
             var host = _btnScrollDown.Parent;
             if (host == null) return;
-            // Якорим по ЦЕНТРУ (чтобы при анимации рос из центра, не смещаясь).
-            int cx = pnlMessages.Right - 97;
-            int cy = pnlMessages.Bottom - 111;
-            _btnScrollDown.Location = new Point(cx - _btnScrollDown.Width / 2, cy - _btnScrollDown.Height / 2);
+            // Прижимаем к правому нижнему углу поля сообщений (как на сервере) —
+            // раньше центр считался как Right-97 и на широком чате уезжал влево.
+            int rightMargin = 20, bottomMargin = 24;
+            _btnScrollDown.Location = new Point(
+                pnlMessages.Right - _btnScrollDown.Width - rightMargin,
+                pnlMessages.Bottom - _btnScrollDown.Height - bottomMargin);
             _btnScrollDown.BringToFront();
         }
 

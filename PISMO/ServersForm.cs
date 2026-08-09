@@ -1361,8 +1361,9 @@ namespace PISMO
                         // Линия-разделитель тянется на всю ширину чата, а не до
                         // потолка бабла (900): иначе на широком окне линия
                         // обрывалась, не доходя до правого края.
-                        int sepWidth = Math.Max(120,
-                            _pnlMessages.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 20);
+                        // Нативная полоса скрыта (её место не резервируется), поэтому
+                        // НЕ вычитаем её ширину — иначе линия не дотягивает до края.
+                        int sepWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 20);
                         _pnlMessages.Controls.Add(MainForm.BuildDateSeparatorW(dsep, sepWidth));
                     }
 

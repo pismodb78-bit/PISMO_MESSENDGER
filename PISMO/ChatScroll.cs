@@ -22,23 +22,20 @@ namespace PISMO
     /// </summary>
     public static class ChatScroll
     {
-        [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-        [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
-        private const int GWL_STYLE = -16;
-        private const int WS_VSCROLL = 0x00200000;
-        private const int WS_HSCROLL = 0x00100000;
+        [DllImport("user32.dll")] private static extern int ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
+        private const int SB_HORZ = 0;
+        private const int SB_VERT = 1;
+        private const int SB_BOTH = 3;
 
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
         private static readonly System.Collections.Generic.HashSet<Panel> _pretty = new();
 
         /// <summary>
-        /// По-настоящему убирает НАТИВНЫЕ полосы прокрутки (обе), снимая стили
-        /// WS_VSCROLL/WS_HSCROLL в обработке WM_NCCALCSIZE. В отличие от ShowScrollBar,
-        /// движок AutoScroll не может вернуть полосу обратно (мы снимаем стиль до
-        /// каждого пересчёта неклиентской области) — поэтому нет ни мерцания, ни
-        /// «толстой» полосы, которая раньше упиралась в кнопку звонка и не убиралась
-        /// в списке контактов. Прокрутка колесом/перетаскиванием и AutoScrollPosition
-        /// продолжают работать — рисуем свой тонкий ползунок поверх.
+        /// Прячет НАТИВНЫЕ полосы прокрутки через ShowScrollBar. У AutoScroll-панели
+        /// движок показывает полосу именно этим API (не стилем окна), поэтому снимать
+        /// WS_VSCROLL бесполезно — прячем так и переспрятываем на всех событиях
+        /// раскладки. Возможное «моргание» нативной полосы полностью скрыто НЕПРОЗРАЧНЫМ
+        /// оверлеем-ползунком, который лежит поверх (см. Attach).
         /// </summary>
         public static void KillHorizontal(Panel p)
         {
@@ -46,34 +43,23 @@ namespace PISMO
             _hkill.Add(p);
             p.HorizontalScroll.Enabled = false;
             p.HorizontalScroll.Visible = false;
-            var hider = new NativeScrollHider();
-            void Hook()
+            void Hide()
             {
-                try { if (p.IsHandleCreated && hider.Handle == IntPtr.Zero) hider.AssignHandle(p.Handle); } catch { }
-            }
-            p.HandleCreated += (s, e) => Hook();
-            p.HandleDestroyed += (s, e) => { try { hider.ReleaseHandle(); } catch { } };
-            Hook();
-        }
-
-        /// <summary>Снимает стили обеих полос при каждом WM_NCCALCSIZE — полосы не рисуются.</summary>
-        private sealed class NativeScrollHider : NativeWindow
-        {
-            private const int WM_NCCALCSIZE = 0x0083;
-            protected override void WndProc(ref Message m)
-            {
-                if (m.Msg == WM_NCCALCSIZE && Handle != IntPtr.Zero)
+                try
                 {
-                    try
-                    {
-                        int style = GetWindowLong(Handle, GWL_STYLE);
-                        int cleared = style & ~WS_VSCROLL & ~WS_HSCROLL;
-                        if (cleared != style) SetWindowLong(Handle, GWL_STYLE, cleared);
-                    }
-                    catch { }
+                    if (!p.IsHandleCreated) return;
+                    ShowScrollBar(p.Handle, SB_HORZ, false);
+                    if (_pretty.Contains(p)) ShowScrollBar(p.Handle, SB_VERT, false);  // верт. прячем только там, где рисуем свой
                 }
-                base.WndProc(ref m);
+                catch { }
             }
+            p.Layout += (s, e) => Hide();
+            p.Resize += (s, e) => Hide();
+            p.Scroll += (s, e) => Hide();
+            p.ControlAdded += (s, e) => Hide();
+            p.HandleCreated += (s, e) => Hide();
+            p.Paint += (s, e) => Hide();
+            Hide();
         }
 
         /// <summary>
@@ -118,7 +104,7 @@ namespace PISMO
             if (host == null || _done.Contains(p)) return;
             _done.Add(p);
 
-            int bw = 14;   // тонкая полоса (нативная убрана стилями — перекрывать нечего)
+            int bw = SystemInformation.VerticalScrollBarWidth;   // = ширина нативной полосы, чтобы ПЕРЕКРЫТЬ её целиком
             var bar = new SlimBar(p) { Width = bw, Visible = false };  // покажем ПОСЛЕ первой валидной позиции
             host.Controls.Add(bar);
             bar.BringToFront();
