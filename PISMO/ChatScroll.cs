@@ -44,12 +44,31 @@ namespace PISMO
             Hide();
         }
 
+        /// <summary>
+        /// Включает двойную буферизацию у панели (у Panel это protected-свойство) —
+        /// без неё при медленном скролле AutoScroll-панель «мажет»: сообщения двоятся
+        /// и оставляют артефакты.
+        /// </summary>
+        public static void EnableDoubleBuffer(Control c)
+        {
+            try
+            {
+                typeof(Control).GetProperty("DoubleBuffered",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?.SetValue(c, true);
+            }
+            catch { }
+        }
+
         /// <summary>Убирает горизонтальный скролл и вешает тонкий вертикальный ползунок.</summary>
         public static void Attach(Panel p)
         {
             if (p == null || _pretty.Contains(p)) return;
             _pretty.Add(p);
             KillHorizontal(p);
+            EnableDoubleBuffer(p);
+            // Перерисовка ВМЕСТЕ С дочерними (true) при скролле убирает «хвосты» сообщений.
+            p.Scroll += (s, e) => p.Invalidate(true);
 
             if (p.Parent == null) { p.ParentChanged += (s, e) => Attach2(p); return; }
             Attach2(p);
