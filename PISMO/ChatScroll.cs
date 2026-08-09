@@ -113,21 +113,10 @@ namespace PISMO
             catch { }
         }
 
-        /// <summary>Замораживает отрисовку на время массовой пересборки ленты (без мигания).</summary>
-        public static void SuspendDraw(Control c)
-        {
-            try { if (c != null && c.IsHandleCreated) SendMessage(c.Handle, WM_SETREDRAW, false, 0); } catch { }
-        }
-
-        public static void ResumeDraw(Control c)
-        {
-            try
-            {
-                if (c == null || !c.IsHandleCreated) return;
-                SendMessage(c.Handle, WM_SETREDRAW, true, 0);
-                c.Invalidate(true);
-            }
-            catch { }
-        }
+        // Заморозка отрисовки через WM_SETREDRAW убрана: при наложении авто-обновления
+        // сервера на прокрутку она оставляла «рваные» полу-отрисованные пузыри.
+        // Достаточно SuspendLayout/ResumeLayout в самих методах пересборки.
+        public static void SuspendDraw(Control c) { }
+        public static void ResumeDraw(Control c) { }
     }
 }
