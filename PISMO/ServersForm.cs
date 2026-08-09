@@ -1695,6 +1695,10 @@ namespace PISMO
                 try { _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null); } catch { }
                 UpdateSrvScrollDownButton();
             };
+            _srvSdAnim = new System.Windows.Forms.Timer { Interval = 12 };
+            _srvSdAnim.Tick += (s, e) => SrvSdAnimTick();
+            _srvBtnScrollDown.MouseEnter += (s, e) => { _srvSdTarget = 64; if (!_srvSdAnim.Enabled) _srvSdAnim.Start(); };
+            _srvBtnScrollDown.MouseLeave += (s, e) => { _srvSdTarget = 55; if (!_srvSdAnim.Enabled) _srvSdAnim.Start(); };
             var host = _pnlMessages.Parent ?? (Control)_pnlMessages;
             host.Controls.Add(_srvBtnScrollDown);
             _srvBtnScrollDown.BringToFront();
@@ -1702,10 +1706,26 @@ namespace PISMO
             host.Resize += (s, e) => PositionSrvScrollDownButton();
         }
 
+        private System.Windows.Forms.Timer _srvSdAnim;
+        private int _srvSdTarget = 55;
+        private void SrvSdAnimTick()
+        {
+            if (_srvBtnScrollDown == null || _srvBtnScrollDown.IsDisposed) { _srvSdAnim?.Stop(); return; }
+            int cur = _srvBtnScrollDown.Width;
+            if (cur == _srvSdTarget) { _srvSdAnim.Stop(); return; }
+            int nw = cur < _srvSdTarget ? Math.Min(_srvSdTarget, cur + 3) : Math.Max(_srvSdTarget, cur - 3);
+            _srvBtnScrollDown.Size = new Size(nw, nw);
+            try { using var gp = new System.Drawing.Drawing2D.GraphicsPath(); gp.AddEllipse(0, 0, nw, nw); _srvBtnScrollDown.Region = new Region(gp); } catch { }
+            PositionSrvScrollDownButton();
+            _srvBtnScrollDown.Invalidate();
+        }
+
         private void PositionSrvScrollDownButton()
         {
             if (_srvBtnScrollDown == null) return;
-            _srvBtnScrollDown.Location = new Point(_pnlMessages.Right - 124, _pnlMessages.Bottom - 138);
+            int cx = _pnlMessages.Right - 97;
+            int cy = _pnlMessages.Bottom - 111;
+            _srvBtnScrollDown.Location = new Point(cx - _srvBtnScrollDown.Width / 2, cy - _srvBtnScrollDown.Height / 2);
             _srvBtnScrollDown.BringToFront();
         }
 

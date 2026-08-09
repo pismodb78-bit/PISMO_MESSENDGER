@@ -2915,12 +2915,33 @@ namespace PISMO
                   _btnScrollDown.Region = new Region(gp); } catch { }
             _btnScrollDown.Paint += (s, e) => PaintScrollDownCircle(e.Graphics, _btnScrollDown.Width, _btnScrollDown.Height);
             _btnScrollDown.Click += (s, e) => ScrollChatToBottom();
+            // Плавное увеличение при наведении.
+            _sdAnim = new System.Windows.Forms.Timer { Interval = 12 };
+            _sdAnim.Tick += (s, e) => SdAnimTick();
+            _btnScrollDown.MouseEnter += (s, e) => { _sdTarget = SdHover; if (!_sdAnim.Enabled) _sdAnim.Start(); };
+            _btnScrollDown.MouseLeave += (s, e) => { _sdTarget = SdBase; if (!_sdAnim.Enabled) _sdAnim.Start(); };
             // Кладём поверх панели сообщений (родитель — контейнер панели).
             var host = pnlMessages.Parent ?? (Control)pnlMessages;
             host.Controls.Add(_btnScrollDown);
             _btnScrollDown.BringToFront();
             PositionScrollDownButton();
             host.Resize += (s, e) => PositionScrollDownButton();
+        }
+
+        private System.Windows.Forms.Timer _sdAnim;
+        private int _sdTarget = 55;
+        private const int SdBase = 55, SdHover = 64;
+        private void SdAnimTick()
+        {
+            if (_btnScrollDown == null || _btnScrollDown.IsDisposed) { _sdAnim?.Stop(); return; }
+            int cur = _btnScrollDown.Width;
+            if (cur == _sdTarget) { _sdAnim.Stop(); return; }
+            int step = 3;
+            int nw = cur < _sdTarget ? Math.Min(_sdTarget, cur + step) : Math.Max(_sdTarget, cur - step);
+            _btnScrollDown.Size = new Size(nw, nw);
+            try { using var gp = new System.Drawing.Drawing2D.GraphicsPath(); gp.AddEllipse(0, 0, nw, nw); _btnScrollDown.Region = new Region(gp); } catch { }
+            PositionScrollDownButton();   // держим центр
+            _btnScrollDown.Invalidate();
         }
 
         /// <summary>Рисует ровный (сглаженный) синий кружок со стрелкой вниз.
@@ -2948,10 +2969,10 @@ namespace PISMO
             if (_btnScrollDown == null) return;
             var host = _btnScrollDown.Parent;
             if (host == null) return;
-            // Правее — с запасом от вертикального ползунка; выше — чтобы не лежать на нём.
-            int x = pnlMessages.Right - 124;
-            int y = pnlMessages.Bottom - 138;
-            _btnScrollDown.Location = new Point(x, y);
+            // Якорим по ЦЕНТРУ (чтобы при анимации рос из центра, не смещаясь).
+            int cx = pnlMessages.Right - 97;
+            int cy = pnlMessages.Bottom - 111;
+            _btnScrollDown.Location = new Point(cx - _btnScrollDown.Width / 2, cy - _btnScrollDown.Height / 2);
             _btnScrollDown.BringToFront();
         }
 
