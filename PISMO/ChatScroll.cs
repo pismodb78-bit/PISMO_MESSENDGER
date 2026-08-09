@@ -14,13 +14,20 @@ namespace PISMO
     {
         [DllImport("user32.dll")] private static extern int ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
         [DllImport("user32.dll")] private static extern int SendMessage(IntPtr hWnd, int msg, bool wParam, int lParam);
+        [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
         [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
         private static extern int SetWindowTheme(IntPtr hWnd, string sub, string ids);
+        // Недокументированные ordinals uxtheme — обязательны, чтобы тёмная полоса реально применилась.
         [DllImport("uxtheme.dll", EntryPoint = "#135", SetLastError = true)]
-        private static extern int SetPreferredAppMode(int mode);
+        private static extern int SetPreferredAppMode(int mode);                       // #135 (1903+)
+        [DllImport("uxtheme.dll", EntryPoint = "#133", SetLastError = true)]
+        private static extern bool AllowDarkModeForWindow(IntPtr hWnd, bool allow);      // #133
+        [DllImport("uxtheme.dll", EntryPoint = "#136", SetLastError = true)]
+        private static extern void FlushMenuThemes();                                    // #136
 
         private const int SB_HORZ = 0;
         private const int WM_SETREDRAW = 0x000B;
+        private const int WM_THEMECHANGED = 0x031A;
         private const int APPMODE_FORCE_DARK = 2;
 
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
@@ -32,10 +39,12 @@ namespace PISMO
         {
             if (_appDark) return;
             _appDark = true;
-            try { SetPreferredAppMode(APPMODE_FORCE_DARK); } catch { }
+            try { SetPreferredAppMode(APPMODE_FORCE_DARK); FlushMenuThemes(); } catch { }
         }
 
-        /// <summary>Переводит нативную полосу контрола в тёмный стиль (в светлой теме — обычный).</summary>
+        /// <summary>Переводит нативную полосу контрола в тёмный стиль. Полный рабочий рецепт:
+        /// AllowDarkModeForWindow → SetWindowTheme(DarkMode_Explorer) → WM_THEMECHANGED.
+        /// Без AllowDarkModeForWindow и WM_THEMECHANGED тёмная полоса НЕ применяется.</summary>
         public static void ApplyDarkScrollbar(Control c)
         {
             try
@@ -43,7 +52,11 @@ namespace PISMO
                 if (c == null || !c.IsHandleCreated) return;
                 bool light = false;
                 try { light = Theme.IsLight; } catch { }
-                SetWindowTheme(c.Handle, light ? "Explorer" : "DarkMode_Explorer", null);
+                bool dark = !light;
+                EnableAppDarkMode();
+                try { AllowDarkModeForWindow(c.Handle, dark); } catch { }
+                SetWindowTheme(c.Handle, dark ? "DarkMode_Explorer" : "Explorer", null);
+                try { SendMessage(c.Handle, WM_THEMECHANGED, IntPtr.Zero, IntPtr.Zero); } catch { }
             }
             catch { }
         }
