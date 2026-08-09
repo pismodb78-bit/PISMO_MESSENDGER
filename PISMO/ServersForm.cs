@@ -1641,6 +1641,7 @@ namespace PISMO
         private void EnsureSrvScrollHook()
         {
             EnsureSrvScrollDownButton();
+            try { ChatScroll.Attach(_pnlMessages); } catch { }   // убрать гор.скролл + тонкий верт.
             _lastSrvTop = int.MaxValue;
             if (_srvScrollHooked || _pnlMessages == null) return;
             _srvScrollHooked = true;
