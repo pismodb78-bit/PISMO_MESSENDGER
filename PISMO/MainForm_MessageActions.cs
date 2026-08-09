@@ -171,11 +171,7 @@ namespace PISMO
                 Text = "📞",
                 Font = new Font("Segoe UI", 13f),
                 Size = new Size(38, 38),
-                // НЕ Dock=Right: докнутая кнопка тянулась на всю высоту шапки, и её
-                // низ совпадал с верхом полосы прокрутки («крышебойный»). Якорим у
-                // верха с отступом — низ кнопки выше полосы.
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Location = new Point(pnlChatHeader.Width - 44, 8),
+                Dock = DockStyle.Right,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.Transparent,
                 ForeColor = Color.FromArgb(87, 171, 90),

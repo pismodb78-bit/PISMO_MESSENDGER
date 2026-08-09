@@ -214,9 +214,14 @@ namespace PISMO
             // pnlMain
             // 
             pnlMain.BackColor = Color.FromArgb(54, 57, 63);
+            // Тонкий разделитель под шапкой: опускает область сообщений на 10px, чтобы
+            // верх вертикальной полосы прокрутки был НИЖЕ докнутой кнопки звонка
+            // (иначе полоса упиралась в неё — «крышебойный»).
+            var pnlHeaderGap = new Panel { Dock = DockStyle.Top, Height = 10, BackColor = Color.FromArgb(54, 57, 63) };
             pnlMain.Controls.Add(pnlMessages);
             pnlMain.Controls.Add(pnlPreview);
             pnlMain.Controls.Add(pnlInputBar);
+            pnlMain.Controls.Add(pnlHeaderGap);
             pnlMain.Controls.Add(pnlChatHeader);
             pnlMain.Dock = DockStyle.Fill;
             pnlMain.Location = new Point(250, 0);
@@ -352,7 +357,7 @@ namespace PISMO
             pnlChatHeader.Location = new Point(0, 0);
             pnlChatHeader.Name = "pnlChatHeader";
             pnlChatHeader.Padding = new Padding(16, 0, 0, 0);
-            pnlChatHeader.Size = new Size(810, 56);   // выше на 8px: верх нативного скролла области сообщений опускается ниже кнопки звонка
+            pnlChatHeader.Size = new Size(810, 48);
             pnlChatHeader.TabIndex = 3;
             pnlChatHeader.Paint += pnlChatHeader_Paint;
             // 

@@ -94,25 +94,12 @@ namespace PISMO
             Apply();
         }
 
-        /// <summary>Для панелей сообщений: как Attach + анти-смаз (двойная буферизация и
-        /// снятие WS_CLIPCHILDREN — рекомендованная замена тяжёлого WS_EX_COMPOSITED,
-        /// без «хвостов» пузырей при прокрутке).</summary>
+        /// <summary>Для панелей сообщений: как Attach + двойная буферизация.
+        /// WS_CLIPCHILDREN НЕ трогаем — его снятие рвало отрисовку пузырей.</summary>
         public static void AttachChat(Panel p)
         {
             Attach(p);
             EnableDoubleBuffer(p);
-            void Unclip()
-            {
-                try
-                {
-                    if (!p.IsHandleCreated) return;
-                    int st = GetWindowLong(p.Handle, GWL_STYLE);
-                    if ((st & WS_CLIPCHILDREN) != 0) SetWindowLong(p.Handle, GWL_STYLE, st & ~WS_CLIPCHILDREN);
-                }
-                catch { }
-            }
-            p.HandleCreated += (s, e) => Unclip();
-            Unclip();
         }
 
         public static void EnableDoubleBuffer(Control c)
