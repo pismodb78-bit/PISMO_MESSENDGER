@@ -146,6 +146,18 @@ namespace PISMO
 
             InitializeComponent();
 
+            // Порядок докинга: Fill-панель сообщений должна быть В САМОМ НИЗУ z-order,
+            // иначе она налезает на докнутые шапку/панель ввода, и её вертикальная
+            // полоса прокрутки уходит ПОД верхнюю панель («крышебойный»).
+            try
+            {
+                pnlChatHeader.BringToFront();
+                pnlInputBar.BringToFront();
+                pnlPreview.BringToFront();
+                pnlMessages.SendToBack();
+            }
+            catch { }
+
             MediaCache.Init();
             EnableFileDrop(pnlMessages);   // перетаскивание файлов из проводника → прикрепить
             EnableFileDrop(txtMessage);
