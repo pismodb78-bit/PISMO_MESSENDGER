@@ -1635,13 +1635,24 @@ namespace PISMO
             catch (Exception ex) { ShowDbError(ex); }
         }
 
+        private int _lastSrvTop = int.MaxValue;
         private void EnsureSrvScrollHook()
         {
             EnsureSrvScrollDownButton();
+            _lastSrvTop = int.MaxValue;
             if (_srvScrollHooked || _pnlMessages == null) return;
             _srvScrollHooked = true;
-            _pnlMessages.Scroll += (s, e) => { MaybeLoadOlderSrv(); UpdateSrvScrollDownButton(); };
-            _pnlMessages.MouseWheel += (s, e) => { MaybeLoadOlderSrv(); UpdateSrvScrollDownButton(); };
+            _pnlMessages.Scroll += (s, e) => OnSrvScrolled();
+            _pnlMessages.MouseWheel += (s, e) => OnSrvScrolled();
+        }
+
+        private void OnSrvScrolled()
+        {
+            int top = -_pnlMessages.AutoScrollPosition.Y;
+            bool movingUp = top < _lastSrvTop;   // догрузка ТОЛЬКО при движении вверх
+            _lastSrvTop = top;
+            if (movingUp) MaybeLoadOlderSrv();
+            UpdateSrvScrollDownButton();
         }
 
         /// <summary>У верха канала и есть более старые сообщения — догружаем ещё

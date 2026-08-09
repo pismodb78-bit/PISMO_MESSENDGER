@@ -2846,13 +2846,24 @@ namespace PISMO
 
         // Подписка на прокрутку панели чата — догрузка старых у верха + кнопка «вниз».
         private bool _dmScrollHooked;
+        private int _lastDmTop = int.MaxValue;   // предыдущая позиция прокрутки (для направления)
         private void EnsureDmScrollHook()
         {
             EnsureScrollDownButton();
+            _lastDmTop = int.MaxValue;
             if (_dmScrollHooked || pnlMessages == null) return;
             _dmScrollHooked = true;
-            pnlMessages.Scroll += (s, e) => { MaybeLoadOlder(); UpdateScrollDownButton(); };
-            pnlMessages.MouseWheel += (s, e) => { MaybeLoadOlder(); UpdateScrollDownButton(); };
+            pnlMessages.Scroll += (s, e) => OnChatScrolled();
+            pnlMessages.MouseWheel += (s, e) => OnChatScrolled();
+        }
+
+        private void OnChatScrolled()
+        {
+            int top = -pnlMessages.AutoScrollPosition.Y;
+            bool movingUp = top < _lastDmTop;      // догружаем ТОЛЬКО при движении вверх
+            _lastDmTop = top;
+            if (movingUp) MaybeLoadOlder();
+            UpdateScrollDownButton();
         }
 
         /// <summary>У верха списка и есть более старые сообщения — догружаем ещё
