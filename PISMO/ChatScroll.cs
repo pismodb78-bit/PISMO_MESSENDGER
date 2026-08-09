@@ -141,6 +141,12 @@ namespace PISMO
             p.Resize += (s, e) => Reposition();
             p.Move += (s, e) => Reposition();
             p.VisibleChanged += (s, e) => Reposition();
+            // Layout — ключевой момент: docked-панель получает правильные Top/Height
+            // ТОЛЬКО после раскладки. Без этого оверлей вставал по устаревшим
+            // координатам (нативная белая полоса светилась до первого скролла, а в
+            // ЛС оверлей заезжал в шапку и перекрывал кнопку звонка).
+            p.Layout += (s, e) => Reposition();
+            host.Layout += (s, e) => Reposition();
             p.Scroll += (s, e) => { bar.BringToFront(); bar.Sync(); };
             p.MouseWheel += (s, e) => { bar.BringToFront(); bar.Sync(); };
             p.ControlAdded += (s, e) => Reposition();
