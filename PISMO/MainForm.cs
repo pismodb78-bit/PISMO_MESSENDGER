@@ -2905,7 +2905,10 @@ namespace PISMO
         private int _lastDmTop = int.MaxValue;   // предыдущая позиция прокрутки (для направления)
         private void EnsureDmScrollHook()
         {
-            EnsureScrollDownButton();
+            // Кнопка «вниз к новым» убрана из приложения: как отдельное окно поверх
+            // прокручиваемой ленты она ломала быстрый путь прокрутки Windows
+            // (ScrollWindowEx) и давала рывки/фризы. Прокрутка доступна колесом и полосой.
+            // EnsureScrollDownButton();
             // Колесо перехватывается до панели (плавная прокрутка), поэтому логику
             // догрузки/кнопки «вниз» отдаём колбэком — событие MouseWheel уже не придёт.
             try { ChatScroll.AttachChat(pnlMessages, OnChatScrolled); } catch { }
@@ -3036,19 +3039,9 @@ namespace PISMO
         /// <summary>Показываем кнопку, когда прокрутка не у низа (ушли к старым).</summary>
         private void UpdateScrollDownButton()
         {
-            if (_btnScrollDown == null || pnlMessages == null) return;
-            bool inChat = _currentChatPartnerId >= 0 || _currentGroupId >= 0;
-            int viewport = pnlMessages.ClientSize.Height;
-            int curTop = -pnlMessages.AutoScrollPosition.Y;
-            int distFromBottom = pnlMessages.DisplayRectangle.Height - (curTop + viewport);
-            // Во время движения кнопку прячем: перекрывающее окно ломает быстрый путь
-            // прокрутки Windows и даёт рывки/фризы. Появится сразу после остановки.
-            bool show = inChat && distFromBottom > 200 && !ChatScroll.IsScrolling(pnlMessages);
-            if (_btnScrollDown.Visible != show)
-            {
-                _btnScrollDown.Visible = show;
-                if (show) { PositionScrollDownButton(); _btnScrollDown.BringToFront(); }
-            }
+            // Кнопка «вниз к новым» убрана из приложения (перекрывающее окно поверх ленты
+            // ломало быстрый путь прокрутки Windows и давало рывки/фризы). Метод оставлен
+            // пустым — он вызывается из многих мест.
         }
 
         private void ScrollChatToBottom()

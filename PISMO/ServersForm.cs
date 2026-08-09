@@ -1654,7 +1654,8 @@ namespace PISMO
         private int _lastSrvTop = int.MaxValue;
         private void EnsureSrvScrollHook()
         {
-            EnsureSrvScrollDownButton();
+            // Кнопка «вниз к новым» убрана — см. пояснение в MainForm.
+            // EnsureSrvScrollDownButton();
             // Колесо перехватывается до панели (плавная прокрутка) — логику догрузки и
             // кнопки «вниз» передаём колбэком, т.к. событие MouseWheel уже не придёт.
             try { ChatScroll.AttachChat(_pnlMessages, OnSrvScrolled); } catch { }
@@ -1753,17 +1754,8 @@ namespace PISMO
 
         private void UpdateSrvScrollDownButton()
         {
-            if (_srvBtnScrollDown == null || _pnlMessages == null) return;
-            int viewport = _pnlMessages.ClientSize.Height;
-            int curTop = -_pnlMessages.AutoScrollPosition.Y;
-            int distFromBottom = _pnlMessages.DisplayRectangle.Height - (curTop + viewport);
-            // Во время движения прячем — перекрывающее окно даёт рывки при прокрутке.
-            bool show = _channelId > 0 && distFromBottom > 200 && !ChatScroll.IsScrolling(_pnlMessages);
-            if (_srvBtnScrollDown.Visible != show)
-            {
-                _srvBtnScrollDown.Visible = show;
-                if (show) { PositionSrvScrollDownButton(); _srvBtnScrollDown.BringToFront(); }
-            }
+            // Кнопка «вниз к новым» убрана — см. пояснение в MainForm. Метод оставлен
+            // пустым, т.к. вызывается из нескольких мест.
         }
 
         /// <summary>Прокручивает к исходному сообщению (по клику на цитату) и подсвечивает.</summary>
