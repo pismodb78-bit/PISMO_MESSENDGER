@@ -1687,6 +1687,8 @@ namespace PISMO
             _srvBtnScrollDown.FlatAppearance.BorderSize = 0;
             _srvBtnScrollDown.FlatAppearance.MouseOverBackColor = _pnlMessages.BackColor;
             _srvBtnScrollDown.FlatAppearance.MouseDownBackColor = _pnlMessages.BackColor;
+            try { using var gp = new System.Drawing.Drawing2D.GraphicsPath(); gp.AddEllipse(0, 0, 44, 44);
+                  _srvBtnScrollDown.Region = new Region(gp); } catch { }
             _srvBtnScrollDown.Paint += (s, e) => MainForm.PaintScrollDownCircle(e.Graphics, _srvBtnScrollDown.Width, _srvBtnScrollDown.Height);
             _srvBtnScrollDown.Click += (s, e) =>
             {

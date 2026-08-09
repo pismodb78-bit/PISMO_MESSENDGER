@@ -2909,7 +2909,10 @@ namespace PISMO
             _btnScrollDown.FlatAppearance.BorderSize = 0;
             _btnScrollDown.FlatAppearance.MouseOverBackColor = pnlMessages.BackColor;
             _btnScrollDown.FlatAppearance.MouseDownBackColor = pnlMessages.BackColor;
-            // Круг рисуем сами со сглаживанием (Region давал рваные края).
+            // Обрезаем контрол по кругу (эллипс-Region) — без квадратных углов/рамки;
+            // сам круг красится чуть внутри (2px), поэтому край остаётся сглаженным.
+            try { using var gp = new System.Drawing.Drawing2D.GraphicsPath(); gp.AddEllipse(0, 0, 44, 44);
+                  _btnScrollDown.Region = new Region(gp); } catch { }
             _btnScrollDown.Paint += (s, e) => PaintScrollDownCircle(e.Graphics, _btnScrollDown.Width, _btnScrollDown.Height);
             _btnScrollDown.Click += (s, e) => ScrollChatToBottom();
             // Кладём поверх панели сообщений (родитель — контейнер панели).
