@@ -1631,7 +1631,10 @@ namespace PISMO
                     _srvRestoreFromBottom = -1;
                 }
                 else if (channelChanged || newMsgs)
+                {
+                    _pnlMessages.PerformLayout();   // актуальный диапазон прокрутки
                     _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);
+                }
                 else
                     try { _pnlMessages.AutoScrollPosition = new Point(0, savedScrollY); } catch { }
                 _lastScrollChannel = channel;

@@ -23,7 +23,33 @@ namespace PISMO
     public static class ChatScroll
     {
         [DllImport("user32.dll")] private static extern int ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
+        [DllImport("user32.dll", SetLastError = true)] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+        [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
         private const int SB_HORZ = 0;
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_COMPOSITED = 0x02000000;
+
+        /// <summary>
+        /// Включает WS_EX_COMPOSITED — двойную буферизацию ВМЕСТЕ С дочерними
+        /// контролами (сообщениями). Без этого при быстром/плавном скролле
+        /// пузыри сообщений «мажут» и двоятся: DoubleBuffered у самой панели
+        /// буферизует только её фон, но не дочерние окна.
+        /// </summary>
+        public static void EnableComposited(Control c)
+        {
+            void Apply()
+            {
+                try
+                {
+                    if (!c.IsHandleCreated) return;
+                    int ex = GetWindowLong(c.Handle, GWL_EXSTYLE);
+                    SetWindowLong(c.Handle, GWL_EXSTYLE, ex | WS_EX_COMPOSITED);
+                }
+                catch { }
+            }
+            c.HandleCreated += (s, e) => Apply();
+            Apply();
+        }
 
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
         private static readonly System.Collections.Generic.HashSet<Panel> _pretty = new();
@@ -67,6 +93,7 @@ namespace PISMO
             _pretty.Add(p);
             KillHorizontal(p);
             EnableDoubleBuffer(p);
+            EnableComposited(p);   // главный фикс смаза: буферизация вместе с дочерними
             // Перерисовка ВМЕСТЕ С дочерними (true) при скролле убирает «хвосты» сообщений.
             p.Scroll += (s, e) => p.Invalidate(true);
 

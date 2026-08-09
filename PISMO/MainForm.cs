@@ -2557,7 +2557,13 @@ namespace PISMO
                     _dmRestoreFromBottom = -1;
                 }
                 else
+                {
+                    // ВАЖНО: сперва пересчитать layout, иначе диапазон прокрутки
+                    // остаётся от ПРЕДЫДУЩЕГО (длинного) чата и MaxValue уводит в
+                    // «пустоту» сверху над короткой перепиской.
+                    pnlMessages.PerformLayout();
                     pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                }
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
             }
@@ -2855,7 +2861,10 @@ namespace PISMO
                 }
                 else
                 {
-                    // Прокручиваем в конец ПОСЛЕ ResumeLayout
+                    // Прокручиваем в конец ПОСЛЕ пересчёта layout: иначе диапазон
+                    // прокрутки остаётся от предыдущего (длинного) чата и MaxValue
+                    // уводит в «пустоту» сверху над короткой перепиской.
+                    pnlMessages.PerformLayout();
                     pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
                 }
                 _dmLoadingOlder = false;
