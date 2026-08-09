@@ -2898,7 +2898,7 @@ namespace PISMO
             _btnScrollDown = new Button
             {
                 Text = "",
-                Size = new Size(44, 44),
+                Size = new Size(52, 52),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = pnlMessages.BackColor,   // фон = чат: углы сливаются, круг ровный
                 Font = new Font("Segoe UI", 15f, FontStyle.Bold),
@@ -2911,7 +2911,7 @@ namespace PISMO
             _btnScrollDown.FlatAppearance.MouseDownBackColor = pnlMessages.BackColor;
             // Обрезаем контрол по кругу (эллипс-Region) — без квадратных углов/рамки;
             // сам круг красится чуть внутри (2px), поэтому край остаётся сглаженным.
-            try { using var gp = new System.Drawing.Drawing2D.GraphicsPath(); gp.AddEllipse(0, 0, 44, 44);
+            try { using var gp = new System.Drawing.Drawing2D.GraphicsPath(); gp.AddEllipse(0, 0, 52, 52);
                   _btnScrollDown.Region = new Region(gp); } catch { }
             _btnScrollDown.Paint += (s, e) => PaintScrollDownCircle(e.Graphics, _btnScrollDown.Width, _btnScrollDown.Height);
             _btnScrollDown.Click += (s, e) => ScrollChatToBottom();
@@ -2949,8 +2949,8 @@ namespace PISMO
             var host = _btnScrollDown.Parent;
             if (host == null) return;
             // Правее — с запасом от вертикального ползунка; выше — чтобы не лежать на нём.
-            int x = pnlMessages.Right - 68;
-            int y = pnlMessages.Bottom - 82;
+            int x = pnlMessages.Right - 76;
+            int y = pnlMessages.Bottom - 92;
             _btnScrollDown.Location = new Point(x, y);
             _btnScrollDown.BringToFront();
         }
