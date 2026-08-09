@@ -1,19 +1,24 @@
 using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace PISMO
 {
     /// <summary>
-    /// Убирает у AutoScroll-панели ГОРИЗОНТАЛЬНЫЙ скролл. Вертикальный оставляем
-    /// нативным — он работает надёжно во всех режимах окна.
+    /// Убирает у AutoScroll-панели ГОРИЗОНТАЛЬНЫЙ скролл и вешает тонкий
+    /// вертикальный ползунок-оверлей.
     ///
-    /// Кастомный тонкий вертикальный ползунок-оверлей убран НАМЕРЕННО: в этой
-    /// раскладке (докнутые панели + FlowLayoutPanel + встроенная ServersForm) он
-    /// ни в одном варианте не получился без артефактов — либо не рисовался, либо
-    /// мерцал (движок AutoScroll возвращает нативную полосу на каждом layout),
-    /// либо вылезал за пределы чата. Без живой отладки на машине надёжно сделать
-    /// его нельзя, поэтому оставлен стабильный нативный вертикальный скролл.
+    /// Против мерцания: нативную вертикальную полосу НЕ прячем через ShowScrollBar
+    /// (движок AutoScroll возвращает её на каждом layout — это и давало мерцание).
+    /// Вместо этого оверлей делаем ШИРИНОЙ с нативную полосу и просто ПЕРЕКРЫВАЕМ
+    /// её сверху непрозрачным фоном.
+    ///
+    /// Против «вылезания за чат»: оверлей — сиблинг панели в ЕЁ ЖЕ родителе,
+    /// позиция берётся из <see cref="Control.Bounds"/> панели (общий координатный
+    /// простор, без PointToScreen), а сами Bounds клампятся в клиентскую область
+    /// родителя.
     /// </summary>
     public static class ChatScroll
     {
@@ -21,6 +26,7 @@ namespace PISMO
         private const int SB_HORZ = 0;
 
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
+        private static readonly System.Collections.Generic.HashSet<Panel> _pretty = new();
 
         /// <summary>Прячет горизонтальную полосу прокрутки у панели (в т.ч. в оконном режиме).</summary>
         public static void KillHorizontal(Panel p)
@@ -38,10 +44,168 @@ namespace PISMO
             Hide();
         }
 
-        /// <summary>
-        /// Только убирает горизонтальный скролл; вертикальный остаётся нативным.
-        /// Сигнатура сохранена, чтобы не менять вызовы в MainForm/ServersForm.
-        /// </summary>
-        public static void Attach(Panel p) => KillHorizontal(p);
+        /// <summary>Убирает горизонтальный скролл и вешает тонкий вертикальный ползунок.</summary>
+        public static void Attach(Panel p)
+        {
+            if (p == null || _pretty.Contains(p)) return;
+            _pretty.Add(p);
+            KillHorizontal(p);
+
+            if (p.Parent == null) { p.ParentChanged += (s, e) => Attach2(p); return; }
+            Attach2(p);
+        }
+
+        private static readonly System.Collections.Generic.HashSet<Panel> _done = new();
+        private static void Attach2(Panel p)
+        {
+            var host = p.Parent;
+            if (host == null || _done.Contains(p)) return;
+            _done.Add(p);
+
+            int bw = SystemInformation.VerticalScrollBarWidth;   // перекрыть нативную полосу
+            var bar = new SlimBar(p) { Width = bw };
+            host.Controls.Add(bar);
+            bar.BringToFront();
+
+            void Reposition()
+            {
+                try
+                {
+                    if (p.IsDisposed || bar.IsDisposed) return;
+                    int x = p.Right - bw;
+                    int y = p.Top;
+                    int h = p.Height;
+                    // кламп в клиентскую область родителя — чтобы ничто не вылезло
+                    if (host is Control hc)
+                    {
+                        int maxR = hc.ClientSize.Width, maxB = hc.ClientSize.Height;
+                        if (x + bw > maxR) x = maxR - bw;
+                        if (x < 0) x = 0;
+                        if (y < 0) y = 0;
+                        if (y + h > maxB) h = Math.Max(0, maxB - y);
+                    }
+                    bar.Bounds = new Rectangle(x, y, bw, h);
+                    bar.Visible = p.Visible && bar.NeedBar;
+                    bar.BringToFront();
+                    bar.Sync();
+                }
+                catch { }
+            }
+
+            p.Resize += (s, e) => Reposition();
+            p.Move += (s, e) => Reposition();
+            p.VisibleChanged += (s, e) => Reposition();
+            p.Scroll += (s, e) => { bar.BringToFront(); bar.Sync(); };
+            p.MouseWheel += (s, e) => { bar.BringToFront(); bar.Sync(); };
+            p.ControlAdded += (s, e) => Reposition();
+            p.HandleCreated += (s, e) => Reposition();
+            Reposition();
+        }
+
+        private sealed class SlimBar : Control
+        {
+            private readonly Panel _p;
+            private bool _hover, _dragging;
+            private int _dragOffset;
+
+            public SlimBar(Panel p)
+            {
+                _p = p;
+                SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                         | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                BackColor = p.BackColor;
+                TabStop = false;
+            }
+
+            private int Content => Math.Max(_p.DisplayRectangle.Height, _p.ClientSize.Height);
+            private int Viewport => _p.ClientSize.Height;
+            private int Offset => -_p.AutoScrollPosition.Y;
+            public bool NeedBar => _p.Visible && Content > Viewport + 1;
+
+            private (int y, int h) Thumb()
+            {
+                int track = Height;
+                if (!NeedBar || track <= 0) return (0, 0);
+                int th = Math.Max(30, (int)((long)Viewport * track / Content));
+                th = Math.Min(th, track);
+                int max = Content - Viewport;
+                int ty = max <= 0 ? 0 : (int)((long)Offset * (track - th) / max);
+                return (ty, th);
+            }
+
+            public void Sync()
+            {
+                bool need = NeedBar;
+                if (Visible != need) Visible = need;
+                if (need) Invalidate();
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.Clear(_p.BackColor);   // перекрываем нативную полосу
+                if (!NeedBar) return;
+                var (ty, th) = Thumb();
+                if (th <= 0) return;
+                var g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                int tw = _hover || _dragging ? 8 : 6;
+                int x = (Width - tw) / 2;
+                var rect = new Rectangle(x, ty + 2, tw, Math.Max(10, th - 4));
+                int alpha = _dragging ? 230 : (_hover ? 200 : 150);
+                using var br = new SolidBrush(Color.FromArgb(alpha, 150, 154, 164));
+                using var path = Rounded(rect, tw / 2);
+                g.FillPath(br, path);
+            }
+
+            private static GraphicsPath Rounded(Rectangle r, int rad)
+            {
+                int d = Math.Max(1, rad * 2);
+                var p = new GraphicsPath();
+                if (d >= r.Width && d >= r.Height) { p.AddEllipse(r); return p; }
+                p.AddArc(r.X, r.Y, d, d, 180, 90);
+                p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+                p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+                p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+                p.CloseFigure();
+                return p;
+            }
+
+            protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+            protected override void OnMouseLeave(EventArgs e) { _hover = false; if (!_dragging) Invalidate(); base.OnMouseLeave(e); }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                var (ty, th) = Thumb();
+                if (e.Y >= ty && e.Y <= ty + th) { _dragging = true; _dragOffset = e.Y - ty; }
+                else ScrollToThumbTop(e.Y - th / 2);
+                Invalidate();
+                base.OnMouseDown(e);
+            }
+
+            protected override void OnMouseMove(MouseEventArgs e)
+            {
+                if (_dragging) ScrollToThumbTop(e.Y - _dragOffset);
+                base.OnMouseMove(e);
+            }
+
+            protected override void OnMouseUp(MouseEventArgs e) { _dragging = false; Invalidate(); base.OnMouseUp(e); }
+
+            protected override void OnMouseWheel(MouseEventArgs e)
+            {
+                try { _p.AutoScrollPosition = new Point(0, Offset - Math.Sign(e.Delta) * 60); } catch { }
+                Sync();
+            }
+
+            private void ScrollToThumbTop(int thumbTop)
+            {
+                var (_, th) = Thumb();
+                int track = Height, max = Content - Viewport;
+                if (max <= 0 || track - th <= 0) return;
+                thumbTop = Math.Max(0, Math.Min(track - th, thumbTop));
+                int off = (int)((long)thumbTop * max / (track - th));
+                try { _p.AutoScrollPosition = new Point(0, off); } catch { }
+                Invalidate();
+            }
+        }
     }
 }

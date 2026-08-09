@@ -750,12 +750,14 @@ namespace PISMO
             // вертикальной полосы) — тогда горизонтального скролла не возникает.
             try
             {
-                // ВНЕШНИЙ габарит карточки = Padding панели + Margin карточки + Width.
-                // Раньше вычитали только -2 и НЕ учитывали Padding панели (4+4=8),
-                // поэтому правый край карточки вылезал за ClientSize и появлялся
-                // горизонтальный скролл. Теперь вычитаем всю горизонтальную рамку.
-                int avail = Math.Max(80, pnlUserList.ClientSize.Width
-                                          - pnlUserList.Padding.Horizontal);
+                // Считаем от СТАБИЛЬНОЙ Width (не от ClientSize!) и ВСЕГДА резервируем
+                // ширину вертикальной полосы. ClientSize «схлопывается» в момент
+                // появления вертикального скролла ПОСРЕДИ загрузки БЕЗ события Resize —
+                // из-за этого карточки, посчитанные по прежней (широкой) ClientSize,
+                // потом вылезали и давал о себе знать горизонтальный скролл.
+                int avail = Math.Max(80, pnlUserList.Width
+                                          - pnlUserList.Padding.Horizontal
+                                          - SystemInformation.VerticalScrollBarWidth);
                 foreach (Control ctrl in pnlUserList.Controls)
                 {
                     if (ctrl is Button btn)   // кнопка «Друзья» (+ бейдж заявок на ней)
@@ -2055,13 +2057,13 @@ namespace PISMO
         {
             get
             {
-                int w = pnlUserList != null && pnlUserList.ClientSize.Width > 0
-                    ? pnlUserList.ClientSize.Width
+                int w = pnlUserList != null && pnlUserList.Width > 0
+                    ? pnlUserList.Width
                     : pnlSidebar.Width;
-                // Учитываем Padding панели (8) + Margin карточки (6) + запас,
-                // иначе внешний габарит карточки вылезает за ClientSize и
-                // появляется горизонтальный скролл ещё до клампа в Resize.
-                return Math.Max(200, w - 16);
+                // От СТАБИЛЬНОЙ Width резервируем Padding панели (8) + Margin
+                // карточки (6) + ширину вертикальной полосы — тогда карточка не
+                // вылезает даже когда появляется вертикальный скролл.
+                return Math.Max(200, w - 14 - SystemInformation.VerticalScrollBarWidth);
             }
         }
 
