@@ -78,6 +78,10 @@ namespace PISMO
                 pnlMain.Controls.Add(_pnlCallBanner);
                 _pnlCallBanner.BringToFront();
                 pnlChatHeader.BringToFront(); // шапка остаётся выше баннера
+                // ВАЖНО: Fill-панель сообщений возвращаем в начало z-order, иначе она
+                // докается РАНЬШЕ шапки, забирает всю высоту, и её полоса прокрутки
+                // уходит под верхнюю панель к кнопке звонка.
+                pnlMessages.BringToFront();
             }
             catch { }
 
