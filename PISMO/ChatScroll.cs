@@ -98,7 +98,7 @@ namespace PISMO
             if (host == null || _done.Contains(p)) return;
             _done.Add(p);
 
-            int bw = 12;   // ширина зоны ползунка (трек невидим — цвет фона)
+            int bw = SystemInformation.VerticalScrollBarWidth;   // = ширина нативной, чтобы ПОЛНОСТЬЮ её перекрыть (трек = фон, виден только бегунок)
             var bar = new SlimBar(p) { Width = bw, Visible = false };
             host.Controls.Add(bar);
             bar.BringToFront();
