@@ -1705,7 +1705,7 @@ namespace PISMO
         private void PositionSrvScrollDownButton()
         {
             if (_srvBtnScrollDown == null) return;
-            _srvBtnScrollDown.Location = new Point(_pnlMessages.Right - 79, _pnlMessages.Bottom - 95);
+            _srvBtnScrollDown.Location = new Point(_pnlMessages.Right - 124, _pnlMessages.Bottom - 138);
             _srvBtnScrollDown.BringToFront();
         }
 

@@ -2949,8 +2949,8 @@ namespace PISMO
             var host = _btnScrollDown.Parent;
             if (host == null) return;
             // Правее — с запасом от вертикального ползунка; выше — чтобы не лежать на нём.
-            int x = pnlMessages.Right - 79;
-            int y = pnlMessages.Bottom - 95;
+            int x = pnlMessages.Right - 124;
+            int y = pnlMessages.Bottom - 138;
             _btnScrollDown.Location = new Point(x, y);
             _btnScrollDown.BringToFront();
         }
