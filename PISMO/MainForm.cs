@@ -153,6 +153,11 @@ namespace PISMO
             // верхнюю панель («крышебойный»).
             try { pnlMessages.BringToFront(); } catch { }
 
+            // Плавность отрисовки всего окна: буферизуем все панели/контролы (без
+            // WS_EX_COMPOSITED — он давал мерцание). Новые контролы буферизуются
+            // автоматически через хук ControlAdded.
+            try { ChatScroll.EnableDoubleBufferDeep(this); } catch { }
+
             MediaCache.Init();
             EnableFileDrop(pnlMessages);   // перетаскивание файлов из проводника → прикрепить
             EnableFileDrop(txtMessage);

@@ -93,12 +93,71 @@ namespace PISMO
             p.VisibleChanged += (s, e) => Apply();
             Apply();
 
+            EnableDoubleBuffer(p);
+
             // Артефакты при быстрой прокрутке = отставание перерисовки: Invalidate лишь
             // ставит WM_PAINT в очередь, и следующий шаг прокрутки приходит раньше, чем
             // очередь разгребётся («не успевает отрисоваться»). RedrawWindow с
             // UPDATENOW|ALLCHILDREN перерисовывает панель И все пузыри СИНХРОННО.
             p.Scroll += (s, e) => RepaintNow(p);
-            p.MouseWheel += (s, e) => RepaintNow(p);
+
+            // Плавная (анимированная) прокрутка колесом вместо рывков по 3 строки.
+            new SmoothScroller(p);
+        }
+
+        /// <summary>
+        /// Плавная прокрутка колесом: вместо мгновенного прыжка ведём позицию к цели
+        /// по кадрам с замедлением (easing). Даёт «текучий» скролл как в Discord.
+        /// </summary>
+        private sealed class SmoothScroller
+        {
+            private const int StepPx = 110;      // насколько прокручивает один щелчок колеса
+            private const double Ease = 0.28;    // доля оставшегося пути за кадр (плавность)
+
+            private readonly Panel _p;
+            private readonly System.Windows.Forms.Timer _t;
+            private int _target;
+
+            public SmoothScroller(Panel p)
+            {
+                _p = p;
+                _t = new System.Windows.Forms.Timer { Interval = 15 };   // ~60 кадров/с
+                _t.Tick += Tick;
+                p.MouseWheel += OnWheel;
+                p.Disposed += (s, e) => { try { _t.Stop(); _t.Dispose(); } catch { } };
+            }
+
+            private int MaxOffset => Math.Max(0, _p.DisplayRectangle.Height - _p.ClientSize.Height);
+            private int Current => -_p.AutoScrollPosition.Y;
+
+            private void OnWheel(object sender, MouseEventArgs e)
+            {
+                if (MaxOffset <= 0) return;
+                // Гасим штатную рывковую прокрутку — дальше ведём сами.
+                if (e is HandledMouseEventArgs h) h.Handled = true;
+
+                if (!_t.Enabled) _target = Current;
+                _target = Clamp(_target - Math.Sign(e.Delta) * StepPx);
+                if (!_t.Enabled) _t.Start();
+            }
+
+            private void Tick(object sender, EventArgs e)
+            {
+                if (_p.IsDisposed) { _t.Stop(); return; }
+                _target = Clamp(_target);
+                int cur = Current, diff = _target - cur;
+                if (Math.Abs(diff) <= 1)
+                {
+                    try { _p.AutoScrollPosition = new Point(0, _target); } catch { }
+                    _t.Stop();
+                    return;
+                }
+                int step = (int)Math.Round(diff * Ease);
+                if (step == 0) step = Math.Sign(diff);
+                try { _p.AutoScrollPosition = new Point(0, cur + step); } catch { }
+            }
+
+            private int Clamp(int v) => Math.Max(0, Math.Min(MaxOffset, v));
         }
 
         [DllImport("user32.dll")]

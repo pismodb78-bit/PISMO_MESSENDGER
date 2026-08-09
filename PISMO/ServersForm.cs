@@ -144,9 +144,11 @@ namespace PISMO
             BuildUi();
             EnableChannelFileDrop(_pnlMessages);   // перетаскивание файлов в канал
             EnableChannelFileDrop(_txtInput);
-            // Убираем горизонтальный скролл и вешаем тонкий вертикальный ползунок
-            // на ВСЕ серверные списки; на области сообщений — с композицией (против
-            // смаза пузырей при быстром/плавном скролле).
+            // Плавность отрисовки всего окна серверов (буферизация всех контролов).
+            try { ChatScroll.EnableDoubleBufferDeep(this); } catch { }
+
+            // Убираем горизонтальный скролл, тёмная полоса + плавная прокрутка
+            // на ВСЕХ серверных списках и в области сообщений.
             try { ChatScroll.Attach(_pnlServers); ChatScroll.Attach(_pnlChannels);
                   ChatScroll.Attach(_pnlMembers); ChatScroll.AttachChat(_pnlMessages); } catch { }
             // Список каналов меняет ширину при ресайзе окна — тянем строки «в эфире»
