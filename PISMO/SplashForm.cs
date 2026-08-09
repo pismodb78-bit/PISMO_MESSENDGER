@@ -73,7 +73,10 @@ namespace PISMO
             var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
             var version = new Label
             {
-                Text = v == null ? "" : $"v{v.Major}.{v.Minor}.{v.Build}",
+                // Показываем и 4-ю часть (Revision), если она не нулевая: 2.8.0.1
+                Text = v == null ? "" : (v.Revision > 0
+                        ? $"v{v.Major}.{v.Minor}.{v.Build}.{v.Revision}"
+                        : $"v{v.Major}.{v.Minor}.{v.Build}"),
                 ForeColor = Color.FromArgb(120, 122, 128),
                 Font = new Font("Segoe UI", 8.5f),
                 AutoSize = false,
