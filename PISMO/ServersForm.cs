@@ -144,9 +144,10 @@ namespace PISMO
             BuildUi();
             EnableChannelFileDrop(_pnlMessages);   // перетаскивание файлов в канал
             EnableChannelFileDrop(_txtInput);
-            // Горизонтальный скролл убираем со всех серверных списков.
-            try { ChatScroll.KillHorizontal(_pnlServers); ChatScroll.KillHorizontal(_pnlChannels);
-                  ChatScroll.KillHorizontal(_pnlMembers); ChatScroll.KillHorizontal(_pnlMessages); } catch { }
+            // Убираем горизонтальный скролл и вешаем тонкий вертикальный ползунок
+            // на ВСЕ серверные списки (каналы/участники/серверы), как в области сообщений.
+            try { ChatScroll.Attach(_pnlServers); ChatScroll.Attach(_pnlChannels);
+                  ChatScroll.Attach(_pnlMembers); ChatScroll.Attach(_pnlMessages); } catch { }
             // Список каналов меняет ширину при ресайзе окна — тянем строки «в эфире»
             // на всю ширину панели, чтобы бейдж «В ЭФИРЕ» был у ПРАВОГО края поля,
             // а имя не сжималось под него.

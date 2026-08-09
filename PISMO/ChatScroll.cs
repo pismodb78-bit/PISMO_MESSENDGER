@@ -148,11 +148,20 @@ namespace PISMO
                 if (th <= 0) return;
                 var g = e.Graphics;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                int tw = _hover || _dragging ? 8 : 6;
-                int x = (Width - tw) / 2;
-                var rect = new Rectangle(x, ty + 2, tw, Math.Max(10, th - 4));
-                int alpha = _dragging ? 230 : (_hover ? 200 : 150);
-                using var br = new SolidBrush(Color.FromArgb(alpha, 150, 154, 164));
+
+                // Тонкий Discord-подобный ползунок: узкий в покое, чуть толще при
+                // наведении/перетаскивании. Прижат к правому краю с небольшим зазором.
+                int tw = _dragging ? 8 : (_hover ? 7 : 5);
+                int gap = 3;                       // зазор от края
+                int x = Width - tw - gap;
+                var rect = new Rectangle(x, ty + 3, tw, Math.Max(12, th - 6));
+
+                // Цвет под тему: в тёмной — светло-серый, в светлой — тёмно-серый.
+                bool light = false;
+                try { light = Theme.IsLight; } catch { }
+                Color c = light ? Color.FromArgb(136, 140, 150) : Color.FromArgb(180, 184, 194);
+                int alpha = _dragging ? 235 : (_hover ? 200 : 130);
+                using var br = new SolidBrush(Color.FromArgb(alpha, c));
                 using var path = Rounded(rect, tw / 2);
                 g.FillPath(br, path);
             }
