@@ -1584,7 +1584,7 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         private void LoadConversations()
         {
-            try { ChatScroll.KillHorizontal(pnlUserList); } catch { }   // без гор.скролла в сайдбаре
+            try { ChatScroll.KillHorizontal(pnlUserList); ChatScroll.KillHorizontal(pnlSidebar); } catch { }   // без гор.скролла в сайдбаре
             pnlUserList.Controls.Clear();
             _userPanels.Clear();
             _groupPanels.Clear();
