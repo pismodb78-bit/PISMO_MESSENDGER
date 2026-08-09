@@ -1655,12 +1655,13 @@ namespace PISMO
         private void EnsureSrvScrollHook()
         {
             EnsureSrvScrollDownButton();
-            try { ChatScroll.Attach(_pnlMessages); } catch { }   // убрать гор.скролл + тонкий верт.
+            // Колесо перехватывается до панели (плавная прокрутка) — логику догрузки и
+            // кнопки «вниз» передаём колбэком, т.к. событие MouseWheel уже не придёт.
+            try { ChatScroll.AttachChat(_pnlMessages, OnSrvScrolled); } catch { }
             _lastSrvTop = int.MaxValue;
             if (_srvScrollHooked || _pnlMessages == null) return;
             _srvScrollHooked = true;
             _pnlMessages.Scroll += (s, e) => OnSrvScrolled();
-            _pnlMessages.MouseWheel += (s, e) => OnSrvScrolled();
         }
 
         private void OnSrvScrolled()

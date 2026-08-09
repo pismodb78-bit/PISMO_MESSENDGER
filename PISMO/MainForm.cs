@@ -2906,12 +2906,13 @@ namespace PISMO
         private void EnsureDmScrollHook()
         {
             EnsureScrollDownButton();
-            try { ChatScroll.AttachChat(pnlMessages); } catch { }   // + композиция от смаза пузырей
+            // Колесо перехватывается до панели (плавная прокрутка), поэтому логику
+            // догрузки/кнопки «вниз» отдаём колбэком — событие MouseWheel уже не придёт.
+            try { ChatScroll.AttachChat(pnlMessages, OnChatScrolled); } catch { }
             _lastDmTop = int.MaxValue;
             if (_dmScrollHooked || pnlMessages == null) return;
             _dmScrollHooked = true;
             pnlMessages.Scroll += (s, e) => OnChatScrolled();
-            pnlMessages.MouseWheel += (s, e) => OnChatScrolled();
         }
 
         private void OnChatScrolled()

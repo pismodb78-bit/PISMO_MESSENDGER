@@ -82,8 +82,12 @@ namespace PISMO
             Hide();
         }
 
-        /// <summary>Убирает горизонтальный скролл и делает вертикальную нативную полосу тёмной.</summary>
-        public static void Attach(Panel p)
+        /// <summary>Убирает горизонтальный скролл, делает вертикальную нативную полосу
+        /// тёмной и включает плавную прокрутку колесом.
+        /// <paramref name="onScrolled"/> — вызывается на кадрах анимации: колесо мы
+        /// перехватываем до панели, поэтому её событие MouseWheel больше не срабатывает,
+        /// а логика догрузки старых сообщений и кнопки «вниз» на нём висела.</summary>
+        public static void Attach(Panel p, Action onScrolled = null)
         {
             if (p == null) return;
             KillHorizontal(p);
@@ -106,7 +110,8 @@ namespace PISMO
             // WM_MOUSEWHEEL) и перерисовываем синхронно после их обработки — это
             // покрывает ВСЕ способы прокрутки: колесо, перетаскивание полосы,
             // клавиатуру.
-            var rp = new ScrollRepainter(p);
+            var scroller = new SmoothScroller(p, onScrolled);
+            var rp = new ScrollRepainter(p, scroller);
             void HookRepaint()
             {
                 try { if (p.IsHandleCreated && rp.Handle == IntPtr.Zero) rp.AssignHandle(p.Handle); } catch { }
@@ -114,8 +119,6 @@ namespace PISMO
             p.HandleCreated += (s, e) => HookRepaint();
             p.HandleDestroyed += (s, e) => { try { rp.ReleaseHandle(); } catch { } };
             HookRepaint();
-
-            new SmoothScroller(p);   // плавная прокрутка колесом
         }
 
         /// <summary>
@@ -130,22 +133,21 @@ namespace PISMO
         private sealed class SmoothScroller
         {
             private const int StepPx = 110;      // прокрутка за один щелчок колеса
-            // Мягче в разы: за кадр проходим лишь малую долю пути, поэтому сдвиг
-            // между кадрами маленький и картинка не «рвётся».
-            private const double Ease = 0.16;
-            private const int MinFrameMs = 16;   // ~60 кадров/с (100 к/с грузило CPU)
+            private const double Ease = 0.16;    // доля оставшегося пути за кадр
+            private const int MinFrameMs = 16;   // ~60 кадров/с
 
             private readonly Panel _p;
             private readonly System.Windows.Forms.Timer _t;
+            private readonly Action _onScrolled;
             private int _target;
             private int _lastSet = int.MinValue;   // что выставили мы сами
 
-            public SmoothScroller(Panel p)
+            public SmoothScroller(Panel p, Action onScrolled)
             {
                 _p = p;
+                _onScrolled = onScrolled;
                 _t = new System.Windows.Forms.Timer { Interval = MinFrameMs };
                 _t.Tick += Tick;
-                p.MouseWheel += OnWheel;
                 p.Disposed += (s, e) => { try { _t.Stop(); _t.Dispose(); } catch { } };
             }
 
@@ -153,14 +155,17 @@ namespace PISMO
             private int Current => -_p.AutoScrollPosition.Y;
             private int Clamp(int v) => Math.Max(0, Math.Min(MaxOffset, v));
 
-            private void OnWheel(object sender, MouseEventArgs e)
+            /// <summary>Щелчок колеса. true — сообщение обработано, панели его не отдаём.
+            /// Щелчки НАКАПЛИВАЮТСЯ: в ту же сторону — цель дальше (прокрутка разгоняется),
+            /// в обратную — цель возвращается назад (сначала гасит ход, затем идёт обратно).</summary>
+            public bool TryHandleWheel(int delta)
             {
-                if (MaxOffset <= 0) return;
-                if (e is HandledMouseEventArgs h) h.Handled = true;   // гасим рывковую прокрутку
+                if (MaxOffset <= 0) return false;   // прокручивать нечего — пусть решает панель
 
-                if (!_t.Enabled) _target = Current;
-                _target = Clamp(_target - Math.Sign(e.Delta) * StepPx);
+                if (!_t.Enabled) _target = Current;              // старт с текущей позиции
+                _target = Clamp(_target - Math.Sign(delta) * StepPx);   // накопление
                 if (!_t.Enabled) { _lastSet = Current; _t.Start(); }
+                return true;
             }
 
             private void Tick(object sender, EventArgs e)
@@ -179,34 +184,44 @@ namespace PISMO
                     try { _p.AutoScrollPosition = new Point(0, _target); } catch { }
                     RepaintNow(_p, force: true);   // финальный кадр — обязательно
                     _t.Stop();
+                    try { _onScrolled?.Invoke(); } catch { }
                     return;
                 }
+
                 int step = (int)Math.Round(diff * Ease);
                 if (step == 0) step = Math.Sign(diff);
                 try { _p.AutoScrollPosition = new Point(0, cur + step); } catch { }
-                // КЛЮЧЕВОЕ: кадр анимации двигает позицию напрямую и НЕ порождает
-                // WM_VSCROLL/WM_MOUSEWHEEL, поэтому подписка на сообщения окна тут не
-                // срабатывает — перерисовываем синхронно сами, иначе картинка рвётся.
+                // Кадр анимации двигает позицию напрямую и НЕ порождает WM_VSCROLL/
+                // WM_MOUSEWHEEL, поэтому перерисовываем сами (с ограничением частоты).
                 RepaintNow(_p);
-                _lastSet = Current;   // читаем фактическое (могло быть подрезано)
+                _lastSet = Current;   // фактическое (могло быть подрезано)
+                try { _onScrolled?.Invoke(); } catch { }   // пагинация и кнопка «вниз»
             }
         }
 
-        /// <summary>Перерисовывает панель со всеми дочерними СИНХРОННО после любой
-        /// прокрутки (колесо/полоса/клавиатура) — иначе при быстром пролистывании
-        /// пузыри не успевают отрисоваться и остаются «рваными».</summary>
         private sealed class ScrollRepainter : NativeWindow
         {
             private const int WM_VSCROLL = 0x0115;
             private const int WM_MOUSEWHEEL = 0x020A;
             private readonly Panel _p;
+            private readonly SmoothScroller _s;
 
-            public ScrollRepainter(Panel p) { _p = p; }
+            public ScrollRepainter(Panel p, SmoothScroller s) { _p = p; _s = s; }
 
             protected override void WndProc(ref Message m)
             {
+                // Колесо перехватываем ДО панели и НЕ отдаём ей: иначе Panel сначала сам
+                // прыгает на 3 строки, и только потом срабатывает наш обработчик —
+                // получается двойное движение, а защита от чужого сдвига обрывала
+                // анимацию (щелчок в ту же сторону «резко останавливал» прокрутку).
+                if (m.Msg == WM_MOUSEWHEEL)
+                {
+                    int delta = (short)((long)m.WParam >> 16);
+                    if (_s.TryHandleWheel(delta)) { m.Result = IntPtr.Zero; return; }
+                }
+
                 base.WndProc(ref m);
-                if (m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL)
+                if (m.Msg == WM_VSCROLL)
                     RepaintNow(_p);   // панель + дети + перекрывающие соседи (кнопка «вниз»)
             }
         }
@@ -260,9 +275,9 @@ namespace PISMO
 
         /// <summary>Для панелей сообщений: как Attach + двойная буферизация.
         /// WS_CLIPCHILDREN НЕ трогаем — его снятие рвало отрисовку пузырей.</summary>
-        public static void AttachChat(Panel p)
+        public static void AttachChat(Panel p, Action onScrolled = null)
         {
-            Attach(p);
+            Attach(p, onScrolled);
             EnableDoubleBuffer(p);
         }
 
