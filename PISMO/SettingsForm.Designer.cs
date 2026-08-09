@@ -623,6 +623,11 @@ namespace PISMO
             this.ClientSize = new Size(500, Math.Min(620, contentHeight));
             Controls.Add(scrollPanel);
 
+            // Тёмная нативная полоса прокрутки (как в остальном приложении).
+            try { ChatScroll.KillHorizontal(scrollPanel); } catch { }
+            scrollPanel.HandleCreated += (s, e) => { try { ChatScroll.ApplyDarkScrollbar(scrollPanel); } catch { } };
+            try { ChatScroll.ApplyDarkScrollbar(scrollPanel); } catch { }
+
             // Колесо мыши над ползунками/списками НЕ меняет их значение, а
             // прокручивает страницу настроек.
             DisableWheelOnInputs(scrollPanel, scrollPanel);
