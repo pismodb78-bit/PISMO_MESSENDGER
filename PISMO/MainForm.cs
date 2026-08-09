@@ -750,21 +750,24 @@ namespace PISMO
             // вертикальной полосы) — тогда горизонтального скролла не возникает.
             try
             {
-                // -2 запас: при ресайзе окна вертикальная полоса может на миг
-                // «съесть» ширину, из-за чего вылезал горизонтальный скролл.
-                int w = Math.Max(80, pnlUserList.ClientSize.Width - 2);
+                // ВНЕШНИЙ габарит карточки = Padding панели + Margin карточки + Width.
+                // Раньше вычитали только -2 и НЕ учитывали Padding панели (4+4=8),
+                // поэтому правый край карточки вылезал за ClientSize и появлялся
+                // горизонтальный скролл. Теперь вычитаем всю горизонтальную рамку.
+                int avail = Math.Max(80, pnlUserList.ClientSize.Width
+                                          - pnlUserList.Padding.Horizontal);
                 foreach (Control ctrl in pnlUserList.Controls)
                 {
                     if (ctrl is Button btn)   // кнопка «Друзья» (+ бейдж заявок на ней)
                     {
-                        btn.Width = w - btn.Margin.Horizontal;
+                        btn.Width = avail - btn.Margin.Horizontal;
                         foreach (Control c in btn.Controls)
                             if (c is Label lb && lb.BackColor == Color.FromArgb(240, 71, 71))
                                 lb.Location = new Point(Math.Max(0, btn.Width - 32), 8);
                     }
                     if (ctrl is Panel pnl)
                     {
-                        pnl.Width = w - pnl.Margin.Horizontal;
+                        pnl.Width = avail - pnl.Margin.Horizontal;
                         foreach (Control c in pnl.Controls)
                         {
                             // бейджи с красным фоном — корректируем позицию
@@ -2055,7 +2058,10 @@ namespace PISMO
                 int w = pnlUserList != null && pnlUserList.ClientSize.Width > 0
                     ? pnlUserList.ClientSize.Width
                     : pnlSidebar.Width;
-                return Math.Max(200, w - 12);   // меньше зазор до границы — карточки шире
+                // Учитываем Padding панели (8) + Margin карточки (6) + запас,
+                // иначе внешний габарит карточки вылезает за ClientSize и
+                // появляется горизонтальный скролл ещё до клампа в Resize.
+                return Math.Max(200, w - 16);
             }
         }
 
