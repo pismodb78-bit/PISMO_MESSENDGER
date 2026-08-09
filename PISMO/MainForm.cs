@@ -2900,8 +2900,8 @@ namespace PISMO
                 Text = "⬇",
                 Size = new Size(44, 44),
                 FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(47, 49, 54),
-                ForeColor = Color.White,
+                BackColor = Color.FromArgb(88, 101, 242),   // синий (как «Отправить»)
+                ForeColor = Theme.IsLight ? Color.Black : Color.White,  // стрелка: тёмная тема — белая, светлая — чёрная
                 Font = new Font("Segoe UI", 15f, FontStyle.Bold),
                 Cursor = Cursors.Hand,
                 Visible = false,
@@ -2924,9 +2924,9 @@ namespace PISMO
             if (_btnScrollDown == null) return;
             var host = _btnScrollDown.Parent;
             if (host == null) return;
-            // Правый нижний угол панели сообщений, чуть выше поля ввода.
-            int x = pnlMessages.Right - 56;
-            int y = pnlMessages.Bottom - 60;
+            // Правее — с запасом от вертикального ползунка; выше — чтобы не лежать на нём.
+            int x = pnlMessages.Right - 68;
+            int y = pnlMessages.Bottom - 82;
             _btnScrollDown.Location = new Point(x, y);
             _btnScrollDown.BringToFront();
         }

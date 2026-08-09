@@ -1680,7 +1680,8 @@ namespace PISMO
             _srvBtnScrollDown = new Button
             {
                 Text = "⬇", Size = new Size(44, 44), FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.White,
+                BackColor = Color.FromArgb(88, 101, 242),
+                ForeColor = Theme.IsLight ? Color.Black : Color.White,
                 Font = new Font("Segoe UI", 15f, FontStyle.Bold), Cursor = Cursors.Hand,
                 Visible = false, TabStop = false
             };
@@ -1702,7 +1703,7 @@ namespace PISMO
         private void PositionSrvScrollDownButton()
         {
             if (_srvBtnScrollDown == null) return;
-            _srvBtnScrollDown.Location = new Point(_pnlMessages.Right - 56, _pnlMessages.Bottom - 60);
+            _srvBtnScrollDown.Location = new Point(_pnlMessages.Right - 68, _pnlMessages.Bottom - 82);
             _srvBtnScrollDown.BringToFront();
         }
 
