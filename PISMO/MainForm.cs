@@ -750,7 +750,9 @@ namespace PISMO
             // вертикальной полосы) — тогда горизонтального скролла не возникает.
             try
             {
-                int w = Math.Max(80, pnlUserList.ClientSize.Width);
+                // -2 запас: при ресайзе окна вертикальная полоса может на миг
+                // «съесть» ширину, из-за чего вылезал горизонтальный скролл.
+                int w = Math.Max(80, pnlUserList.ClientSize.Width - 2);
                 foreach (Control ctrl in pnlUserList.Controls)
                 {
                     if (ctrl is Button btn)   // кнопка «Друзья» (+ бейдж заявок на ней)

@@ -7,16 +7,10 @@ using System.Windows.Forms;
 namespace PISMO
 {
     /// <summary>
-    /// Убирает у AutoScroll-панели ГОРИЗОНТАЛЬНЫЙ скролл и (для чатов) заменяет
-    /// нативный ВЕРТИКАЛЬНЫЙ на тонкий скруглённый ползунок (как в Discord).
-    ///
-    /// Ключевые решения против прошлых багов:
-    ///  • нативную вертикаль НЕ прячем — она резервирует место справа, поэтому
-    ///    сообщения НЕ лезут под ползунок;
-    ///  • наш ползунок НЕпрозрачный (перекрывает нативную полосу) — не мерцает;
-    ///  • виден только когда прокрутка реально нужна;
-    ///  • тяжёлое (репозиция/BringToFront) — только на ресайз, на скролл лишь
-    ///    перерисовка — без мерцания.
+    /// Убирает у AutoScroll-панели ГОРИЗОНТАЛЬНЫЙ скролл и (для чатов) рисует тонкий
+    /// вертикальный ползунок. Ползунок вешается на ВЕРХНЮЮ форму (всегда поверх
+    /// всего) и позиционируется по экранным координатам панели — так он гарантированно
+    /// виден (прошлые версии терялись под докнутыми панелями по z-order).
     /// </summary>
     public static class ChatScroll
     {
@@ -26,7 +20,6 @@ namespace PISMO
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
         private static readonly System.Collections.Generic.HashSet<Panel> _pretty = new();
 
-        /// <summary>Только убрать горизонтальный скролл (сайдбары/списки).</summary>
         public static void KillHorizontal(Panel p)
         {
             if (p == null || _hkill.Contains(p)) return;
@@ -40,32 +33,43 @@ namespace PISMO
             Hide();
         }
 
-        /// <summary>Гор.скролл убрать + красивый тонкий вертикальный ползунок (чаты).</summary>
         public static void Attach(Panel p)
         {
             if (p == null || _pretty.Contains(p)) return;
             _pretty.Add(p);
             KillHorizontal(p);
 
-            int bw = Math.Max(14, SystemInformation.VerticalScrollBarWidth);
-            var bar = new SlimBar(p) { Width = bw, BackColor = p.BackColor };
-            var host = p.Parent ?? (Control)p;
-            host.Controls.Add(bar);
+            var form = p.FindForm();
+            if (form == null) return;   // без формы ползунок вешать некуда
+
+            int bw = 12;
+            var bar = new SlimBar(p) { Width = bw };
+            form.Controls.Add(bar);
+            bar.BringToFront();
 
             void Reposition()
             {
-                bar.BackColor = p.BackColor;
-                // Ровно над нативной вертикальной полосой (правые bw px панели).
-                bar.Location = new Point(p.Right - bw, p.Top);
-                bar.Height = p.Height;
-                bar.BringToFront();
-                bar.Sync();
+                try
+                {
+                    if (!p.IsHandleCreated || !form.IsHandleCreated) return;
+                    // правый край клиентской области панели -> координаты формы
+                    var scr = p.PointToScreen(new Point(p.ClientSize.Width - bw, 0));
+                    var pt = form.PointToClient(scr);
+                    bar.Location = pt;
+                    bar.Height = p.ClientSize.Height;
+                    bar.BringToFront();
+                    bar.Sync();
+                }
+                catch { }
             }
+
             p.Resize += (s, e) => Reposition();
-            host.Resize += (s, e) => Reposition();
-            // Скролл/колесо/добавление сообщений — только перерисовка ползунка.
-            p.Scroll += (s, e) => bar.Sync();
-            p.MouseWheel += (s, e) => bar.Sync();
+            p.Move += (s, e) => Reposition();
+            p.VisibleChanged += (s, e) => { bar.Visible = p.Visible && bar.NeedBar; Reposition(); };
+            form.Resize += (s, e) => Reposition();
+            form.Move += (s, e) => Reposition();
+            p.Scroll += (s, e) => { bar.BringToFront(); bar.Sync(); };
+            p.MouseWheel += (s, e) => { bar.BringToFront(); bar.Sync(); };
             p.ControlAdded += (s, e) => bar.Sync();
             Reposition();
         }
@@ -80,19 +84,20 @@ namespace PISMO
             {
                 _p = p;
                 SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
-                         | ControlStyles.UserPaint, true);
+                         | ControlStyles.UserPaint | ControlStyles.SupportsTransparentBackColor, true);
+                BackColor = Color.Transparent;
                 TabStop = false;
             }
 
             private int Content => Math.Max(_p.DisplayRectangle.Height, _p.ClientSize.Height);
             private int Viewport => _p.ClientSize.Height;
             private int Offset => -_p.AutoScrollPosition.Y;
-            private bool Needed => Content > Viewport + 1;
+            public bool NeedBar => _p.Visible && Content > Viewport + 1;
 
             private (int y, int h) Thumb()
             {
                 int track = Height;
-                if (!Needed || track <= 0) return (0, 0);
+                if (!NeedBar || track <= 0) return (0, 0);
                 int th = Math.Max(28, (int)((long)Viewport * track / Content));
                 th = Math.Min(th, track);
                 int max = Content - Viewport;
@@ -102,25 +107,25 @@ namespace PISMO
 
             public void Sync()
             {
-                bool need = Needed;
+                bool need = NeedBar;
                 if (Visible != need) Visible = need;
                 if (need) Invalidate();
             }
 
             protected override void OnPaint(PaintEventArgs e)
             {
-                e.Graphics.Clear(_p.BackColor);   // непрозрачно — перекрываем нативную полосу
-                if (!Needed) return;
+                if (!NeedBar) return;
                 var (ty, th) = Thumb();
                 if (th <= 0) return;
-                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                var g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
                 int tw = 7;
                 int x = (Width - tw) / 2;
                 var rect = new Rectangle(x, ty + 1, tw, Math.Max(8, th - 2));
-                int alpha = _dragging ? 210 : (_hover ? 185 : 130);
-                using var br = new SolidBrush(Color.FromArgb(alpha, 132, 136, 146));
+                int alpha = _dragging ? 220 : (_hover ? 190 : 140);
+                using var br = new SolidBrush(Color.FromArgb(alpha, 140, 144, 154));
                 using var path = Rounded(rect, tw / 2);
-                e.Graphics.FillPath(br, path);
+                g.FillPath(br, path);
             }
 
             private static GraphicsPath Rounded(Rectangle r, int rad)
