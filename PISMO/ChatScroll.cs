@@ -102,16 +102,28 @@ namespace PISMO
             EnableDoubleBuffer(p);
         }
 
+        private static readonly System.Reflection.PropertyInfo _dbProp =
+            typeof(Control).GetProperty("DoubleBuffered",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
         public static void EnableDoubleBuffer(Control c)
         {
-            try
-            {
-                typeof(Control).GetProperty("DoubleBuffered",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-                    ?.SetValue(c, true);
-            }
-            catch { }
+            try { _dbProp?.SetValue(c, true); } catch { }
         }
+
+        /// <summary>Двойная буферизация контрола И ВСЕХ вложенных (аватар/имя/текст/время
+        /// пузыря — это отдельные дочерние окна, каждое из которых «рвётся» при скролле,
+        /// если его не буферизовать).</summary>
+        public static void EnableDoubleBufferDeep(Control c)
+        {
+            if (c == null) return;
+            EnableDoubleBuffer(c);
+            foreach (Control child in c.Controls) EnableDoubleBufferDeep(child);
+            // Новые дети (добавляются после построения) — тоже буферизуем.
+            c.ControlAdded -= _dbOnAdd;
+            c.ControlAdded += _dbOnAdd;
+        }
+        private static readonly ControlEventHandler _dbOnAdd = (s, e) => EnableDoubleBufferDeep(e.Control);
 
         // Заморозка отрисовки через WM_SETREDRAW убрана: при наложении авто-обновления
         // сервера на прокрутку она оставляла «рваные» полу-отрисованные пузыри.
