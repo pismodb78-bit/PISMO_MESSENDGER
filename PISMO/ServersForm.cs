@@ -1679,7 +1679,7 @@ namespace PISMO
             if (_srvBtnScrollDown != null || _pnlMessages == null) return;
             _srvBtnScrollDown = new Button
             {
-                Text = "", Size = new Size(52, 52), FlatStyle = FlatStyle.Flat,
+                Text = "", Size = new Size(55, 55), FlatStyle = FlatStyle.Flat,
                 BackColor = _pnlMessages.BackColor,   // фон = чат: углы сливаются, круг ровный
                 Font = new Font("Segoe UI", 15f, FontStyle.Bold), Cursor = Cursors.Hand,
                 Visible = false, TabStop = false
@@ -1687,7 +1687,7 @@ namespace PISMO
             _srvBtnScrollDown.FlatAppearance.BorderSize = 0;
             _srvBtnScrollDown.FlatAppearance.MouseOverBackColor = _pnlMessages.BackColor;
             _srvBtnScrollDown.FlatAppearance.MouseDownBackColor = _pnlMessages.BackColor;
-            try { using var gp = new System.Drawing.Drawing2D.GraphicsPath(); gp.AddEllipse(0, 0, 52, 52);
+            try { using var gp = new System.Drawing.Drawing2D.GraphicsPath(); gp.AddEllipse(0, 0, 55, 55);
                   _srvBtnScrollDown.Region = new Region(gp); } catch { }
             _srvBtnScrollDown.Paint += (s, e) => MainForm.PaintScrollDownCircle(e.Graphics, _srvBtnScrollDown.Width, _srvBtnScrollDown.Height);
             _srvBtnScrollDown.Click += (s, e) =>
@@ -1705,7 +1705,7 @@ namespace PISMO
         private void PositionSrvScrollDownButton()
         {
             if (_srvBtnScrollDown == null) return;
-            _srvBtnScrollDown.Location = new Point(_pnlMessages.Right - 76, _pnlMessages.Bottom - 92);
+            _srvBtnScrollDown.Location = new Point(_pnlMessages.Right - 79, _pnlMessages.Bottom - 95);
             _srvBtnScrollDown.BringToFront();
         }
 
