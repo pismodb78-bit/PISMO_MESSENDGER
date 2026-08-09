@@ -106,7 +106,7 @@ namespace PISMO
             // WM_MOUSEWHEEL) и перерисовываем синхронно после их обработки — это
             // покрывает ВСЕ способы прокрутки: колесо, перетаскивание полосы,
             // клавиатуру.
-            var rp = new ScrollRepainter();
+            var rp = new ScrollRepainter(p);
             void HookRepaint()
             {
                 try { if (p.IsHandleCreated && rp.Handle == IntPtr.Zero) rp.AssignHandle(p.Handle); } catch { }
@@ -199,19 +199,15 @@ namespace PISMO
         {
             private const int WM_VSCROLL = 0x0115;
             private const int WM_MOUSEWHEEL = 0x020A;
+            private readonly Panel _p;
+
+            public ScrollRepainter(Panel p) { _p = p; }
 
             protected override void WndProc(ref Message m)
             {
                 base.WndProc(ref m);
-                if ((m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL) && Handle != IntPtr.Zero)
-                {
-                    try
-                    {
-                        RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero,
-                            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
-                    }
-                    catch { }
-                }
+                if (m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL)
+                    RepaintNow(_p);   // панель + дети + перекрывающие соседи (кнопка «вниз»)
             }
         }
 
@@ -223,7 +219,10 @@ namespace PISMO
         private const uint RDW_ALLCHILDREN = 0x0080;
         private const uint RDW_UPDATENOW = 0x0100;
 
-        /// <summary>Немедленная (синхронная) перерисовка контрола вместе со всеми дочерними.</summary>
+        /// <summary>Немедленная (синхронная) перерисовка контрола вместе со всеми дочерними
+        /// И с перекрывающими его СОСЕДЯМИ (плавающая кнопка «вниз к новым» — не ребёнок
+        /// панели, а её сосед поверх неё, поэтому ALLCHILDREN её не покрывает и в её
+        /// области картинка рвалась, как только кнопка появлялась).</summary>
         public static void RepaintNow(Control c)
         {
             try
@@ -231,6 +230,16 @@ namespace PISMO
                 if (c == null || !c.IsHandleCreated) return;
                 RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
                     RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+
+                var parent = c.Parent;
+                if (parent == null) return;
+                foreach (Control sib in parent.Controls)
+                {
+                    if (ReferenceEquals(sib, c) || !sib.Visible || !sib.IsHandleCreated) continue;
+                    if (!sib.Bounds.IntersectsWith(c.Bounds)) continue;   // только перекрывающие
+                    RedrawWindow(sib.Handle, IntPtr.Zero, IntPtr.Zero,
+                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                }
             }
             catch { }
         }
