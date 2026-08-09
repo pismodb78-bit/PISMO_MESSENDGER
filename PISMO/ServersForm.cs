@@ -1356,7 +1356,7 @@ namespace PISMO
                     holder.Paint += (s, e) =>
                     {
                         e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                        using var br = new SolidBrush(bubbleBg);
+                        using var br = new SolidBrush(Theme.Map(bubbleBg));   // светлая тема: пузырь тоже светлеет
                         e.Graphics.FillRoundedRectangle(br, 0, 0, holder.Width - 1, holder.Height - 1, 10);
                         // Аватар отправителя (кружок) в левом верхнем углу бабла.
                         if (!AvatarStore.DrawAvatar(e.Graphics, senderId, PAD, PAD, AVA - 1))
