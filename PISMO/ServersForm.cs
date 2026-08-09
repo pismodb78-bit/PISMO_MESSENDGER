@@ -1757,7 +1757,8 @@ namespace PISMO
             int viewport = _pnlMessages.ClientSize.Height;
             int curTop = -_pnlMessages.AutoScrollPosition.Y;
             int distFromBottom = _pnlMessages.DisplayRectangle.Height - (curTop + viewport);
-            bool show = _channelId > 0 && distFromBottom > 200;
+            // Во время движения прячем — перекрывающее окно даёт рывки при прокрутке.
+            bool show = _channelId > 0 && distFromBottom > 200 && !ChatScroll.IsScrolling(_pnlMessages);
             if (_srvBtnScrollDown.Visible != show)
             {
                 _srvBtnScrollDown.Visible = show;

@@ -38,6 +38,15 @@ namespace PISMO
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
         private static bool _appDark;
 
+        // Панели, у которых прямо сейчас идёт плавная прокрутка. Пока она идёт, окна,
+        // перекрывающие панель (кнопка «вниз»), прячем: перекрывающее окно не даёт
+        // Windows сдвинуть содержимое быстрым путём (ScrollWindowEx) и заставляет
+        // перерисовывать область под собой на каждом шаге — отсюда рывки и фризы.
+        private static readonly System.Collections.Generic.HashSet<Panel> _animating = new();
+
+        /// <summary>Идёт ли сейчас плавная прокрутка этой панели.</summary>
+        public static bool IsScrolling(Panel p) => p != null && _animating.Contains(p);
+
         /// <summary>Разово включает тёмный режим для всего процесса (Win10 1903+) — без него
         /// тёмный стиль полос подхватывается не на всех окнах.</summary>
         public static void EnableAppDarkMode()
@@ -164,18 +173,32 @@ namespace PISMO
 
                 if (!_t.Enabled) _target = Current;              // старт с текущей позиции
                 _target = Clamp(_target - Math.Sign(delta) * StepPx);   // накопление
-                if (!_t.Enabled) { _lastSet = Current; _t.Start(); }
+                if (!_t.Enabled)
+                {
+                    _lastSet = Current;
+                    _animating.Add(_p);                 // прячем перекрывающие окна
+                    try { _onScrolled?.Invoke(); } catch { }
+                    _t.Start();
+                }
                 return true;
+            }
+
+            /// <summary>Останавливает анимацию и возвращает перекрывающие окна (кнопка «вниз»).</summary>
+            private void Finish()
+            {
+                _t.Stop();
+                _animating.Remove(_p);
+                try { _onScrolled?.Invoke(); } catch { }
             }
 
             private void Tick(object sender, EventArgs e)
             {
-                if (_p.IsDisposed || !_p.IsHandleCreated) { _t.Stop(); return; }
+                if (_p.IsDisposed || !_p.IsHandleCreated) { Finish(); return; }
 
                 int cur = Current;
                 // Позицию сдвинул кто-то другой (перерисовка ленты / догрузка / ползунок)
                 // — прекращаем анимацию, чтобы не дёргать взад-вперёд.
-                if (_lastSet != int.MinValue && Math.Abs(cur - _lastSet) > 2) { _t.Stop(); return; }
+                if (_lastSet != int.MinValue && Math.Abs(cur - _lastSet) > 2) { Finish(); return; }
 
                 _target = Clamp(_target);
                 int diff = _target - cur;
@@ -183,8 +206,7 @@ namespace PISMO
                 {
                     try { _p.AutoScrollPosition = new Point(0, _target); } catch { }
                     RepaintNow(_p, force: true);   // финальный кадр — обязательно
-                    _t.Stop();
-                    try { _onScrolled?.Invoke(); } catch { }
+                    Finish();                       // снимаем флаг → кнопка «вниз» вернётся
                     return;
                 }
 
