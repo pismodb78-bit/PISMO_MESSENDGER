@@ -1679,15 +1679,15 @@ namespace PISMO
             if (_srvBtnScrollDown != null || _pnlMessages == null) return;
             _srvBtnScrollDown = new Button
             {
-                Text = "⬇", Size = new Size(44, 44), FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(88, 101, 242),
-                ForeColor = Theme.IsLight ? Color.Black : Color.White,
+                Text = "", Size = new Size(44, 44), FlatStyle = FlatStyle.Flat,
+                BackColor = _pnlMessages.BackColor,   // фон = чат: углы сливаются, круг ровный
                 Font = new Font("Segoe UI", 15f, FontStyle.Bold), Cursor = Cursors.Hand,
                 Visible = false, TabStop = false
             };
             _srvBtnScrollDown.FlatAppearance.BorderSize = 0;
-            try { _srvBtnScrollDown.Region = System.Drawing.Region.FromHrgn(
-                NativeMethods.CreateRoundRectRgn(0, 0, 44, 44, 44, 44)); } catch { }
+            _srvBtnScrollDown.FlatAppearance.MouseOverBackColor = _pnlMessages.BackColor;
+            _srvBtnScrollDown.FlatAppearance.MouseDownBackColor = _pnlMessages.BackColor;
+            _srvBtnScrollDown.Paint += (s, e) => MainForm.PaintScrollDownCircle(e.Graphics, _srvBtnScrollDown.Width, _srvBtnScrollDown.Height);
             _srvBtnScrollDown.Click += (s, e) =>
             {
                 try { _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null); } catch { }

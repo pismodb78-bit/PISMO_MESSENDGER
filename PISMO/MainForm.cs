@@ -2897,19 +2897,20 @@ namespace PISMO
             if (_btnScrollDown != null || pnlMessages == null) return;
             _btnScrollDown = new Button
             {
-                Text = "⬇",
+                Text = "",
                 Size = new Size(44, 44),
                 FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(88, 101, 242),   // синий (как «Отправить»)
-                ForeColor = Theme.IsLight ? Color.Black : Color.White,  // стрелка: тёмная тема — белая, светлая — чёрная
+                BackColor = pnlMessages.BackColor,   // фон = чат: углы сливаются, круг ровный
                 Font = new Font("Segoe UI", 15f, FontStyle.Bold),
                 Cursor = Cursors.Hand,
                 Visible = false,
                 TabStop = false
             };
             _btnScrollDown.FlatAppearance.BorderSize = 0;
-            try { _btnScrollDown.Region = System.Drawing.Region.FromHrgn(
-                NativeMethods.CreateRoundRectRgn(0, 0, 44, 44, 44, 44)); } catch { }
+            _btnScrollDown.FlatAppearance.MouseOverBackColor = pnlMessages.BackColor;
+            _btnScrollDown.FlatAppearance.MouseDownBackColor = pnlMessages.BackColor;
+            // Круг рисуем сами со сглаживанием (Region давал рваные края).
+            _btnScrollDown.Paint += (s, e) => PaintScrollDownCircle(e.Graphics, _btnScrollDown.Width, _btnScrollDown.Height);
             _btnScrollDown.Click += (s, e) => ScrollChatToBottom();
             // Кладём поверх панели сообщений (родитель — контейнер панели).
             var host = pnlMessages.Parent ?? (Control)pnlMessages;
@@ -2917,6 +2918,26 @@ namespace PISMO
             _btnScrollDown.BringToFront();
             PositionScrollDownButton();
             host.Resize += (s, e) => PositionScrollDownButton();
+        }
+
+        /// <summary>Рисует ровный (сглаженный) синий кружок со стрелкой вниз.
+        /// Общий для ЛС/групп и сервера.</summary>
+        internal static void PaintScrollDownCircle(Graphics g, int w, int h)
+        {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var r = new Rectangle(2, 2, w - 5, h - 5);
+            using (var br = new SolidBrush(Color.FromArgb(88, 101, 242)))
+                g.FillEllipse(br, r);
+            var arrow = Theme.IsLight ? Color.Black : Color.White;   // белая в тёмной, чёрная в светлой
+            using var pen = new Pen(arrow, 3f)
+            {
+                StartCap = System.Drawing.Drawing2D.LineCap.Round,
+                EndCap = System.Drawing.Drawing2D.LineCap.Round,
+                LineJoin = System.Drawing.Drawing2D.LineJoin.Round
+            };
+            int cx = w / 2, cy = h / 2;
+            g.DrawLine(pen, cx, cy - 8, cx, cy + 7);                     // стержень
+            g.DrawLines(pen, new[] { new Point(cx - 6, cy + 1), new Point(cx, cy + 8), new Point(cx + 6, cy + 1) }); // «галочка» вниз
         }
 
         private void PositionScrollDownButton()
