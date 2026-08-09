@@ -245,7 +245,7 @@ namespace PISMO
         // «фризило». Ограничиваем: не чаще ~50 раз в секунду; финальный кадр всегда
         // рисуем принудительно (force), чтобы картинка гарантированно устоялась.
         private static int _lastRepaintTick;
-        private const int RepaintMinIntervalMs = 20;
+        private const int RepaintMinIntervalMs = 33;   // ~30 синхронных перерисовок/с
 
         public static void RepaintNow(Control c, bool force)
         {
@@ -266,8 +266,12 @@ namespace PISMO
                 {
                     if (ReferenceEquals(sib, c) || !sib.Visible || !sib.IsHandleCreated) continue;
                     if (!sib.Bounds.IntersectsWith(c.Bounds)) continue;   // только перекрывающие
+                    // БЕЗ UPDATENOW: соседу (кнопка «вниз») достаточно пометить область
+                    // недействительной — он перерисуется в обычном цикле. Синхронная
+                    // отрисовка соседа на каждом кадре как раз и давала фриз, когда
+                    // кнопка появлялась.
                     RedrawWindow(sib.Handle, IntPtr.Zero, IntPtr.Zero,
-                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                        RDW_INVALIDATE | RDW_ALLCHILDREN);
                 }
             }
             catch { }
