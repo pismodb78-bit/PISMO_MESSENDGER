@@ -23,33 +23,7 @@ namespace PISMO
     public static class ChatScroll
     {
         [DllImport("user32.dll")] private static extern int ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
-        [DllImport("user32.dll", SetLastError = true)] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-        [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
         private const int SB_HORZ = 0;
-        private const int GWL_EXSTYLE = -20;
-        private const int WS_EX_COMPOSITED = 0x02000000;
-
-        /// <summary>
-        /// Включает WS_EX_COMPOSITED — двойную буферизацию ВМЕСТЕ С дочерними
-        /// контролами (сообщениями). Без этого при быстром/плавном скролле
-        /// пузыри сообщений «мажут» и двоятся: DoubleBuffered у самой панели
-        /// буферизует только её фон, но не дочерние окна.
-        /// </summary>
-        public static void EnableComposited(Control c)
-        {
-            void Apply()
-            {
-                try
-                {
-                    if (!c.IsHandleCreated) return;
-                    int ex = GetWindowLong(c.Handle, GWL_EXSTYLE);
-                    SetWindowLong(c.Handle, GWL_EXSTYLE, ex | WS_EX_COMPOSITED);
-                }
-                catch { }
-            }
-            c.HandleCreated += (s, e) => Apply();
-            Apply();
-        }
 
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
         private static readonly System.Collections.Generic.HashSet<Panel> _pretty = new();
@@ -87,16 +61,30 @@ namespace PISMO
         }
 
         /// <summary>Убирает горизонтальный скролл и вешает тонкий вертикальный ползунок.</summary>
-        public static void Attach(Panel p)
+        public static void Attach(Panel p) => Attach(p, chat: false);
+
+        /// <summary>То же, что <see cref="Attach(Panel)"/>, но с усиленным анти-смазом
+        /// для панелей сообщений: на скролл — синхронный <see cref="Control.Refresh"/>,
+        /// который перерисовывает панель ВМЕСТЕ с дочерними пузырями без «хвостов».
+        /// WS_EX_COMPOSITED тут НЕ используем — он даёт светлые полосы на стыках.</summary>
+        public static void AttachChat(Panel p) => Attach(p, chat: true);
+
+        private static void Attach(Panel p, bool chat)
         {
             if (p == null || _pretty.Contains(p)) return;
             _pretty.Add(p);
             KillHorizontal(p);
             EnableDoubleBuffer(p);
-            // WS_EX_COMPOSITED убран: он давал светлые полосы-артефакты между
-            // соседними панелями (шапка/чат/сайдбар) и от смаза не спасал.
-            // Перерисовка ВМЕСТЕ С дочерними (true) при скролле убирает «хвосты» сообщений.
-            p.Scroll += (s, e) => p.Invalidate(true);
+            if (chat)
+            {
+                // Синхронная перерисовка на скролл: пузыри-дочки не оставляют «хвостов».
+                p.Scroll += (s, e) => { try { p.Refresh(); } catch { } };
+                p.MouseWheel += (s, e) => { try { p.Refresh(); } catch { } };
+            }
+            else
+            {
+                p.Scroll += (s, e) => p.Invalidate(true);
+            }
 
             if (p.Parent == null) { p.ParentChanged += (s, e) => Attach2(p); return; }
             Attach2(p);
@@ -110,7 +98,7 @@ namespace PISMO
             _done.Add(p);
 
             int bw = SystemInformation.VerticalScrollBarWidth;   // перекрыть нативную полосу
-            var bar = new SlimBar(p) { Width = bw };
+            var bar = new SlimBar(p) { Width = bw, Visible = false };  // покажем ПОСЛЕ первой валидной позиции
             host.Controls.Add(bar);
             bar.BringToFront();
 
@@ -156,6 +144,10 @@ namespace PISMO
             p.ControlAdded += (s, e) => Reposition();
             p.HandleCreated += (s, e) => Reposition();
             Reposition();
+            // Дополнительно перепозиционируем ПОСЛЕ полного цикла раскладки формы —
+            // без этого оверлей в ЛС оставался на y=0 (перекрывая кнопку звонка), а
+            // в сервер-чате нативная белая полоса светилась до первого скролла.
+            try { p.BeginInvoke(new Action(Reposition)); } catch { }
         }
 
         private sealed class SlimBar : Control

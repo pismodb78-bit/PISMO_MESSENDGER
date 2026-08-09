@@ -2883,7 +2883,7 @@ namespace PISMO
         private void EnsureDmScrollHook()
         {
             EnsureScrollDownButton();
-            try { ChatScroll.Attach(pnlMessages); } catch { }   // убрать гор.скролл + тонкий верт.
+            try { ChatScroll.AttachChat(pnlMessages); } catch { }   // + композиция от смаза пузырей
             _lastDmTop = int.MaxValue;
             if (_dmScrollHooked || pnlMessages == null) return;
             _dmScrollHooked = true;
