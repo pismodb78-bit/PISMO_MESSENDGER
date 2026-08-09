@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -113,6 +114,74 @@ namespace PISMO
             p.HandleCreated += (s, e) => HookRepaint();
             p.HandleDestroyed += (s, e) => { try { rp.ReleaseHandle(); } catch { } };
             HookRepaint();
+
+            new SmoothScroller(p);   // плавная прокрутка колесом
+        }
+
+        /// <summary>
+        /// Плавная прокрутка колесом: ведём позицию к цели по кадрам с замедлением.
+        ///
+        /// Против дёрганья (было на сервере): лента там периодически перерисовывается и
+        /// САМА восстанавливает позицию прокрутки, а также срабатывает догрузка старых
+        /// сообщений. Наша анимация с этим воевала — позицию тянуло туда-сюда. Теперь
+        /// запоминаем, какое значение выставили сами; если на следующем кадре позиция
+        /// оказалась другой (её сдвинул кто-то ещё) — анимацию прекращаем, а не боремся.
+        /// </summary>
+        private sealed class SmoothScroller
+        {
+            private const int StepPx = 110;      // прокрутка за один щелчок колеса
+            private const double Ease = 0.28;    // доля оставшегося пути за кадр
+
+            private readonly Panel _p;
+            private readonly System.Windows.Forms.Timer _t;
+            private int _target;
+            private int _lastSet = int.MinValue;   // что выставили мы сами
+
+            public SmoothScroller(Panel p)
+            {
+                _p = p;
+                _t = new System.Windows.Forms.Timer { Interval = 15 };
+                _t.Tick += Tick;
+                p.MouseWheel += OnWheel;
+                p.Disposed += (s, e) => { try { _t.Stop(); _t.Dispose(); } catch { } };
+            }
+
+            private int MaxOffset => Math.Max(0, _p.DisplayRectangle.Height - _p.ClientSize.Height);
+            private int Current => -_p.AutoScrollPosition.Y;
+            private int Clamp(int v) => Math.Max(0, Math.Min(MaxOffset, v));
+
+            private void OnWheel(object sender, MouseEventArgs e)
+            {
+                if (MaxOffset <= 0) return;
+                if (e is HandledMouseEventArgs h) h.Handled = true;   // гасим рывковую прокрутку
+
+                if (!_t.Enabled) _target = Current;
+                _target = Clamp(_target - Math.Sign(e.Delta) * StepPx);
+                if (!_t.Enabled) { _lastSet = Current; _t.Start(); }
+            }
+
+            private void Tick(object sender, EventArgs e)
+            {
+                if (_p.IsDisposed || !_p.IsHandleCreated) { _t.Stop(); return; }
+
+                int cur = Current;
+                // Позицию сдвинул кто-то другой (перерисовка ленты / догрузка / ползунок)
+                // — прекращаем анимацию, чтобы не дёргать взад-вперёд.
+                if (_lastSet != int.MinValue && Math.Abs(cur - _lastSet) > 2) { _t.Stop(); return; }
+
+                _target = Clamp(_target);
+                int diff = _target - cur;
+                if (Math.Abs(diff) <= 1)
+                {
+                    try { _p.AutoScrollPosition = new Point(0, _target); } catch { }
+                    _t.Stop();
+                    return;
+                }
+                int step = (int)Math.Round(diff * Ease);
+                if (step == 0) step = Math.Sign(diff);
+                try { _p.AutoScrollPosition = new Point(0, cur + step); } catch { }
+                _lastSet = Current;   // читаем фактическое (могло быть подрезано)
+            }
         }
 
         /// <summary>Перерисовывает панель со всеми дочерними СИНХРОННО после любой
@@ -131,7 +200,7 @@ namespace PISMO
                     try
                     {
                         RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero,
-                            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
                     }
                     catch { }
                 }
@@ -153,7 +222,7 @@ namespace PISMO
             {
                 if (c == null || !c.IsHandleCreated) return;
                 RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
-                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
             }
             catch { }
         }
