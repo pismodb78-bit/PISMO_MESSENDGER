@@ -132,8 +132,8 @@ namespace PISMO
             private const int StepPx = 110;      // прокрутка за один щелчок колеса
             // Мягче в разы: за кадр проходим лишь малую долю пути, поэтому сдвиг
             // между кадрами маленький и картинка не «рвётся».
-            private const double Ease = 0.12;
-            private const int MinFrameMs = 10;   // ~100 кадров/с
+            private const double Ease = 0.16;
+            private const int MinFrameMs = 16;   // ~60 кадров/с (100 к/с грузило CPU)
 
             private readonly Panel _p;
             private readonly System.Windows.Forms.Timer _t;
@@ -177,7 +177,7 @@ namespace PISMO
                 if (Math.Abs(diff) <= 1)
                 {
                     try { _p.AutoScrollPosition = new Point(0, _target); } catch { }
-                    RepaintNow(_p);
+                    RepaintNow(_p, force: true);   // финальный кадр — обязательно
                     _t.Stop();
                     return;
                 }
@@ -223,11 +223,25 @@ namespace PISMO
         /// И с перекрывающими его СОСЕДЯМИ (плавающая кнопка «вниз к новым» — не ребёнок
         /// панели, а её сосед поверх неё, поэтому ALLCHILDREN её не покрывает и в её
         /// области картинка рвалась, как только кнопка появлялась).</summary>
-        public static void RepaintNow(Control c)
+        public static void RepaintNow(Control c) => RepaintNow(c, false);
+
+        // Синхронная перерисовка ленты — дорогая операция (десятки пузырей со своими
+        // дочерними контролами). Без ограничения частоты она съедала CPU и приложение
+        // «фризило». Ограничиваем: не чаще ~50 раз в секунду; финальный кадр всегда
+        // рисуем принудительно (force), чтобы картинка гарантированно устоялась.
+        private static int _lastRepaintTick;
+        private const int RepaintMinIntervalMs = 20;
+
+        public static void RepaintNow(Control c, bool force)
         {
             try
             {
                 if (c == null || !c.IsHandleCreated) return;
+
+                int now = Environment.TickCount;
+                if (!force && unchecked(now - _lastRepaintTick) < RepaintMinIntervalMs) return;
+                _lastRepaintTick = now;
+
                 RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
                     RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 

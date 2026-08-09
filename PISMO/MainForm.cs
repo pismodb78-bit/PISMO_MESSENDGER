@@ -3027,7 +3027,9 @@ namespace PISMO
             _btnScrollDown.Location = new Point(
                 pnlMessages.Right - _btnScrollDown.Width - rightMargin,
                 pnlMessages.Bottom - _btnScrollDown.Height - bottomMargin);
-            _btnScrollDown.BringToFront();
+            // BringToFront здесь НЕ вызываем: метод дёргается при каждом ресайзе и на
+            // каждом кадре анимации наведения — смена z-order каждый раз давала лишние
+            // перерисовки и подтормаживание. Поверх кнопку поднимаем только при показе.
         }
 
         /// <summary>Показываем кнопку, когда прокрутка не у низа (ушли к старым).</summary>

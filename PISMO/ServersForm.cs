@@ -1746,7 +1746,8 @@ namespace PISMO
             _srvBtnScrollDown.Location = new Point(
                 _pnlMessages.Right - _srvBtnScrollDown.Width - rightMargin,
                 _pnlMessages.Bottom - _srvBtnScrollDown.Height - bottomMargin);
-            _srvBtnScrollDown.BringToFront();
+            // BringToFront здесь НЕ вызываем — см. пояснение в MainForm: лишние смены
+            // z-order на каждом кадре анимации давали подтормаживание.
         }
 
         private void UpdateSrvScrollDownButton()
