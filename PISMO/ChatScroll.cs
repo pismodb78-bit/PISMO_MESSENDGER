@@ -23,9 +23,30 @@ namespace PISMO
     public static class ChatScroll
     {
         [DllImport("user32.dll")] private static extern int ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
+        [DllImport("user32.dll")] private static extern int SendMessage(IntPtr hWnd, int msg, bool wParam, int lParam);
         private const int SB_HORZ = 0;
         private const int SB_VERT = 1;
         private const int SB_BOTH = 3;
+        private const int WM_SETREDRAW = 0x000B;
+
+        /// <summary>Замораживает отрисовку контрола (перед массовой пересборкой ленты),
+        /// чтобы не было мигания «загрузки заново».</summary>
+        public static void SuspendDraw(Control c)
+        {
+            try { if (c != null && c.IsHandleCreated) SendMessage(c.Handle, WM_SETREDRAW, false, 0); } catch { }
+        }
+
+        /// <summary>Размораживает отрисовку и перерисовывает контрол целиком.</summary>
+        public static void ResumeDraw(Control c)
+        {
+            try
+            {
+                if (c == null || !c.IsHandleCreated) return;
+                SendMessage(c.Handle, WM_SETREDRAW, true, 0);
+                c.Invalidate(true);
+            }
+            catch { }
+        }
 
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
         private static readonly System.Collections.Generic.HashSet<Panel> _pretty = new();

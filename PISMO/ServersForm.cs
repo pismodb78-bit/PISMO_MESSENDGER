@@ -1327,6 +1327,7 @@ namespace PISMO
                 bool newMsgs = dt.Rows.Count > _lastMsgCount;
                 int savedScrollY = -_pnlMessages.AutoScrollPosition.Y;
 
+                ChatScroll.SuspendDraw(_pnlMessages);   // заморозка — без мигания «загрузки заново»
                 _pnlMessages.SuspendLayout();
                 MainForm.DisposeAndClear(_pnlMessages);
                 _msgControls.Clear();
@@ -1642,8 +1643,9 @@ namespace PISMO
                 _lastScrollChannel = channel;
                 _srvLoadingOlder = false;
                 UpdateSrvScrollDownButton();
+                ChatScroll.ResumeDraw(_pnlMessages);   // разморозка ПОСЛЕ восстановления позиции
             }
-            catch (Exception ex) { ShowDbError(ex); }
+            catch (Exception ex) { try { _pnlMessages.ResumeLayout(); } catch { } ChatScroll.ResumeDraw(_pnlMessages); ShowDbError(ex); }
         }
 
         private int _lastSrvTop = int.MaxValue;

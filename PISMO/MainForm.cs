@@ -2486,6 +2486,7 @@ namespace PISMO
             }
             catch { _reactionsInView = null; }
 
+            ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
 
@@ -2566,10 +2567,12 @@ namespace PISMO
                 }
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
+                ChatScroll.ResumeDraw(pnlMessages);   // разморозка ПОСЛЕ восстановления позиции
             }
             catch (Exception ex)
             {
                 pnlMessages.ResumeLayout();
+                ChatScroll.ResumeDraw(pnlMessages);
                 MessageBox.Show("Ошибка загрузки сообщений группы: " + ex.Message);
             }
         }
@@ -2740,6 +2743,7 @@ namespace PISMO
             }
             catch { _reactionsInView = null; }
 
+            ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
 
@@ -2869,10 +2873,12 @@ namespace PISMO
                 }
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
+                ChatScroll.ResumeDraw(pnlMessages);   // разморозка ПОСЛЕ восстановления позиции
             }
             catch (Exception ex)
             {
                 pnlMessages.ResumeLayout();
+                ChatScroll.ResumeDraw(pnlMessages);
                 MessageBox.Show("Ошибка загрузки сообщений: " + ex.Message);
             }
         }
