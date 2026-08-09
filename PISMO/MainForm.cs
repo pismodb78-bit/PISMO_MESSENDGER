@@ -3087,6 +3087,7 @@ namespace PISMO
                 AccessibleDescription = (senderName + " " + (text ?? "")).Trim(),  // для поиска по чату (2.0)
                 Cursor = Cursors.Default
             };
+            ChatScroll.EnableDoubleBuffer(bubble);   // сам пузырь буферизуем — не «рвётся» при прокрутке
 
             bubble.Paint += (s, e) =>
             {

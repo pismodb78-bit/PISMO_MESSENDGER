@@ -1386,6 +1386,7 @@ namespace PISMO
                         Padding = new Padding(LEFT, PAD, PAD, PAD),
                         BackColor = Color.FromArgb(54, 57, 63)   // цвет фона чата — углы «прозрачны»
                     };
+                    ChatScroll.EnableDoubleBuffer(holder);   // буферизуем сам пузырь — не «рвётся» при прокрутке
                     holder.Paint += (s, e) =>
                     {
                         e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;

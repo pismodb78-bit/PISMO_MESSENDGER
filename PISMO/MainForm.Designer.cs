@@ -351,10 +351,7 @@ namespace PISMO
             pnlChatHeader.Dock = DockStyle.Top;
             pnlChatHeader.Location = new Point(0, 0);
             pnlChatHeader.Name = "pnlChatHeader";
-            // Нижний отступ 10px: докнутая кнопка звонка (Dock=Right) уважает padding и
-            // становится ниже низа шапки, поэтому верх полосы прокрутки (на границе
-            // шапки) оказывается ниже кнопки — «крышебойный» уходит.
-            pnlChatHeader.Padding = new Padding(16, 0, 0, 10);
+            pnlChatHeader.Padding = new Padding(16, 0, 0, 0);
             pnlChatHeader.Size = new Size(810, 48);
             pnlChatHeader.TabIndex = 3;
             pnlChatHeader.Paint += pnlChatHeader_Paint;

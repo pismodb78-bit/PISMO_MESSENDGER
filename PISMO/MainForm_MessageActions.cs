@@ -172,6 +172,10 @@ namespace PISMO
                 Font = new Font("Segoe UI", 13f),
                 Size = new Size(38, 38),
                 Dock = DockStyle.Right,
+                // Отступ снизу: докинг уважает Margin, поэтому низ кнопки поднимается
+                // над низом шапки — верх полосы прокрутки (на границе шапки) больше
+                // не оказывается прямо под кнопкой звонка.
+                Margin = new Padding(0, 5, 4, 12),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.Transparent,
                 ForeColor = Color.FromArgb(87, 171, 90),
