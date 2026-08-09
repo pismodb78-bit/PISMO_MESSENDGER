@@ -60,35 +60,24 @@ namespace PISMO
             catch { }
         }
 
-        /// <summary>Убирает горизонтальный скролл и вешает тонкий вертикальный ползунок.</summary>
-        public static void Attach(Panel p) => Attach(p, chat: false);
-
-        /// <summary>То же, что <see cref="Attach(Panel)"/>, но с усиленным анти-смазом
-        /// для панелей сообщений: на скролл — синхронный <see cref="Control.Refresh"/>,
-        /// который перерисовывает панель ВМЕСТЕ с дочерними пузырями без «хвостов».
-        /// WS_EX_COMPOSITED тут НЕ используем — он даёт светлые полосы на стыках.</summary>
-        public static void AttachChat(Panel p) => Attach(p, chat: true);
-
-        private static void Attach(Panel p, bool chat)
+        /// <summary>Убирает горизонтальный скролл и вешает тонкий вертикальный ползунок.
+        /// Смаз пузырей при прокрутке лечится композицией на уровне формы
+        /// (WS_EX_COMPOSITED в MainForm/ServersForm), поэтому здесь достаточно
+        /// обычного Invalidate.</summary>
+        public static void Attach(Panel p)
         {
             if (p == null || _pretty.Contains(p)) return;
             _pretty.Add(p);
             KillHorizontal(p);
             EnableDoubleBuffer(p);
-            if (chat)
-            {
-                // Синхронная перерисовка на скролл: пузыри-дочки не оставляют «хвостов».
-                p.Scroll += (s, e) => { try { p.Refresh(); } catch { } };
-                p.MouseWheel += (s, e) => { try { p.Refresh(); } catch { } };
-            }
-            else
-            {
-                p.Scroll += (s, e) => p.Invalidate(true);
-            }
+            p.Scroll += (s, e) => p.Invalidate(true);
 
             if (p.Parent == null) { p.ParentChanged += (s, e) => Attach2(p); return; }
             Attach2(p);
         }
+
+        /// <summary>Совместимость: то же, что <see cref="Attach(Panel)"/>.</summary>
+        public static void AttachChat(Panel p) => Attach(p);
 
         private static readonly System.Collections.Generic.HashSet<Panel> _done = new();
         private static void Attach2(Panel p)
