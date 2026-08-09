@@ -2423,6 +2423,7 @@ namespace PISMO
                 cachedDt = MessageCache.Load(MessageCache.GroupKey(group));
                 if (cachedDt != null) _groupMetaCache[group] = cachedDt;
             }
+            if (cachedDt != null && cachedDt.Rows.Count > _dmLimit) _dmLimit = cachedDt.Rows.Count;
             if (cachedDt != null && !_dmLoadingOlder) RenderGroupMessages(cachedDt, myId, group);
 
             // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в группе.
@@ -2631,6 +2632,10 @@ namespace PISMO
                 cachedDt = MessageCache.Load(MessageCache.DirectKey(myId, partner));
                 if (cachedDt != null) _msgMetaCache[partner] = cachedDt;
             }
+            // Глубина не должна «схлопываться» при возврате в чат: если в кеше уже
+            // больше сообщений, чем текущий лимит — держим ту же глубину.
+            if (cachedDt != null && cachedDt.Rows.Count > _dmLimit) _dmLimit = cachedDt.Rows.Count;
+
             // При догрузке вверх кеш (последняя страница) НЕ рисуем — иначе мигало бы
             // и сбивало позицию; ждём свежую большую выборку из БД.
             if (cachedDt != null && !_dmLoadingOlder)

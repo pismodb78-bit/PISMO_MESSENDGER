@@ -1155,6 +1155,8 @@ namespace PISMO
                 cachedDt = MessageCache.Load(MessageCache.ChannelKey(channel));
                 if (cachedDt != null) _chanMetaCache[channel] = cachedDt;
             }
+            // Глубина не «схлопывается» при возврате в канал.
+            if (cachedDt != null && cachedDt.Rows.Count > _srvLimit) _srvLimit = cachedDt.Rows.Count;
             // При догрузке вверх кеш (последняя страница) не рисуем — ждём большую выборку.
             if (cachedDt != null && !_srvLoadingOlder) RenderMessages(cachedDt, channel);
 
