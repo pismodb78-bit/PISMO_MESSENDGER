@@ -30,6 +30,23 @@ namespace PISMO
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
         private static readonly System.Collections.Generic.HashSet<Panel> _pretty = new();
 
+        // Общий таймер: принудительно держит все ползунки на месте и видимыми,
+        // чтобы не зависеть от того, какие именно события раскладки сработали
+        // (главная причина, почему оверлей раньше «не появлялся»).
+        private static readonly System.Collections.Generic.List<Action> _tickers = new();
+        private static System.Windows.Forms.Timer _timer;
+        private static void EnsureTimer()
+        {
+            if (_timer != null) return;
+            _timer = new System.Windows.Forms.Timer { Interval = 120 };
+            _timer.Tick += (s, e) =>
+            {
+                for (int i = 0; i < _tickers.Count; i++)
+                    try { _tickers[i](); } catch { }
+            };
+            _timer.Start();
+        }
+
         /// <summary>
         /// Прячет НАТИВНЫЕ полосы прокрутки через ShowScrollBar. У AutoScroll-панели
         /// движок показывает полосу именно этим API (не стилем окна), поэтому снимать
@@ -88,7 +105,9 @@ namespace PISMO
             _pretty.Add(p);
             KillHorizontal(p);
             EnableDoubleBuffer(p);
+            // Полная перерисовка вместе с дочерними при любой прокрутке — против «хвостов».
             p.Scroll += (s, e) => p.Invalidate(true);
+            p.MouseWheel += (s, e) => p.Invalidate(true);
 
             if (p.Parent == null) { p.ParentChanged += (s, e) => Attach2(p); return; }
             Attach2(p);
@@ -109,18 +128,14 @@ namespace PISMO
             host.Controls.Add(bar);
             bar.BringToFront();
 
+            int _lastOffset = int.MinValue;
             void Reposition()
             {
                 try
                 {
                     if (p.IsDisposed || bar.IsDisposed) return;
-                    // Панель ещё не разложена (bounds 0/0) — прячем оверлей, иначе он
-                    // приземляется в левый край родителя и светится полоской.
-                    if (p.Width < 20 || p.Height < 20) { bar.Visible = false; return; }
-                    int x = p.Right - bw;
-                    int y = p.Top;
-                    int h = p.Height;
-                    // кламп в клиентскую область родителя — чтобы ничто не вылезло
+                    if (!p.Visible || p.Width < 20 || p.Height < 20) { if (bar.Visible) bar.Visible = false; return; }
+                    int x = p.Right - bw, y = p.Top, h = p.Height;
                     if (host is Control hc)
                     {
                         int maxR = hc.ClientSize.Width, maxB = hc.ClientSize.Height;
@@ -129,10 +144,18 @@ namespace PISMO
                         if (y < 0) y = 0;
                         if (y + h > maxB) h = Math.Max(0, maxB - y);
                     }
-                    bar.Bounds = new Rectangle(x, y, bw, h);
-                    bar.Visible = p.Visible && bar.NeedBar;
-                    bar.BringToFront();
-                    bar.Sync();
+                    var want = new Rectangle(x, y, bw, h);
+                    if (bar.Bounds != want) bar.Bounds = want;   // менять только при изменении — таймер не дёргает layout зря
+
+                    bool need = bar.NeedBar;
+                    if (bar.Visible != need) bar.Visible = need;
+                    if (!need) return;
+
+                    // держим поверх всего (карточки/пузыри могли перекрыть)
+                    if (host.Controls.GetChildIndex(bar) != 0) bar.BringToFront();
+                    // перерисовываем ползунок только когда реально сдвинулись
+                    int off = -p.AutoScrollPosition.Y;
+                    if (off != _lastOffset) { _lastOffset = off; bar.Invalidate(); }
                 }
                 catch { }
             }
@@ -140,12 +163,10 @@ namespace PISMO
             p.Resize += (s, e) => Reposition();
             p.Move += (s, e) => Reposition();
             p.VisibleChanged += (s, e) => Reposition();
-            // Layout — ключевой момент: docked-панель получает правильные Top/Height
-            // ТОЛЬКО после раскладки. Без этого оверлей вставал по устаревшим
-            // координатам (нативная белая полоса светилась до первого скролла, а в
-            // ЛС оверлей заезжал в шапку и перекрывал кнопку звонка).
             p.Layout += (s, e) => Reposition();
             host.Layout += (s, e) => Reposition();
+            _tickers.Add(Reposition);   // страховка от капризов событий раскладки
+            EnsureTimer();
             p.Scroll += (s, e) => { bar.BringToFront(); bar.Sync(); };
             p.MouseWheel += (s, e) => { bar.BringToFront(); bar.Sync(); };
             p.ControlAdded += (s, e) => Reposition();
