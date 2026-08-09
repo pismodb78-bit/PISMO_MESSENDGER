@@ -760,6 +760,11 @@ namespace PISMO
                                           - SystemInformation.VerticalScrollBarWidth);
                 foreach (Control ctrl in pnlUserList.Controls)
                 {
+                    // Заголовки/подсказки («ГРУППЫ», hint админа) — прямые Label в списке.
+                    // Их тоже подгоняем, иначе длинный текст даёт горизонтальный скролл.
+                    if (ctrl is Label direct)
+                        direct.Width = avail - direct.Margin.Horizontal;
+
                     if (ctrl is Button btn)   // кнопка «Друзья» (+ бейдж заявок на ней)
                     {
                         btn.Width = avail - btn.Margin.Horizontal;
@@ -1764,7 +1769,7 @@ namespace PISMO
                 Font = new Font("Segoe UI", 7.5f),
                 ForeColor = Color.FromArgb(90, 93, 102),
                 AutoSize = false,
-                Width = pnlSidebar.Width - 12,
+                Width = CardWidth,   // как у карточек: с резервом под вертикальную полосу
                 Height = 30,
                 Padding = new Padding(8, 6, 0, 0)
             };
