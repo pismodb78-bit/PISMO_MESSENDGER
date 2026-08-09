@@ -2582,7 +2582,7 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         //  ЗАГРУЗКА И РЕНДЕР СООБЩЕНИЙ
         // ════════════════════════════════════════════════════════════════
-        private void LoadMessages()
+        private void LoadMessages(bool markRead = true)
         {
             if (_currentChatPartnerId < 0) return;
             int partner = _currentChatPartnerId;
@@ -2625,7 +2625,7 @@ namespace PISMO
                 // и продолжало давать уведомления даже после визита в чат).
                 try
                 {
-                    if (_currentChatPartnerId == partner)
+                    if (markRead && _currentChatPartnerId == partner)
                     {
                         bool hasUnreadIncoming = false;
                         if (dt.Columns.Contains("is_read") && dt.Columns.Contains("sender_id"))
@@ -4495,7 +4495,7 @@ namespace PISMO
             if (_currentGroupId >= 0)
                 LoadGroupMessages();
             else if (_currentChatPartnerId >= 0)
-                LoadMessages();
+                LoadMessages(markRead: false);   // «Обновить» не гасит непрочитанные
 
             PollTick(null, null); // разовый опрос непрочитанных/новых (как делал таймер)
         }
