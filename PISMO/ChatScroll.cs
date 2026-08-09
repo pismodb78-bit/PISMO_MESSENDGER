@@ -130,7 +130,10 @@ namespace PISMO
         private sealed class SmoothScroller
         {
             private const int StepPx = 110;      // прокрутка за один щелчок колеса
-            private const double Ease = 0.28;    // доля оставшегося пути за кадр
+            // Мягче в разы: за кадр проходим лишь малую долю пути, поэтому сдвиг
+            // между кадрами маленький и картинка не «рвётся».
+            private const double Ease = 0.12;
+            private const int MinFrameMs = 10;   // ~100 кадров/с
 
             private readonly Panel _p;
             private readonly System.Windows.Forms.Timer _t;
@@ -140,7 +143,7 @@ namespace PISMO
             public SmoothScroller(Panel p)
             {
                 _p = p;
-                _t = new System.Windows.Forms.Timer { Interval = 15 };
+                _t = new System.Windows.Forms.Timer { Interval = MinFrameMs };
                 _t.Tick += Tick;
                 p.MouseWheel += OnWheel;
                 p.Disposed += (s, e) => { try { _t.Stop(); _t.Dispose(); } catch { } };
@@ -174,12 +177,17 @@ namespace PISMO
                 if (Math.Abs(diff) <= 1)
                 {
                     try { _p.AutoScrollPosition = new Point(0, _target); } catch { }
+                    RepaintNow(_p);
                     _t.Stop();
                     return;
                 }
                 int step = (int)Math.Round(diff * Ease);
                 if (step == 0) step = Math.Sign(diff);
                 try { _p.AutoScrollPosition = new Point(0, cur + step); } catch { }
+                // КЛЮЧЕВОЕ: кадр анимации двигает позицию напрямую и НЕ порождает
+                // WM_VSCROLL/WM_MOUSEWHEEL, поэтому подписка на сообщения окна тут не
+                // срабатывает — перерисовываем синхронно сами, иначе картинка рвётся.
+                RepaintNow(_p);
                 _lastSet = Current;   // читаем фактическое (могло быть подрезано)
             }
         }
