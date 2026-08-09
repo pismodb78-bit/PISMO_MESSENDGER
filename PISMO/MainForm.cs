@@ -18,10 +18,14 @@ namespace PISMO
         // На открытии грузим ПОСЛЕДНИЕ MsgPageSize сообщений; при прокрутке вверх
         // догружаем ещё страницу, сохраняя позицию (не скидывая вниз).
         private const int MsgPageSize = 40;
-        private int _dmLimit = MsgPageSize;         // сколько последних ЛС грузим сейчас
+        private int _dmLimit = MsgPageSize;         // сколько последних сообщений грузим сейчас (ЛС/группа)
         private bool _dmHasMore;                     // есть ли более старые сообщения
         private bool _dmLoadingOlder;                // идёт догрузка вверх
         private int _dmRestoreFromBottom = -1;       // держим позицию: расстояние от низа
+        // Сколько сообщений было долистано в чате — чтобы при переоткрытии показать
+        // столько же (ключ: "d{partnerId}" для ЛС, "g{groupId}" для группы).
+        private readonly Dictionary<string, int> _limitByChat = new();
+        private Button _btnScrollDown;               // плавающая кнопка «вниз к новым»
 
         // ── Состояние ──────────────────────────────────────────────────────
         private int _currentChatPartnerId = -1;
@@ -2358,7 +2362,8 @@ namespace PISMO
             _currentGroupId = -1;
             _currentGroupName = "";
             _lastMsgCount = 0;
-            _dmLimit = MsgPageSize;          // при открытии — только последняя страница
+            // Восстанавливаем столько сообщений, сколько было долистано ранее.
+            _dmLimit = _limitByChat.TryGetValue("d" + partnerId, out var dlim) ? dlim : MsgPageSize;
             _dmHasMore = false;
             _dmLoadingOlder = false;
             _dmRestoreFromBottom = -1;
@@ -2387,6 +2392,11 @@ namespace PISMO
             _currentChatPartnerId = -1;
             _currentChatPartnerName = "";
             _lastGroupMsgCount = 0;
+            _dmLimit = _limitByChat.TryGetValue("g" + groupId, out var glim) ? glim : MsgPageSize;
+            _dmHasMore = false;
+            _dmLoadingOlder = false;
+            _dmRestoreFromBottom = -1;
+            EnsureDmScrollHook();
 
             lblChatTitle.Text = "👥 " + groupName;
             UpdateChatHeaderPresence();   // группа — статус собеседника прячется
@@ -2413,14 +2423,15 @@ namespace PISMO
                 cachedDt = MessageCache.Load(MessageCache.GroupKey(group));
                 if (cachedDt != null) _groupMetaCache[group] = cachedDt;
             }
-            if (cachedDt != null) RenderGroupMessages(cachedDt, myId, group);
+            if (cachedDt != null && !_dmLoadingOlder) RenderGroupMessages(cachedDt, myId, group);
 
             // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в группе.
             System.Threading.Tasks.Task.Run(() =>
             {
                 DataTable dt = null;
-                try { dt = LoadGroupMessagesMetaOnly(group); } catch { }
+                try { dt = LoadGroupMessagesMetaOnly(group, _dmLimit); } catch { }
                 if (dt == null) return;
+                _dmHasMore = dt.Rows.Count >= _dmLimit;
                 try { MessageCache.Save(MessageCache.GroupKey(group), dt); } catch { }
                 if (IsDisposed || !IsHandleCreated) return;
                 try
@@ -2517,8 +2528,18 @@ namespace PISMO
                 _lastGroupMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
 
-                // ← ИСПРАВЛЕНИЕ: прокручиваем в конец ПОСЛЕ ResumeLayout
-                pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                if (_dmRestoreFromBottom >= 0)
+                {
+                    pnlMessages.PerformLayout();
+                    int viewport = pnlMessages.ClientSize.Height;
+                    int newTop = pnlMessages.DisplayRectangle.Height - viewport - _dmRestoreFromBottom;
+                    try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
+                    _dmRestoreFromBottom = -1;
+                }
+                else
+                    pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                _dmLoadingOlder = false;
+                UpdateScrollDownButton();
             }
             catch (Exception ex)
             {
@@ -2814,6 +2835,7 @@ namespace PISMO
                     pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
                 }
                 _dmLoadingOlder = false;
+                UpdateScrollDownButton();
             }
             catch (Exception ex)
             {
@@ -2822,21 +2844,24 @@ namespace PISMO
             }
         }
 
-        // Подписка на прокрутку панели ЛС — для догрузки старых сообщений у верха.
+        // Подписка на прокрутку панели чата — догрузка старых у верха + кнопка «вниз».
         private bool _dmScrollHooked;
         private void EnsureDmScrollHook()
         {
+            EnsureScrollDownButton();
             if (_dmScrollHooked || pnlMessages == null) return;
             _dmScrollHooked = true;
-            pnlMessages.Scroll += (s, e) => MaybeLoadOlderDm();
-            pnlMessages.MouseWheel += (s, e) => MaybeLoadOlderDm();
+            pnlMessages.Scroll += (s, e) => { MaybeLoadOlder(); UpdateScrollDownButton(); };
+            pnlMessages.MouseWheel += (s, e) => { MaybeLoadOlder(); UpdateScrollDownButton(); };
         }
 
         /// <summary>У верха списка и есть более старые сообщения — догружаем ещё
-        /// страницу, сохраняя позицию просмотра (чат не скидывается вниз).</summary>
-        private void MaybeLoadOlderDm()
+        /// страницу (ЛС или группа), сохраняя позицию (чат не скидывается вниз).</summary>
+        private void MaybeLoadOlder()
         {
-            if (_currentChatPartnerId < 0 || _currentGroupId >= 0) return;
+            bool grp = _currentGroupId >= 0;
+            bool dm = !grp && _currentChatPartnerId >= 0;
+            if (!grp && !dm) return;
             if (_dmLoadingOlder || !_dmHasMore) return;
             if (-pnlMessages.AutoScrollPosition.Y > 60) return;   // ещё не у верха
 
@@ -2845,7 +2870,71 @@ namespace PISMO
             int curTop = -pnlMessages.AutoScrollPosition.Y;
             _dmRestoreFromBottom = pnlMessages.DisplayRectangle.Height - (curTop + viewport);
             _dmLimit += MsgPageSize;
-            LoadMessages(markRead: false);
+            // Запоминаем «сколько долистано» — при переоткрытии покажем столько же.
+            _limitByChat[(grp ? "g" : "d") + (grp ? _currentGroupId : _currentChatPartnerId)] = _dmLimit;
+            if (grp) LoadGroupMessages(); else LoadMessages(markRead: false);
+        }
+
+        // ── Плавающая кнопка «вниз к новым сообщениям» (ЛС/группы) ───────────
+        private void EnsureScrollDownButton()
+        {
+            if (_btnScrollDown != null || pnlMessages == null) return;
+            _btnScrollDown = new Button
+            {
+                Text = "⬇",
+                Size = new Size(44, 44),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(47, 49, 54),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 15f, FontStyle.Bold),
+                Cursor = Cursors.Hand,
+                Visible = false,
+                TabStop = false
+            };
+            _btnScrollDown.FlatAppearance.BorderSize = 0;
+            try { _btnScrollDown.Region = System.Drawing.Region.FromHrgn(
+                NativeMethods.CreateRoundRectRgn(0, 0, 44, 44, 44, 44)); } catch { }
+            _btnScrollDown.Click += (s, e) => ScrollChatToBottom();
+            // Кладём поверх панели сообщений (родитель — контейнер панели).
+            var host = pnlMessages.Parent ?? (Control)pnlMessages;
+            host.Controls.Add(_btnScrollDown);
+            _btnScrollDown.BringToFront();
+            PositionScrollDownButton();
+            host.Resize += (s, e) => PositionScrollDownButton();
+        }
+
+        private void PositionScrollDownButton()
+        {
+            if (_btnScrollDown == null) return;
+            var host = _btnScrollDown.Parent;
+            if (host == null) return;
+            // Правый нижний угол панели сообщений, чуть выше поля ввода.
+            int x = pnlMessages.Right - 56;
+            int y = pnlMessages.Bottom - 60;
+            _btnScrollDown.Location = new Point(x, y);
+            _btnScrollDown.BringToFront();
+        }
+
+        /// <summary>Показываем кнопку, когда прокрутка не у низа (ушли к старым).</summary>
+        private void UpdateScrollDownButton()
+        {
+            if (_btnScrollDown == null || pnlMessages == null) return;
+            bool inChat = _currentChatPartnerId >= 0 || _currentGroupId >= 0;
+            int viewport = pnlMessages.ClientSize.Height;
+            int curTop = -pnlMessages.AutoScrollPosition.Y;
+            int distFromBottom = pnlMessages.DisplayRectangle.Height - (curTop + viewport);
+            bool show = inChat && distFromBottom > 200;   // заметно ушли вверх
+            if (_btnScrollDown.Visible != show)
+            {
+                _btnScrollDown.Visible = show;
+                if (show) { PositionScrollDownButton(); _btnScrollDown.BringToFront(); }
+            }
+        }
+
+        private void ScrollChatToBottom()
+        {
+            try { pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue); } catch { }
+            UpdateScrollDownButton();
         }
 
         private Panel BuildDateSeparator(string dateText)

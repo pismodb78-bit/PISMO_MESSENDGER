@@ -189,10 +189,11 @@ namespace PISMO
         /// <summary>
         /// Шаг 1 для групп: Загружаем метаданные без BLOB.
         /// </summary>
-        public static DataTable LoadGroupMessagesMetaOnly(int groupId)
+        public static DataTable LoadGroupMessagesMetaOnly(int groupId, int limit = 0)
         {
             using var conn = DBHelper.OpenConnection();
-            const string sql = @"
+            // Постранично: последние `limit` (по id DESC), затем в хронологическом (ASC).
+            string inner = @"
                 SELECT gm.id, gm.sender_id, gm.text,
                        NULL AS image_data, NULL AS audio_data,
                        NULL AS video_data, NULL AS file_data,
@@ -207,7 +208,8 @@ namespace PISMO
                 FROM group_messages gm
                 JOIN users u ON u.id = gm.sender_id
                 WHERE gm.group_id=@g
-                ORDER BY gm.created_at ASC";
+                ORDER BY gm.id " + (limit > 0 ? "DESC LIMIT " + limit : "ASC");
+            string sql = limit > 0 ? "SELECT * FROM (" + inner + ") sub ORDER BY id ASC" : inner;
 
             using var cmd = new MySqlCommand(sql, conn);
             cmd.Parameters.AddWithValue("@g", groupId);

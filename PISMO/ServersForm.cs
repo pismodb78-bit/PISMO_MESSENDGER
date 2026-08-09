@@ -33,6 +33,8 @@ namespace PISMO
         private bool _srvLoadingOlder;
         private int _srvRestoreFromBottom = -1;
         private bool _srvScrollHooked;
+        private readonly System.Collections.Generic.Dictionary<int, int> _srvLimitByChannel = new(); // канал → сколько долистано
+        private Button _srvBtnScrollDown;
 
         // Права текущего пользователя на выбранном сервере и заглушение.
         private bool _canBan, _canKick, _canMute, _canManage, _serverMuted;
@@ -1003,7 +1005,9 @@ namespace PISMO
         private void SelectChannel(int cid, string type, string name, bool joinVoice = true)
         {
             _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1;
-            _srvLimit = ChanPageSize; _srvHasMore = false; _srvLoadingOlder = false; _srvRestoreFromBottom = -1;
+            // Восстанавливаем столько сообщений, сколько было долистано в этом канале.
+            _srvLimit = _srvLimitByChannel.TryGetValue(cid, out var clim) ? clim : ChanPageSize;
+            _srvHasMore = false; _srvLoadingOlder = false; _srvRestoreFromBottom = -1;
             EnsureSrvScrollHook();
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
             MainForm.DisposeAndClear(_pnlMessages);
@@ -1626,16 +1630,18 @@ namespace PISMO
                     try { _pnlMessages.AutoScrollPosition = new Point(0, savedScrollY); } catch { }
                 _lastScrollChannel = channel;
                 _srvLoadingOlder = false;
+                UpdateSrvScrollDownButton();
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
 
         private void EnsureSrvScrollHook()
         {
+            EnsureSrvScrollDownButton();
             if (_srvScrollHooked || _pnlMessages == null) return;
             _srvScrollHooked = true;
-            _pnlMessages.Scroll += (s, e) => MaybeLoadOlderSrv();
-            _pnlMessages.MouseWheel += (s, e) => MaybeLoadOlderSrv();
+            _pnlMessages.Scroll += (s, e) => { MaybeLoadOlderSrv(); UpdateSrvScrollDownButton(); };
+            _pnlMessages.MouseWheel += (s, e) => { MaybeLoadOlderSrv(); UpdateSrvScrollDownButton(); };
         }
 
         /// <summary>У верха канала и есть более старые сообщения — догружаем ещё
@@ -1649,8 +1655,56 @@ namespace PISMO
             int curTop = -_pnlMessages.AutoScrollPosition.Y;
             _srvRestoreFromBottom = _pnlMessages.DisplayRectangle.Height - (curTop + viewport);
             _srvLimit += ChanPageSize;
+            _srvLimitByChannel[_channelId] = _srvLimit;   // запоминаем «сколько долистано»
             _renderedKey = null; _renderedSig = null;   // форсим перерисовку с большей выборкой
             LoadMessages();
+        }
+
+        // ── Плавающая кнопка «вниз к новым сообщениям» (сервер) ─────────────
+        private void EnsureSrvScrollDownButton()
+        {
+            if (_srvBtnScrollDown != null || _pnlMessages == null) return;
+            _srvBtnScrollDown = new Button
+            {
+                Text = "⬇", Size = new Size(44, 44), FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.White,
+                Font = new Font("Segoe UI", 15f, FontStyle.Bold), Cursor = Cursors.Hand,
+                Visible = false, TabStop = false
+            };
+            _srvBtnScrollDown.FlatAppearance.BorderSize = 0;
+            try { _srvBtnScrollDown.Region = System.Drawing.Region.FromHrgn(
+                NativeMethods.CreateRoundRectRgn(0, 0, 44, 44, 44, 44)); } catch { }
+            _srvBtnScrollDown.Click += (s, e) =>
+            {
+                try { _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null); } catch { }
+                UpdateSrvScrollDownButton();
+            };
+            var host = _pnlMessages.Parent ?? (Control)_pnlMessages;
+            host.Controls.Add(_srvBtnScrollDown);
+            _srvBtnScrollDown.BringToFront();
+            PositionSrvScrollDownButton();
+            host.Resize += (s, e) => PositionSrvScrollDownButton();
+        }
+
+        private void PositionSrvScrollDownButton()
+        {
+            if (_srvBtnScrollDown == null) return;
+            _srvBtnScrollDown.Location = new Point(_pnlMessages.Right - 56, _pnlMessages.Bottom - 60);
+            _srvBtnScrollDown.BringToFront();
+        }
+
+        private void UpdateSrvScrollDownButton()
+        {
+            if (_srvBtnScrollDown == null || _pnlMessages == null) return;
+            int viewport = _pnlMessages.ClientSize.Height;
+            int curTop = -_pnlMessages.AutoScrollPosition.Y;
+            int distFromBottom = _pnlMessages.DisplayRectangle.Height - (curTop + viewport);
+            bool show = _channelId > 0 && distFromBottom > 200;
+            if (_srvBtnScrollDown.Visible != show)
+            {
+                _srvBtnScrollDown.Visible = show;
+                if (show) { PositionSrvScrollDownButton(); _srvBtnScrollDown.BringToFront(); }
+            }
         }
 
         /// <summary>Прокручивает к исходному сообщению (по клику на цитату) и подсвечивает.</summary>
