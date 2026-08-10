@@ -54,6 +54,7 @@ namespace PISMO
 
         // Polling: обнаружение новых сообщений
         private System.Windows.Forms.Timer _pollTimer;
+        private int _wsIdleTicks;   // тики опроса при живом WS (разряжаем до ~9с)
         private int _lastMsgCount = 0;
         private bool _pollBusy = false;
         private int _lastOpenSig = -1;   // число сообщений открытого чата на прошлом опросе (детект новых)
@@ -1218,7 +1219,20 @@ namespace PISMO
             // Состояние WS проверяется на каждом тике (и при запуске тоже), так что
             // переключение автоматическое: WS отвалился — опрос включился, поднялся —
             // выключился.
-            if (sender != null && WebSocketSignalingClient.Instance.IsHealthy) return;
+            // РАНЬШЕ при «здоровом» WS тик выходил СРАЗУ — и если WS по факту не
+            // доставлял (сокет открыт, но сервер не шлёт события; при старом ws-server
+            // pong не приходит никогда, и «здоровьем» считается просто открытый сокет),
+            // уведомления не приходили вовсе — только по кнопке ↻, которая идёт мимо
+            // этой проверки. Теперь при здоровом WS опрос не выключается, а разряжается:
+            // раз в ~9 секунд проверяем непрочитанные и шлём пуши, а открытый чат не
+            // трогаем — его перезагружает сам WS.
+            bool wsOk = sender != null && WebSocketSignalingClient.Instance.IsHealthy;
+            if (wsOk)
+            {
+                if (++_wsIdleTicks < 3) return;   // 3 тика по 3с ≈ раз в 9с
+                _wsIdleTicks = 0;
+            }
+            else _wsIdleTicks = 0;
 
             if (_pollBusy) return;
             _pollBusy = true;
@@ -1261,7 +1275,7 @@ namespace PISMO
                     {
                         try
                         {
-                            if ((forced || openChanged) && !OnServerView)
+                            if ((forced || (openChanged && !wsOk)) && !OnServerView)
                             {
                                 if (_currentGroupId >= 0) LoadGroupMessages();
                                 else if (_currentChatPartnerId >= 0) LoadMessages();
