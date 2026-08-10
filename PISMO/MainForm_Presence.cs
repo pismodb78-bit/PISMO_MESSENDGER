@@ -302,6 +302,13 @@ namespace PISMO
         private void UpdateChatHeaderPresence()
         {
             EnsureChatPresenceLabel();
+            // Пока открыта строка поиска, статус не показываем: он делит место в шапке
+            // с полем поиска, и в оконном режиме они накладывались.
+            if (_searchRowOpen)
+            {
+                if (_lblChatPresence != null) _lblChatPresence.Visible = false;
+                return;
+            }
             int peer = _currentChatPartnerId;
             if (peer <= 0 || !_presenceColumnsOk)
             {

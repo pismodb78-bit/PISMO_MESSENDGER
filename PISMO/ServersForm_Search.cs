@@ -105,7 +105,12 @@ namespace PISMO
                 _srvBtnPrev.Location     = new Point(Math.Max(0, w - 106), 5);
                 _srvBtnCalendar.Location = new Point(Math.Max(0, w - 140), 5);
                 _srvSearchCount.Location = new Point(Math.Max(0, w - 202), 8);
-                _srvSearchBox.Location   = new Point(Math.Max(0, w - 396), 5);
+                // Ширину поля подгоняем под узкое окно, иначе оно наезжает на имя канала.
+                const int titleMin = 150;
+                int boxRight = w - 150;                       // дальше идут 📅 ▲ ▼ 🔍
+                int boxLeft = Math.Max(titleMin, w - 396);
+                int boxW = Math.Max(70, boxRight - boxLeft);
+                _srvSearchBox.Bounds = new Rectangle(boxLeft, 5, boxW, 26);
             }
             _lblTitle.Resize += (s, e) => Reposition();
             _lblTitle.HandleCreated += (s, e) => Reposition();

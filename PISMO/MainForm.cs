@@ -291,6 +291,25 @@ namespace PISMO
 
         private Button _btnMsgSearch;
         private Button _btnMsgCalendar;      // 📅 переход к дате
+        private bool _searchRowOpen;         // открыта ли строка поиска (прячем статус собеседника)
+
+        /// <summary>Подгоняет ширину поля поиска под ширину шапки: в оконном режиме
+        /// фиксированный отступ от правого края наезжал на имя собеседника и его статус.</summary>
+        private void LayoutSearchRow()
+        {
+            if (_msgSearch == null || pnlChatHeader == null) return;
+            try
+            {
+                int w = pnlChatHeader.ClientSize.Width;
+                const int titleMin = 150;          // место под имя собеседника
+                int boxRight = w - 300;            // правый край поля (дальше идёт 📅)
+                int boxLeft = Math.Max(titleMin, w - 490);
+                int boxW = Math.Max(70, boxRight - boxLeft);
+                if (boxW <= 70 && boxRight - titleMin < 70) { _msgSearch.Visible = false; return; }
+                _msgSearch.Bounds = new Rectangle(boxLeft, 11, boxW, 26);
+            }
+            catch { }
+        }
         private TextBox _msgSearch;
         private Label _msgSearchCount;
 
@@ -358,7 +377,12 @@ namespace PISMO
 
                 void SetSearchVisible(bool show)
                 {
+                    _searchRowOpen = show;
+                    // Статус «был(а) в сети…» и поле поиска делят одно место в шапке:
+                    // в оконном режиме они накладывались друг на друга.
+                    try { if (_lblChatPresence != null) _lblChatPresence.Visible = !show; } catch { }
                     _msgSearch.Visible = show;
+                    LayoutSearchRow();
                     _msgSearchCount.Visible = show;
                     _btnMsgSearchPrev.Visible = show;
                     _btnMsgSearchNext.Visible = show;
@@ -397,6 +421,7 @@ namespace PISMO
                 _btnMsgSearchPrev.BringToFront(); _btnMsgSearchNext.BringToFront();
                 _btnMsgCalendar.BringToFront();
                 _btnMsgSearch.BringToFront();
+                pnlChatHeader.Resize += (s, e) => { if (_searchRowOpen) LayoutSearchRow(); };
             }
             catch { }
         }
