@@ -2511,14 +2511,16 @@ namespace PISMO
             }
             catch { _reactionsInView = null; }
 
+            // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
+            // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
+            // начала координат: если оставить панель прокрученной, новые пузыри уедут
+            // вниз на величину прокрутки и сверху появится большая пустота. На пустой
+            // панели с приостановленной раскладкой сброс не срабатывает — начало
+            // координат не пересчитывается, поэтому порядок важен.
+            try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
             ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
-            // ОБЯЗАТЕЛЬНО сбросить прокрутку в начало ПЕРЕД добавлением пузырей: у
-            // AutoScroll-панели координата Top отсчитывается от СДВИНУТОГО начала, и
-            // если панель осталась прокрученной, все пузыри уезжают вниз на величину
-            // прокрутки — сверху появляется большая пустота.
-            try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
 
             try
             {
@@ -2578,6 +2580,7 @@ namespace PISMO
 
                 _lastGroupMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
+                NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -2773,14 +2776,16 @@ namespace PISMO
             }
             catch { _reactionsInView = null; }
 
+            // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
+            // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
+            // начала координат: если оставить панель прокрученной, новые пузыри уедут
+            // вниз на величину прокрутки и сверху появится большая пустота. На пустой
+            // панели с приостановленной раскладкой сброс не срабатывает — начало
+            // координат не пересчитывается, поэтому порядок важен.
+            try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
             ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
-            // ОБЯЗАТЕЛЬНО сбросить прокрутку в начало ПЕРЕД добавлением пузырей: у
-            // AutoScroll-панели координата Top отсчитывается от СДВИНУТОГО начала, и
-            // если панель осталась прокрученной, все пузыри уезжают вниз на величину
-            // прокрутки — сверху появляется большая пустота.
-            try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
 
             // Если кто-то заблокирован — показываем уведомление и блокируем отправку
             if (iBlocked || theyBlockedMe)
@@ -2885,6 +2890,7 @@ namespace PISMO
 
                 _lastMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
+                NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -3077,6 +3083,20 @@ namespace PISMO
             for (int i = dt.Rows.Count - n; i < dt.Rows.Count; i++)
                 res.ImportRow(dt.Rows[i]);
             return res;
+        }
+
+        /// <summary>Убирает «пустоту» сверху ленты: если из-за сдвинутого начала координат
+        /// AutoScroll-панели все пузыри уехали вниз, поднимает их обратно так, чтобы
+        /// первый начинался со штатного отступа. Чтение и запись Top идут в одной и той
+        /// же системе координат, поэтому сдвиг корректен при любом состоянии прокрутки.</summary>
+        private static void NormalizeTopOffset(Panel p)
+        {
+            if (p == null || p.Controls.Count == 0) return;
+            int min = int.MaxValue;
+            foreach (Control c in p.Controls) if (c.Top < min) min = c.Top;
+            int delta = min - 10;                 // 10 — штатный верхний отступ
+            if (delta <= 0 || min == int.MaxValue) return;
+            foreach (Control c in p.Controls) c.Top -= delta;
         }
 
         private Panel BuildDateSeparator(string dateText)
