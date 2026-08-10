@@ -1332,7 +1332,13 @@ namespace PISMO
             foreach (DataRow rr in dt.Rows)
                 if (_serverMedia.ContainsKey(Convert.ToInt32(rr["id"]))) mediaForChan++;
             string key = "c" + channel, sig = MainForm.SigOf(dt) + "|m" + mediaForChan;
-            if (_renderedKey == key && _renderedSig == sig) return;
+            if (_renderedKey == key && _renderedSig == sig)
+            {
+                // См. пояснение в MainForm: без сброса флага догрузка старых сообщений
+                // в канале блокировалась после «пустой» перезагрузки.
+                _srvLoadingOlder = false;
+                return;
+            }
             _renderedKey = key; _renderedSig = sig;
 
             try

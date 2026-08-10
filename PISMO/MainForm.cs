@@ -2637,7 +2637,14 @@ namespace PISMO
 
             // Пропускаем повторную отрисовку, если та же группа и данные не изменились.
             string key = "g" + group, sig = SigOf(dt);
-            if (_renderedChatKey == key && _renderedChatSig == sig) return;
+            if (_renderedChatKey == key && _renderedChatSig == sig)
+            {
+                // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
+                // «пустой» перезагрузки (данные не изменились) подгрузка старых
+                // сообщений в этом чате оставалась заблокированной навсегда.
+                _dmLoadingOlder = false;
+                return;
+            }
             _renderedChatKey = key; _renderedChatSig = sig;
             try { _pinnedInView = PinsRepository.PinnedIds(1); } catch { _pinnedInView = null; }
             try
@@ -2913,7 +2920,14 @@ namespace PISMO
 
             // Пропускаем повторную отрисовку, если тот же чат и данные не изменились.
             string key = "d" + partner, sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0);
-            if (_renderedChatKey == key && _renderedChatSig == sig) return;
+            if (_renderedChatKey == key && _renderedChatSig == sig)
+            {
+                // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
+                // «пустой» перезагрузки (данные не изменились) подгрузка старых
+                // сообщений в этом чате оставалась заблокированной навсегда.
+                _dmLoadingOlder = false;
+                return;
+            }
             _renderedChatKey = key; _renderedChatSig = sig;
             try { _pinnedInView = PinsRepository.PinnedIds(0); } catch { _pinnedInView = null; }
             try
