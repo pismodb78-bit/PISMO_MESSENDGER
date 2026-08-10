@@ -871,11 +871,10 @@ namespace PISMO
             // иконку приложения и трею, и самой форме.
             try
             {
-                var icoPath = System.IO.Path.Combine(
-                    AppDomain.CurrentDomain.BaseDirectory, "pismo.ico");
-                System.Drawing.Icon appIcon = System.IO.File.Exists(icoPath)
-                    ? new System.Drawing.Icon(icoPath)
-                    : System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                // Единая цепочка запасных вариантов (см. ResolveTrayIcon): в сборке
+                // без pismo.ico рядом с exe иконка оставалась null и уведомления
+                // не показывались вовсе.
+                System.Drawing.Icon appIcon = ResolveTrayIcon();
                 if (appIcon != null)
                 {
                     this.Icon = appIcon;
@@ -1531,23 +1530,38 @@ namespace PISMO
         /// уведомлений просто пропускалась по условию `_trayIcon.Icon != null` —
         /// пользователь слышал звук, но всплывашки не было. Теперь перед показом
         /// восстанавливаем и иконку, и видимость.</summary>
+        /// <summary>Иконка для трея: файл рядом с exe → иконка exe → иконка формы →
+        /// системная. Возвращает НЕ-null всегда, иначе всплывашки не показываются.</summary>
+        private System.Drawing.Icon ResolveTrayIcon()
+        {
+            try
+            {
+                var icoPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "pismo.ico");
+                if (System.IO.File.Exists(icoPath)) return new System.Drawing.Icon(icoPath);
+            }
+            catch { }
+            try
+            {
+                var ico = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (ico != null) return ico;
+            }
+            catch { }
+            try { if (this.Icon != null) return this.Icon; } catch { }
+            return System.Drawing.SystemIcons.Application;
+        }
+
         internal void PushNotify(string title, string body)
         {
             try
             {
                 if (_trayIcon == null) return;
-                if (_trayIcon.Icon == null)
-                {
-                    try
-                    {
-                        var icoPath = System.IO.Path.Combine(
-                            AppDomain.CurrentDomain.BaseDirectory, "pismo.ico");
-                        _trayIcon.Icon = System.IO.File.Exists(icoPath)
-                            ? new System.Drawing.Icon(icoPath)
-                            : System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-                    }
-                    catch { }
-                }
+                // Без Icon у иконки в трее ShowBalloonTip молча ничего не показывает.
+                // Раньше пробовали только pismo.ico рядом с exe и ExtractAssociatedIcon:
+                // в сборке с GitHub файла может не быть, а извлечение из exe вернуть
+                // null — и уведомления пропадали целиком (при запуске из Visual Studio
+                // файл лежит рядом, поэтому там всё работало). Теперь идём по цепочке
+                // запасных вариантов и в конце берём системную иконку — она есть всегда.
+                if (_trayIcon.Icon == null) _trayIcon.Icon = ResolveTrayIcon();
                 if (!_trayIcon.Visible) _trayIcon.Visible = true;
                 _trayIcon.ShowBalloonTip(4000, title, body, ToolTipIcon.Info);
             }
