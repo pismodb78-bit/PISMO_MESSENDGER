@@ -309,11 +309,12 @@ namespace PISMO
                 _btnMsgSearch.Location   = new Point(w - 128, y);
                 _btnMsgSearchNext.Location = new Point(w - 128 - step, y);
                 _btnMsgSearchPrev.Location = new Point(w - 128 - step * 2, y);
-                _msgSearchCount.Location = new Point(w - 128 - step * 2 - 48, y + 2);
-                _btnMsgCalendar.Location = new Point(w - 128 - step * 2 - 48 - step, y);
+                // Счётчику хватает узкого места — так календарь и поле стоят ближе к стрелкам.
+                _msgSearchCount.Location = new Point(w - 128 - step * 2 - 38, y + 2);
+                _btnMsgCalendar.Location = new Point(w - 128 - step * 2 - 38 - step, y);
 
                 int boxRight = _btnMsgCalendar.Left - SearchBarUi.Gap;
-                int boxLeft = Math.Max(titleMin, boxRight - 150);
+                int boxLeft = Math.Max(titleMin, boxRight - 200);   // поле длиннее
                 int boxW = Math.Max(70, boxRight - boxLeft);
                 _msgSearch.Bounds = new Rectangle(boxLeft, y, boxW, SearchBarUi.BoxH);
             }

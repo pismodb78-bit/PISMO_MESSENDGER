@@ -101,12 +101,13 @@ namespace PISMO
                 _srvBtnSearch.Location   = new Point(Math.Max(0, w - 34), y);
                 _srvBtnNext.Location     = new Point(Math.Max(0, w - 34 - step), y);
                 _srvBtnPrev.Location     = new Point(Math.Max(0, w - 34 - step * 2), y);
-                _srvSearchCount.Location = new Point(Math.Max(0, w - 34 - step * 2 - 48), y + 2);
-                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 34 - step * 2 - 48 - step), y);
+                // Как в мессенджере: узкий счётчик → календарь и поле ближе к стрелкам.
+                _srvSearchCount.Location = new Point(Math.Max(0, w - 34 - step * 2 - 38), y + 2);
+                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 34 - step * 2 - 38 - step), y);
 
                 const int titleMin = 150;
                 int boxRight = _srvBtnCalendar.Left - SearchBarUi.Gap;
-                int boxLeft = Math.Max(titleMin, boxRight - 150);
+                int boxLeft = Math.Max(titleMin, boxRight - 200);   // поле длиннее
                 int boxW = Math.Max(70, boxRight - boxLeft);
                 _srvSearchBox.Bounds = new Rectangle(boxLeft, y, boxW, SearchBarUi.BoxH);
             }

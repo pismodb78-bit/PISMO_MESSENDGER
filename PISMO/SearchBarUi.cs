@@ -64,7 +64,7 @@ namespace PISMO
         {
             if (l == null) return;
             l.AutoSize = false;
-            l.Size = new Size(40, 20);
+            l.Size = new Size(36, 20);
             l.ForeColor = Color.FromArgb(150, 152, 158);
             l.Font = new Font("Segoe UI", 8f);
             l.TextAlign = ContentAlignment.MiddleLeft;
