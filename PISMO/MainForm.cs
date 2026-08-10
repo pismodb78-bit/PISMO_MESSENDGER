@@ -158,6 +158,12 @@ namespace PISMO
             // автоматически через хук ControlAdded.
             try { ChatScroll.EnableDoubleBufferDeep(this); } catch { }
 
+            // Список контактов подключаем ЗДЕСЬ, а не в LoadConversations: в админском
+            // режиме («Все пользователи») список строит LoadAllUsersForAdmin, который
+            // Attach не вызывал — поэтому там не было плавной прокрутки. Attach
+            // идемпотентен, повторные вызовы отсекаются.
+            try { ChatScroll.Attach(pnlUserList); ChatScroll.KillHorizontal(pnlSidebar); } catch { }
+
             MediaCache.Init();
             EnableFileDrop(pnlMessages);   // перетаскивание файлов из проводника → прикрепить
             EnableFileDrop(txtMessage);
