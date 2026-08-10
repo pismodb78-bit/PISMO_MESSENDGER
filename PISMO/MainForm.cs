@@ -290,6 +290,7 @@ namespace PISMO
         }
 
         private Button _btnMsgSearch;
+        private Button _btnMsgCalendar;      // 📅 переход к дате
         private TextBox _msgSearch;
         private Label _msgSearchCount;
 
@@ -327,6 +328,11 @@ namespace PISMO
                 }
                 _btnMsgSearchNext = MkNav("▼", 170, "Следующее совпадение (Enter)");
                 _btnMsgSearchPrev = MkNav("▲", 198, "Предыдущее совпадение (Shift+Enter)");
+                // 📅 — переход к первому сообщению за выбранную дату.
+                _btnMsgCalendar = MkNav("📅", 296, "Перейти к дате");
+                _btnMsgCalendar.Font = new Font("Segoe UI Emoji", 9f);
+                _btnMsgCalendar.Click += (s2, e2) =>
+                    DatePickerPopup.Show(_btnMsgCalendar, DateTime.Today, JumpToDate);
                 _btnMsgSearchPrev.Click += (s, e) => GoToSearchMatch(-1);
                 _btnMsgSearchNext.Click += (s, e) => GoToSearchMatch(+1);
 
@@ -335,7 +341,8 @@ namespace PISMO
                     Visible = false, BorderStyle = BorderStyle.FixedSingle,
                     BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
                     Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в переписке…",
-                    Size = new Size(190, 26), Location = new Point(pnlChatHeader.Width - 460, 11),
+                    // Ширина 190: поле занимает Width-490..Width-300, дальше 📅, затем счётчик.
+                    Size = new Size(190, 26), Location = new Point(pnlChatHeader.Width - 490, 11),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right
                 };
                 _msgSearchCount = new Label
@@ -355,6 +362,7 @@ namespace PISMO
                     _msgSearchCount.Visible = show;
                     _btnMsgSearchPrev.Visible = show;
                     _btnMsgSearchNext.Visible = show;
+                    _btnMsgCalendar.Visible = show;
                     if (show) _msgSearch.Focus();
                     else
                     {
@@ -380,6 +388,7 @@ namespace PISMO
                 pnlChatHeader.Controls.Add(_msgSearchCount);
                 pnlChatHeader.Controls.Add(_btnMsgSearchPrev);
                 pnlChatHeader.Controls.Add(_btnMsgSearchNext);
+                pnlChatHeader.Controls.Add(_btnMsgCalendar);
                 pnlChatHeader.Controls.Add(_btnMsgSearch);
                 _msgSearch.BringToFront(); _msgSearchCount.BringToFront();
                 _btnMsgSearchPrev.BringToFront(); _btnMsgSearchNext.BringToFront();
@@ -2666,6 +2675,7 @@ namespace PISMO
                 _lastGroupMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
+                ApplyPendingJump();                // переход к выбранной дате, если он ждёт
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -2979,6 +2989,7 @@ namespace PISMO
                 _lastMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
+                ApplyPendingJump();                // переход к выбранной дате, если он ждёт
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -3185,6 +3196,89 @@ namespace PISMO
             int delta = min - 10;                 // 10 — штатный верхний отступ
             if (delta <= 0 || min == int.MaxValue) return;
             foreach (Control c in p.Controls) c.Top -= delta;
+        }
+
+        // ── Переход к сообщениям за дату (кнопка 📅 в поиске) ───────────────
+        private DateTime? _pendingJumpDate;   // дата, к которой прокрутиться после отрисовки
+
+        /// <summary>Открывает чат на первом сообщении за выбранную дату. Если нужные
+        /// сообщения ещё не подгружены (лента постраничная), сначала расширяем страницу
+        /// ровно настолько, чтобы эта дата попала в выборку, и лишь потом прокручиваем.</summary>
+        private void JumpToDate(DateTime day)
+        {
+            bool grp = _currentGroupId >= 0;
+            bool dm = !grp && _currentChatPartnerId >= 0;
+            if (!grp && !dm) return;
+
+            day = day.Date;
+            int need = 0;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = grp
+                    ? new MySqlCommand("SELECT COUNT(*) FROM group_messages " +
+                                       "WHERE group_id=@g AND created_at >= @d", conn)
+                    : new MySqlCommand("SELECT COUNT(*) FROM messages WHERE ((sender_id=@me AND receiver_id=@them) " +
+                                       "OR (sender_id=@them AND receiver_id=@me)) AND created_at >= @d", conn);
+                if (grp) cmd.Parameters.AddWithValue("@g", _currentGroupId);
+                else
+                {
+                    cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
+                    cmd.Parameters.AddWithValue("@them", _currentChatPartnerId);
+                }
+                cmd.Parameters.AddWithValue("@d", day);
+                need = Convert.ToInt32(cmd.ExecuteScalar());
+            }
+            catch { }
+
+            if (need <= 0)
+            {
+                MessageBox.Show(this, $"За {day:dd.MM.yyyy} и позже сообщений нет.",
+                    "Переход к дате", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            _pendingJumpDate = day;
+            if (need + 5 > _dmLimit)
+            {
+                _dmLimit = need + 5;                 // подтягиваем ленту до нужной даты
+                _renderedChatKey = null; _renderedChatSig = null;   // форсим перерисовку
+                if (grp) LoadGroupMessages(); else LoadMessages(markRead: false);
+            }
+            else ApplyPendingJump();                 // всё уже на экране
+        }
+
+        /// <summary>Прокручивает к первому сообщению с датой >= выбранной и подсвечивает его.
+        /// Дату берём из пузыря — она уже хранится там для списка результатов поиска.</summary>
+        private void ApplyPendingJump()
+        {
+            if (_pendingJumpDate == null) return;
+            var day = _pendingJumpDate.Value;
+            _pendingJumpDate = null;
+
+            Panel target = null;
+            foreach (Control c in pnlMessages.Controls)
+            {
+                if (c is not Panel p) continue;
+                string s = p.AccessibleDefaultActionDescription;
+                if (string.IsNullOrEmpty(s)) continue;
+                if (!DateTime.TryParseExact(s, "dd.MM.yyyy HH:mm",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None, out var dt)) continue;
+                if (dt.Date >= day && (target == null || p.Top < target.Top)) target = p;
+            }
+            if (target == null) return;
+
+            try
+            {
+                pnlMessages.ScrollControlIntoView(target);
+                var orig = target.BackColor;
+                target.BackColor = Color.FromArgb(60, 90, 130);
+                var t = new System.Windows.Forms.Timer { Interval = 900 };
+                t.Tick += (s2, e2) => { t.Stop(); t.Dispose(); if (!target.IsDisposed) target.BackColor = orig; };
+                t.Start();
+            }
+            catch { }
         }
 
         private Panel BuildDateSeparator(string dateText)

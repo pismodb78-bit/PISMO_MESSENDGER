@@ -146,6 +146,9 @@ namespace PISMO
             // Плавность отрисовки всего окна серверов (буферизация всех контролов).
             try { ChatScroll.EnableDoubleBufferDeep(this); } catch { }
 
+            // Поиск по каналу + переход к дате (🔍 и 📅 в заголовке канала).
+            try { BuildChannelSearch(); } catch { }
+
             // Горизонтальный скролл убран, тёмная полоса + плавная прокрутка на ВСЕХ
             // серверных списках: серверы, каналы и УЧАСТНИКИ.
             // Панель сообщений здесь НЕ трогаем — её подключает EnsureSrvScrollHook,
@@ -1651,6 +1654,7 @@ namespace PISMO
                 _srvLoadingOlder = false;
                 UpdateSrvScrollDownButton();
                 ChatScroll.ResumeDraw(_pnlMessages);   // разморозка ПОСЛЕ восстановления позиции
+                ApplySrvPendingJump();                 // переход к выбранной дате, если он ждёт
             }
             catch (Exception ex) { try { _pnlMessages.ResumeLayout(); } catch { } ChatScroll.ResumeDraw(_pnlMessages); ShowDbError(ex); }
         }
