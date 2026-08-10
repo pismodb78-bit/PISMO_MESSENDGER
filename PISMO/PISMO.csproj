@@ -102,7 +102,10 @@
   <ItemGroup>
     <EmbeddedResource Include="CallForm.resx" />
     <EmbeddedResource Include="LoginForm.resx" />
-    <EmbeddedResource Include="MainForm_MessageActions.resx" />
+    <!-- MainForm_MessageActions.resx удалён: он был пустой заготовкой VS, а из-за
+         partial class MainForm в MainForm_MessageActions.cs MSBuild давал ему имя
+         PISMO.MainForm.resources — оно конфликтовало с ресурсом самой формы
+         (MSB3577: два выходных файла в один путь). -->
     <EmbeddedResource Include="SettingsForm.resx" />
   </ItemGroup>
 
