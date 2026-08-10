@@ -142,8 +142,10 @@ namespace PISMO
         private sealed class SmoothScroller
         {
             private const int StepPx = 110;      // прокрутка за один щелчок колеса
-            private const double Ease = 0.16;    // доля оставшегося пути за кадр
-            private const int MinFrameMs = 16;   // ~60 кадров/с
+            // Чем меньше Ease, тем мягче: за кадр проходим лишь малую долю оставшегося
+            // пути, поэтому сдвиг между кадрами крошечный и движение «маслянистое».
+            private const double Ease = 0.09;
+            private const int MinFrameMs = 15;   // ~65 кадров/с
 
             private readonly Panel _p;
             private readonly System.Windows.Forms.Timer _t;
@@ -267,7 +269,10 @@ namespace PISMO
         // «фризило». Ограничиваем: не чаще ~50 раз в секунду; финальный кадр всегда
         // рисуем принудительно (force), чтобы картинка гарантированно устоялась.
         private static int _lastRepaintTick;
-        private const int RepaintMinIntervalMs = 33;   // ~30 синхронных перерисовок/с
+        // Кнопку «вниз» убрали, второй полной перерисовки на кадр больше нет — можно
+        // рисовать на каждом кадре анимации (было ~30/с, из-за чего движение выглядело
+        // ступенчатым при мягком easing).
+        private const int RepaintMinIntervalMs = 15;   // ~65 синхронных перерисовок/с
 
         public static void RepaintNow(Control c, bool force)
         {
