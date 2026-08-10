@@ -45,16 +45,20 @@ namespace PISMO
                 return b;
             }
 
-            _srvBtnSearch   = MkBtn("🔍", 40, 30, "Поиск по каналу");
-            _srvBtnNext     = MkBtn("▼", 76, 26, "Следующее совпадение (Enter)");
-            _srvBtnPrev     = MkBtn("▲", 106, 26, "Предыдущее совпадение (Shift+Enter)");
-            _srvBtnCalendar = MkBtn("📅", 140, 28, "Перейти к дате");
+            _srvBtnSearch   = MkBtn("🔍", 38, 30, "Поиск по каналу");
+            _srvBtnNext     = MkBtn("▼", 66, 24, "Следующее совпадение (Enter)");
+            _srvBtnPrev     = MkBtn("▲", 92, 24, "Предыдущее совпадение (Shift+Enter)");
+            _srvBtnCalendar = MkBtn("📅", 122, 26, "Перейти к дате");
+            // Стрелки светлее и компактнее — на тёмном заголовке серые почти не видны.
+            foreach (var b in new[] { _srvBtnPrev, _srvBtnNext, _srvBtnCalendar })
+                b.ForeColor = Color.FromArgb(236, 238, 242);
+            _srvBtnPrev.Font = _srvBtnNext.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
             _srvBtnNext.Visible = _srvBtnPrev.Visible = _srvBtnCalendar.Visible = false;
 
             _srvSearchCount = new Label
             {
-                Visible = false, AutoSize = false, Size = new Size(58, 20),
-                Location = new Point(Math.Max(0, _lblTitle.Width - 202), 8),
+                Visible = false, AutoSize = false, Size = new Size(44, 20),
+                Location = new Point(Math.Max(0, _lblTitle.Width - 170), 8),
                 Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 ForeColor = Color.FromArgb(150, 152, 158), Font = new Font("Segoe UI", 8f),
                 TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent
@@ -100,17 +104,17 @@ namespace PISMO
             {
                 int w = _lblTitle.Width;
                 if (w <= 0) return;
-                _srvBtnSearch.Location   = new Point(Math.Max(0, w - 40), 5);
-                _srvBtnNext.Location     = new Point(Math.Max(0, w - 76), 5);
-                _srvBtnPrev.Location     = new Point(Math.Max(0, w - 106), 5);
-                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 140), 5);
-                _srvSearchCount.Location = new Point(Math.Max(0, w - 202), 8);
+                _srvBtnSearch.Location   = new Point(Math.Max(0, w - 38), 5);
+                _srvBtnNext.Location     = new Point(Math.Max(0, w - 66), 6);
+                _srvBtnPrev.Location     = new Point(Math.Max(0, w - 92), 6);
+                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 122), 6);
+                _srvSearchCount.Location = new Point(Math.Max(0, w - 170), 8);
                 // Ширину поля подгоняем под узкое окно, иначе оно наезжает на имя канала.
                 const int titleMin = 150;
-                int boxRight = w - 150;                       // дальше идут 📅 ▲ ▼ 🔍
-                int boxLeft = Math.Max(titleMin, w - 396);
+                int boxRight = w - 174;                       // дальше идут счётчик, 📅 ▲ ▼ 🔍
+                int boxLeft = Math.Max(titleMin, w - 334);
                 int boxW = Math.Max(70, boxRight - boxLeft);
-                _srvSearchBox.Bounds = new Rectangle(boxLeft, 5, boxW, 26);
+                _srvSearchBox.Bounds = new Rectangle(boxLeft, 6, boxW, 24);
             }
             _lblTitle.Resize += (s, e) => Reposition();
             _lblTitle.HandleCreated += (s, e) => Reposition();

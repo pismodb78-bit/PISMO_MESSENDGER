@@ -46,20 +46,12 @@ namespace PISMO
             if (maxDate.HasValue) { try { cal.MaxDate = maxDate.Value.Date; } catch { } }
 
             popup.Controls.Add(cal);
-            popup.ClientSize = new Size(cal.Width + 2, cal.Height + 2);
-
-            // Позиционируем под кнопкой, но не выпуская за край экрана.
-            try
-            {
-                var pt = anchor.PointToScreen(new Point(0, anchor.Height + 2));
-                var wa = Screen.FromControl(anchor).WorkingArea;
-                int x = Math.Min(pt.X, wa.Right - popup.Width - 4);
-                int y = pt.Y + popup.Height > wa.Bottom
-                    ? anchor.PointToScreen(Point.Empty).Y - popup.Height - 2   // не влезает вниз — раскрываем вверх
-                    : pt.Y;
-                popup.Location = new Point(Math.Max(wa.Left + 4, x), Math.Max(wa.Top + 4, y));
-            }
-            catch { popup.StartPosition = FormStartPosition.CenterParent; }
+            // ВАЖНО: MonthCalendar вычисляет свой настоящий размер только после
+            // создания хендла. Раньше окно подгонялось по размеру ДО показа — и
+            // календарь оказывался обрезан справа и снизу. Поэтому сначала AutoSize,
+            // а точный размер и позицию выставляем уже после Show().
+            popup.AutoSize = true;
+            popup.AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
             void Pick(DateTime d)
             {
@@ -73,7 +65,27 @@ namespace PISMO
             popup.KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { try { popup.Close(); } catch { } } };
             popup.FormClosed += (s, e) => { try { popup.Dispose(); } catch { } };
 
-            try { popup.Show(anchor.FindForm()); popup.Activate(); } catch { }
+            try
+            {
+                popup.Show(anchor.FindForm());
+
+                // Размер календаря уже известен — фиксируем окно точно по нему.
+                popup.AutoSize = false;
+                popup.ClientSize = new Size(cal.Width + 2, cal.Height + 2);
+
+                // Раскрываем под кнопкой, не выпуская за границы экрана.
+                var below = anchor.PointToScreen(new Point(0, anchor.Height + 2));
+                var wa = Screen.FromControl(anchor).WorkingArea;
+                int x = Math.Min(below.X, wa.Right - popup.Width - 4);
+                int y = below.Y + popup.Height > wa.Bottom
+                    ? anchor.PointToScreen(Point.Empty).Y - popup.Height - 2   // вниз не влезает — вверх
+                    : below.Y;
+                popup.Location = new Point(Math.Max(wa.Left + 4, x), Math.Max(wa.Top + 4, y));
+
+                popup.Activate();
+            }
+            catch { }
+
         }
     }
 }

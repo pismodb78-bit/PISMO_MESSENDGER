@@ -302,11 +302,11 @@ namespace PISMO
             {
                 int w = pnlChatHeader.ClientSize.Width;
                 const int titleMin = 150;          // место под имя собеседника
-                int boxRight = w - 300;            // правый край поля (дальше идёт 📅)
-                int boxLeft = Math.Max(titleMin, w - 490);
+                int boxRight = w - 274;            // правый край поля (дальше идёт 📅)
+                int boxLeft = Math.Max(titleMin, w - 434);
                 int boxW = Math.Max(70, boxRight - boxLeft);
                 if (boxW <= 70 && boxRight - titleMin < 70) { _msgSearch.Visible = false; return; }
-                _msgSearch.Bounds = new Rectangle(boxLeft, 11, boxW, 26);
+                _msgSearch.Bounds = new Rectangle(boxLeft, 12, boxW, 24);
             }
             catch { }
         }
@@ -345,11 +345,20 @@ namespace PISMO
                     new ToolTip().SetToolTip(b, tip);
                     return b;
                 }
-                _btnMsgSearchNext = MkNav("▼", 170, "Следующее совпадение (Enter)");
-                _btnMsgSearchPrev = MkNav("▲", 198, "Предыдущее совпадение (Shift+Enter)");
+                _btnMsgSearchNext = MkNav("▼", 168, "Следующее совпадение (Enter)");
+                _btnMsgSearchPrev = MkNav("▲", 194, "Предыдущее совпадение (Shift+Enter)");
                 // 📅 — переход к первому сообщению за выбранную дату.
-                _btnMsgCalendar = MkNav("📅", 296, "Перейти к дате");
+                _btnMsgCalendar = MkNav("📅", 270, "Перейти к дате");
                 _btnMsgCalendar.Font = new Font("Segoe UI Emoji", 9f);
+                // Компактнее и светлее: стрелки были почти не видны на тёмной шапке.
+                foreach (var b in new[] { _btnMsgSearchPrev, _btnMsgSearchNext })
+                {
+                    b.Size = new Size(24, 24);
+                    b.ForeColor = Color.FromArgb(236, 238, 242);
+                    b.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+                }
+                _btnMsgCalendar.Size = new Size(26, 24);
+                _btnMsgCalendar.ForeColor = Color.FromArgb(236, 238, 242);
                 _btnMsgCalendar.Click += (s2, e2) =>
                     DatePickerPopup.Show(_btnMsgCalendar, DateTime.Today, JumpToDate);
                 _btnMsgSearchPrev.Click += (s, e) => GoToSearchMatch(-1);
@@ -361,13 +370,13 @@ namespace PISMO
                     BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
                     Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в переписке…",
                     // Ширина 190: поле занимает Width-490..Width-300, дальше 📅, затем счётчик.
-                    Size = new Size(190, 26), Location = new Point(pnlChatHeader.Width - 490, 11),
+                    Size = new Size(160, 24), Location = new Point(pnlChatHeader.Width - 434, 12),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right
                 };
                 _msgSearchCount = new Label
                 {
-                    Visible = false, AutoSize = false, Size = new Size(62, 20),
-                    Location = new Point(pnlChatHeader.Width - 264, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    Visible = false, AutoSize = false, Size = new Size(44, 20),
+                    Location = new Point(pnlChatHeader.Width - 240, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     ForeColor = Color.FromArgb(150, 152, 158), Font = new Font("Segoe UI", 8f),
                     TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent,
                     Cursor = Cursors.Hand
