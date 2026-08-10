@@ -2514,6 +2514,11 @@ namespace PISMO
             ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
+            // ОБЯЗАТЕЛЬНО сбросить прокрутку в начало ПЕРЕД добавлением пузырей: у
+            // AutoScroll-панели координата Top отсчитывается от СДВИНУТОГО начала, и
+            // если панель осталась прокрученной, все пузыри уезжают вниз на величину
+            // прокрутки — сверху появляется большая пустота.
+            try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
 
             try
             {
@@ -2771,6 +2776,11 @@ namespace PISMO
             ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
+            // ОБЯЗАТЕЛЬНО сбросить прокрутку в начало ПЕРЕД добавлением пузырей: у
+            // AutoScroll-панели координата Top отсчитывается от СДВИНУТОГО начала, и
+            // если панель осталась прокрученной, все пузыри уезжают вниз на величину
+            // прокрутки — сверху появляется большая пустота.
+            try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
 
             // Если кто-то заблокирован — показываем уведомление и блокируем отправку
             if (iBlocked || theyBlockedMe)
