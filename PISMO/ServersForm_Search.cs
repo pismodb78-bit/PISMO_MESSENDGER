@@ -25,34 +25,24 @@ namespace PISMO
         /// <summary>Создаёт строку поиска в заголовке канала. Вызывается из конструктора.</summary>
         private void BuildChannelSearch()
         {
-            Button MkBtn(string text, int right, int width, string tip)
+            // Кнопки — в едином стиле с мессенджером, значки рисованные (эмодзи в
+            // мелких кнопках обрезались и выглядели по-разному в двух местах).
+            Button MkBtn(SearchBarUi.Icon icon, int right, string tip)
             {
                 var b = new Button
                 {
-                    Text = text,
-                    Font = new Font("Segoe UI Emoji", 9f),
-                    FlatStyle = FlatStyle.Flat,
-                    ForeColor = Color.FromArgb(200, 202, 208),
-                    BackColor = Color.FromArgb(47, 49, 54),
-                    Size = new Size(width, 26),
-                    Location = new Point(Math.Max(0, _lblTitle.Width - right), 5),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                    Cursor = Cursors.Hand,
-                    TabStop = false
+                    Location = new Point(Math.Max(0, _lblTitle.Width - right), 6),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right
                 };
-                b.FlatAppearance.BorderSize = 0;
+                SearchBarUi.Style(b, icon);
                 new ToolTip().SetToolTip(b, tip);
                 return b;
             }
 
-            _srvBtnSearch   = MkBtn("🔍", 34, 28, "Поиск по каналу");
-            _srvBtnNext     = MkBtn("▼", 60, 22, "Следующее совпадение (Enter)");
-            _srvBtnPrev     = MkBtn("▲", 84, 22, "Предыдущее совпадение (Shift+Enter)");
-            _srvBtnCalendar = MkBtn("📅", 114, 26, "Перейти к дате");
-            // Стрелки светлее и компактнее — на тёмном заголовке серые почти не видны.
-            foreach (var b in new[] { _srvBtnPrev, _srvBtnNext, _srvBtnCalendar })
-                b.ForeColor = Color.FromArgb(236, 238, 242);
-            _srvBtnPrev.Font = _srvBtnNext.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+            _srvBtnSearch   = MkBtn(SearchBarUi.Icon.Magnifier, 34,  "Поиск по каналу");
+            _srvBtnNext     = MkBtn(SearchBarUi.Icon.Down,      64,  "Следующее совпадение (Enter)");
+            _srvBtnPrev     = MkBtn(SearchBarUi.Icon.Up,        94,  "Предыдущее совпадение (Shift+Enter)");
+            _srvBtnCalendar = MkBtn(SearchBarUi.Icon.Calendar,  124, "Перейти к дате");
             _srvBtnNext.Visible = _srvBtnPrev.Visible = _srvBtnCalendar.Visible = false;
 
             _srvSearchCount = new Label
@@ -104,17 +94,21 @@ namespace PISMO
             {
                 int w = _lblTitle.Width;
                 if (w <= 0) return;
-                _srvBtnSearch.Location   = new Point(Math.Max(0, w - 34), 5);
-                _srvBtnNext.Location     = new Point(Math.Max(0, w - 60), 7);
-                _srvBtnPrev.Location     = new Point(Math.Max(0, w - 84), 7);
-                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 114), 7);
-                _srvSearchCount.Location = new Point(Math.Max(0, w - 152), 8);
-                // Ширину поля подгоняем под узкое окно, иначе оно наезжает на имя канала.
+                const int y = 6;                                  // общая линия строки
+                int step = SearchBarUi.BtnW + SearchBarUi.Gap;    // тот же шаг, что в мессенджере
+
+                // Тот же порядок, что в мессенджере: 🔍 ▼ ▲ [счётчик] 📅 [поле]
+                _srvBtnSearch.Location   = new Point(Math.Max(0, w - 34), y);
+                _srvBtnNext.Location     = new Point(Math.Max(0, w - 34 - step), y);
+                _srvBtnPrev.Location     = new Point(Math.Max(0, w - 34 - step * 2), y);
+                _srvSearchCount.Location = new Point(Math.Max(0, w - 34 - step * 2 - 48), y + 2);
+                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 34 - step * 2 - 48 - step), y);
+
                 const int titleMin = 150;
-                int boxRight = w - 158;                       // дальше идут счётчик, 📅 ▲ ▼ 🔍
-                int boxLeft = Math.Max(titleMin, w - 296);
+                int boxRight = _srvBtnCalendar.Left - SearchBarUi.Gap;
+                int boxLeft = Math.Max(titleMin, boxRight - 150);
                 int boxW = Math.Max(70, boxRight - boxLeft);
-                _srvSearchBox.Bounds = new Rectangle(boxLeft, 7, boxW, 22);
+                _srvSearchBox.Bounds = new Rectangle(boxLeft, y, boxW, SearchBarUi.BoxH);
             }
             _lblTitle.Resize += (s, e) => Reposition();
             _lblTitle.HandleCreated += (s, e) => Reposition();

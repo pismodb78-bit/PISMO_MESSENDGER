@@ -301,12 +301,21 @@ namespace PISMO
             try
             {
                 int w = pnlChatHeader.ClientSize.Width;
-                const int titleMin = 150;          // место под имя собеседника
-                int boxRight = w - 246;            // правый край поля, дальше 📅 с зазором
-                int boxLeft = Math.Max(titleMin, w - 386);
+                const int titleMin = 150;              // место под имя собеседника
+                const int y = 12;                      // общая линия для всей строки
+                int step = SearchBarUi.BtnW + SearchBarUi.Gap;   // единый шаг 30px
+
+                // Раскладка справа налево: 🔍 ▼ ▲ [счётчик] 📅 [поле]
+                _btnMsgSearch.Location   = new Point(w - 128, y);
+                _btnMsgSearchNext.Location = new Point(w - 128 - step, y);
+                _btnMsgSearchPrev.Location = new Point(w - 128 - step * 2, y);
+                _msgSearchCount.Location = new Point(w - 128 - step * 2 - 48, y + 2);
+                _btnMsgCalendar.Location = new Point(w - 128 - step * 2 - 48 - step, y);
+
+                int boxRight = _btnMsgCalendar.Left - SearchBarUi.Gap;
+                int boxLeft = Math.Max(titleMin, boxRight - 150);
                 int boxW = Math.Max(70, boxRight - boxLeft);
-                if (boxW <= 70 && boxRight - titleMin < 70) { _msgSearch.Visible = false; return; }
-                _msgSearch.Bounds = new Rectangle(boxLeft, 13, boxW, 22);
+                _msgSearch.Bounds = new Rectangle(boxLeft, y, boxW, SearchBarUi.BoxH);
             }
             catch { }
         }
@@ -328,7 +337,7 @@ namespace PISMO
                     Size = new Size(32, 30), Location = new Point(pnlChatHeader.Width - 128, 9),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right, Cursor = Cursors.Hand, TabStop = false
                 };
-                _btnMsgSearch.FlatAppearance.BorderSize = 0;
+                SearchBarUi.Style(_btnMsgSearch, SearchBarUi.Icon.Magnifier);
                 new ToolTip().SetToolTip(_btnMsgSearch, "Поиск по чату");
 
                 Button MkNav(string text, int right, string tip)
@@ -349,16 +358,10 @@ namespace PISMO
                 _btnMsgSearchPrev = MkNav("▲", 176, "Предыдущее совпадение (Shift+Enter)");
                 // 📅 — переход к первому сообщению за выбранную дату.
                 _btnMsgCalendar = MkNav("📅", 240, "Перейти к дате");
-                _btnMsgCalendar.Font = new Font("Segoe UI Emoji", 8f);
-                // Компактнее и светлее: стрелки были почти не видны на тёмной шапке.
-                foreach (var b in new[] { _btnMsgSearchPrev, _btnMsgSearchNext })
-                {
-                    b.Size = new Size(22, 22);
-                    b.ForeColor = Color.FromArgb(236, 238, 242);
-                    b.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
-                }
-                _btnMsgCalendar.Size = new Size(26, 22);
-                _btnMsgCalendar.ForeColor = Color.FromArgb(236, 238, 242);
+                // Единый стиль и рисованные значки (эмодзи в мелких кнопках обрезались).
+                SearchBarUi.Style(_btnMsgSearchPrev, SearchBarUi.Icon.Up);
+                SearchBarUi.Style(_btnMsgSearchNext, SearchBarUi.Icon.Down);
+                SearchBarUi.Style(_btnMsgCalendar,   SearchBarUi.Icon.Calendar);
                 _btnMsgCalendar.Click += (s2, e2) =>
                     DatePickerPopup.Show(_btnMsgCalendar, DateTime.Today, JumpToDate);
                 _btnMsgSearchPrev.Click += (s, e) => GoToSearchMatch(-1);
@@ -381,6 +384,8 @@ namespace PISMO
                     TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent,
                     Cursor = Cursors.Hand
                 };
+                SearchBarUi.StyleBox(_msgSearch, "Поиск в переписке…");
+                SearchBarUi.StyleCount(_msgSearchCount);
                 new ToolTip().SetToolTip(_msgSearchCount, "Список найденных сообщений");
                 _msgSearchCount.Click += (s, e) => ShowSearchResults();
 
@@ -498,7 +503,7 @@ namespace PISMO
             // Вместо этого держим кнопки включёнными и просто приглушаем цвет —
             // сам переход всё равно ничего не делает, когда совпадений нет.
             bool canNav = active && _searchMatches.Count > 0;
-            var navColor = canNav ? Color.FromArgb(236, 238, 242) : Color.FromArgb(130, 133, 140);
+            var navColor = canNav ? SearchBarUi.Fg : SearchBarUi.FgDim;
             if (_btnMsgSearchPrev != null) { _btnMsgSearchPrev.Enabled = true; _btnMsgSearchPrev.ForeColor = navColor; }
             if (_btnMsgSearchNext != null) { _btnMsgSearchNext.Enabled = true; _btnMsgSearchNext.ForeColor = navColor; }
         }
