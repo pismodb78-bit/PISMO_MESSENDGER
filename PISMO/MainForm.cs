@@ -2516,6 +2516,8 @@ namespace PISMO
                 DataTable dt = null;
                 try { dt = LoadGroupMessagesMetaOnly(group, _dmLimit); } catch { }
                 if (dt == null) return;
+                // Медиа страницы — одним запросом в фоне (см. пояснение в ЛС).
+                try { PrefetchPageMedia(dt, isGroup: true); } catch { }
                 _dmHasMore = dt.Rows.Count >= _dmLimit;
                 try { MessageCache.Save(MessageCache.GroupKey(group), dt); } catch { }
                 if (IsDisposed || !IsHandleCreated) return;
@@ -2759,6 +2761,9 @@ namespace PISMO
                 }
                 catch { }
                 if (dt == null) return;
+                // Медиа страницы забираем ОДНИМ запросом здесь, в фоне: иначе цикл
+                // отрисовки лезет в БД за каждой картинкой/голосовым по отдельности.
+                try { PrefetchPageMedia(dt, isGroup: false); } catch { }
                 _dmHasMore = dt.Rows.Count >= _dmLimit;   // набрали полную страницу → возможно есть ещё
                 // Сохраняем в постоянный кеш переписки (текст зашифрован, как в БД).
                 try { MessageCache.Save(MessageCache.DirectKey(myId, partner), dt); } catch { }

@@ -225,6 +225,57 @@ namespace PISMO
         // встроенный проигрыватель прямо в пузыре (как в Telegram). Большие — по клику.
         private const long InlineVideoMaxBytes = 30L * 1024 * 1024;
 
+        /// <summary>
+        /// Пакетная предзагрузка картинок и голосовых для ЦЕЛОЙ страницы сообщений.
+        /// Раньше медиа тянулось по ОДНОМУ запросу на сообщение прямо в цикле отрисовки:
+        /// на странице в 40 сообщений это до 40 последовательных обращений к БД, и на
+        /// удалённом сервере именно они съедали время открытия чата. Здесь берём всё
+        /// одним IN-запросом и кладём в кеш — дальше LoadMediaForMessage находит данные
+        /// в кеше и в БД не ходит вовсе.
+        ///
+        /// Видео и файлы намеренно НЕ трогаем: они большие, тянуть их пачкой было бы
+        /// хуже, чем по требованию.
+        /// Вызывать в ФОНОВОМ потоке, до отрисовки.
+        /// </summary>
+        public static void PrefetchPageMedia(DataTable dt, bool isGroup)
+        {
+            if (dt == null || dt.Rows.Count == 0) return;
+            try
+            {
+                var ids = new System.Collections.Generic.List<int>();
+                foreach (DataRow r in dt.Rows)
+                {
+                    if (r["id"] == DBNull.Value) continue;
+                    int id = Convert.ToInt32(r["id"]);
+                    string fn = r.Table.Columns.Contains("file_name") && r["file_name"] != DBNull.Value
+                        ? r["file_name"].ToString() : null;
+                    bool hasImg = r.Table.Columns.Contains("has_img")
+                        && r["has_img"] != DBNull.Value && Convert.ToBoolean(r["has_img"]);
+                    bool hasAudio = r.Table.Columns.Contains("has_audio")
+                        && r["has_audio"] != DBNull.Value && Convert.ToBoolean(r["has_audio"]);
+                    if ((hasImg && !MediaCache.Has(id, "img", fn))
+                     || (hasAudio && !MediaCache.Has(id, "audio")))
+                        ids.Add(id);
+                }
+                if (ids.Count == 0) return;
+
+                string table = isGroup ? "group_messages" : "messages";
+                string sql = $"SELECT id, image_data, audio_data, file_name FROM {table} " +
+                             $"WHERE id IN ({string.Join(",", ids)})";
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(sql, conn);
+                using var rd = cmd.ExecuteReader();
+                while (rd.Read())
+                {
+                    int id = rd.GetInt32(0);
+                    string fn = rd.IsDBNull(3) ? null : rd.GetString(3);
+                    if (!rd.IsDBNull(1)) MediaCache.Put(id, "img", (byte[])rd[1], fn);
+                    if (!rd.IsDBNull(2)) MediaCache.Put(id, "audio", (byte[])rd[2]);
+                }
+            }
+            catch { }   // не смогли — не беда, отрисовка догрузит по-старому
+        }
+
         public static (byte[] img, byte[] audio, byte[] video, byte[] fileData)
             LoadMediaForMessage(int msgId, string fileName,
                                 bool hasImg, bool hasAudio, bool hasVideo, bool hasFile,
