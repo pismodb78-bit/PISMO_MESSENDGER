@@ -390,8 +390,12 @@ namespace PISMO
                 pnlChatHeader.Controls.Add(_btnMsgSearchNext);
                 pnlChatHeader.Controls.Add(_btnMsgCalendar);
                 pnlChatHeader.Controls.Add(_btnMsgSearch);
+                // lblChatTitle докнут на всю шапку и лежит ВПЕРЕДИ по z-order, поэтому
+                // каждый элемент поиска обязан поднять себя сам — иначе он окажется за
+                // подписью чата и будет невидим (так и вышло с 📅).
                 _msgSearch.BringToFront(); _msgSearchCount.BringToFront();
                 _btnMsgSearchPrev.BringToFront(); _btnMsgSearchNext.BringToFront();
+                _btnMsgCalendar.BringToFront();
                 _btnMsgSearch.BringToFront();
             }
             catch { }
