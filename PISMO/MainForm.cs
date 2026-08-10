@@ -302,8 +302,8 @@ namespace PISMO
             {
                 int w = pnlChatHeader.ClientSize.Width;
                 const int titleMin = 150;          // место под имя собеседника
-                int boxRight = w - 236;            // правый край поля (📅 вплотную за ним)
-                int boxLeft = Math.Max(titleMin, w - 376);
+                int boxRight = w - 246;            // правый край поля, дальше 📅 с зазором
+                int boxLeft = Math.Max(titleMin, w - 386);
                 int boxW = Math.Max(70, boxRight - boxLeft);
                 if (boxW <= 70 && boxRight - titleMin < 70) { _msgSearch.Visible = false; return; }
                 _msgSearch.Bounds = new Rectangle(boxLeft, 13, boxW, 22);
@@ -348,8 +348,8 @@ namespace PISMO
                 _btnMsgSearchNext = MkNav("▼", 152, "Следующее совпадение (Enter)");
                 _btnMsgSearchPrev = MkNav("▲", 176, "Предыдущее совпадение (Shift+Enter)");
                 // 📅 — переход к первому сообщению за выбранную дату.
-                _btnMsgCalendar = MkNav("📅", 234, "Перейти к дате");
-                _btnMsgCalendar.Font = new Font("Segoe UI Emoji", 9f);
+                _btnMsgCalendar = MkNav("📅", 240, "Перейти к дате");
+                _btnMsgCalendar.Font = new Font("Segoe UI Emoji", 8f);
                 // Компактнее и светлее: стрелки были почти не видны на тёмной шапке.
                 foreach (var b in new[] { _btnMsgSearchPrev, _btnMsgSearchNext })
                 {
@@ -357,7 +357,7 @@ namespace PISMO
                     b.ForeColor = Color.FromArgb(236, 238, 242);
                     b.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
                 }
-                _btnMsgCalendar.Size = new Size(24, 22);
+                _btnMsgCalendar.Size = new Size(26, 22);
                 _btnMsgCalendar.ForeColor = Color.FromArgb(236, 238, 242);
                 _btnMsgCalendar.Click += (s2, e2) =>
                     DatePickerPopup.Show(_btnMsgCalendar, DateTime.Today, JumpToDate);
@@ -370,7 +370,7 @@ namespace PISMO
                     BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
                     Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в переписке…",
                     // Ширина 190: поле занимает Width-490..Width-300, дальше 📅, затем счётчик.
-                    Size = new Size(140, 22), Location = new Point(pnlChatHeader.Width - 376, 13),
+                    Size = new Size(140, 22), Location = new Point(pnlChatHeader.Width - 386, 13),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right
                 };
                 _msgSearchCount = new Label
@@ -2603,7 +2603,13 @@ namespace PISMO
             // долистанную историю и переживает перезапуск, поэтому раньше лимит
             // поднимался до размера кеша и группа прогружалась целиком сразу.
             if (cachedDt != null && !_dmLoadingOlder)
+            {
+                // См. пояснение в ЛС: переход к дате применяем только к свежей выборке.
+                var savedJump = _pendingJumpDate;
+                _pendingJumpDate = null;
                 RenderGroupMessages(TakeLastRows(cachedDt, _dmLimit), myId, group);
+                _pendingJumpDate = savedJump;
+            }
 
             // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в группе.
             System.Threading.Tasks.Task.Run(() =>
@@ -2841,7 +2847,13 @@ namespace PISMO
             if (cachedDt != null && !_dmLoadingOlder)
             {
                 var (cib, ctb) = _blockCache.TryGetValue(partner, out var bc) ? bc : (false, false);
+                // Переход к дате НЕ применяем к отрисовке из кеша: следом придёт свежая
+                // (расширенная) выборка и перерисует ленту, сбросив прокрутку вниз —
+                // именно из-за этого переход «срабатывал» только со второго клика.
+                var savedJump = _pendingJumpDate;
+                _pendingJumpDate = null;
                 RenderMessages(TakeLastRows(cachedDt, _dmLimit), myId, partner, cib, ctb);
+                _pendingJumpDate = savedJump;
             }
 
             // 2) Свежие данные тянем в ФОНЕ (запросы к БД не на UI-потоке) и
