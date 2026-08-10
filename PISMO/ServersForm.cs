@@ -33,7 +33,6 @@ namespace PISMO
         private bool _srvLoadingOlder;
         private int _srvRestoreFromBottom = -1;
         private bool _srvScrollHooked;
-        private readonly System.Collections.Generic.Dictionary<int, int> _srvLimitByChannel = new(); // канал → сколько долистано
         private Button _srvBtnScrollDown;
 
         // Права текущего пользователя на выбранном сервере и заглушение.
@@ -1016,7 +1015,7 @@ namespace PISMO
         {
             _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1;
             // Восстанавливаем столько сообщений, сколько было долистано в этом канале.
-            _srvLimit = _srvLimitByChannel.TryGetValue(cid, out var clim) ? clim : ChanPageSize;
+            _srvLimit = ChanPageSize;   // каждое открытие канала — снова одна страница
             _srvHasMore = false; _srvLoadingOlder = false; _srvRestoreFromBottom = -1;
             EnsureSrvScrollHook();
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
@@ -1167,7 +1166,7 @@ namespace PISMO
             }
             // Глубину по кешу НЕ поднимаем — иначе канал прогружался бы целиком сразу
             // (дисковый кеш хранит всю долистанную историю). Глубина в пределах сессии
-            // держится через _srvLimitByChannel.
+            // НЕ запоминается: вернулся в канал — снова одна страница.
             // При догрузке вверх кеш (последняя страница) не рисуем — ждём большую выборку.
             if (cachedDt != null && !_srvLoadingOlder)
                 RenderMessages(MainForm.TakeLastRows(cachedDt, _srvLimit), channel);
@@ -1690,7 +1689,6 @@ namespace PISMO
             int curTop = -_pnlMessages.AutoScrollPosition.Y;
             _srvRestoreFromBottom = _pnlMessages.DisplayRectangle.Height - (curTop + viewport);
             _srvLimit += ChanPageSize;
-            _srvLimitByChannel[_channelId] = _srvLimit;   // запоминаем «сколько долистано»
             _renderedKey = null; _renderedSig = null;   // форсим перерисовку с большей выборкой
             LoadMessages();
         }

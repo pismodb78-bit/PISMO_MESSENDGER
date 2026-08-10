@@ -24,7 +24,6 @@ namespace PISMO
         private int _dmRestoreFromBottom = -1;       // держим позицию: расстояние от низа
         // Сколько сообщений было долистано в чате — чтобы при переоткрытии показать
         // столько же (ключ: "d{partnerId}" для ЛС, "g{groupId}" для группы).
-        private readonly Dictionary<string, int> _limitByChat = new();
         private Button _btnScrollDown;               // плавающая кнопка «вниз к новым»
 
         // ── Состояние ──────────────────────────────────────────────────────
@@ -2405,7 +2404,7 @@ namespace PISMO
             _currentGroupName = "";
             _lastMsgCount = 0;
             // Восстанавливаем столько сообщений, сколько было долистано ранее.
-            _dmLimit = _limitByChat.TryGetValue("d" + partnerId, out var dlim) ? dlim : MsgPageSize;
+            _dmLimit = MsgPageSize;   // каждое открытие чата — снова одна страница
             _dmHasMore = false;
             _dmLoadingOlder = false;
             _dmRestoreFromBottom = -1;
@@ -2434,7 +2433,7 @@ namespace PISMO
             _currentChatPartnerId = -1;
             _currentChatPartnerName = "";
             _lastGroupMsgCount = 0;
-            _dmLimit = _limitByChat.TryGetValue("g" + groupId, out var glim) ? glim : MsgPageSize;
+            _dmLimit = MsgPageSize;   // каждое открытие группы — снова одна страница
             _dmHasMore = false;
             _dmLoadingOlder = false;
             _dmRestoreFromBottom = -1;
@@ -2688,7 +2687,7 @@ namespace PISMO
             }
             // Глубину по кешу НЕ поднимаем: дисковый кеш хранит всю долистанную
             // историю и переживает перезапуск — иначе чат прогружался бы целиком при
-            // каждом открытии. Глубина в пределах сессии держится через _limitByChat.
+            // каждом открытии. Глубина НЕ запоминается: вернулся в чат — снова страница.
 
             // При догрузке вверх кеш (последняя страница) НЕ рисуем — иначе мигало бы
             // и сбивало позицию; ждём свежую большую выборку из БД.
@@ -2952,7 +2951,6 @@ namespace PISMO
             _dmRestoreFromBottom = pnlMessages.DisplayRectangle.Height - (curTop + viewport);
             _dmLimit += MsgPageSize;
             // Запоминаем «сколько долистано» — при переоткрытии покажем столько же.
-            _limitByChat[(grp ? "g" : "d") + (grp ? _currentGroupId : _currentChatPartnerId)] = _dmLimit;
             if (grp) LoadGroupMessages(); else LoadMessages(markRead: false);
         }
 
