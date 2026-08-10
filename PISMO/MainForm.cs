@@ -5224,6 +5224,36 @@ namespace PISMO
 
         private bool _reallyExit;               // true — реальный выход (из трея/logout), а не сворачивание
 
+        private System.Windows.Forms.Timer _trayHintTimer;
+
+        /// <summary>
+        /// Подсказка «свёрнут в трей». Показываем с небольшой задержкой ПОСЛЕ того,
+        /// как окно спрятано: если дёргать показ прямо в обработчике закрытия (даже
+        /// через BeginInvoke — он выполняется в той же итерации цикла сообщений, пока
+        /// закрытие ещё на стеке), Windows всплывашку не рисует. Плюс идём через
+        /// PushNotify, который восстанавливает Icon и Visible у иконки в трее —
+        /// без них ShowBalloonTip молча ничего не показывает.
+        /// </summary>
+        private void ShowTrayHintDelayed()
+        {
+            try
+            {
+                _trayHintTimer?.Stop();
+                _trayHintTimer ??= new System.Windows.Forms.Timer { Interval = 500 };
+                _trayHintTimer.Tick -= TrayHintTick;
+                _trayHintTimer.Tick += TrayHintTick;
+                _trayHintTimer.Start();
+            }
+            catch { }
+        }
+
+        private void TrayHintTick(object sender, EventArgs e)
+        {
+            try { _trayHintTimer?.Stop(); } catch { }
+            PushNotify("PISMO свёрнут в трей",
+                "Приложение работает и получает уведомления. Правый клик по иконке — закрыть.");
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             // Крестик = свернуть в трей (приложение продолжает ловить уведомления).
@@ -5238,20 +5268,7 @@ namespace PISMO
                 // (Visible=false) и так не висит в таскбаре — Hide() достаточно.
                 Hide();
                 try { if (_trayIcon != null) _trayIcon.Visible = true; } catch { }
-                // Подсказку показываем через PushNotify: прямой ShowBalloonTip молча
-                // не срабатывает, если у иконки в трее не задан Icon (та же причина,
-                // по которой раньше пропали пуши). Плюс откладываем на BeginInvoke —
-                // окно к этому моменту уже спрятано и иконка в трее «устоялась».
-                try
-                {
-                    BeginInvoke(new Action(() => PushNotify("PISMO свёрнут в трей",
-                        "Приложение работает и получает уведомления. Правый клик по иконке — закрыть.")));
-                }
-                catch
-                {
-                    PushNotify("PISMO свёрнут в трей",
-                        "Приложение работает и получает уведомления. Правый клик по иконке — закрыть.");
-                }
+                ShowTrayHintDelayed();
                 return;
             }
             base.OnFormClosing(e);
