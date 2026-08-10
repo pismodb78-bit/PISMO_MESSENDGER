@@ -26,7 +26,7 @@ namespace PISMO
         public const int BtnW = 26;   // единый размер кнопок
         public const int BtnH = 24;
         public const int BoxH = 24;   // высота поля ввода
-        public const int Gap  = 4;    // зазор между элементами
+        public const int Gap  = 2;    // зазор между элементами (плотная строка)
 
         /// <summary>Приводит кнопку к общему стилю и вешает отрисовку значка.</summary>
         public static void Style(Button b, Icon icon)
@@ -124,12 +124,17 @@ namespace PISMO
 
         private static void DrawArrow(Graphics g, Rectangle r, Color c, bool up)
         {
-            int w = 9, h = 5;
-            int cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
+            // Симметричные целочисленные координаты: при нечётной высоте одна из
+            // стрелок получалась «размазанной» сглаживанием и выглядела бледнее.
+            const int half = 5;   // половина ширины основания
+            const int rise = 6;   // высота треугольника
+            int cx = r.X + r.Width / 2;
+            int cy = r.Y + r.Height / 2;
+            int top = cy - rise / 2, bottom = cy + rise / 2;
             using var br = new SolidBrush(c);
             Point[] pts = up
-                ? new[] { new Point(cx - w / 2, cy + h / 2), new Point(cx + w / 2, cy + h / 2), new Point(cx, cy - h / 2 - 1) }
-                : new[] { new Point(cx - w / 2, cy - h / 2), new Point(cx + w / 2, cy - h / 2), new Point(cx, cy + h / 2 + 1) };
+                ? new[] { new Point(cx - half, bottom), new Point(cx + half, bottom), new Point(cx, top) }
+                : new[] { new Point(cx - half, top), new Point(cx + half, top), new Point(cx, bottom) };
             g.FillPolygon(br, pts);
         }
     }
