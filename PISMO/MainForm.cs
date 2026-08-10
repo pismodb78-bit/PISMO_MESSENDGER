@@ -2459,8 +2459,11 @@ namespace PISMO
                 cachedDt = MessageCache.Load(MessageCache.GroupKey(group));
                 if (cachedDt != null) _groupMetaCache[group] = cachedDt;
             }
-            if (cachedDt != null && cachedDt.Rows.Count > _dmLimit) _dmLimit = cachedDt.Rows.Count;
-            if (cachedDt != null && !_dmLoadingOlder) RenderGroupMessages(cachedDt, myId, group);
+            // Из кеша рисуем ТОЛЬКО последнюю страницу: дисковый кеш хранит всю
+            // долистанную историю и переживает перезапуск, поэтому раньше лимит
+            // поднимался до размера кеша и группа прогружалась целиком сразу.
+            if (cachedDt != null && !_dmLoadingOlder)
+                RenderGroupMessages(TakeLastRows(cachedDt, _dmLimit), myId, group);
 
             // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в группе.
             System.Threading.Tasks.Task.Run(() =>
@@ -2677,16 +2680,16 @@ namespace PISMO
                 cachedDt = MessageCache.Load(MessageCache.DirectKey(myId, partner));
                 if (cachedDt != null) _msgMetaCache[partner] = cachedDt;
             }
-            // Глубина не должна «схлопываться» при возврате в чат: если в кеше уже
-            // больше сообщений, чем текущий лимит — держим ту же глубину.
-            if (cachedDt != null && cachedDt.Rows.Count > _dmLimit) _dmLimit = cachedDt.Rows.Count;
+            // Глубину по кешу НЕ поднимаем: дисковый кеш хранит всю долистанную
+            // историю и переживает перезапуск — иначе чат прогружался бы целиком при
+            // каждом открытии. Глубина в пределах сессии держится через _limitByChat.
 
             // При догрузке вверх кеш (последняя страница) НЕ рисуем — иначе мигало бы
             // и сбивало позицию; ждём свежую большую выборку из БД.
             if (cachedDt != null && !_dmLoadingOlder)
             {
                 var (cib, ctb) = _blockCache.TryGetValue(partner, out var bc) ? bc : (false, false);
-                RenderMessages(cachedDt, myId, partner, cib, ctb);
+                RenderMessages(TakeLastRows(cachedDt, _dmLimit), myId, partner, cib, ctb);
             }
 
             // 2) Свежие данные тянем в ФОНЕ (запросы к БД не на UI-потоке) и
@@ -3048,6 +3051,18 @@ namespace PISMO
         {
             try { pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue); } catch { }
             UpdateScrollDownButton();
+        }
+
+        /// <summary>Последние <paramref name="n"/> строк таблицы (самые новые сообщения).
+        /// Нужен, чтобы из дискового кеша, где лежит вся долистанная история, рисовать
+        /// только текущую страницу — иначе чат прогружается целиком при открытии.</summary>
+        internal static DataTable TakeLastRows(DataTable dt, int n)
+        {
+            if (dt == null || n <= 0 || dt.Rows.Count <= n) return dt;
+            var res = dt.Clone();
+            for (int i = dt.Rows.Count - n; i < dt.Rows.Count; i++)
+                res.ImportRow(dt.Rows[i]);
+            return res;
         }
 
         private Panel BuildDateSeparator(string dateText)

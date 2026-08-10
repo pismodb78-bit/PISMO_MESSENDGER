@@ -1162,10 +1162,12 @@ namespace PISMO
                 cachedDt = MessageCache.Load(MessageCache.ChannelKey(channel));
                 if (cachedDt != null) _chanMetaCache[channel] = cachedDt;
             }
-            // Глубина не «схлопывается» при возврате в канал.
-            if (cachedDt != null && cachedDt.Rows.Count > _srvLimit) _srvLimit = cachedDt.Rows.Count;
+            // Глубину по кешу НЕ поднимаем — иначе канал прогружался бы целиком сразу
+            // (дисковый кеш хранит всю долистанную историю). Глубина в пределах сессии
+            // держится через _srvLimitByChannel.
             // При догрузке вверх кеш (последняя страница) не рисуем — ждём большую выборку.
-            if (cachedDt != null && !_srvLoadingOlder) RenderMessages(cachedDt, channel);
+            if (cachedDt != null && !_srvLoadingOlder)
+                RenderMessages(MainForm.TakeLastRows(cachedDt, _srvLimit), channel);
 
             // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в канале.
             System.Threading.Tasks.Task.Run(() =>
