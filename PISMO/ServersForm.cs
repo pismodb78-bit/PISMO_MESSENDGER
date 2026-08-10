@@ -1172,7 +1172,15 @@ namespace PISMO
             // НЕ запоминается: вернулся в канал — снова одна страница.
             // При догрузке вверх кеш (последняя страница) не рисуем — ждём большую выборку.
             if (cachedDt != null && !_srvLoadingOlder)
+            {
+                // Переход к дате НЕ применяем к отрисовке из кеша: следом придёт свежая
+                // (расширенная) выборка и перерисует ленту, сбросив прокрутку к последним
+                // сообщениям — из-за этого переход срабатывал бы только со второго клика.
+                int savedJump = _srvPendingJumpId;
+                _srvPendingJumpId = 0;
                 RenderMessages(MainForm.TakeLastRows(cachedDt, _srvLimit), channel);
+                _srvPendingJumpId = savedJump;
+            }
 
             // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в канале.
             System.Threading.Tasks.Task.Run(() =>
