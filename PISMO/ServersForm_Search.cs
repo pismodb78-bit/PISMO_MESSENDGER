@@ -92,22 +92,19 @@ namespace PISMO
                 const int y = 6;                                  // общая линия строки
                 int step = SearchBarUi.BtnW + SearchBarUi.Gap;    // тот же шаг, что в мессенджере
 
-                // Тот же порядок, что в мессенджере: 🔍 ▼ ▲ [счётчик] 📅 [поле]
+                // Тот же порядок, что в мессенджере: 🔍 ▼ ▲ 📅 [поле] [счётчик слева]
                 _srvBtnSearch.Location   = new Point(Math.Max(0, w - 34), y);
                 _srvBtnNext.Location     = new Point(Math.Max(0, w - 34 - step), y);
                 _srvBtnPrev.Location     = new Point(Math.Max(0, w - 34 - step * 2), y);
-                // Резерв под счётчик — от его фактической ширины (см. пояснение в
-                // MainForm): фиксированное меньшее значение заставляло метку наезжать
-                // на кнопку ▲ и обрезать стрелку.
-                int countReserve = _srvSearchCount.Width + SearchBarUi.Gap;
-                _srvSearchCount.Location = new Point(Math.Max(0, w - 34 - step * 2 - countReserve), y + 2);
-                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 34 - step * 2 - countReserve - step), y);
+                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 34 - step * 3), y);
 
                 const int titleMin = 150;
-                int boxRight = _srvBtnCalendar.Left - SearchBarUi.Gap;
-                int boxLeft = Math.Max(titleMin, boxRight - 240);   // поле длиннее
+                int boxRight = _srvBtnCalendar.Left - 4;
+                int countW = _srvSearchCount.Width;
+                int boxLeft = Math.Max(titleMin + countW + 6, boxRight - 240);
                 int boxW = Math.Max(70, boxRight - boxLeft);
                 _srvSearchBox.Bounds = new Rectangle(boxLeft, y, boxW, SearchBarUi.BoxH);
+                _srvSearchCount.Location = new Point(Math.Max(0, boxLeft - countW - 6), y + 2);
             }
             _lblTitle.Resize += (s, e) => Reposition();
             _lblTitle.HandleCreated += (s, e) => Reposition();

@@ -23,10 +23,10 @@ namespace PISMO
         public static readonly Color Hover   = Color.FromArgb(62, 65, 72);
         public static readonly Color BoxBack = Color.FromArgb(30, 31, 34);
 
-        public const int BtnW = 26;   // единый размер кнопок
+        public const int BtnW = 24;   // единый размер кнопок (плотнее)
         public const int BtnH = 24;
         public const int BoxH = 24;   // высота поля ввода
-        public const int Gap  = 2;    // зазор между элементами (плотная строка)
+        public const int Gap  = 1;    // зазор между кнопками (плотная строка)
 
         /// <summary>
         /// Кнопка строки поиска с ПОЛНОЙ собственной отрисовкой.
@@ -87,10 +87,10 @@ namespace PISMO
         {
             if (l == null) return;
             l.AutoSize = false;
-            l.Size = new Size(36, 20);
+            l.Size = new Size(56, 20);   // хватает на «11/45» и «0 найд.» без обрезки
             l.ForeColor = Color.FromArgb(150, 152, 158);
             l.Font = new Font("Segoe UI", 8f);
-            l.TextAlign = ContentAlignment.MiddleLeft;
+            l.TextAlign = ContentAlignment.MiddleRight;   // прижат к полю ввода справа
             l.BackColor = Color.Transparent;
         }
 
