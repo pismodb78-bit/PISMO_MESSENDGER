@@ -96,9 +96,12 @@ namespace PISMO
                 _srvBtnSearch.Location   = new Point(Math.Max(0, w - 34), y);
                 _srvBtnNext.Location     = new Point(Math.Max(0, w - 34 - step), y);
                 _srvBtnPrev.Location     = new Point(Math.Max(0, w - 34 - step * 2), y);
-                // Как в мессенджере: узкий счётчик → календарь и поле ближе к стрелкам.
-                _srvSearchCount.Location = new Point(Math.Max(0, w - 34 - step * 2 - 22), y + 2);
-                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 34 - step * 2 - 22 - step), y);
+                // Резерв под счётчик — от его фактической ширины (см. пояснение в
+                // MainForm): фиксированное меньшее значение заставляло метку наезжать
+                // на кнопку ▲ и обрезать стрелку.
+                int countReserve = _srvSearchCount.Width + SearchBarUi.Gap;
+                _srvSearchCount.Location = new Point(Math.Max(0, w - 34 - step * 2 - countReserve), y + 2);
+                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 34 - step * 2 - countReserve - step), y);
 
                 const int titleMin = 150;
                 int boxRight = _srvBtnCalendar.Left - SearchBarUi.Gap;
