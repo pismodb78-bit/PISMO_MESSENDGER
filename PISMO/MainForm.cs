@@ -5209,7 +5209,6 @@ namespace PISMO
         }
 
         private bool _reallyExit;               // true — реальный выход (из трея/logout), а не сворачивание
-        private bool _trayHintShown;            // подсказку про трей показываем один раз
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
@@ -5225,12 +5224,19 @@ namespace PISMO
                 // (Visible=false) и так не висит в таскбаре — Hide() достаточно.
                 Hide();
                 try { if (_trayIcon != null) _trayIcon.Visible = true; } catch { }
-                if (!_trayHintShown)
+                // Подсказку показываем через PushNotify: прямой ShowBalloonTip молча
+                // не срабатывает, если у иконки в трее не задан Icon (та же причина,
+                // по которой раньше пропали пуши). Плюс откладываем на BeginInvoke —
+                // окно к этому моменту уже спрятано и иконка в трее «устоялась».
+                try
                 {
-                    _trayHintShown = true;
-                    try { _trayIcon?.ShowBalloonTip(3000, "PISMO свёрнут в трей",
-                        "Приложение работает и получает уведомления. Правый клик по иконке — закрыть.", ToolTipIcon.Info); }
-                    catch { }
+                    BeginInvoke(new Action(() => PushNotify("PISMO свёрнут в трей",
+                        "Приложение работает и получает уведомления. Правый клик по иконке — закрыть.")));
+                }
+                catch
+                {
+                    PushNotify("PISMO свёрнут в трей",
+                        "Приложение работает и получает уведомления. Правый клик по иконке — закрыть.");
                 }
                 return;
             }
