@@ -28,34 +28,47 @@ namespace PISMO
         public const int BoxH = 24;   // высота поля ввода
         public const int Gap  = 2;    // зазор между элементами (плотная строка)
 
-        /// <summary>Приводит кнопку к общему стилю и вешает отрисовку значка.</summary>
-        public static void Style(Button b, Icon icon)
+        /// <summary>
+        /// Кнопка строки поиска с ПОЛНОЙ собственной отрисовкой.
+        ///
+        /// Обычный Button рисует себя сам (фон, подсветка при наведении, фокус) и
+        /// делает это ПОВЕРХ/вместо обработчика Paint — из-за этого одна из стрелок
+        /// показывалась светлым пустым прямоугольником без значка. С UserPaint базовая
+        /// отрисовка отключена полностью, и рисуем только мы.
+        /// </summary>
+        internal sealed class IconButton : Button
         {
-            if (b == null) return;
-            b.Text = "";
-            b.Size = new Size(BtnW, BtnH);
-            b.FlatStyle = FlatStyle.Flat;
-            b.BackColor = Back;
-            b.ForeColor = Fg;                    // цветом значка управляет ForeColor
-            b.Cursor = Cursors.Hand;
-            b.TabStop = false;
-            b.FlatAppearance.BorderSize = 0;
-            b.FlatAppearance.MouseOverBackColor = Hover;
-            b.FlatAppearance.MouseDownBackColor = Hover;
-            b.Paint += (s, e) =>
+            private readonly Icon _icon;
+            private bool _hover;
+
+            public IconButton(Icon icon)
             {
-                // Фон закрашиваем сами: у Button со своим Paint иногда оставались
-                // артефакты подложки, из-за чего значок выглядел «сломанным».
-                using (var bg = new SolidBrush(b.ClientRectangle.Contains(b.PointToClient(Cursor.Position))
-                        ? Hover : b.BackColor))
-                    e.Graphics.FillRectangle(bg, b.ClientRectangle);
-                Draw(e.Graphics, b.ClientRectangle, icon, b.ForeColor);
-            };
-            b.MouseEnter += (s, e) => b.Invalidate();
-            b.MouseLeave += (s, e) => b.Invalidate();
-            // Приглушение/подсветку делаем сменой ForeColor — значок должен перерисоваться.
-            b.ForeColorChanged += (s, e) => b.Invalidate();
+                _icon = icon;
+                SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                         | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+                Text = "";
+                Size = new Size(BtnW, BtnH);
+                FlatStyle = FlatStyle.Flat;
+                FlatAppearance.BorderSize = 0;
+                BackColor = Back;
+                ForeColor = Fg;
+                Cursor = Cursors.Hand;
+                TabStop = false;
+            }
+
+            protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+            protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+            protected override void OnPaintBackground(PaintEventArgs e) { }   // всё рисуем в OnPaint
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.Clear(_hover ? Hover : BackColor);
+                Draw(e.Graphics, ClientRectangle, _icon, ForeColor);
+            }
         }
+
+        /// <summary>Создаёт кнопку строки поиска с нужным значком.</summary>
+        public static Button Make(Icon icon) => new IconButton(icon);
 
         /// <summary>Приводит поле ввода поиска к общему стилю.</summary>
         public static void StyleBox(TextBox t, string placeholder)

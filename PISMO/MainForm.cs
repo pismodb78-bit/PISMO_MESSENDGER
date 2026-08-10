@@ -331,38 +331,24 @@ namespace PISMO
         {
             try
             {
-                _btnMsgSearch = new Button
-                {
-                    Text = "🔍", Font = new Font("Segoe UI Emoji", 10f), FlatStyle = FlatStyle.Flat,
-                    ForeColor = Color.FromArgb(200, 202, 208), BackColor = Color.FromArgb(47, 49, 54),
-                    Size = new Size(32, 30), Location = new Point(pnlChatHeader.Width - 128, 9),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Right, Cursor = Cursors.Hand, TabStop = false
-                };
-                SearchBarUi.Style(_btnMsgSearch, SearchBarUi.Icon.Magnifier);
+                _btnMsgSearch = SearchBarUi.Make(SearchBarUi.Icon.Magnifier);
+                _btnMsgSearch.Location = new Point(pnlChatHeader.Width - 128, 12);
+                _btnMsgSearch.Anchor = AnchorStyles.Top | AnchorStyles.Right;
                 new ToolTip().SetToolTip(_btnMsgSearch, "Поиск по чату");
 
-                Button MkNav(string text, int right, string tip)
+                Button MkNav(SearchBarUi.Icon icon, int right, string tip)
                 {
-                    var b = new Button
-                    {
-                        Text = text, Font = new Font("Segoe UI", 8f), FlatStyle = FlatStyle.Flat,
-                        ForeColor = Color.FromArgb(200, 202, 208), BackColor = Color.FromArgb(47, 49, 54),
-                        Size = new Size(26, 26), Location = new Point(pnlChatHeader.Width - right, 11),
-                        Anchor = AnchorStyles.Top | AnchorStyles.Right, Cursor = Cursors.Hand,
-                        TabStop = false, Visible = false
-                    };
-                    b.FlatAppearance.BorderSize = 0;
+                    var b = SearchBarUi.Make(icon);
+                    b.Location = new Point(pnlChatHeader.Width - right, 12);
+                    b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+                    b.Visible = false;
                     new ToolTip().SetToolTip(b, tip);
                     return b;
                 }
-                _btnMsgSearchNext = MkNav("▼", 152, "Следующее совпадение (Enter)");
-                _btnMsgSearchPrev = MkNav("▲", 176, "Предыдущее совпадение (Shift+Enter)");
+                _btnMsgSearchNext = MkNav(SearchBarUi.Icon.Down, 152, "Следующее совпадение (Enter)");
+                _btnMsgSearchPrev = MkNav(SearchBarUi.Icon.Up, 176, "Предыдущее совпадение (Shift+Enter)");
                 // 📅 — переход к первому сообщению за выбранную дату.
-                _btnMsgCalendar = MkNav("📅", 240, "Перейти к дате");
-                // Единый стиль и рисованные значки (эмодзи в мелких кнопках обрезались).
-                SearchBarUi.Style(_btnMsgSearchPrev, SearchBarUi.Icon.Up);
-                SearchBarUi.Style(_btnMsgSearchNext, SearchBarUi.Icon.Down);
-                SearchBarUi.Style(_btnMsgCalendar,   SearchBarUi.Icon.Calendar);
+                _btnMsgCalendar = MkNav(SearchBarUi.Icon.Calendar, 240, "Перейти к дате");
                 _btnMsgCalendar.Click += (s2, e2) =>
                     DatePickerPopup.Show(_btnMsgCalendar, DateTime.Today, JumpToDate);
                 _btnMsgSearchPrev.Click += (s, e) => GoToSearchMatch(-1);

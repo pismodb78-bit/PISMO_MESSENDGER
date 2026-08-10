@@ -29,12 +29,9 @@ namespace PISMO
             // мелких кнопках обрезались и выглядели по-разному в двух местах).
             Button MkBtn(SearchBarUi.Icon icon, int right, string tip)
             {
-                var b = new Button
-                {
-                    Location = new Point(Math.Max(0, _lblTitle.Width - right), 6),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Right
-                };
-                SearchBarUi.Style(b, icon);
+                var b = SearchBarUi.Make(icon);
+                b.Location = new Point(Math.Max(0, _lblTitle.Width - right), 6);
+                b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
                 new ToolTip().SetToolTip(b, tip);
                 return b;
             }
@@ -47,22 +44,20 @@ namespace PISMO
 
             _srvSearchCount = new Label
             {
-                Visible = false, AutoSize = false, Size = new Size(44, 20),
-                Location = new Point(Math.Max(0, _lblTitle.Width - 170), 8),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                ForeColor = Color.FromArgb(150, 152, 158), Font = new Font("Segoe UI", 8f),
-                TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent
+                Visible = false,
+                Location = new Point(Math.Max(0, _lblTitle.Width - 166), 8),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right
             };
+            SearchBarUi.StyleCount(_srvSearchCount);   // общий стиль с мессенджером
 
             _srvSearchBox = new TextBox
             {
-                Visible = false, BorderStyle = BorderStyle.FixedSingle,
-                BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
-                Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в канале…",
-                Size = new Size(190, 26),
-                Location = new Point(Math.Max(0, _lblTitle.Width - 396), 5),
+                Visible = false,
+                Location = new Point(Math.Max(0, _lblTitle.Width - 306), 6),
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
             };
+            // Общий стиль с мессенджером (шрифт, высота, цвета, подпись в поле).
+            SearchBarUi.StyleBox(_srvSearchBox, "Поиск в переписке…");
 
             void SetVisible(bool show)
             {
