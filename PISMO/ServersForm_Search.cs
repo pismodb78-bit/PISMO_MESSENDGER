@@ -48,7 +48,7 @@ namespace PISMO
             _srvBtnSearch   = MkBtn("🔍", 34, 28, "Поиск по каналу");
             _srvBtnNext     = MkBtn("▼", 60, 22, "Следующее совпадение (Enter)");
             _srvBtnPrev     = MkBtn("▲", 84, 22, "Предыдущее совпадение (Shift+Enter)");
-            _srvBtnCalendar = MkBtn("📅", 110, 24, "Перейти к дате");
+            _srvBtnCalendar = MkBtn("📅", 104, 24, "Перейти к дате");
             // Стрелки светлее и компактнее — на тёмном заголовке серые почти не видны.
             foreach (var b in new[] { _srvBtnPrev, _srvBtnNext, _srvBtnCalendar })
                 b.ForeColor = Color.FromArgb(236, 238, 242);
@@ -107,11 +107,11 @@ namespace PISMO
                 _srvBtnSearch.Location   = new Point(Math.Max(0, w - 34), 5);
                 _srvBtnNext.Location     = new Point(Math.Max(0, w - 60), 7);
                 _srvBtnPrev.Location     = new Point(Math.Max(0, w - 84), 7);
-                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 110), 7);
+                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 104), 7);
                 _srvSearchCount.Location = new Point(Math.Max(0, w - 152), 8);
                 // Ширину поля подгоняем под узкое окно, иначе оно наезжает на имя канала.
                 const int titleMin = 150;
-                int boxRight = w - 156;                       // дальше идут счётчик, 📅 ▲ ▼ 🔍
+                int boxRight = w - 148;                       // дальше идут счётчик, 📅 ▲ ▼ 🔍
                 int boxLeft = Math.Max(titleMin, w - 296);
                 int boxW = Math.Max(70, boxRight - boxLeft);
                 _srvSearchBox.Bounds = new Rectangle(boxLeft, 7, boxW, 22);

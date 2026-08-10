@@ -302,8 +302,8 @@ namespace PISMO
             {
                 int w = pnlChatHeader.ClientSize.Width;
                 const int titleMin = 150;          // место под имя собеседника
-                int boxRight = w - 248;            // правый край поля (дальше идёт 📅)
-                int boxLeft = Math.Max(titleMin, w - 388);
+                int boxRight = w - 236;            // правый край поля (📅 вплотную за ним)
+                int boxLeft = Math.Max(titleMin, w - 376);
                 int boxW = Math.Max(70, boxRight - boxLeft);
                 if (boxW <= 70 && boxRight - titleMin < 70) { _msgSearch.Visible = false; return; }
                 _msgSearch.Bounds = new Rectangle(boxLeft, 13, boxW, 22);
@@ -348,7 +348,7 @@ namespace PISMO
                 _btnMsgSearchNext = MkNav("▼", 152, "Следующее совпадение (Enter)");
                 _btnMsgSearchPrev = MkNav("▲", 176, "Предыдущее совпадение (Shift+Enter)");
                 // 📅 — переход к первому сообщению за выбранную дату.
-                _btnMsgCalendar = MkNav("📅", 244, "Перейти к дате");
+                _btnMsgCalendar = MkNav("📅", 234, "Перейти к дате");
                 _btnMsgCalendar.Font = new Font("Segoe UI Emoji", 9f);
                 // Компактнее и светлее: стрелки были почти не видны на тёмной шапке.
                 foreach (var b in new[] { _btnMsgSearchPrev, _btnMsgSearchNext })
@@ -370,7 +370,7 @@ namespace PISMO
                     BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
                     Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в переписке…",
                     // Ширина 190: поле занимает Width-490..Width-300, дальше 📅, затем счётчик.
-                    Size = new Size(140, 22), Location = new Point(pnlChatHeader.Width - 388, 13),
+                    Size = new Size(140, 22), Location = new Point(pnlChatHeader.Width - 376, 13),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right
                 };
                 _msgSearchCount = new Label
@@ -493,9 +493,14 @@ namespace PISMO
                 _msgSearchCount.Text = !active ? ""
                     : _searchMatches.Count == 0 ? "0 найд."
                     : $"{_searchIndex + 1}/{_searchMatches.Count} ▾";
+            // Enabled НЕ используем: у отключённой кнопки Windows рисует текст
+            // системным «серым», и на тёмной шапке стрелки становились почти чёрными.
+            // Вместо этого держим кнопки включёнными и просто приглушаем цвет —
+            // сам переход всё равно ничего не делает, когда совпадений нет.
             bool canNav = active && _searchMatches.Count > 0;
-            if (_btnMsgSearchPrev != null) _btnMsgSearchPrev.Enabled = canNav;
-            if (_btnMsgSearchNext != null) _btnMsgSearchNext.Enabled = canNav;
+            var navColor = canNav ? Color.FromArgb(236, 238, 242) : Color.FromArgb(130, 133, 140);
+            if (_btnMsgSearchPrev != null) { _btnMsgSearchPrev.Enabled = true; _btnMsgSearchPrev.ForeColor = navColor; }
+            if (_btnMsgSearchNext != null) { _btnMsgSearchNext.Enabled = true; _btnMsgSearchNext.ForeColor = navColor; }
         }
 
         /// <summary>Перейти к следующему/предыдущему совпадению (с зацикливанием).</summary>
