@@ -1519,18 +1519,26 @@ namespace PISMO
             string msgWord = RuPlural(totalMsgs, "сообщение", "сообщения", "сообщений");
             string body;
 
+            // Имена в уведомлении подрезаем: длинные ФИО превращали всплывашку в
+            // простыню, а Windows всё равно обрезает текст на своё усмотрение.
+            string Who(int sid)
+            {
+                string n = GetNameFromCards(sid);
+                return n.Length > 22 ? n[..21] + "…" : n;
+            }
+
             if (grew.Count == 1)
             {
                 // ОДИН отправитель — всегда одна и та же форма: имя, количество и тип
                 // (сообщение/фото/файл/кружок…). Раньше форма «прыгала»: то «Имя: N
                 // новых сообщений», то «Имя: 🖼 Фото (+2)», а без карточки в списке
                 // вместо имени уходило «Пользователь #21».
-                body = $"{GetNameFromCards(grew[0].sid)}: {totalMsgs} {msgWord} · {LatestUnreadKind(grew[0].sid)}";
+                body = $"{Who(grew[0].sid)}: {totalMsgs} {msgWord} · {LatestUnreadKind(grew[0].sid)}";
             }
             else if (grew.Count <= 3)
             {
                 // 2–3 отправителя — перечисляем имена и общее количество.
-                var names = grew.Select(g => GetNameFromCards(g.sid)).ToList();
+                var names = grew.Select(g => Who(g.sid)).ToList();
                 string who = string.Join(", ", names.Take(names.Count - 1)) + " и " + names[^1];
                 body = $"{who} оставили вам {totalMsgs} {msgWord}";
             }
@@ -1564,21 +1572,21 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@s", sid);
                 cmd.Parameters.AddWithValue("@me", me);
                 using var r = cmd.ExecuteReader();
-                if (!r.Read()) return "💬 Сообщение";   // форма едина даже если строку не нашли
+                if (!r.Read()) return "💬 Текст";   // форма едина даже если строку не нашли
                 bool a = r["a"] != DBNull.Value && Convert.ToInt32(r["a"]) == 1;
                 bool v = r["v"] != DBNull.Value && Convert.ToInt32(r["v"]) == 1;
                 bool i = r["i"] != DBNull.Value && Convert.ToInt32(r["i"]) == 1;
                 bool f = r["f"] != DBNull.Value && Convert.ToInt32(r["f"]) == 1;
                 string txt = "";
                 try { txt = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString()); } catch { }
-                if (a) return "🎤 Голосовое сообщение";
-                if (v) return "⭕ Видео-кружок";
+                if (a) return "🎤 Голосовое";
+                if (v) return "⭕ Кружок";
                 if (i) return txt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase) ? "🎞 GIF" : "🖼 Фото";
                 if (f) return "📎 Файл";
                 if (txt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)) return "🎞 GIF";
-                return "💬 Сообщение";   // обычный текст тоже описываем — форма единая
+                return "💬 Текст";   // обычный текст тоже описываем; слово «сообщение» не дублируем
             }
-            catch { return "💬 Сообщение"; }
+            catch { return "💬 Текст"; }
         }
 
         /// <summary>Русское склонение по числу: 1 книга / 2 книги / 5 книг.</summary>
