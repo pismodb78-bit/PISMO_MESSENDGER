@@ -42,7 +42,17 @@ namespace PISMO
             b.FlatAppearance.BorderSize = 0;
             b.FlatAppearance.MouseOverBackColor = Hover;
             b.FlatAppearance.MouseDownBackColor = Hover;
-            b.Paint += (s, e) => Draw(e.Graphics, new Rectangle(0, 0, b.Width, b.Height), icon, b.ForeColor);
+            b.Paint += (s, e) =>
+            {
+                // Фон закрашиваем сами: у Button со своим Paint иногда оставались
+                // артефакты подложки, из-за чего значок выглядел «сломанным».
+                using (var bg = new SolidBrush(b.ClientRectangle.Contains(b.PointToClient(Cursor.Position))
+                        ? Hover : b.BackColor))
+                    e.Graphics.FillRectangle(bg, b.ClientRectangle);
+                Draw(e.Graphics, b.ClientRectangle, icon, b.ForeColor);
+            };
+            b.MouseEnter += (s, e) => b.Invalidate();
+            b.MouseLeave += (s, e) => b.Invalidate();
             // Приглушение/подсветку делаем сменой ForeColor — значок должен перерисоваться.
             b.ForeColorChanged += (s, e) => b.Invalidate();
         }
@@ -126,8 +136,8 @@ namespace PISMO
         {
             // Симметричные целочисленные координаты: при нечётной высоте одна из
             // стрелок получалась «размазанной» сглаживанием и выглядела бледнее.
-            const int half = 5;   // половина ширины основания
-            const int rise = 6;   // высота треугольника
+            const int half = 6;   // половина ширины основания
+            const int rise = 7;   // высота треугольника
             int cx = r.X + r.Width / 2;
             int cy = r.Y + r.Height / 2;
             int top = cy - rise / 2, bottom = cy + rise / 2;
