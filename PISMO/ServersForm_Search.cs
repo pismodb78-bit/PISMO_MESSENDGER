@@ -226,6 +226,11 @@ namespace PISMO
         private void ApplySrvPendingJump()
         {
             if (_srvPendingJumpId <= 0) return;
+            // Пока нужное сообщение не отрисовано (первая отрисовка идёт из кеша, где
+            // старая страница), ожидание НЕ сбрасываем — дождёмся свежей выборки.
+            // Иначе переход «съедался» первым же кликом и приходилось жать повторно.
+            if (!_msgControls.TryGetValue(_srvPendingJumpId, out var ctl) || ctl == null || ctl.IsDisposed)
+                return;
             int id = _srvPendingJumpId;
             _srvPendingJumpId = 0;
             try { ScrollToServerMessage(id); } catch { }

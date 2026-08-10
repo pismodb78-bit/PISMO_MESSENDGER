@@ -1643,6 +1643,10 @@ namespace PISMO
                     try { _pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
                     _srvRestoreFromBottom = -1;
                 }
+                else if (_srvPendingJumpId > 0)
+                {
+                    _pnlMessages.PerformLayout();   // ждём переход к дате — позицию не трогаем
+                }
                 else if (channelChanged || newMsgs)
                 {
                     _pnlMessages.PerformLayout();   // актуальный диапазон прокрутки

@@ -2713,7 +2713,6 @@ namespace PISMO
                 _lastGroupMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
-                ApplyPendingJump();                // переход к выбранной дате, если он ждёт
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -2723,7 +2722,7 @@ namespace PISMO
                     try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
                     _dmRestoreFromBottom = -1;
                 }
-                else
+                else if (_pendingJumpDate == null)
                 {
                     // ВАЖНО: сперва пересчитать layout, иначе диапазон прокрутки
                     // остаётся от ПРЕДЫДУЩЕГО (длинного) чата и MaxValue уводит в
@@ -2731,6 +2730,8 @@ namespace PISMO
                     pnlMessages.PerformLayout();
                     pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
                 }
+                else pnlMessages.PerformLayout();   // ждём переход к дате — вниз не скидываем
+                ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
                 ChatScroll.ResumeDraw(pnlMessages);   // разморозка ПОСЛЕ восстановления позиции
@@ -3027,7 +3028,6 @@ namespace PISMO
                 _lastMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
-                ApplyPendingJump();                // переход к выбранной дате, если он ждёт
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -3041,7 +3041,7 @@ namespace PISMO
                     try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
                     _dmRestoreFromBottom = -1;
                 }
-                else
+                else if (_pendingJumpDate == null)
                 {
                     // Прокручиваем в конец ПОСЛЕ пересчёта layout: иначе диапазон
                     // прокрутки остаётся от предыдущего (длинного) чата и MaxValue
@@ -3049,6 +3049,8 @@ namespace PISMO
                     pnlMessages.PerformLayout();
                     pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
                 }
+                else pnlMessages.PerformLayout();   // ждём переход к дате — вниз не скидываем
+                ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
                 ChatScroll.ResumeDraw(pnlMessages);   // разморозка ПОСЛЕ восстановления позиции
@@ -3292,7 +3294,6 @@ namespace PISMO
         {
             if (_pendingJumpDate == null) return;
             var day = _pendingJumpDate.Value;
-            _pendingJumpDate = null;
 
             Panel target = null;
             foreach (Control c in pnlMessages.Controls)
@@ -3305,7 +3306,11 @@ namespace PISMO
                         System.Globalization.DateTimeStyles.None, out var dt)) continue;
                 if (dt.Date >= day && (target == null || p.Top < target.Top)) target = p;
             }
+            // Цели ещё нет — это отрисовка из кеша (старая страница). Ожидание НЕ
+            // сбрасываем: дождёмся свежей выборки, где нужная дата уже есть. Раньше
+            // флаг гасился здесь, и переход «съедался» первым же кликом.
             if (target == null) return;
+            _pendingJumpDate = null;
 
             try
             {
