@@ -22,6 +22,13 @@ namespace PISMO
         private System.Windows.Forms.Timer _presenceTimer;
         private bool _presenceColumnsOk = true;
 
+        /// <summary>Присутствие можно отключать ТОЛЬКО когда в схеме реально нет
+        /// колонок/таблицы (1054 Unknown column, 1146 Table doesn't exist). Раньше в
+        /// тот же catch попадал обрыв связи с БД, флаг гасился навсегда, и после
+        /// переподключения человек висел «офлайн», продолжая писать сообщения.</summary>
+        private static bool IsSchemaMissing(Exception ex)
+            => ex is MySqlException my && (my.Number == 1054 || my.Number == 1146);
+
         // Баннер активного звонка под заголовком чата.
         private Panel _pnlCallBanner;
         private Label _lblCallBanner;
@@ -161,10 +168,11 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@id", myId);
                 cmd.ExecuteNonQuery();
             }
-            catch
+            catch (Exception ex)
             {
-                // Колонок ещё нет (миграция не выполнена) — тихо отключаем присутствие.
-                _presenceColumnsOk = false;
+                // Отключаем присутствие только если колонок нет в схеме; обрыв связи —
+                // временный, после переподключения heartbeat должен продолжиться.
+                if (IsSchemaMissing(ex)) _presenceColumnsOk = false;
             }
         }
 
@@ -204,7 +212,7 @@ namespace PISMO
                 }
                 return result;
             }
-            catch { _presenceColumnsOk = false; return null; }
+            catch (Exception ex) { if (IsSchemaMissing(ex)) _presenceColumnsOk = false; return null; }
         }
 
         private void InvalidateCardAvatars()
@@ -274,7 +282,7 @@ namespace PISMO
                 if (activeAgo > 90) return ($"● бездействует {HumanDur(activeAgo)}", PresenceIdle);
                 return ("● в сети", PresenceOnline);
             }
-            catch { _presenceColumnsOk = false; return null; }
+            catch (Exception ex) { if (IsSchemaMissing(ex)) _presenceColumnsOk = false; return null; }
         }
 
         /// <summary>Позиционирует ярлык статуса сразу за текстом заголовка чата.</summary>

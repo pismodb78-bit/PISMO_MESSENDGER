@@ -20,6 +20,12 @@ namespace PISMO
         private readonly List<(int uid, Button btn)> _memberButtons = new();
         private bool _serverPresenceOk = true;
 
+        /// <summary>Гасим присутствие ТОЛЬКО при реально отсутствующих колонках/таблице
+        /// (1054/1146). Обрыв связи с БД временный: раньше он навсегда выключал
+        /// присутствие, и участники висели «не в сети» до перезапуска.</summary>
+        private static bool IsSchemaMissingSrv(Exception ex)
+            => ex is MySqlException my && (my.Number == 1054 || my.Number == 1146);
+
         private static readonly Color SrvPresenceOnline = Color.FromArgb(59, 165, 93);
         private static readonly Color SrvPresenceIdle = Color.FromArgb(240, 178, 50);
         private static readonly Color SrvPresenceOffline = Color.FromArgb(116, 127, 141);
@@ -130,7 +136,7 @@ namespace PISMO
                 }
                 return result;
             }
-            catch { _serverPresenceOk = false; return null; }
+            catch (Exception ex) { if (IsSchemaMissingSrv(ex)) _serverPresenceOk = false; return null; }
         }
     }
 }
