@@ -1019,11 +1019,9 @@ namespace PISMO
                         BeginInvoke(new Action(() =>
                         {
                             try { Sounds.Message(); } catch { }
-                            if (_trayIcon != null && _trayIcon.Icon != null)
-                                _trayIcon.ShowBalloonTip(4000,
-                                    isReply ? "PISMO — ответ" : "PISMO — упоминание",
-                                    isReply ? $"Ответ на ваше сообщение: {parts[1]} · #{parts[2]}"
-                                            : $"Вас упомянули: {parts[1]} · #{parts[2]}", ToolTipIcon.Info);
+                            PushNotify(isReply ? "PISMO — ответ" : "PISMO — упоминание",
+                                isReply ? $"Ответ на ваше сообщение: {parts[1]} · #{parts[2]}"
+                                        : $"Вас упомянули: {parts[1]} · #{parts[2]}");
                             try { FlashWindow(this.Handle, true); } catch { }
                         }));
                     }
@@ -1395,7 +1393,7 @@ namespace PISMO
                     string body = totalNew == 1
                         ? $"Новое сообщение в группе «{lastName}»"
                         : $"Новые сообщения в {totalNew} {RuPlural(totalNew, "группе", "группах", "группах")}";
-                    try { _trayIcon?.ShowBalloonTip(4000, "PISMO — сообщение", body, ToolTipIcon.Info); } catch { }
+                    PushNotify("PISMO — сообщение", body);
                     if (!this.ContainsFocus) { try { FlashWindow(this.Handle, true); } catch { } }
                 }
             }
@@ -1455,13 +1453,8 @@ namespace PISMO
             if (_prevFriendReq >= 0 && cnt > _prevFriendReq)
             {
                 try { Sounds.Message(); } catch { }
-                try
-                {
-                    _trayIcon.ShowBalloonTip(4000, "PISMO — заявка в друзья",
-                        "Вам отправили заявку в друзья. Откройте «Друзья» → «Ожидание».",
-                        ToolTipIcon.Info);
-                }
-                catch { }
+                PushNotify("PISMO — заявка в друзья",
+                    "Вам отправили заявку в друзья. Откройте «Друзья» → «Ожидание».");
                 if (!this.ContainsFocus) FlashWindow(this.Handle, true);
             }
             if (cnt != _prevFriendReq && _friendsBadge != null && !_friendsBadge.IsDisposed)
@@ -1470,6 +1463,35 @@ namespace PISMO
                 _friendsBadge.Visible = cnt > 0;
             }
             _prevFriendReq = cnt;
+        }
+
+        /// <summary>Единая точка показа пуш-уведомления из трея.
+        /// ShowBalloonTip МОЛЧА ничего не показывает (а в части случаев бросает
+        /// исключение), если у иконки не задан Icon или она не Visible. Раньше часть
+        /// уведомлений просто пропускалась по условию `_trayIcon.Icon != null` —
+        /// пользователь слышал звук, но всплывашки не было. Теперь перед показом
+        /// восстанавливаем и иконку, и видимость.</summary>
+        internal void PushNotify(string title, string body)
+        {
+            try
+            {
+                if (_trayIcon == null) return;
+                if (_trayIcon.Icon == null)
+                {
+                    try
+                    {
+                        var icoPath = System.IO.Path.Combine(
+                            AppDomain.CurrentDomain.BaseDirectory, "pismo.ico");
+                        _trayIcon.Icon = System.IO.File.Exists(icoPath)
+                            ? new System.Drawing.Icon(icoPath)
+                            : System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                    }
+                    catch { }
+                }
+                if (!_trayIcon.Visible) _trayIcon.Visible = true;
+                _trayIcon.ShowBalloonTip(4000, title, body, ToolTipIcon.Info);
+            }
+            catch { }
         }
 
         /// <summary>Одно уведомление на все пришедшие за тик сообщения:
@@ -1497,7 +1519,7 @@ namespace PISMO
                      + $" · {totalMsgs} {RuPlural(totalMsgs, "сообщение", "сообщения", "сообщений")}";
             }
 
-            _trayIcon.ShowBalloonTip(4000, "PISMO — новые сообщения", body, ToolTipIcon.Info);
+            PushNotify("PISMO — новые сообщения", body);
 
             if (!this.ContainsFocus)
                 FlashWindow(this.Handle, true);

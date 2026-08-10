@@ -221,8 +221,8 @@ namespace PISMO
                                     && !muted.Contains(kv.Key))
                                 {
                                     string nm = _railServerNames.TryGetValue(kv.Key, out var n) ? n : "сервер";
-                                    try { _trayIcon?.ShowBalloonTip(4000, "PISMO — упоминание",
-                                        $"Новые упоминания/ответы на сервере «{nm}»", ToolTipIcon.Info); } catch { }
+                                    PushNotify("PISMO — упоминание",
+                                        $"Новые упоминания/ответы на сервере «{nm}»");
                                 }
                             }
                         }
