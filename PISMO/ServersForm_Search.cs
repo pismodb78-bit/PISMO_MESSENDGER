@@ -45,10 +45,10 @@ namespace PISMO
                 return b;
             }
 
-            _srvBtnSearch   = MkBtn("🔍", 38, 30, "Поиск по каналу");
-            _srvBtnNext     = MkBtn("▼", 66, 24, "Следующее совпадение (Enter)");
-            _srvBtnPrev     = MkBtn("▲", 92, 24, "Предыдущее совпадение (Shift+Enter)");
-            _srvBtnCalendar = MkBtn("📅", 122, 26, "Перейти к дате");
+            _srvBtnSearch   = MkBtn("🔍", 34, 28, "Поиск по каналу");
+            _srvBtnNext     = MkBtn("▼", 60, 22, "Следующее совпадение (Enter)");
+            _srvBtnPrev     = MkBtn("▲", 84, 22, "Предыдущее совпадение (Shift+Enter)");
+            _srvBtnCalendar = MkBtn("📅", 110, 24, "Перейти к дате");
             // Стрелки светлее и компактнее — на тёмном заголовке серые почти не видны.
             foreach (var b in new[] { _srvBtnPrev, _srvBtnNext, _srvBtnCalendar })
                 b.ForeColor = Color.FromArgb(236, 238, 242);
@@ -104,17 +104,17 @@ namespace PISMO
             {
                 int w = _lblTitle.Width;
                 if (w <= 0) return;
-                _srvBtnSearch.Location   = new Point(Math.Max(0, w - 38), 5);
-                _srvBtnNext.Location     = new Point(Math.Max(0, w - 66), 6);
-                _srvBtnPrev.Location     = new Point(Math.Max(0, w - 92), 6);
-                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 122), 6);
-                _srvSearchCount.Location = new Point(Math.Max(0, w - 170), 8);
+                _srvBtnSearch.Location   = new Point(Math.Max(0, w - 34), 5);
+                _srvBtnNext.Location     = new Point(Math.Max(0, w - 60), 7);
+                _srvBtnPrev.Location     = new Point(Math.Max(0, w - 84), 7);
+                _srvBtnCalendar.Location = new Point(Math.Max(0, w - 110), 7);
+                _srvSearchCount.Location = new Point(Math.Max(0, w - 152), 8);
                 // Ширину поля подгоняем под узкое окно, иначе оно наезжает на имя канала.
                 const int titleMin = 150;
-                int boxRight = w - 174;                       // дальше идут счётчик, 📅 ▲ ▼ 🔍
-                int boxLeft = Math.Max(titleMin, w - 334);
+                int boxRight = w - 156;                       // дальше идут счётчик, 📅 ▲ ▼ 🔍
+                int boxLeft = Math.Max(titleMin, w - 296);
                 int boxW = Math.Max(70, boxRight - boxLeft);
-                _srvSearchBox.Bounds = new Rectangle(boxLeft, 6, boxW, 24);
+                _srvSearchBox.Bounds = new Rectangle(boxLeft, 7, boxW, 22);
             }
             _lblTitle.Resize += (s, e) => Reposition();
             _lblTitle.HandleCreated += (s, e) => Reposition();

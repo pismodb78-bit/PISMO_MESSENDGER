@@ -302,11 +302,11 @@ namespace PISMO
             {
                 int w = pnlChatHeader.ClientSize.Width;
                 const int titleMin = 150;          // место под имя собеседника
-                int boxRight = w - 274;            // правый край поля (дальше идёт 📅)
-                int boxLeft = Math.Max(titleMin, w - 434);
+                int boxRight = w - 248;            // правый край поля (дальше идёт 📅)
+                int boxLeft = Math.Max(titleMin, w - 388);
                 int boxW = Math.Max(70, boxRight - boxLeft);
                 if (boxW <= 70 && boxRight - titleMin < 70) { _msgSearch.Visible = false; return; }
-                _msgSearch.Bounds = new Rectangle(boxLeft, 12, boxW, 24);
+                _msgSearch.Bounds = new Rectangle(boxLeft, 13, boxW, 22);
             }
             catch { }
         }
@@ -325,7 +325,7 @@ namespace PISMO
                 {
                     Text = "🔍", Font = new Font("Segoe UI Emoji", 10f), FlatStyle = FlatStyle.Flat,
                     ForeColor = Color.FromArgb(200, 202, 208), BackColor = Color.FromArgb(47, 49, 54),
-                    Size = new Size(38, 34), Location = new Point(pnlChatHeader.Width - 140, 7),
+                    Size = new Size(32, 30), Location = new Point(pnlChatHeader.Width - 128, 9),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right, Cursor = Cursors.Hand, TabStop = false
                 };
                 _btnMsgSearch.FlatAppearance.BorderSize = 0;
@@ -345,19 +345,19 @@ namespace PISMO
                     new ToolTip().SetToolTip(b, tip);
                     return b;
                 }
-                _btnMsgSearchNext = MkNav("▼", 168, "Следующее совпадение (Enter)");
-                _btnMsgSearchPrev = MkNav("▲", 194, "Предыдущее совпадение (Shift+Enter)");
+                _btnMsgSearchNext = MkNav("▼", 152, "Следующее совпадение (Enter)");
+                _btnMsgSearchPrev = MkNav("▲", 176, "Предыдущее совпадение (Shift+Enter)");
                 // 📅 — переход к первому сообщению за выбранную дату.
-                _btnMsgCalendar = MkNav("📅", 270, "Перейти к дате");
+                _btnMsgCalendar = MkNav("📅", 244, "Перейти к дате");
                 _btnMsgCalendar.Font = new Font("Segoe UI Emoji", 9f);
                 // Компактнее и светлее: стрелки были почти не видны на тёмной шапке.
                 foreach (var b in new[] { _btnMsgSearchPrev, _btnMsgSearchNext })
                 {
-                    b.Size = new Size(24, 24);
+                    b.Size = new Size(22, 22);
                     b.ForeColor = Color.FromArgb(236, 238, 242);
                     b.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
                 }
-                _btnMsgCalendar.Size = new Size(26, 24);
+                _btnMsgCalendar.Size = new Size(24, 22);
                 _btnMsgCalendar.ForeColor = Color.FromArgb(236, 238, 242);
                 _btnMsgCalendar.Click += (s2, e2) =>
                     DatePickerPopup.Show(_btnMsgCalendar, DateTime.Today, JumpToDate);
@@ -370,13 +370,13 @@ namespace PISMO
                     BackColor = Color.FromArgb(30, 31, 34), ForeColor = Color.White,
                     Font = new Font("Segoe UI", 10f), PlaceholderText = "Поиск в переписке…",
                     // Ширина 190: поле занимает Width-490..Width-300, дальше 📅, затем счётчик.
-                    Size = new Size(160, 24), Location = new Point(pnlChatHeader.Width - 434, 12),
+                    Size = new Size(140, 22), Location = new Point(pnlChatHeader.Width - 388, 13),
                     Anchor = AnchorStyles.Top | AnchorStyles.Right
                 };
                 _msgSearchCount = new Label
                 {
-                    Visible = false, AutoSize = false, Size = new Size(44, 20),
-                    Location = new Point(pnlChatHeader.Width - 240, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    Visible = false, AutoSize = false, Size = new Size(40, 20),
+                    Location = new Point(pnlChatHeader.Width - 216, 14), Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     ForeColor = Color.FromArgb(150, 152, 158), Font = new Font("Segoe UI", 8f),
                     TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent,
                     Cursor = Cursors.Hand
