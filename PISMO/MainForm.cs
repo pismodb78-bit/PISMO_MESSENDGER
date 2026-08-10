@@ -1516,21 +1516,29 @@ namespace PISMO
             try { Sounds.Message(); } catch { }
 
             int totalMsgs = grew.Sum(g => g.delta);
+            string msgWord = RuPlural(totalMsgs, "сообщение", "сообщения", "сообщений");
             string body;
+
             if (grew.Count == 1)
             {
-                string name = GetNameFromCards(grew[0].sid);
-                // Тип последнего вложения — чтобы уведомление на гс/гиф/файл/кружок/
-                // фото было осмысленным, а не «пустым» (текста у медиа нет).
-                string kind = LatestUnreadKind(grew[0].sid);
-                body = string.IsNullOrEmpty(kind)
-                    ? $"{name}: {totalMsgs} {RuPlural(totalMsgs, "новое сообщение", "новых сообщения", "новых сообщений")}"
-                    : $"{name}: {kind}" + (totalMsgs > 1 ? $" (+{totalMsgs - 1})" : "");
+                // ОДИН отправитель — всегда одна и та же форма: имя, количество и тип
+                // (сообщение/фото/файл/кружок…). Раньше форма «прыгала»: то «Имя: N
+                // новых сообщений», то «Имя: 🖼 Фото (+2)», а без карточки в списке
+                // вместо имени уходило «Пользователь #21».
+                body = $"{GetNameFromCards(grew[0].sid)}: {totalMsgs} {msgWord} · {LatestUnreadKind(grew[0].sid)}";
+            }
+            else if (grew.Count <= 3)
+            {
+                // 2–3 отправителя — перечисляем имена и общее количество.
+                var names = grew.Select(g => GetNameFromCards(g.sid)).ToList();
+                string who = string.Join(", ", names.Take(names.Count - 1)) + " и " + names[^1];
+                body = $"{who} оставили вам {totalMsgs} {msgWord}";
             }
             else
             {
+                // Больше трёх — только количество людей и общее количество сообщений.
                 body = $"{grew.Count} {RuPlural(grew.Count, "пользователь", "пользователя", "пользователей")}"
-                     + $" · {totalMsgs} {RuPlural(totalMsgs, "сообщение", "сообщения", "сообщений")}";
+                     + $" оставили вам {totalMsgs} {msgWord}";
             }
 
             PushNotify("PISMO — новые сообщения", body);
@@ -1556,7 +1564,7 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@s", sid);
                 cmd.Parameters.AddWithValue("@me", me);
                 using var r = cmd.ExecuteReader();
-                if (!r.Read()) return "";
+                if (!r.Read()) return "💬 Сообщение";   // форма едина даже если строку не нашли
                 bool a = r["a"] != DBNull.Value && Convert.ToInt32(r["a"]) == 1;
                 bool v = r["v"] != DBNull.Value && Convert.ToInt32(r["v"]) == 1;
                 bool i = r["i"] != DBNull.Value && Convert.ToInt32(r["i"]) == 1;
@@ -1568,9 +1576,9 @@ namespace PISMO
                 if (i) return txt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase) ? "🎞 GIF" : "🖼 Фото";
                 if (f) return "📎 Файл";
                 if (txt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)) return "🎞 GIF";
-                return "";
+                return "💬 Сообщение";   // обычный текст тоже описываем — форма единая
             }
-            catch { return ""; }
+            catch { return "💬 Сообщение"; }
         }
 
         /// <summary>Русское склонение по числу: 1 книга / 2 книги / 5 книг.</summary>
@@ -1582,6 +1590,12 @@ namespace PISMO
             return many;
         }
 
+        private readonly Dictionary<int, string> _nameCache = new();
+
+        /// <summary>Имя отправителя для уведомлений. Сначала берём с карточки в списке,
+        /// а если карточки нет (человек не в списке чатов, режим «за пользователя»,
+        /// список ещё не построен) — дочитываем из БД и кешируем. Раньше в таком случае
+        /// в уведомление уходило «Пользователь #21».</summary>
         private string GetNameFromCards(int uid)
         {
             foreach (var p in _userPanels)
@@ -1590,9 +1604,30 @@ namespace PISMO
                 {
                     foreach (Control c in p.Controls)
                         if (c is Label lbl && lbl.Font.Bold && lbl.ForeColor == Color.FromArgb(220, 221, 222))
-                            return lbl.Text;
+                        {
+                            string t = (lbl.Text ?? "").Replace("📌 ", "").Trim();
+                            if (t.Length > 0) { _nameCache[uid] = t; return t; }
+                        }
                 }
             }
+            if (_nameCache.TryGetValue(uid, out var cached)) return cached;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT TRIM(CONCAT(COALESCE(Name,''),' ',COALESCE(Surname,''))) AS fio, login " +
+                    "FROM users WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", uid);
+                using var r = cmd.ExecuteReader();
+                if (r.Read())
+                {
+                    string fio = r["fio"] == DBNull.Value ? "" : r["fio"].ToString().Trim();
+                    string login = r["login"] == DBNull.Value ? "" : r["login"].ToString().Trim();
+                    string nm = fio.Length > 0 ? fio : login;
+                    if (nm.Length > 0) { _nameCache[uid] = nm; return nm; }
+                }
+            }
+            catch { }
             return $"Пользователь #{uid}";
         }
 
