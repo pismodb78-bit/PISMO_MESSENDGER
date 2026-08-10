@@ -36,6 +36,7 @@ namespace PISMO
         private const int APPMODE_FORCE_DARK = 2;
 
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
+        private static readonly System.Collections.Generic.HashSet<Panel> _attached = new();
         private static bool _appDark;
 
         // Панели, у которых прямо сейчас идёт плавная прокрутка. Пока она идёт, окна,
@@ -99,6 +100,11 @@ namespace PISMO
         public static void Attach(Panel p, Action onScrolled = null)
         {
             if (p == null) return;
+            // Защита от повторного подключения: Attach вызывается многократно
+            // (LoadConversations — на каждое обновление списка, EnsureDmScrollHook — на
+            // каждое открытие чата). Без неё плодились лишние скроллеры со своими
+            // таймерами и перехватчики сообщений — лишняя нагрузка и рывки.
+            if (!_attached.Add(p)) return;
             KillHorizontal(p);
             EnableAppDarkMode();
             void Apply() => ApplyDarkScrollbar(p);
