@@ -1574,22 +1574,17 @@ namespace PISMO
 
                 if (cnt > 0 && badge == null)
                 {
-                    badge = new Label
-                    {
-                        Text = cnt > 9 ? "9+" : cnt.ToString(),
-                        Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
-                        ForeColor = Color.White,
-                        BackColor = Color.FromArgb(240, 71, 71),
-                        Size = new Size(22, 18),
-                        Location = new Point(pnl.Width - 34, 22),
-                        TextAlign = ContentAlignment.MiddleCenter
-                    };
+                    badge = MakeBadge(cnt, pnl.Width);   // реальное число, ширина под цифры
                     pnl.Controls.Add(badge);
                     badge.BringToFront();
                 }
                 else if (cnt > 0 && badge != null)
                 {
-                    badge.Text = cnt > 9 ? "9+" : cnt.ToString();
+                    // Реальное число + подгон ширины, иначе «73» не влезало в 22px.
+                    badge.Text = cnt > 999 ? "999+" : cnt.ToString();
+                    int bw = badge.Text.Length <= 1 ? 22 : 22 + (badge.Text.Length - 1) * 8;
+                    badge.Size = new Size(bw, 18);
+                    badge.Location = new Point(pnl.Width - 12 - bw, 22);
                 }
                 else if (cnt == 0 && badge != null)
                 {
@@ -2328,16 +2323,25 @@ namespace PISMO
             _userPanels.Add(pnl);
         }
 
-        private Label MakeBadge(int count, int parentWidth) => new Label
+        /// <summary>Красный счётчик непрочитанных на карточке чата. Показывает реальное
+        /// число (раньше всё, что больше 9, превращалось в «9+», да ещё и «+» не влезал
+        /// в 22px — выглядело как «9» при 73 непрочитанных). Ширина подстраивается под
+        /// количество цифр, правый край остаётся на месте.</summary>
+        private Label MakeBadge(int count, int parentWidth)
         {
-            Text = count > 9 ? "9+" : count.ToString(),
-            Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
-            ForeColor = Color.White,
-            BackColor = Color.FromArgb(240, 71, 71),
-            Size = new Size(22, 18),
-            Location = new Point(parentWidth - 34, 22),
-            TextAlign = ContentAlignment.MiddleCenter
-        };
+            string text = count > 999 ? "999+" : count.ToString();
+            int w = text.Length <= 1 ? 22 : 22 + (text.Length - 1) * 8;
+            return new Label
+            {
+                Text = text,
+                Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(240, 71, 71),
+                Size = new Size(w, 18),
+                Location = new Point(parentWidth - 12 - w, 22),
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+        }
 
         // ════════════════════════════════════════════════════════════════
         //  IMPERSONATION
