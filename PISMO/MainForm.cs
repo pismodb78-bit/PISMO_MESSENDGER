@@ -2657,6 +2657,7 @@ namespace PISMO
                 // «пустой» перезагрузки (данные не изменились) подгрузка старых
                 // сообщений в этом чате оставалась заблокированной навсегда.
                 _dmLoadingOlder = false;
+                ApplyPendingJump();   // см. пояснение в RenderMessages (переход к дате)
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
@@ -2940,6 +2941,12 @@ namespace PISMO
                 // «пустой» перезагрузки (данные не изменились) подгрузка старых
                 // сообщений в этом чате оставалась заблокированной навсегда.
                 _dmLoadingOlder = false;
+                // И переход к дате обязаны выполнить ЗДЕСЬ. Отрисовка из кеша уже
+                // нарисовала нужную страницу и записала подпись; свежая выборка
+                // приходит с ТОЙ ЖЕ подписью — раньше мы просто выходили, и переход
+                // навсегда оставался в ожидании. Отсюда и «срабатывает со второго
+                // раза»: повторный клик шёл коротким путём (лимит уже поднят).
+                ApplyPendingJump();
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
@@ -3279,6 +3286,24 @@ namespace PISMO
 
         // ── Переход к сообщениям за дату (кнопка 📅 в поиске) ───────────────
         private DateTime? _pendingJumpDate;   // дата, к которой прокрутиться после отрисовки
+        private System.Windows.Forms.Timer _jumpWatchdog;
+
+        /// <summary>Страховка: если свежая выборка не пришла (обрыв сети, пустой ответ),
+        /// ожидание перехода нужно снять. Иначе флаг висит вечно и лента перестаёт
+        /// прокручиваться вниз к новым сообщениям при каждой следующей отрисовке.</summary>
+        private void ArmJumpWatchdog()
+        {
+            try
+            {
+                _jumpWatchdog?.Stop();
+                _jumpWatchdog?.Dispose();
+                var t = new System.Windows.Forms.Timer { Interval = 8000 };
+                _jumpWatchdog = t;
+                t.Tick += (s, e) => { t.Stop(); _pendingJumpDate = null; };
+                t.Start();
+            }
+            catch { }
+        }
 
         /// <summary>Открывает чат на первом сообщении за выбранную дату. Если нужные
         /// сообщения ещё не подгружены (лента постраничная), сначала расширяем страницу
@@ -3322,6 +3347,7 @@ namespace PISMO
             {
                 _dmLimit = need + 5;                 // подтягиваем ленту до нужной даты
                 _renderedChatKey = null; _renderedChatSig = null;   // форсим перерисовку
+                ArmJumpWatchdog();
                 if (grp) LoadGroupMessages(); else LoadMessages(markRead: false);
             }
             else ApplyPendingJump();                 // всё уже на экране
@@ -3350,10 +3376,25 @@ namespace PISMO
             // флаг гасился здесь, и переход «съедался» первым же кликом.
             if (target == null) return;
             _pendingJumpDate = null;
+            try { _jumpWatchdog?.Stop(); } catch { }
 
             try
             {
-                pnlMessages.ScrollControlIntoView(target);
+                // ScrollControlIntoView считает сдвиг по ТЕКУЩЕЙ раскладке и промахивается,
+                // если высоты пузырей ещё уточняются после отрисовки — отсюда «срабатывает
+                // через раз». Позиционируемся явно: абсолютная координата цели в контенте
+                // = Top минус текущее смещение прокрутки (оно отрицательное).
+                void ScrollToTarget()
+                {
+                    if (target.IsDisposed) return;
+                    pnlMessages.PerformLayout();
+                    int abs = target.Top - pnlMessages.AutoScrollPosition.Y;
+                    pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, abs - 12));
+                }
+                ScrollToTarget();
+                // Повторяем после полного цикла раскладки: если высоты сместились
+                // (догрузилось изображение/видео), первая попытка окажется неточной.
+                try { BeginInvoke(new Action(ScrollToTarget)); } catch { }
                 var orig = target.BackColor;
                 target.BackColor = Color.FromArgb(60, 90, 130);
                 var t = new System.Windows.Forms.Timer { Interval = 900 };

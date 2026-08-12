@@ -206,9 +206,30 @@ namespace PISMO
             }
 
             _srvPendingJumpId = targetId;
-            _srvLimit = need + 5;
+            // Только расширяем страницу: если пользователь уже долистал глубже, сужать
+            // выборку нельзя — часть ленты просто исчезла бы с экрана.
+            _srvLimit = Math.Max(_srvLimit, need + 5);
             _renderedKey = null; _renderedSig = null;   // форсим перерисовку с большей выборкой
+            ArmSrvJumpWatchdog();
             LoadMessages();
+        }
+
+        private System.Windows.Forms.Timer _srvJumpWatchdog;
+
+        /// <summary>Страховка: если свежая выборка так и не пришла (обрыв связи), ожидание
+        /// снимаем — иначе оно сработало бы позже, в неожиданный момент.</summary>
+        private void ArmSrvJumpWatchdog()
+        {
+            try
+            {
+                _srvJumpWatchdog?.Stop();
+                _srvJumpWatchdog?.Dispose();
+                var t = new System.Windows.Forms.Timer { Interval = 8000 };
+                _srvJumpWatchdog = t;
+                t.Tick += (s, e) => { t.Stop(); _srvPendingJumpId = 0; };
+                t.Start();
+            }
+            catch { }
         }
 
         /// <summary>Вызывается после отрисовки ленты канала: если ждём переход к дате —
@@ -223,6 +244,7 @@ namespace PISMO
                 return;
             int id = _srvPendingJumpId;
             _srvPendingJumpId = 0;
+            try { _srvJumpWatchdog?.Stop(); } catch { }
             try { ScrollToServerMessage(id); } catch { }
         }
     }

@@ -1337,6 +1337,11 @@ namespace PISMO
                 // См. пояснение в MainForm: без сброса флага догрузка старых сообщений
                 // в канале блокировалась после «пустой» перезагрузки.
                 _srvLoadingOlder = false;
+                // Переход к дате выполняем и здесь: отрисовка из кеша уже нарисовала
+                // нужную страницу и записала подпись, а свежая выборка приходит с той
+                // же подписью — раньше мы просто выходили, и переход оставался в
+                // ожидании до следующего клика («срабатывает со второго раза»).
+                ApplySrvPendingJump();
                 return;
             }
             _renderedKey = key; _renderedSig = sig;
@@ -1789,7 +1794,21 @@ namespace PISMO
             if (!_msgControls.TryGetValue(id, out var ctrl) || ctrl.IsDisposed) return;
             try
             {
-                _pnlMessages.ScrollControlIntoView(ctrl);
+                // ScrollControlIntoView считает сдвиг по ТЕКУЩЕЙ раскладке и промахивается,
+                // если высоты пузырей ещё уточняются после отрисовки. Позиционируемся явно:
+                // абсолютная координата цели в контенте = Top минус текущее смещение
+                // прокрутки (у AutoScroll-панели оно отрицательное).
+                void ScrollToTarget()
+                {
+                    if (ctrl.IsDisposed) return;
+                    _pnlMessages.PerformLayout();
+                    int abs = ctrl.Top - _pnlMessages.AutoScrollPosition.Y;
+                    _pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, abs - 12));
+                }
+                ScrollToTarget();
+                // Повтор после полного цикла раскладки: если высоты сместились
+                // (догрузилось изображение/видео), первая попытка окажется неточной.
+                try { BeginInvoke(new Action(ScrollToTarget)); } catch { }
                 var orig = ctrl.BackColor;
                 ctrl.BackColor = Color.FromArgb(60, 90, 130);
                 var t = new System.Windows.Forms.Timer { Interval = 900 };
