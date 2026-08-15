@@ -25,12 +25,30 @@ namespace PISMO
         {
             if (_open != null && !_open.IsDisposed)
             {
-                try { _open.Activate(); } catch { }
+                try { _open.Activate(); _open.BringToFront(); } catch { }
                 return;
             }
-            _open = new OverlayEditorForm();
-            _open.FormClosed += (s, e) => _open = null;
-            if (owner is Form f && !f.IsDisposed) _open.Show(f); else _open.Show();
+            OverlayEditorForm w = null;
+            try
+            {
+                w = new OverlayEditorForm();
+                _open = w;
+                w.FormClosed += (s, e) => { if (ReferenceEquals(_open, w)) _open = null; };
+                if (owner is Form f && !f.IsDisposed) w.Show(f); else w.Show();
+                w.BringToFront();
+                w.Activate();
+            }
+            catch (Exception ex)
+            {
+                // Молча проглоченная ошибка выглядела как «кнопка ничего не делает»,
+                // а вдобавок оставляла взведённым режим настройки — после этого
+                // оверлей нельзя было ни выключить, ни убрать по выходе из звонка.
+                _open = null;
+                try { CallOverlay.SetEditMode(false); } catch { }
+                try { w?.Dispose(); } catch { }
+                MessageBox.Show("Не удалось открыть настройку оверлея:\n" + ex.Message,
+                    "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         private OverlayEditorForm() : base("Настройка оверлея", new Size(400, 620))
@@ -138,15 +156,22 @@ namespace PISMO
             Content.Controls.Add(btnDefaults);
             y += 40;
 
-            // Режим перетаскивания живёт ровно столько, сколько открыто окно.
-            CallOverlay.SetEditMode(true);
-            CallOverlay.PositionChanged += OnOverlayMoved;
             FormClosed += (s, e) =>
             {
                 CallOverlay.PositionChanged -= OnOverlayMoved;
                 CallOverlay.SetEditMode(false);
             };
+        }
 
+        /// <summary>Режим перетаскивания включаем только когда окно РЕАЛЬНО показано,
+        /// и привязываем его к этому окну. Если бы он взводился в конструкторе, а окно
+        /// затем не открылось, режим остался бы включённым навсегда — и панель нельзя
+        /// было бы ни выключить, ни убрать после звонка.</summary>
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            CallOverlay.SetEditMode(true, this);
+            CallOverlay.PositionChanged += OnOverlayMoved;
             RefreshAll();
         }
 

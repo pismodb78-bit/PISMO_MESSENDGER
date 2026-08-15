@@ -453,6 +453,11 @@ namespace PISMO
         private static bool _showNow;
         private static bool _editMode;
         private static bool _sampleShown;   // на экране демо-состав, а не реальный звонок
+        // Окно редактора. Режим настройки живёт ровно столько, сколько живо ЭТО окно:
+        // раньше это был «голый» флаг, и если редактор не открылся (или закрылся
+        // аварийно), он оставался взведённым — Stop() превращался в пустышку, и
+        // панель нельзя было ни выключить, ни убрать после выхода из звонка.
+        private static Form _editOwner;
 
         /// <summary>Панель перетащили в режиме настройки.</summary>
         public static event Action PositionChanged;
@@ -460,26 +465,59 @@ namespace PISMO
         public static void Push(List<OverlayMember> members)
         {
             _last = members ?? new List<OverlayMember>();
-            if (!DeviceSettings.OverlayEnabled || (_last.Count == 0 && !_editMode)) { Stop(); return; }
+            // Выключенный оверлей сносим ВСЕГДА, даже с открытым редактором:
+            // настраивать отключённую панель всё равно нечего.
+            if (!DeviceSettings.OverlayEnabled) { Stop(true); return; }
+            if (_last.Count == 0 && !EditActive()) { Stop(); return; }
             EnsureForm();
             Apply();
         }
 
-        public static void Stop()
+        public static void Stop() => Stop(false);
+
+        /// <summary><paramref name="force"/> — снести панель, даже если открыт редактор.</summary>
+        public static void Stop(bool force)
         {
-            if (_editMode) return;   // окно настройки держит панель на экране
+            if (!force && EditActive())
+            {
+                // Редактор открыт (звонок мог закончиться) — панель остаётся, но
+                // реальный состав подменяем демонстрационным.
+                _last = OverlayRenderer.SampleMembers();
+                _sampleShown = true;
+                Apply();
+                return;
+            }
+            _editMode = false; _editOwner = null; _sampleShown = false;
             _last = new List<OverlayMember>();
             try { _tick?.Stop(); _tick?.Dispose(); } catch { }
             _tick = null;
-            try { if (_form != null && !_form.IsDisposed) _form.Close(); } catch { }
+            try
+            {
+                if (_form != null && !_form.IsDisposed)
+                {
+                    _form.Visible = false;   // гасим до разрушения окна
+                    _form.Close();
+                    _form.Dispose();
+                }
+            }
+            catch { }
             _form = null;
+        }
+
+        /// <summary>Режим настройки считается активным, только пока живо окно
+        /// редактора — сам по себе флаг залипнуть не может.</summary>
+        private static bool EditActive()
+        {
+            if (!_editMode) return false;
+            if (_editOwner == null || _editOwner.IsDisposed) { _editMode = false; _editOwner = null; return false; }
+            return true;
         }
 
         /// <summary>Перерисовать с текущими настройками (вызывает редактор).</summary>
         public static void Refresh()
         {
-            if (!DeviceSettings.OverlayEnabled && !_editMode) { Stop(); return; }
-            if (_last.Count == 0 && !_editMode) return;
+            if (!DeviceSettings.OverlayEnabled) { Stop(true); return; }
+            if (_last.Count == 0 && !EditActive()) return;
             EnsureForm();
             Apply();
         }
@@ -488,9 +526,10 @@ namespace PISMO
 
         /// <summary>Режим настройки: панель видна всегда и перетаскивается мышью.
         /// sample — что показывать, если звонка сейчас нет.</summary>
-        public static void SetEditMode(bool on, List<OverlayMember> sample = null)
+        public static void SetEditMode(bool on, Form owner = null, List<OverlayMember> sample = null)
         {
             _editMode = on;
+            _editOwner = on ? owner : null;
             if (on)
             {
                 // Звонка может и не быть — тогда показываем демо-состав, иначе
@@ -527,13 +566,17 @@ namespace PISMO
             _tick = new System.Windows.Forms.Timer { Interval = 700 };
             _tick.Tick += (s, e) =>
             {
+                // Страховка: что бы ни случилось выше по стеку, выключенный оверлей
+                // не должен оставаться на экране.
+                if (!DeviceSettings.OverlayEnabled) { Stop(true); return; }
+                bool edit = EditActive();          // заодно снимает залипший режим
                 try { _form?.ReassertTopMost(); } catch { }
-                if (_editMode) return;             // в настройке видимостью не рулим
+                if (edit) return;                  // в настройке видимостью не рулим
                 bool show = IsFullscreenAppForeground();
                 if (show != _showNow) { _showNow = show; Apply(); }
             };
             _tick.Start();
-            _showNow = _editMode || IsFullscreenAppForeground();
+            _showNow = EditActive() || IsFullscreenAppForeground();
         }
 
         private static void Apply()

@@ -123,7 +123,11 @@ namespace PISMO
                 // поэтому границы обозначаем сами.
                 if ((int)m.Result == HTCLIENT)
                 {
-                    int lp = m.LParam.ToInt32();
+                    // ToInt64, а не ToInt32: на 64-битной системе координаты
+                    // упакованы в младшие 32 бита, и при отрицательном Y (окно выше
+                    // верха экрана, второй монитор) ToInt32 бросает OverflowException
+                    // прямо из WndProc.
+                    long lp = m.LParam.ToInt64();
                     var pt = PointToClient(new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)));
                     bool l = pt.X <= Grip, r = pt.X >= ClientSize.Width - Grip;
                     bool t = pt.Y <= Grip, b = pt.Y >= ClientSize.Height - Grip;
