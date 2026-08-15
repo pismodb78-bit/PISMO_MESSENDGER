@@ -543,6 +543,9 @@ namespace PISMO
                 _form?.SetEditMode(true);
                 _showNow = true;
                 Apply();
+                // Сразу наверх, не дожидаясь тика: редактор тоже поверх всех окон,
+                // и без этого плашка могла оказаться под ним.
+                try { _form?.ReassertTopMost(); } catch { }
             }
             else
             {
