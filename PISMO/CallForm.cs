@@ -2229,9 +2229,47 @@ namespace PISMO
                 Reg(2, DeviceSettings.HotkeyCamera);
                 Reg(3, DeviceSettings.HotkeyScreen);
                 Reg(4, DeviceSettings.HotkeyDeafen);
+                // Запоминаем, ЧТО повесили: по этим значениям ApplyLiveSettings
+                // понимает, что комбинации сменили в настройках, и перевешивает их
+                // на текущий звонок без перезахода.
+                _lastHkMic = DeviceSettings.HotkeyMic;
+                _lastHkCam = DeviceSettings.HotkeyCamera;
+                _lastHkScr = DeviceSettings.HotkeyScreen;
+                _lastHkDeaf = DeviceSettings.HotkeyDeafen;
                 _hotkeysRegistered = true;
             }
             catch { }
+        }
+
+        private int _lastHkMic, _lastHkCam, _lastHkScr, _lastHkDeaf;
+
+        /// <summary>Держит горячие клавиши звонка в актуальном состоянии.
+        ///
+        /// Пока окно настроек открыто, регистрацию СНИМАЕМ: глобальная горячая
+        /// клавиша перехватывает нажатие раньше любого окна, и назначить ту же
+        /// комбинацию заново было бы невозможно — она уходила бы в мьют вместо поля
+        /// захвата. Закрыли настройки — вешаем уже новые комбинации.</summary>
+        private void SyncCallHotkeys()
+        {
+            bool settingsOpen = false;
+            try
+            {
+                foreach (Form f in Application.OpenForms)
+                    if (f is SettingsForm) { settingsOpen = true; break; }
+            }
+            catch { }
+
+            if (settingsOpen) { UnregisterCallHotkeys(); return; }
+
+            bool changed = _lastHkMic != DeviceSettings.HotkeyMic
+                        || _lastHkCam != DeviceSettings.HotkeyCamera
+                        || _lastHkScr != DeviceSettings.HotkeyScreen
+                        || _lastHkDeaf != DeviceSettings.HotkeyDeafen;
+            if (!_hotkeysRegistered || changed)
+            {
+                UnregisterCallHotkeys();
+                RegisterCallHotkeys();
+            }
         }
 
         private void UnregisterCallHotkeys()
@@ -2245,6 +2283,10 @@ namespace PISMO
         {
             base.OnHandleCreated(e);
             RegisterCallHotkeys();
+            // Раньше таймер живых настроек заводился только в OnActivated — а окно
+            // голосового канала часто вообще не получает фокус (сразу уходишь в
+            // игру), и тогда ни смена бинда, ни настройки оверлея не применялись.
+            EnsureLiveSettingsTimer();
         }
 
         // Применяем настройки чувствительности «на лету»: когда окно звонка
@@ -2295,6 +2337,7 @@ namespace PISMO
                     _lastGain = DeviceSettings.MicrophoneGain;
                     _transport?.SetMicGain(_lastGain);
                 }
+                SyncCallHotkeys();   // сменили бинд в настройках — применяем без перезахода
                 // Настройки оверлея тоже «на горячую»: их могли поменять и из панели
                 // звонка, и из настроек устройств — сюда приходит любой источник.
                 if (_lastOverlayOn != DeviceSettings.OverlayEnabled ||
