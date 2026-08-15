@@ -983,6 +983,57 @@ namespace PISMO
             }
         }
 
+        /// <summary>Говорит ли участник прямо сейчас (с учётом «хвоста» затухания).</summary>
+        private bool IsSpeakingNow(string pid, DateTime now)
+            => _activeSpeakers.Contains(pid)
+               || (_speakUntil.TryGetValue(pid, out var until) && now < until);
+
+        /// <summary>Снимок состава звонка для игрового оверлея (панель поверх игры).
+        /// Себя ставим первым: настройка «сколько показывать» считает минимум 1 —
+        /// это именно ты, поэтому при лимите 1 в оверлее видно себя.</summary>
+        private void PushOverlay()
+        {
+            if (!DeviceSettings.OverlayEnabled) { CallOverlay.Stop(); return; }
+            try
+            {
+                var now = DateTime.UtcNow;
+                var list = new List<OverlayMember>
+                {
+                    new OverlayMember
+                    {
+                        Uid = UserSession.EffectiveId,
+                        Name = string.IsNullOrWhiteSpace(UserSession.EffectiveName)
+                               ? "Вы" : UserSession.EffectiveName,
+                        MicMuted = _muted,
+                        Deafened = _remoteAllMuted,
+                        Streaming = _cameraStarted || _screenSharing,
+                        Speaking = IsSpeakingNow(SelfPid, now),
+                        IsSelf = true
+                    }
+                };
+                foreach (var kv in _participants)
+                {
+                    string pid = kv.Key;
+                    int.TryParse(pid, out int uid);
+                    if (uid > 0) AvatarStore.EnsureLoaded(uid);
+                    list.Add(new OverlayMember
+                    {
+                        Uid = uid,
+                        Name = string.IsNullOrWhiteSpace(kv.Value) ? pid : kv.Value,
+                        MicMuted = _micMutedPids.Contains(pid),
+                        Deafened = _deafenedPids.Contains(pid),
+                        // «В эфире» = демонстрация экрана ИЛИ включённая камера
+                        // (у камеры появляется своя плитка).
+                        Streaming = _publishedStreams.ContainsKey(pid)
+                                    || _tiles.ContainsKey(TileKey(pid, "camera")),
+                        Speaking = IsSpeakingNow(pid, now)
+                    });
+                }
+                CallOverlay.Push(list);
+            }
+            catch { }
+        }
+
         // ── Отрисовка плитки (аватар + рамка говорящего) ────────────────
         private void PaintTile(Graphics g, CallTile tile)
         {

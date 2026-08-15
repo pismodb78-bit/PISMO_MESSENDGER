@@ -34,6 +34,8 @@ namespace PISMO
         private Label _lblNoiseStrengthValue;
         private CheckBox _chkLightTheme;
         private CheckBox _chkAllMonitors;   // все мониторы в выборе демонстрации (WGC)
+        private CheckBox _chkOverlay;         // игровой оверлей вкл/выкл
+        private NumericUpDown _numOverlayMax; // сколько участников показывать в оверлее
         private TrackBar _trkVoiceThreshold;
         private Label _lblVoiceThresholdValue;
         private Panel _pnlLevelBar;
@@ -238,6 +240,12 @@ namespace PISMO
 
             // Тема оформления.
             _chkLightTheme.Checked = Theme.IsLight;
+
+            // Игровой оверлей.
+            _chkOverlay.Checked = DeviceSettings.OverlayEnabled;
+            _numOverlayMax.Value = Math.Clamp(DeviceSettings.OverlayMaxParticipants,
+                                              (int)_numOverlayMax.Minimum, (int)_numOverlayMax.Maximum);
+            _numOverlayMax.Enabled = _chkOverlay.Checked;
         }
 
         // ════════════════════════════════════════════════════════════
@@ -556,6 +564,8 @@ namespace PISMO
             // Управление GPU из настроек убрано: захват демки всегда на встройке
             // (пин на дискретку ронял fps на Optimus, NVENC в FFI нет).
             DeviceSettings.ScreenCaptureAllMonitors = _chkAllMonitors.Checked;
+            DeviceSettings.OverlayEnabled = _chkOverlay.Checked;
+            DeviceSettings.OverlayMaxParticipants = (int)_numOverlayMax.Value;
             bool newLight = _chkLightTheme.Checked;
             DeviceSettings.ThemeMode = newLight ? "light" : "dark";
 
@@ -568,6 +578,9 @@ namespace PISMO
             try { MainForm.Current?.RefreshVoiceEqState(); } catch { }
             try { MainForm.Current?.ActiveCallFormPublic()?.SetNoiseSuppressionLive(DeviceSettings.NoiseSuppression); } catch { }
             try { MainForm.Current?.ActiveCallFormPublic()?.SetNoiseStrengthLive(DeviceSettings.NoiseSuppressionStrength); } catch { }
+            // Оверлей — на лету: выключили = гаснет сразу, включили = появляется
+            // с текущим составом, не дожидаясь следующего тика звонка.
+            try { CallOverlay.ApplySettings(); } catch { }
 
             // Тема зафиксирована на старте приложения (Theme.IsLight) — если
             // выбор изменился, честно предупреждаем и предлагаем перезапуск

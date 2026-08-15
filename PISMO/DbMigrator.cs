@@ -225,6 +225,14 @@ namespace PISMO
                     try { Exec(conn, "ALTER TABLE server_messages ADD KEY idx_reply (reply_to_id)"); } catch { }
                 }
             }),
+
+            (14, "server_channels.user_limit: вместимость голосового канала", conn =>
+            {
+                // 0 = без ограничения (поведение до этой миграции сохраняется на
+                // всех существующих каналах).
+                if (TableExists(conn, "server_channels") && !ColumnExists(conn, "server_channels", "user_limit"))
+                    Exec(conn, "ALTER TABLE server_channels ADD COLUMN user_limit INT NOT NULL DEFAULT 0");
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>

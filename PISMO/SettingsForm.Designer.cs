@@ -518,11 +518,86 @@ namespace PISMO
             pnlScreen.Controls.Add(_chkAllMonitors);
             pnlScreen.Controls.Add(lblAllMonHint);
 
+            // ── Игровой оверлей ─────────────────────────────────────────
+            var pnlOverlay = new Panel
+            {
+                BackColor = Color.FromArgb(47, 49, 54),
+                Location = new Point(20, pnlScreen.Bottom + 14),
+                Size = new Size(456, 146)
+            };
+            pnlOverlay.Controls.Add(new Label
+            {
+                Text = "🎮 Оверлей в игре",
+                Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(14, 8)
+            });
+
+            _chkOverlay = new CheckBox
+            {
+                Text = "Показывать участников поверх игры",
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BackColor = Color.FromArgb(47, 49, 54),
+                AutoSize = true,
+                Location = new Point(14, 38),
+                Cursor = Cursors.Hand
+            };
+            pnlOverlay.Controls.Add(_chkOverlay);
+            pnlOverlay.Controls.Add(new Label
+            {
+                Text = "Панель у правого края экрана: кто в голосовом канале, выключен ли микрофон и\n" +
+                       "бейдж «В ЭФИРЕ» при камере/демонстрации. Работает поверх игр в оконном и\n" +
+                       "полноэкранном оконном режимах (эксклюзивный полный экран Windows не даёт перекрыть).",
+                Font = new Font("Segoe UI", 8f),
+                ForeColor = Color.FromArgb(140, 142, 146),
+                AutoSize = false,
+                Size = new Size(430, 44),
+                Location = new Point(16, 60)
+            });
+
+            pnlOverlay.Controls.Add(new Label
+            {
+                Text = "Показывать участников, не более:",
+                Font = new Font("Segoe UI", 9.5f),
+                ForeColor = Color.FromArgb(200, 201, 203),
+                AutoSize = false,
+                Size = new Size(230, 26),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Location = new Point(14, 108)
+            });
+            _numOverlayMax = new NumericUpDown
+            {
+                Minimum = 1,                 // минимум — ты сам
+                Maximum = 20,
+                Value = 5,
+                BackColor = Color.FromArgb(32, 34, 37),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 9.5f),
+                Size = new Size(70, 26),
+                Location = new Point(250, 108)
+            };
+            pnlOverlay.Controls.Add(_numOverlayMax);
+            pnlOverlay.Controls.Add(new Label
+            {
+                Text = "остальные — строкой «и ещё N…»",
+                Font = new Font("Segoe UI", 8f),
+                ForeColor = Color.FromArgb(140, 142, 146),
+                AutoSize = false,
+                Size = new Size(120, 26),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Location = new Point(328, 108)
+            });
+            // Число участников имеет смысл только при включённом оверлее.
+            _chkOverlay.CheckedChanged += (s, e) => _numOverlayMax.Enabled = _chkOverlay.Checked;
+
             // ── Горячие клавиши в звонке ────────────────────────────────
             var pnlKeys = new Panel
             {
                 BackColor = Color.FromArgb(47, 49, 54),
-                Location = new Point(20, pnlScreen.Bottom + 14),
+                Location = new Point(20, pnlOverlay.Bottom + 14),
                 Size = new Size(456, 150)
             };
             pnlKeys.Controls.Add(new Label
@@ -616,7 +691,7 @@ namespace PISMO
             // Переносим все контролы в scrollPanel
             scrollPanel.Controls.AddRange(new Control[]
             {
-                lblTitle, pnlCamera, pnlMic, pnlScreen, pnlKeys, _btnSave
+                lblTitle, pnlCamera, pnlMic, pnlScreen, pnlOverlay, pnlKeys, _btnSave
             });
 
             // Форма фиксирована — содержимое скроллится

@@ -128,6 +128,20 @@ namespace PISMO
         /// <summary>Тема оформления: "dark" (по умолчанию, как раньше) или "light".</summary>
         public static string ThemeMode { get; set; } = "dark";
 
+        /// <summary>Игровой оверлей: показывать участников голосового канала поверх
+        /// игры (панель у правого края экрана). По умолчанию включён.</summary>
+        public static bool OverlayEnabled { get; set; } = true;
+
+        /// <summary>Сколько участников максимум рисовать в игровом оверлее.
+        /// Минимум 1 (ты сам) — иначе панель была бы пустой; остальные сворачиваются
+        /// в строку «и ещё N…», чтобы большой канал не перекрывал полэкрана.</summary>
+        private static int _overlayMax = 5;
+        public static int OverlayMaxParticipants
+        {
+            get => _overlayMax;
+            set => _overlayMax = Math.Clamp(value, 1, 20);
+        }
+
         /// <summary>Показывать ВСЕ мониторы в выборе демонстрации (захват WGC).
         /// По умолчанию выключено: WGC ограничен ~30 fps, зато DXGI-захват (60 fps)
         /// видит только мониторы «своего» GPU — на мульти-GPU системах часть
@@ -276,6 +290,12 @@ namespace PISMO
                         case "ScreenCaptureAllMonitors":
                             ScreenCaptureAllMonitors = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
                             break;
+                        case "OverlayEnabled":
+                            OverlayEnabled = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "OverlayMaxParticipants":
+                            if (int.TryParse(val, out int omp)) OverlayMaxParticipants = omp;
+                            break;
                         case "HotkeyMic":
                             if (int.TryParse(val, out int hm)) HotkeyMic = hm;
                             break;
@@ -321,6 +341,8 @@ namespace PISMO
                     $"HardwareAcceleration={(HardwareAcceleration ? 1 : 0)}\n" +
                     $"ThemeMode={ThemeMode}\n" +
                     $"ScreenCaptureAllMonitors={(ScreenCaptureAllMonitors ? 1 : 0)}\n" +
+                    $"OverlayEnabled={(OverlayEnabled ? 1 : 0)}\n" +
+                    $"OverlayMaxParticipants={OverlayMaxParticipants}\n" +
                     $"HotkeyMic={HotkeyMic}\n" +
                     $"HotkeyCamera={HotkeyCamera}\n" +
                     $"HotkeyScreen={HotkeyScreen}\n" +

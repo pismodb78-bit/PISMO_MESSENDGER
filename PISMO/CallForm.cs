@@ -2191,6 +2191,7 @@ namespace PISMO
                 _presenceLeft = true;
                 _durationTimer?.Stop();
                 _signalTimer?.Stop();
+                try { CallOverlay.Stop(); } catch { }   // звонок закончился — оверлей убираем
 
                 // Убираем себя из «в эфире» голосового канала. Повторный Leave с
                 // небольшой задержкой добивает возможную гонку с in-flight heartbeat.

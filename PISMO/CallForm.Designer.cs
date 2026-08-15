@@ -277,6 +277,10 @@ namespace PISMO
                 if (_connected)
                     _lblDuration.Text = (DateTime.Now - _startTime).ToString(@"mm\:ss");
 
+                // Игровой оверлей (панель поверх игры) — обновляем до ветвлений
+                // ниже: у голосового канала свой путь с ранним return.
+                PushOverlay();
+
                 // Голосовой канал сервера: участников берём из плиток (нет call_participants).
                 if (_isChannel)
                 {

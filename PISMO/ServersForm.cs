@@ -65,6 +65,10 @@ namespace PISMO
         // Контейнеры участников «в эфире» под каждым голосовым каналом.
         private readonly Dictionary<int, FlowLayoutPanel> _voiceContainers = new();
         private readonly Dictionary<int, string> _voiceSig = new(); // подпись «кто в эфире» — чтобы не перестраивать каждые 2.5с
+        // Вместимость голосовых каналов: cid -> лимит (0 = без ограничения) и
+        // пилюля «занято/лимит» в строке канала.
+        private readonly Dictionary<int, int> _channelLimits = new();
+        private readonly Dictionary<int, Label> _channelCountLabels = new();
         private readonly ToolTip _voiceMemberTip = new ToolTip();    // полное имя участника (при обрезке «…»)
         private readonly ToolTip _memberTip = new ToolTip();         // полное имя участника в списке «Участники»
         private static readonly Font _vmNameFont = new Font("Segoe UI", 8.5f);
@@ -653,11 +657,33 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand("SELECT id,name,type FROM server_channels WHERE server_id=@s ORDER BY position,id", conn);
-                cmd.Parameters.AddWithValue("@s", _serverId);
-                var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
+                var dt = new DataTable();
+                // user_limit появился миграцией 14. Если она ещё не прошла (старая
+                // база, не было связи при запуске) — MySQL ответит 1054, и мы честно
+                // читаем без этой колонки: каналы просто будут без ограничения.
+                try
+                {
+                    using var cmd = new MySqlCommand(
+                        "SELECT id,name,type,user_limit FROM server_channels WHERE server_id=@s ORDER BY position,id", conn);
+                    cmd.Parameters.AddWithValue("@s", _serverId);
+                    new MySqlDataAdapter(cmd).Fill(dt);
+                }
+                catch (MySqlException mex) when (mex.Number == 1054)
+                {
+                    dt = new DataTable();
+                    using var cmd2 = new MySqlCommand(
+                        "SELECT id,name,type FROM server_channels WHERE server_id=@s ORDER BY position,id", conn);
+                    cmd2.Parameters.AddWithValue("@s", _serverId);
+                    new MySqlDataAdapter(cmd2).Fill(dt);
+                }
                 _voiceContainers.Clear();
                 _voiceSig.Clear();
+                _channelLimits.Clear();
+                _channelCountLabels.Clear();
+
+                bool hasLimit = dt.Columns.Contains("user_limit");
+                int LimitOf(DataRow r) =>
+                    hasLimit && r["user_limit"] != DBNull.Value ? Convert.ToInt32(r["user_limit"]) : 0;
 
                 // Группировка как в Discord: сначала «Текстовые каналы», затем «Голосовые».
                 bool textHeader = false, voiceHeader = false;
@@ -671,7 +697,9 @@ namespace PISMO
                 {
                     if (r["type"].ToString() != "voice") continue;
                     if (!voiceHeader) { _pnlChannels.Controls.Add(MakeHeader("Голосовые каналы")); voiceHeader = true; }
-                    AddChannelButton(Convert.ToInt32(r["id"]), r["name"].ToString(), "voice");
+                    int cid = Convert.ToInt32(r["id"]);
+                    _channelLimits[cid] = LimitOf(r);
+                    AddChannelButton(cid, r["name"].ToString(), "voice");
                 }
                 FilterChannels(_channelSearch?.Text);
             }
@@ -723,11 +751,53 @@ namespace PISMO
             badge.Click += (s, e) => SelectChannel(capCid, capType, capName, joinVoice: false);
             b.Controls.Add(badge);
             _channelBadgeLabels[cid] = badge;
+            // Пилюля «занято/лимит» (как в Discord) — только у голосовых каналов с
+            // заданной вместимостью. Число слева обновляется по присутствию.
+            int chanLimit = ctype == "voice" && _channelLimits.TryGetValue(cid, out var lim) ? lim : 0;
+            if (chanLimit > 0)
+            {
+                var countLbl = new Label
+                {
+                    AutoSize = false,
+                    Size = new Size(42, 18),
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold),
+                    ForeColor = Color.FromArgb(185, 187, 190),
+                    BackColor = Color.FromArgb(40, 42, 47),
+                    Text = "0/" + chanLimit
+                };
+                void ShapePill()
+                {
+                    try
+                    {
+                        int d = countLbl.Height;
+                        using var gp = new System.Drawing.Drawing2D.GraphicsPath();
+                        gp.AddArc(0, 0, d, d, 90, 180);
+                        gp.AddArc(countLbl.Width - d, 0, d, d, 270, 180);
+                        gp.CloseFigure();
+                        countLbl.Region = new Region(gp);
+                    }
+                    catch { }
+                }
+                countLbl.Resize += (s, e) => ShapePill();
+                ShapePill();
+                _voiceMemberTip.SetToolTip(countLbl, $"Вместимость канала: {chanLimit}");
+                b.Controls.Add(countLbl);
+                _channelCountLabels[cid] = countLbl;
+                void PlacePill(object s, EventArgs e)
+                { try { countLbl.Location = new Point(b.Width - countLbl.Width - 34, (b.Height - countLbl.Height) / 2); } catch { } }
+                b.Resize += PlacePill;
+                PlacePill(null, null);
+                countLbl.BringToFront();
+            }
+
             void PlaceBadge(object s, EventArgs e)
             {
                 try
                 {
-                    int rightPad = ctype == "voice" ? 34 : 8;   // у голосового не залезаем на 💬
+                    // У голосового не залезаем на 💬, а при наличии пилюли лимита —
+                    // ещё и на неё.
+                    int rightPad = ctype == "voice" ? (chanLimit > 0 ? 80 : 34) : 8;
                     badge.Location = new Point(b.Width - badge.Width - rightPad, (b.Height - badge.Height) / 2);
                 }
                 catch { }
@@ -854,6 +924,22 @@ namespace PISMO
                     BeginInvoke(new Action(() =>
                     {
                         if (_serverId != serverId) return;
+
+                        // Счётчик «занято/лимит» обновляем ВНЕ проверки подписи ниже:
+                        // она пропускает каналы с неизменным составом, а число всё
+                        // равно должно быть верным при первом построении списка.
+                        foreach (var cl in _channelCountLabels)
+                        {
+                            var lbl = cl.Value;
+                            if (lbl == null || lbl.IsDisposed) continue;
+                            if (!_channelLimits.TryGetValue(cl.Key, out int limit) || limit <= 0) continue;
+                            int busy = map.TryGetValue(cl.Key, out var pp) ? pp.Count : 0;
+                            lbl.Text = busy + "/" + limit;
+                            // Заполнен — красным, чтобы было видно, что войти нельзя.
+                            lbl.ForeColor = busy >= limit
+                                ? Color.FromArgb(237, 66, 69) : Color.FromArgb(185, 187, 190);
+                        }
+
                         foreach (var kv in _voiceContainers)
                         {
                             var cont = kv.Value;
@@ -1055,6 +1141,8 @@ namespace PISMO
             menu.Items.Add("💬  Открыть чат", null, (s, e) => SelectChannel(cid, ctype, cname, joinVoice: false));
             if (ctype == "voice")
                 menu.Items.Add("🔊  Присоединиться к звонку", null, (s, e) => SelectChannel(cid, ctype, cname));
+            if (ctype == "voice" && _canManage)
+                menu.Items.Add("👥  Лимит участников…", null, (s, e) => EditChannelLimit(cid, cname));
             menu.Items.Add("🔕  Заглушить уведомления сервера", null, (s, e) => ToggleServerMute());
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("✓  Пометить прочитанным", null, (s, e) =>
@@ -1064,12 +1152,70 @@ namespace PISMO
             menu.Show(Cursor.Position);
         }
 
+        /// <summary>Вместимость голосового канала: 0 (или пусто) — без ограничения,
+        /// иначе столько человек максимум может находиться в канале одновременно.</summary>
+        private void EditChannelLimit(int cid, string cname)
+        {
+            int cur = _channelLimits.TryGetValue(cid, out var l) ? l : 0;
+            string ans = Prompt($"Лимит участников «{cname}» (0 — без ограничения)",
+                                cur > 0 ? cur.ToString() : "0");
+            if (ans == null) return;                       // отмена
+            ans = ans.Trim();
+            if (!int.TryParse(ans, out int limit) || limit < 0)
+            {
+                MessageBox.Show(this, "Нужно целое число от 0 до 99 (0 — без ограничения).",
+                    "Лимит участников", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            limit = Math.Min(limit, 99);
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "UPDATE server_channels SET user_limit=@l WHERE id=@c", conn);
+                cmd.Parameters.AddWithValue("@l", limit);
+                cmd.Parameters.AddWithValue("@c", cid);
+                cmd.ExecuteNonQuery();
+                _channelLimits[cid] = limit;
+                LoadChannels();       // пилюля появляется/исчезает вместе с лимитом
+            }
+            catch (MySqlException mex) when (mex.Number == 1054)
+            {
+                MessageBox.Show(this,
+                    "В базе ещё нет колонки вместимости каналов — перезапустите приложение,\n" +
+                    "чтобы применилась миграция схемы.",
+                    "Лимит участников", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (Exception ex) { ShowDbError(ex); }
+        }
+
         // Уже подключённые голосовые каналы (не заходим в один звонок дважды).
         private readonly HashSet<int> _joinedVoice = new HashSet<int>();
+
+        /// <summary>Проверяет вместимость канала перед входом. Возвращает false и
+        /// показывает сообщение, если мест нет.</summary>
+        private bool CanEnterVoice(int cid, string name)
+        {
+            if (!_channelLimits.TryGetValue(cid, out int limit) || limit <= 0) return true;   // без ограничения
+            try
+            {
+                // Свою собственную (ещё не протухшую) запись за «занятое место» не
+                // считаем — иначе быстрый перезаход упирался бы в лимит.
+                if (VoicePresence.IsInChannel(cid, _me)) return true;
+                int busy = VoicePresence.CountForChannel(cid);
+                if (busy < limit) return true;
+                MessageBox.Show(this,
+                    $"Канал «{name}» заполнен: {busy} из {limit}.\n\nПодождите, пока кто-нибудь выйдет.",
+                    "Канал заполнен", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return false;
+            }
+            catch { return true; }   // не смогли проверить — не мешаем войти
+        }
 
         private void JoinVoiceChannel(int cid, string name)
         {
             if (_joinedVoice.Contains(cid)) return;
+            if (!CanEnterVoice(cid, name)) return;
             // Нельзя быть в двух голосовых каналах разом: выходим из текущего
             // голоса (личного/серверного) перед входом в новый — иначе две комнаты
             // LiveKit, звук стакается/усиливается и слышен свой голос.

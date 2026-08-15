@@ -68,6 +68,48 @@ namespace PISMO
             catch { }
         }
 
+        /// <summary>Сколько «живых» участников сейчас в канале (для проверки лимита
+        /// вместимости перед входом). Считаем ровно по тому же правилу свежести,
+        /// что и список участников, иначе счётчик и список расходились бы.</summary>
+        public static int CountForChannel(int channelId)
+        {
+            if (!_tableOk || channelId <= 0) return 0;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT COUNT(*) FROM voice_presence " +
+                    "WHERE channel_id=@c AND last_seen > (NOW() - INTERVAL 20 SECOND)", conn);
+                cmd.Parameters.AddWithValue("@c", channelId);
+                return Convert.ToInt32(cmd.ExecuteScalar());
+            }
+            catch (MySqlException mex)
+            {
+                if (mex.Number == 1146) _tableOk = false;
+            }
+            catch { }
+            return 0;
+        }
+
+        /// <summary>Уже ли пользователь числится в этом канале (перезаход не должен
+        /// упираться в лимит из-за собственной ещё не протухшей записи).</summary>
+        public static bool IsInChannel(int channelId, int userId)
+        {
+            if (!_tableOk || channelId <= 0 || userId <= 0) return false;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT COUNT(*) FROM voice_presence " +
+                    "WHERE channel_id=@c AND user_id=@u AND last_seen > (NOW() - INTERVAL 20 SECOND)", conn);
+                cmd.Parameters.AddWithValue("@c", channelId);
+                cmd.Parameters.AddWithValue("@u", userId);
+                return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+            }
+            catch { }
+            return false;
+        }
+
         /// <summary>Список «живых» участников всех голосовых каналов сервера:
         /// channelId -> [(userId, name)]. Протухшие записи (нет heartbeat &gt; 20 c) игнорируются.</summary>
         public static Dictionary<int, List<(int uid, string name, bool streaming, bool micMuted, bool deafened)>> ReadForServer(int serverId)
