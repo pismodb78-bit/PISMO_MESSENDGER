@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -49,9 +50,13 @@ namespace PISMO
         private static readonly Color CardEdge = Color.FromArgb(90, 0, 0, 0);
         private static readonly Color NameFg = Color.FromArgb(236, 238, 242);
         private static readonly Color SelfFg = Color.FromArgb(120, 200, 140);
-        private static readonly Color SpeakRing = Color.FromArgb(59, 165, 93);
         private static readonly Color BadgeBack = Color.FromArgb(237, 66, 69);
         private static readonly Color MoreFg = Color.FromArgb(150, 152, 158);
+
+        // Кто говорит — видно по прозрачности строки, а не по зелёному кольцу:
+        // молчит — бледная, говорит — почти непрозрачная.
+        private const float RowAlphaSilent = 0.20f;     // ~80% прозрачности
+        private const float RowAlphaSpeaking = 0.75f;   // ~25% прозрачности
         // Непрозрачный «двойник» фона карточки — им MuteGlyph рисует вырез под
         // перечёркивающей линией (полупрозрачный цвет дал бы грязный след).
         private static readonly Color SlashBg = Color.FromArgb(255, 34, 35, 39);
@@ -109,13 +114,19 @@ namespace PISMO
 
             // Ширина — по самому длинному видимому имени, в разумных пределах:
             // узкая панель резала бы имена, широкая зря перекрывала бы экран.
-            int nameW = 0;
-            for (int i = 0; i < shown; i++)
+            // Меряем через GDI+ (MeasureString), потому что и рисуем теперь им же.
+            int nameW = 0, badgeW;
+            using (var mb = new Bitmap(1, 1))
+            using (var mg = Graphics.FromImage(mb))
             {
-                int w = TextRenderer.MeasureText(members[i].Name ?? "", _fName).Width;
-                if (w > nameW) nameW = w;
+                mg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+                for (int i = 0; i < shown; i++)
+                {
+                    int w = (int)Math.Ceiling(mg.MeasureString(members[i].Name ?? "", _fName).Width);
+                    if (w > nameW) nameW = w;
+                }
+                badgeW = (int)Math.Ceiling(mg.MeasureString("В ЭФИРЕ", _fBadge).Width) + 12;
             }
-            int badgeW = TextRenderer.MeasureText("В ЭФИРЕ", _fBadge).Width + 12;
             int width = Pad + AvatarSz + Gap + nameW + Gap + MuteSz + 6 + badgeW + Pad;
             width = Math.Clamp(width, 200, 360);
             int height = Pad + shown * RowH + (hidden > 0 ? 18 : 0) + Pad;
@@ -124,7 +135,9 @@ namespace PISMO
             using (var g = Graphics.FromImage(bmp))
             {
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                // ClearType на слоёном окне некорректен (нужен непрозрачный фон);
+                // GDI+ со сглаживанием пишет альфу правильно.
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
                 g.Clear(Color.Transparent);
 
                 using (var path = Rounded(new Rectangle(0, 0, width - 1, height - 1), Radius))
@@ -140,9 +153,11 @@ namespace PISMO
 
                 if (hidden > 0)
                 {
-                    var moreRect = new Rectangle(Pad, Pad + shown * RowH, width - Pad * 2, 18);
-                    TextRenderer.DrawText(g, $"и ещё {hidden}…", _fMore, moreRect, MoreFg,
-                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                    var moreRect = new RectangleF(Pad, Pad + shown * RowH, width - Pad * 2, 18);
+                    using var moreBr = new SolidBrush(WithAlpha(MoreFg, RowAlphaSilent));
+                    using var sf = new StringFormat(StringFormatFlags.NoWrap)
+                    { LineAlignment = StringAlignment.Center };
+                    g.DrawString($"и ещё {hidden}…", _fMore, moreBr, moreRect, sf);
                 }
             }
 
@@ -156,20 +171,49 @@ namespace PISMO
             PushLayered(bmp, new Point(x, y));
         }
 
+        private static Color WithAlpha(Color c, float k)
+            => Color.FromArgb((int)Math.Round(Math.Clamp(k, 0f, 1f) * 255), c.R, c.G, c.B);
+
+        /// <summary>Рисует строку участника с прозрачностью по признаку «говорит».
+        /// Содержимое собирается в отдельном слое и накладывается целиком с нужной
+        /// альфой: иначе пришлось бы задавать прозрачность каждому элементу по
+        /// отдельности, а картинку аватара так не приглушить.</summary>
         private void DrawRow(Graphics g, OverlayMember m, Rectangle r)
+        {
+            bool speaking = m.Speaking && !m.MicMuted && !m.Deafened;
+            float alpha = speaking ? RowAlphaSpeaking : RowAlphaSilent;
+
+            using var layer = new Bitmap(r.Width, r.Height, PixelFormat.Format32bppArgb);
+            using (var lg = Graphics.FromImage(layer))
+            {
+                lg.SmoothingMode = SmoothingMode.AntiAlias;
+                lg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+                DrawRowContent(lg, m, new Rectangle(0, 0, r.Width, r.Height));
+            }
+
+            var cm = new ColorMatrix { Matrix33 = alpha };   // множитель альфа-канала
+            using var ia = new ImageAttributes();
+            ia.SetColorMatrix(cm);
+            g.DrawImage(layer, r, 0, 0, r.Width, r.Height, GraphicsUnit.Pixel, ia);
+        }
+
+        /// <summary>Содержимое строки в координатах слоя. Только GDI+: TextRenderer
+        /// (GDI) не пишет альфа-канал, и на прозрачной подложке текст пропал бы.</summary>
+        private void DrawRowContent(Graphics g, OverlayMember m, Rectangle r)
         {
             int rightEdge = r.Right;
 
             // Бейдж «В ЭФИРЕ» — только при включённой камере/демонстрации.
             if (m.Streaming)
             {
-                int bw = TextRenderer.MeasureText(g, "В ЭФИРЕ", _fBadge).Width + 12;
+                int bw = (int)Math.Ceiling(g.MeasureString("В ЭФИРЕ", _fBadge).Width) + 12;
                 var br = new Rectangle(rightEdge - bw, r.Y + (r.Height - 17) / 2, bw, 17);
                 using (var path = Rounded(br, 8))
                 using (var b = new SolidBrush(BadgeBack))
                     g.FillPath(b, path);
-                TextRenderer.DrawText(g, "В ЭФИРЕ", _fBadge, br, Color.White,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                using (var sf = new StringFormat(StringFormatFlags.NoWrap)
+                { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                    g.DrawString("В ЭФИРЕ", _fBadge, Brushes.White, (RectangleF)br, sf);
                 rightEdge = br.Left - 6;
             }
 
@@ -181,7 +225,6 @@ namespace PISMO
                 rightEdge = mr.Left - 6;
             }
 
-            // Аватар + зелёное кольцо, пока человек говорит.
             var av = new Rectangle(r.X, r.Y + (r.Height - AvatarSz) / 2, AvatarSz, AvatarSz);
             if (!AvatarStore.DrawAvatar(g, m.Uid, av.X, av.Y, av.Width))
             {
@@ -197,16 +240,13 @@ namespace PISMO
                 using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
                 g.DrawString(letter, f, Brushes.White, (RectangleF)av, sf);
             }
-            if (m.Speaking && !m.MicMuted && !m.Deafened)
-            {
-                using var ring = new Pen(SpeakRing, 2f);
-                g.DrawEllipse(ring, Rectangle.Inflate(av, 1, 1));
-            }
 
-            var nameRect = Rectangle.FromLTRB(av.Right + Gap, r.Y, Math.Max(av.Right + Gap + 20, rightEdge), r.Bottom);
-            TextRenderer.DrawText(g, m.Name ?? "", _fName, nameRect, m.IsSelf ? SelfFg : NameFg,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
-                TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            var nameRect = RectangleF.FromLTRB(av.Right + Gap, r.Y,
+                                               Math.Max(av.Right + Gap + 20, rightEdge), r.Bottom);
+            using (var nameBr = new SolidBrush(m.IsSelf ? SelfFg : NameFg))
+            using (var sfName = new StringFormat(StringFormatFlags.NoWrap)
+            { Trimming = StringTrimming.EllipsisCharacter, LineAlignment = StringAlignment.Center })
+                g.DrawString(m.Name ?? "", _fName, nameBr, nameRect, sfName);
         }
 
         private static GraphicsPath Rounded(Rectangle r, int radius)

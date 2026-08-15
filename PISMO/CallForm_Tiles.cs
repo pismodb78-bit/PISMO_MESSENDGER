@@ -981,6 +981,10 @@ namespace PISMO
                     try { tile.Panel.Invalidate(); } catch { }
                 }
             }
+            // Прозрачность строк оверлея завязана на «говорит/молчит», а секундный
+            // таймер звонка для этого слишком медленный — обновляем здесь, вместе
+            // с подсветкой плиток (лишние перерисовки отсекает подпись в PushOverlay).
+            PushOverlay();
         }
 
         /// <summary>Говорит ли участник прямо сейчас (с учётом «хвоста» затухания).</summary>
@@ -993,7 +997,14 @@ namespace PISMO
         /// это именно ты, поэтому при лимите 1 в оверлее видно себя.</summary>
         private void PushOverlay()
         {
-            if (!DeviceSettings.OverlayEnabled) { CallOverlay.Stop(); return; }
+            if (!DeviceSettings.OverlayEnabled)
+            {
+                // Подпись сбрасываем, иначе после обратного включения состав совпал бы
+                // с запомненным и оверлей уже не вернулся бы на экран.
+                _overlaySig = "";
+                CallOverlay.Stop();
+                return;
+            }
             try
             {
                 var now = DateTime.UtcNow;
@@ -1029,10 +1040,26 @@ namespace PISMO
                         Speaking = IsSpeakingNow(pid, now)
                     });
                 }
+
+                // Подпись состава: этот метод дёргается и из 100мс-таймера речи,
+                // поэтому перерисовываем окно, только когда что-то реально изменилось.
+                var sb = new System.Text.StringBuilder();
+                foreach (var p in list)
+                    sb.Append(p.Uid).Append(p.Name).Append(p.MicMuted ? 'm' : '_')
+                      .Append(p.Deafened ? 'd' : '_').Append(p.Streaming ? 's' : '_')
+                      .Append(p.Speaking ? 'v' : '_').Append('|');
+                // Лимит показа тоже в подписи: без него смена числа в настройках
+                // не проходила бы через эту отсечку и панель не перерисовывалась.
+                sb.Append("max=").Append(DeviceSettings.OverlayMaxParticipants);
+                string sig = sb.ToString();
+                if (sig == _overlaySig) return;
+                _overlaySig = sig;
+
                 CallOverlay.Push(list);
             }
             catch { }
         }
+        private string _overlaySig = "";
 
         // ── Отрисовка плитки (аватар + рамка говорящего) ────────────────
         private void PaintTile(Graphics g, CallTile tile)
