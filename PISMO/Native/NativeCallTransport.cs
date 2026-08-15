@@ -121,8 +121,19 @@ namespace PISMO.Native
         {
             ulong handle;
             lock (_videoLock)
+            {
+                // Работаем ТОЛЬКО с живой публикацией: если активных sid'ов демки у
+                // участника нет, любой сохранённый handle уже освобождён, а его номер
+                // мог быть переиспользован под чужой объект.
+                if (!_screenSidsByIdentity.ContainsKey(identity))
+                {
+                    _screenPubHandleByIdentity.Remove(identity);
+                    ScreenLog.Log($"SetScreenSubscribed id={identity} sub={subscribe} -> нет АКТИВНОГО трека демки (пропуск)");
+                    return;
+                }
                 if (!_screenPubHandleByIdentity.TryGetValue(identity, out handle) || handle == 0)
                 { ScreenLog.Log($"SetScreenSubscribed id={identity} sub={subscribe} -> НЕТ handle (пропуск)"); return; }
+            }
             ScreenLog.Log($"SetScreenSubscribed id={identity} sub={subscribe} handle={handle}");
             try
             {
@@ -2382,8 +2393,24 @@ namespace PISMO.Native
                     break;
                 }
                 case RoomEvent.MessageOneofCase.ParticipantDisconnected:
-                    ParticipantLeftById?.Invoke(re.ParticipantDisconnected.ParticipantIdentity);
+                {
+                    // Участник ушёл — его треки демки больше не существуют. Без этой
+                    // чистки sid'ы и handle публикации оставались в картах навсегда,
+                    // и после его перезахода мы дёргали освобождённый handle (номера
+                    // в FFI переиспользуются — можно попасть в чужую публикацию).
+                    string goneId = re.ParticipantDisconnected.ParticipantIdentity;
+                    lock (_videoLock)
+                    {
+                        if (_screenSidsByIdentity.TryGetValue(goneId, out var gone))
+                        {
+                            foreach (var s in gone) _sourceBySid.Remove(s);
+                            _screenSidsByIdentity.Remove(goneId);
+                        }
+                        _screenPubHandleByIdentity.Remove(goneId);
+                    }
+                    ParticipantLeftById?.Invoke(goneId);
                     break;
+                }
                 case RoomEvent.MessageOneofCase.TrackPublished:
                     ScreenLog.Log($"RoomEvent TrackPublished id={re.TrackPublished.ParticipantIdentity} sid={re.TrackPublished.Publication.Info.Sid} source={re.TrackPublished.Publication.Info.Source} pubHandle={re.TrackPublished.Publication.Handle.Id}");
                     RememberSource(re.TrackPublished.ParticipantIdentity,
@@ -2600,6 +2627,13 @@ namespace PISMO.Native
                             if (set.Count == 0) _screenSidsByIdentity.Remove(identity);
                         }
                         stillSharing = _screenSidsByIdentity.ContainsKey(identity);
+                        // Демка кончилась — ЗАБЫВАЕМ handle публикации. Раньше он жил
+                        // вечно, и SetScreenSubscribed позже дёргал давно мёртвый
+                        // handle. А FFI переиспользует номера: освободившийся мог
+                        // достаться публикации ДРУГОГО участника, и «подписка» на
+                        // одного переключала трек другого — два зрителя в одной
+                        // комнате отбирали демку друг у друга (мерцание/двоение).
+                        if (!stillSharing) _screenPubHandleByIdentity.Remove(identity);
                     }
                     ScreenLog.Log($"OnTrackUnsubscribed SCREEN(known) id={identity} sid={sid} stillSharing={stillSharing} -> {(stillSharing ? "плитку НЕ трогаем" : "RemoteVideoRemoved (снять плитку)")}");
                     if (!stillSharing) RemoteVideoRemoved?.Invoke(identity, true);
