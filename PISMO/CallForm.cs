@@ -994,14 +994,14 @@ namespace PISMO
                 StartPosition = FormStartPosition.Manual,
                 ShowInTaskbar = false,
                 BackColor = Color.FromArgb(40, 42, 46),
-                ClientSize = new Size(310, 570),
+                ClientSize = new Size(310, 640),
                 MinimumSize = new Size(326, 300),
                 AutoScroll = true
             };
             var anchor = PointToScreen(new Point(_pnlButtons.Left, _pnlButtons.Top));
             _audioPanel.Location = new Point(
                 Math.Max(0, anchor.X + (_pnlButtons.Width - 310) / 2),
-                Math.Max(0, anchor.Y - 580));
+                Math.Max(0, anchor.Y - 650));
 
             int y = 12;
             Label MkLbl(string t)
@@ -1122,6 +1122,68 @@ namespace PISMO
             var chkMute = new CheckBox { Text = "🔇 Заглушить весь звук", ForeColor = Color.FromArgb(220, 221, 222), AutoSize = true, Location = new Point(14, y), Checked = _remoteAllMuted, Font = new Font("Segoe UI", 9.5f) };
             chkMute.CheckedChanged += (s, e) => { _remoteAllMuted = chkMute.Checked; try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { } };
             _audioPanel.Controls.Add(chkMute);
+            y += 34;
+
+            // ── Игровой оверлей ─────────────────────────────────────────
+            // Те же два параметра, что в настройках устройств, но под рукой во
+            // время звонка и БЕЗ кнопки «Сохранить»: правка применяется сразу.
+            var chkOverlay = new CheckBox
+            {
+                Text = "🎮 Оверлей в игре",
+                ForeColor = Color.FromArgb(220, 221, 222),
+                AutoSize = true,
+                Location = new Point(14, y),
+                Checked = DeviceSettings.OverlayEnabled,
+                Font = new Font("Segoe UI", 9.5f)
+            };
+            _audioPanel.Controls.Add(chkOverlay);
+            y += 26;
+            _audioPanel.Controls.Add(new Label
+            {
+                Text = "(панель справа поверх полноэкранной игры)",
+                ForeColor = Color.FromArgb(140, 142, 148),
+                AutoSize = true,
+                Location = new Point(14, y),
+                Font = new Font("Segoe UI", 7.5f)
+            });
+            y += 24;
+
+            _audioPanel.Controls.Add(new Label
+            {
+                Text = "Участников, не более",
+                ForeColor = Color.FromArgb(220, 221, 222),
+                AutoSize = true,
+                Location = new Point(14, y + 4),
+                Font = new Font("Segoe UI", 9f)
+            });
+            var numOverlay = new NumericUpDown
+            {
+                Minimum = 1,      // минимум — ты сам
+                Maximum = 20,
+                Value = Math.Clamp(DeviceSettings.OverlayMaxParticipants, 1, 20),
+                Location = new Point(170, y),
+                Size = new Size(64, 24),
+                BackColor = Color.FromArgb(32, 34, 37),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BorderStyle = BorderStyle.FixedSingle,
+                Enabled = DeviceSettings.OverlayEnabled
+            };
+            _audioPanel.Controls.Add(numOverlay);
+            y += 34;
+
+            chkOverlay.CheckedChanged += (s, e) =>
+            {
+                DeviceSettings.OverlayEnabled = chkOverlay.Checked;
+                try { DeviceSettings.Save(); } catch { }
+                numOverlay.Enabled = chkOverlay.Checked;
+                PushOverlay();   // включили — появился, выключили — пропал сразу
+            };
+            numOverlay.ValueChanged += (s, e) =>
+            {
+                DeviceSettings.OverlayMaxParticipants = (int)numOverlay.Value;
+                try { DeviceSettings.Save(); } catch { }
+                PushOverlay();   // список перерисовывается с новым лимитом сразу
+            };
 
             // КРИТИЧНО: при программном заполнении списков НЕ дёргаем смену
             // устройства — иначе открытие панели само включало камеру (зелёный
@@ -1165,6 +1227,26 @@ namespace PISMO
                     if (_cameraStarted) _transport?.SwitchCameraDevice(cm);
                 }
             };
+
+            // Колесо мыши над ползунками/списками/счётчиком НЕ меняет значение, а
+            // прокручивает панель: она с AutoScroll, и иначе прокрутка мимо трека
+            // случайно перекручивала громкость или лимит участников.
+            var scrollHost = _audioPanel;
+            void NoWheelOnInputs(Control root)
+            {
+                foreach (Control c in root.Controls)
+                {
+                    if (c is TrackBar || c is ComboBox || c is NumericUpDown)
+                        c.MouseWheel += (s, e) =>
+                        {
+                            if (e is HandledMouseEventArgs he) he.Handled = true;
+                            int ny = -scrollHost.AutoScrollPosition.Y - e.Delta;
+                            scrollHost.AutoScrollPosition = new Point(0, ny);
+                        };
+                    if (c.HasChildren) NoWheelOnInputs(c);
+                }
+            }
+            NoWheelOnInputs(_audioPanel);
 
             _audioPanel.FormClosed += (s, e) => { try { _transport.DevicesEnumerated -= OnDevices; } catch { } _audioPanel = null; };
             _audioPanel.Show(this);
@@ -2155,10 +2237,21 @@ namespace PISMO
                     _lastGain = DeviceSettings.MicrophoneGain;
                     _transport?.SetMicGain(_lastGain);
                 }
+                // Настройки оверлея тоже «на горячую»: их могли поменять и из панели
+                // звонка, и из настроек устройств — сюда приходит любой источник.
+                if (_lastOverlayOn != DeviceSettings.OverlayEnabled ||
+                    _lastOverlayMax != DeviceSettings.OverlayMaxParticipants)
+                {
+                    _lastOverlayOn = DeviceSettings.OverlayEnabled;
+                    _lastOverlayMax = DeviceSettings.OverlayMaxParticipants;
+                    PushOverlay();
+                }
             }
             catch { }
         }
         private float _lastGain = -1f;
+        private bool _lastOverlayOn = true;
+        private int _lastOverlayMax = -1;   // −1 = ещё не считывали, первый тик применит
 
         protected override void WndProc(ref Message m)
         {

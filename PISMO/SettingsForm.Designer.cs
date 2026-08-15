@@ -523,7 +523,7 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, pnlScreen.Bottom + 14),
-                Size = new Size(456, 146)
+                Size = new Size(456, 172)
             };
             pnlOverlay.Controls.Add(new Label
             {
@@ -545,15 +545,17 @@ namespace PISMO
                 Cursor = Cursors.Hand
             };
             pnlOverlay.Controls.Add(_chkOverlay);
+            // Подсказка: высоты хватает на все три строки — при 44px последние две
+            // обрезались и текст обрывался на полуслове.
             pnlOverlay.Controls.Add(new Label
             {
-                Text = "Панель у правого края экрана: кто в голосовом канале, выключен ли микрофон и\n" +
-                       "бейдж «В ЭФИРЕ» при камере/демонстрации. Работает поверх игр в оконном и\n" +
-                       "полноэкранном оконном режимах (эксклюзивный полный экран Windows не даёт перекрыть).",
+                Text = "Панель у правого края экрана: кто в голосовом канале, выключен ли\n" +
+                       "микрофон, бейдж «В ЭФИРЕ» при камере или демонстрации. Видна\n" +
+                       "только поверх полноэкранной игры, на рабочем столе не мешает.",
                 Font = new Font("Segoe UI", 8f),
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,
-                Size = new Size(430, 44),
+                Size = new Size(430, 50),
                 Location = new Point(16, 60)
             });
 
@@ -565,7 +567,7 @@ namespace PISMO
                 AutoSize = false,
                 Size = new Size(230, 26),
                 TextAlign = ContentAlignment.MiddleLeft,
-                Location = new Point(14, 108)
+                Location = new Point(14, 114)
             });
             _numOverlayMax = new NumericUpDown
             {
@@ -577,18 +579,19 @@ namespace PISMO
                 BorderStyle = BorderStyle.FixedSingle,
                 Font = new Font("Segoe UI", 9.5f),
                 Size = new Size(70, 26),
-                Location = new Point(250, 108)
+                Location = new Point(250, 114)
             };
             pnlOverlay.Controls.Add(_numOverlayMax);
+            // Пояснение к числу — отдельной строкой во всю ширину: рядом с полем на
+            // него оставалось 120px и текст обрезался на «остальные —».
             pnlOverlay.Controls.Add(new Label
             {
-                Text = "остальные — строкой «и ещё N…»",
+                Text = "Минимум 1 — это вы сами. Остальные сворачиваются в строку «и ещё N…».",
                 Font = new Font("Segoe UI", 8f),
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,
-                Size = new Size(120, 26),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Location = new Point(328, 108)
+                Size = new Size(430, 18),
+                Location = new Point(16, 146)
             });
             // Число участников имеет смысл только при включённом оверлее.
             _chkOverlay.CheckedChanged += (s, e) => _numOverlayMax.Enabled = _chkOverlay.Checked;
