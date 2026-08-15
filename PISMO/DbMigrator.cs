@@ -318,23 +318,65 @@ namespace PISMO
             cmd.ExecuteNonQuery();
         }
 
+        // На части хостингов доступ к information_schema закрыт даже
+        // администратору («#1044 — доступ к базе данных 'information_schema'
+        // закрыт»). Тогда проверки существования таблицы/колонки падали ещё
+        // ДО самого ALTER, и миграция не применялась и не отмечалась —
+        // повторялась при каждом запуске. Фолбэк — SHOW-запросы: это
+        // встроенные команды сервера, им хватает обычных прав на таблицу.
+
         private static bool TableExists(MySqlConnection conn, string table)
         {
-            using var cmd = new MySqlCommand(
-                "SELECT COUNT(*) FROM information_schema.TABLES " +
-                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@t", conn);
-            cmd.Parameters.AddWithValue("@t", table);
-            return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+            try
+            {
+                using var cmd = new MySqlCommand(
+                    "SELECT COUNT(*) FROM information_schema.TABLES " +
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@t", conn);
+                cmd.Parameters.AddWithValue("@t", table);
+                return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+            }
+            catch (MySqlException)
+            {
+                using var cmd = new MySqlCommand("SHOW TABLES", conn);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                    if (string.Equals(r.GetString(0), table, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                return false;
+            }
         }
 
         private static bool ColumnExists(MySqlConnection conn, string table, string column)
         {
-            using var cmd = new MySqlCommand(
-                "SELECT COUNT(*) FROM information_schema.COLUMNS " +
-                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@t AND COLUMN_NAME=@c", conn);
-            cmd.Parameters.AddWithValue("@t", table);
-            cmd.Parameters.AddWithValue("@c", column);
-            return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+            try
+            {
+                using var cmd = new MySqlCommand(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS " +
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@t AND COLUMN_NAME=@c", conn);
+                cmd.Parameters.AddWithValue("@t", table);
+                cmd.Parameters.AddWithValue("@c", column);
+                return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+            }
+            catch (MySqlException)
+            {
+                // Имя таблицы приходит только из констант в списке миграций,
+                // но подстановку в SHOW всё равно ограничиваем идентификатором.
+                if (!IsPlainIdentifier(table)) throw;
+                using var cmd = new MySqlCommand($"SHOW COLUMNS FROM `{table}`", conn);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                    if (string.Equals(r.GetString(0), column, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                return false;
+            }
+        }
+
+        private static bool IsPlainIdentifier(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            foreach (char c in s)
+                if (!char.IsLetterOrDigit(c) && c != '_') return false;
+            return true;
         }
     }
 }
