@@ -322,11 +322,15 @@ namespace PISMO
             if (bmp == null) { if (Visible) Visible = false; return; }
 
             Point pos;
-            if (_editMode && Visible)
+            // Пока панель тащат, позиция берётся у САМОГО ОКНА (иначе Render
+            // возвращал бы её в сохранённую точку на каждом кадре) — но через
+            // GetWindowRect, а НЕ через Form.Location: окно двигает
+            // UpdateLayeredWindow, и кэш координат WinForms остаётся стартовым
+            // (-32000). Из-за этого панель показывалась на мгновение и тут же
+            // улетала за экран.
+            if (_editMode && Visible && TryGetWindowPos(out var live) && OnAnyScreen(live, bmp.Size))
             {
-                // Пока панель тащат, позиция берётся из самого окна: иначе Render
-                // возвращал бы её обратно в сохранённую точку на каждом кадре.
-                pos = Location;
+                pos = live;
             }
             else
             {
@@ -360,16 +364,49 @@ namespace PISMO
             if (_editMode && m.Msg == WM_NCHITTEST) { m.Result = (IntPtr)HTCAPTION; return; }
             if (_editMode && m.Msg == WM_EXITSIZEMOVE)
             {
-                DeviceSettings.OverlayX = Location.X;
-                DeviceSettings.OverlayY = Location.Y;
-                try { DeviceSettings.Save(); } catch { }
-                PositionChanged?.Invoke();
+                // Координаты спрашиваем у окна, а не у Form.Location (см. Render).
+                if (TryGetWindowPos(out var p))
+                {
+                    DeviceSettings.OverlayX = p.X;
+                    DeviceSettings.OverlayY = p.Y;
+                    try { DeviceSettings.Save(); } catch { }
+                    PositionChanged?.Invoke();
+                }
             }
             base.WndProc(ref m);
         }
 
         /// <summary>Панель перетащили — редактор обновляет подпись с координатами.</summary>
         public event Action PositionChanged;
+
+        /// <summary>Настоящая позиция окна. Form.Location для слоёного окна не годится:
+        /// его двигает UpdateLayeredWindow, а кэш координат WinForms при этом может
+        /// остаться стартовым.</summary>
+        private bool TryGetWindowPos(out Point p)
+        {
+            p = Point.Empty;
+            try
+            {
+                if (!IsHandleCreated || !GetWindowRect(Handle, out var r)) return false;
+                p = new Point(r.Left, r.Top);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Проверка, что панель такого размера в этой точке реально видна хоть
+        /// на одном мониторе: страховка от «улетела за экран».</summary>
+        private static bool OnAnyScreen(Point p, Size size)
+        {
+            try
+            {
+                var rect = new Rectangle(p, size);
+                foreach (var sc in Screen.AllScreens)
+                    if (sc.Bounds.IntersectsWith(rect)) return true;
+            }
+            catch { }
+            return false;
+        }
 
         private void PushLayered(Bitmap bmp, Point location)
         {
@@ -417,6 +454,9 @@ namespace PISMO
 
         [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X, Y; }
         [StructLayout(LayoutKind.Sequential)] private struct SIZE { public int cx, cy; }
+        [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
+
+        [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         private struct BLENDFUNCTION { public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat; }
 
