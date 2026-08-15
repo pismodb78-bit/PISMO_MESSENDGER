@@ -523,7 +523,7 @@ namespace PISMO
             {
                 BackColor = Color.FromArgb(47, 49, 54),
                 Location = new Point(20, pnlScreen.Bottom + 14),
-                Size = new Size(456, 172)
+                Size = new Size(456, 206)
             };
             pnlOverlay.Controls.Add(new Label
             {
@@ -567,7 +567,7 @@ namespace PISMO
                 AutoSize = false,
                 Size = new Size(230, 26),
                 TextAlign = ContentAlignment.MiddleLeft,
-                Location = new Point(14, 114)
+                Location = new Point(14, 112)
             });
             _numOverlayMax = new NumericUpDown
             {
@@ -579,7 +579,7 @@ namespace PISMO
                 BorderStyle = BorderStyle.FixedSingle,
                 Font = new Font("Segoe UI", 9.5f),
                 Size = new Size(70, 26),
-                Location = new Point(250, 114)
+                Location = new Point(250, 112)
             };
             pnlOverlay.Controls.Add(_numOverlayMax);
             // Пояснение к числу — отдельной строкой во всю ширину: рядом с полем на
@@ -591,8 +591,27 @@ namespace PISMO
                 ForeColor = Color.FromArgb(140, 142, 146),
                 AutoSize = false,
                 Size = new Size(430, 18),
-                Location = new Point(16, 146)
+                Location = new Point(16, 142)
             });
+
+            // Положение, прозрачность, цвета и масштаб — в отдельном окне с живым
+            // превью: набивать это чекбоксами в общем списке настроек неудобно.
+            var btnOverlayEdit = new Button
+            {
+                Text = "Настроить оверлей…",
+                Font = new Font("Segoe UI", 9f),
+                Size = new Size(200, 28),
+                Location = new Point(14, 166),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(64, 68, 75),
+                ForeColor = Color.White,
+                Cursor = Cursors.Hand,
+                TabStop = false
+            };
+            btnOverlayEdit.FlatAppearance.BorderSize = 0;
+            btnOverlayEdit.FlatAppearance.MouseOverBackColor = Color.FromArgb(79, 84, 92);
+            btnOverlayEdit.Click += (s, e) => OverlayEditorForm.Open(this);
+            pnlOverlay.Controls.Add(btnOverlayEdit);
             // Число участников имеет смысл только при включённом оверлее.
             _chkOverlay.CheckedChanged += (s, e) => _numOverlayMax.Enabled = _chkOverlay.Checked;
 

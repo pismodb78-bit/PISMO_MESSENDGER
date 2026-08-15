@@ -985,52 +985,182 @@ namespace PISMO
                 return;
             }
 
-            _audioPanel = new Form
-            {
-                Text = "Звук и устройства",
-                // Ресайзабельное окно (+прокрутка), чтобы всё влезало и можно было
-                // растянуть — раньше было FixedToolWindow и низ обрезался.
-                FormBorderStyle = FormBorderStyle.SizableToolWindow,
-                StartPosition = FormStartPosition.Manual,
-                ShowInTaskbar = false,
-                BackColor = Color.FromArgb(40, 42, 46),
-                ClientSize = new Size(310, 640),
-                MinimumSize = new Size(326, 300),
-                AutoScroll = true
-            };
+            // Тёмное безрамочное окно со своим заголовком и вертикальной прокруткой.
+            // Горизонтальной полосы у него нет в принципе (ChatScroll.Attach), а всё
+            // содержимое тянется по ширине — раньше длинные подсказки вылезали за
+            // край и окно ездило вбок.
+            var win = new DarkToolWindow("Звук и устройства", new Size(390, 620));
+            _audioPanel = win;
+            var host = win.Content;
+
             var anchor = PointToScreen(new Point(_pnlButtons.Left, _pnlButtons.Top));
-            _audioPanel.Location = new Point(
-                Math.Max(0, anchor.X + (_pnlButtons.Width - 310) / 2),
-                Math.Max(0, anchor.Y - 650));
+            var wa = Screen.FromControl(this).WorkingArea;
+            win.Location = new Point(
+                Math.Clamp(anchor.X + (_pnlButtons.Width - win.Width) / 2, wa.Left, Math.Max(wa.Left, wa.Right - win.Width)),
+                Math.Clamp(anchor.Y - win.Height - 10, wa.Top, Math.Max(wa.Top, wa.Bottom - win.Height)));
 
-            int y = 12;
-            Label MkLbl(string t)
+            const int RowGap = 6;
+            int y = 0;
+            int W() => Math.Max(140, host.ClientSize.Width);
+
+            const AnchorStyles Wide = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+            void AddSection(string text)
             {
-                var l = new Label { Text = t, ForeColor = Color.FromArgb(220, 221, 222), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 9f) };
-                _audioPanel.Controls.Add(l); y += 22; return l;
-            }
-            ComboBox MkCombo()
-            {
-                var cb = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
-                _audioPanel.Controls.Add(cb); y += 38; return cb;
-            }
-            TrackBar MkTb(int val)
-            {
-                var tb = new TrackBar { Minimum = 0, Maximum = 300, Value = Math.Min(300, val), TickStyle = TickStyle.None, Location = new Point(8, y), Size = new Size(290, 40) };
-                _audioPanel.Controls.Add(tb); y += 58; return tb;
+                host.Controls.Add(new Label
+                {
+                    Text = text.ToUpperInvariant(),
+                    Location = new Point(0, y + 8),
+                    Size = new Size(W(), 18),
+                    Anchor = Wide,
+                    ForeColor = Color.FromArgb(150, 152, 158),
+                    Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold)
+                });
+                y += 30;
             }
 
-            MkLbl("🎤 Микрофон");
-            var cmbMic = MkCombo();
-            MkLbl("🔊 Устройство вывода");
-            var cmbSpk = MkCombo();
-            MkLbl("📷 Камера");
-            var cmbCam = MkCombo();
+            Label AddLabel(string t)
+            {
+                var l = new Label
+                {
+                    Text = t,
+                    Location = new Point(0, y),
+                    Size = new Size(W(), 18),
+                    Anchor = Wide,
+                    ForeColor = Color.FromArgb(220, 221, 222),
+                    Font = new Font("Segoe UI", 9f)
+                };
+                host.Controls.Add(l); y += 21; return l;
+            }
 
-            MkLbl("🖥 Качество демонстрации");
-            var rowQ = y;
-            var cmbRes = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, rowQ), Size = new Size(135, 24), FlatStyle = FlatStyle.Flat };
-            var cmbFps = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(161, rowQ), Size = new Size(135, 24), FlatStyle = FlatStyle.Flat };
+            // Подсказки — НЕ AutoSize: длинный текст переносится внутри ширины панели,
+            // а не уезжает вправо (из-за этого и появлялась горизонтальная полоса).
+            void AddHint(string t, int lines = 2)
+            {
+                host.Controls.Add(new Label
+                {
+                    Text = t,
+                    Location = new Point(0, y),
+                    Size = new Size(W(), 15 * lines),
+                    Anchor = Wide,
+                    ForeColor = Color.FromArgb(138, 140, 146),
+                    Font = new Font("Segoe UI", 7.5f)
+                });
+                y += 15 * lines + RowGap;
+            }
+
+            ComboBox AddCombo(int width = 0, int xOff = 0, bool advance = true)
+            {
+                var cb = new ComboBox
+                {
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    Location = new Point(xOff, y),
+                    Size = new Size(width > 0 ? width : W(), 24),
+                    Anchor = width > 0 ? AnchorStyles.Top | AnchorStyles.Left : Wide,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(40, 42, 46),
+                    ForeColor = Color.FromArgb(226, 228, 232),
+                    Font = new Font("Segoe UI", 9f)
+                };
+                host.Controls.Add(cb);
+                if (advance) y += 24 + RowGap * 2;
+                return cb;
+            }
+
+            CheckBox AddCheck(string text, bool value)
+            {
+                var c = new CheckBox
+                {
+                    Text = text,
+                    Location = new Point(0, y),
+                    Size = new Size(W(), 22),
+                    Anchor = Wide,
+                    ForeColor = Color.FromArgb(220, 221, 222),
+                    BackColor = Color.Transparent,
+                    Checked = value,
+                    Cursor = Cursors.Hand,
+                    Font = new Font("Segoe UI", 9f)
+                };
+                host.Controls.Add(c); y += 26; return c;
+            }
+
+            // Ползунок с подписью и живым значением справа.
+            FlatSlider AddSlider(string caption, int val, int max)
+            {
+                host.Controls.Add(new Label
+                {
+                    Text = caption,
+                    Location = new Point(0, y),
+                    Size = new Size(W() - 60, 18),
+                    Anchor = Wide,
+                    ForeColor = Color.FromArgb(220, 221, 222),
+                    Font = new Font("Segoe UI", 9f)
+                });
+                var num = new Label
+                {
+                    Text = val + "%",
+                    Location = new Point(W() - 60, y),
+                    Size = new Size(60, 18),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    TextAlign = ContentAlignment.MiddleRight,
+                    ForeColor = Color.FromArgb(150, 152, 158),
+                    Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold)
+                };
+                host.Controls.Add(num);
+                y += 20;
+                var sl = new FlatSlider
+                {
+                    Minimum = 0,
+                    Maximum = max,
+                    Value = Math.Min(max, val),
+                    Location = new Point(0, y),
+                    Size = new Size(W(), 20),
+                    Anchor = Wide,
+                    BackColor = Color.FromArgb(32, 34, 37)
+                };
+                sl.ValueChanged += (s, e) => num.Text = sl.Value + "%";
+                host.Controls.Add(sl);
+                y += 20 + RowGap * 2;
+                return sl;
+            }
+
+            Button AddButton(string text)
+            {
+                var b = new Button
+                {
+                    Text = text,
+                    Location = new Point(0, y),
+                    Size = new Size(W(), 30),
+                    Anchor = Wide,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(64, 68, 75),
+                    ForeColor = Color.White,
+                    Font = new Font("Segoe UI", 9f),
+                    Cursor = Cursors.Hand,
+                    TabStop = false
+                };
+                b.FlatAppearance.BorderSize = 0;
+                b.FlatAppearance.MouseOverBackColor = Color.FromArgb(79, 84, 92);
+                host.Controls.Add(b); y += 30 + RowGap; return b;
+            }
+
+            // ── Устройства ──────────────────────────────────────────────
+            AddSection("Устройства");
+            AddLabel("🎤 Микрофон");
+            var cmbMic = AddCombo();
+            AddLabel("🔊 Устройство вывода");
+            var cmbSpk = AddCombo();
+            AddLabel("📷 Камера");
+            var cmbCam = AddCombo();
+
+            // ── Демонстрация экрана ─────────────────────────────────────
+            AddSection("Демонстрация экрана");
+            AddLabel("Качество");
+            int rowQ = y;
+            int halfW = (W() - 8) / 2;
+            var cmbRes = AddCombo(halfW, 0, advance: false);
+            var cmbFps = AddCombo(halfW, halfW + 8, advance: false);
+            y = rowQ + 24 + RowGap;
             cmbRes.Items.AddRange(new object[] { "Исходное", "1080p", "720p", "480p", "360p" });
             cmbFps.Items.AddRange(new object[] { "60 fps", "30 fps", "15 fps" });
             cmbRes.SelectedItem = DeviceSettings.ScreenShareResolutionHeight > 0
@@ -1052,14 +1182,10 @@ namespace PISMO
                 DeviceSettings.ScreenShareFps = f; try { DeviceSettings.Save(); } catch { }
                 try { _transport?.SetScreenQualityLive(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps); } catch { }
             };
-            _audioPanel.Controls.Add(cmbRes);
-            _audioPanel.Controls.Add(cmbFps);
-            y = rowQ + 34;
-            var lblHint = new Label { Text = "(применяется сразу, в том числе к идущей демонстрации)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
-            _audioPanel.Controls.Add(lblHint); y += 24;
+            AddHint("Применяется сразу, в том числе к идущей демонстрации.", 1);
 
-            MkLbl("Кодек демонстрации");
-            var cmbCodec = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(14, y), Size = new Size(282, 24), FlatStyle = FlatStyle.Flat };
+            AddLabel("Кодек");
+            var cmbCodec = AddCombo();
             cmbCodec.Items.AddRange(new object[] { "AV1 (чётче при том же битрейте)", "H.264 (совместимость)" });
             cmbCodec.SelectedIndex = DeviceSettings.ScreenShareCodec == "h264" ? 1 : 0;
             cmbCodec.SelectedIndexChanged += (s, e) =>
@@ -1073,33 +1199,20 @@ namespace PISMO
                 try
                 {
                     string cn = chosen == "h264" ? "H.264" : "AV1";
-                    // Кодек ЗАФИКСИРОВАН на весь звонок; сравниваем выбор с кодеком сессии.
                     string session = _transport?.SessionScreenCodec ?? chosen;
                     string msg = string.Equals(session, chosen, StringComparison.OrdinalIgnoreCase)
                         ? $"Кодек демонстрации ({cn}) — тот же, что в текущем звонке.\nПерезаход не требуется."
                         : $"Кодек ({cn}) применится после перезахода в звонок.\n" +
                           $"Текущий звонок (и рестарт демонстрации) продолжается на прежнем ({session.ToUpperInvariant()}).";
-                    MessageBox.Show(this, msg, "Смена кодека", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(win, msg, "Смена кодека", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch { }
             };
-            _audioPanel.Controls.Add(cmbCodec);
-            y += 30;
-            var lblCodecHint = new Label { Text = "(смена перезапустит демонстрацию; зритель повторно нажмёт «Смотреть стрим»)", ForeColor = Color.FromArgb(140, 142, 148), AutoSize = true, Location = new Point(14, y), Font = new Font("Segoe UI", 7.5f) };
-            _audioPanel.Controls.Add(lblCodecHint); y += 24;
+            AddHint("Смена перезапустит демонстрацию: зритель повторно нажмёт «Смотреть стрим».", 2);
 
-            // Выбор видеокарты в звонке убран: GPU управляется единственным
-            // пунктом «Аппаратное ускорение (GPU)» в главных настройках приложения.
-
-            var chkNs = new CheckBox
-            {
-                Text = "🎚 Шумоподавление включено",
-                ForeColor = Color.FromArgb(220, 221, 222),
-                AutoSize = true,
-                Location = new Point(14, y),
-                Checked = DeviceSettings.NoiseSuppression,
-                Font = new Font("Segoe UI", 9.5f)
-            };
+            // ── Звук ────────────────────────────────────────────────────
+            AddSection("Звук");
+            var chkNs = AddCheck("🎚  Шумоподавление включено", DeviceSettings.NoiseSuppression);
             chkNs.CheckedChanged += (s, e) =>
             {
                 DeviceSettings.NoiseSuppressMode = chkNs.Checked ? "standard" : "off";
@@ -1108,86 +1221,47 @@ namespace PISMO
                 try { _transport?.SetNoiseMode(DeviceSettings.NoiseSuppressMode); } catch { }
                 try { MainForm.Current?.RefreshVoiceEqState(); } catch { }
             };
-            _audioPanel.Controls.Add(chkNs);
-            y += 30;
+            y += RowGap;
 
-            MkLbl("Громкость собеседников");
-            var tbVoice = MkTb((int)(_remoteVoiceVolume * 100));
-            tbVoice.ValueChanged += (s, e) => { _remoteVoiceVolume = tbVoice.Value / 100f; try { _transport?.SetRemoteVoiceVolume(_remoteVoiceVolume); } catch { } };
-
-            MkLbl("Громкость демонстрации");
-            var tbScreen = MkTb((int)(_remoteScreenAudioVolume * 100));
-            tbScreen.ValueChanged += (s, e) => { _remoteScreenAudioVolume = tbScreen.Value / 100f; try { _transport?.SetRemoteScreenAudioVolume(_remoteScreenAudioVolume); } catch { } };
-
-            var chkMute = new CheckBox { Text = "🔇 Заглушить весь звук", ForeColor = Color.FromArgb(220, 221, 222), AutoSize = true, Location = new Point(14, y), Checked = _remoteAllMuted, Font = new Font("Segoe UI", 9.5f) };
-            chkMute.CheckedChanged += (s, e) => { _remoteAllMuted = chkMute.Checked; try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { } };
-            _audioPanel.Controls.Add(chkMute);
-            y += 34;
-
-            // ── Игровой оверлей ─────────────────────────────────────────
-            // Те же два параметра, что в настройках устройств, но под рукой во
-            // время звонка и БЕЗ кнопки «Сохранить»: правка применяется сразу.
-            var chkOverlay = new CheckBox
+            var tbVoice = AddSlider("Громкость собеседников", (int)(_remoteVoiceVolume * 100), 300);
+            tbVoice.ValueChanged += (s, e) =>
             {
-                Text = "🎮 Оверлей в игре",
-                ForeColor = Color.FromArgb(220, 221, 222),
-                AutoSize = true,
-                Location = new Point(14, y),
-                Checked = DeviceSettings.OverlayEnabled,
-                Font = new Font("Segoe UI", 9.5f)
+                _remoteVoiceVolume = tbVoice.Value / 100f;
+                try { _transport?.SetRemoteVoiceVolume(_remoteVoiceVolume); } catch { }
             };
-            _audioPanel.Controls.Add(chkOverlay);
-            y += 26;
-            _audioPanel.Controls.Add(new Label
-            {
-                Text = "(панель справа поверх полноэкранной игры)",
-                ForeColor = Color.FromArgb(140, 142, 148),
-                AutoSize = true,
-                Location = new Point(14, y),
-                Font = new Font("Segoe UI", 7.5f)
-            });
-            y += 24;
 
-            _audioPanel.Controls.Add(new Label
+            var tbScreen = AddSlider("Громкость демонстрации", (int)(_remoteScreenAudioVolume * 100), 300);
+            tbScreen.ValueChanged += (s, e) =>
             {
-                Text = "Участников, не более",
-                ForeColor = Color.FromArgb(220, 221, 222),
-                AutoSize = true,
-                Location = new Point(14, y + 4),
-                Font = new Font("Segoe UI", 9f)
-            });
-            var numOverlay = new NumericUpDown
-            {
-                Minimum = 1,      // минимум — ты сам
-                Maximum = 20,
-                Value = Math.Clamp(DeviceSettings.OverlayMaxParticipants, 1, 20),
-                Location = new Point(170, y),
-                Size = new Size(64, 24),
-                BackColor = Color.FromArgb(32, 34, 37),
-                ForeColor = Color.FromArgb(220, 221, 222),
-                BorderStyle = BorderStyle.FixedSingle,
-                Enabled = DeviceSettings.OverlayEnabled
+                _remoteScreenAudioVolume = tbScreen.Value / 100f;
+                try { _transport?.SetRemoteScreenAudioVolume(_remoteScreenAudioVolume); } catch { }
             };
-            _audioPanel.Controls.Add(numOverlay);
-            y += 34;
 
+            var chkMute = AddCheck("🔇  Заглушить весь звук", _remoteAllMuted);
+            chkMute.CheckedChanged += (s, e) =>
+            {
+                _remoteAllMuted = chkMute.Checked;
+                try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { }
+            };
+
+            // ── Оверлей ─────────────────────────────────────────────────
+            // Тонкая настройка (положение, прозрачность, цвета) — в отдельном
+            // окне; здесь только выключатель и вход в него.
+            AddSection("Оверлей в игре");
+            var chkOverlay = AddCheck("🎮  Показывать участников поверх игры", DeviceSettings.OverlayEnabled);
             chkOverlay.CheckedChanged += (s, e) =>
             {
                 DeviceSettings.OverlayEnabled = chkOverlay.Checked;
                 try { DeviceSettings.Save(); } catch { }
-                numOverlay.Enabled = chkOverlay.Checked;
                 PushOverlay();   // включили — появился, выключили — пропал сразу
             };
-            numOverlay.ValueChanged += (s, e) =>
-            {
-                DeviceSettings.OverlayMaxParticipants = (int)numOverlay.Value;
-                try { DeviceSettings.Save(); } catch { }
-                PushOverlay();   // список перерисовывается с новым лимитом сразу
-            };
+            AddHint("Панель у края экрана поверх полноэкранной игры.", 1);
+            AddButton("Настроить оверлей…").Click += (s, e) => OverlayEditorForm.Open(win);
 
+            // ── Список устройств из транспорта ──────────────────────────
             // КРИТИЧНО: при программном заполнении списков НЕ дёргаем смену
-            // устройства — иначе открытие панели само включало камеру (зелёный
-            // экран/предпросмотр не пропадал) и сбрасывало микрофон.
+            // устройства — иначе открытие панели само включало камеру и
+            // сбрасывало микрофон.
             bool populating = false;
             void OnDevices(string camsJson, string micsJson, string spkJson)
             {
@@ -1228,28 +1302,18 @@ namespace PISMO
                 }
             };
 
-            // Колесо мыши над ползунками/списками/счётчиком НЕ меняет значение, а
-            // прокручивает панель: она с AutoScroll, и иначе прокрутка мимо трека
-            // случайно перекручивала громкость или лимит участников.
-            var scrollHost = _audioPanel;
-            void NoWheelOnInputs(Control root)
-            {
-                foreach (Control c in root.Controls)
-                {
-                    if (c is TrackBar || c is ComboBox || c is NumericUpDown)
-                        c.MouseWheel += (s, e) =>
-                        {
-                            if (e is HandledMouseEventArgs he) he.Handled = true;
-                            int ny = -scrollHost.AutoScrollPosition.Y - e.Delta;
-                            scrollHost.AutoScrollPosition = new Point(0, ny);
-                        };
-                    if (c.HasChildren) NoWheelOnInputs(c);
-                }
-            }
-            NoWheelOnInputs(_audioPanel);
+            // Колесо над выпадающими списками прокручивает панель, а не меняет
+            // выбор. Ползунки теперь свои (FlatSlider) — они колесо не трогают.
+            foreach (Control c in host.Controls)
+                if (c is ComboBox)
+                    c.MouseWheel += (s, e) =>
+                    {
+                        if (e is HandledMouseEventArgs he) he.Handled = true;
+                        host.AutoScrollPosition = new Point(0, -host.AutoScrollPosition.Y - e.Delta);
+                    };
 
-            _audioPanel.FormClosed += (s, e) => { try { _transport.DevicesEnumerated -= OnDevices; } catch { } _audioPanel = null; };
-            _audioPanel.Show(this);
+            win.FormClosed += (s, e) => { try { _transport.DevicesEnumerated -= OnDevices; } catch { } _audioPanel = null; };
+            win.Show(this);
             _transport.EnumerateDevices();
         }
 

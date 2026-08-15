@@ -22,9 +22,9 @@
     <RootNamespace>PISMO</RootNamespace>
     <ApplicationIcon>pismo.ico</ApplicationIcon>
     <StartupObject>PISMO.Program</StartupObject>
-    <Version>2.8.3.4</Version>
-    <AssemblyVersion>2.8.3.4</AssemblyVersion>
-    <FileVersion>2.8.3.4</FileVersion>
+    <Version>2.8.4</Version>
+    <AssemblyVersion>2.8.4</AssemblyVersion>
+    <FileVersion>2.8.4</FileVersion>
     <Company>PISMO</Company>
     <Product>PISMO Messenger</Product>
   </PropertyGroup>

@@ -21,100 +21,62 @@ namespace PISMO
     }
 
     /// <summary>
-    /// Игровой оверлей в стиле Discord: полупрозрачная панель у ПРАВОГО края
-    /// экрана со списком участников голосового канала — аватар, имя, значок
-    /// выключенного микрофона/наушников и красный бейдж «В ЭФИРЕ», когда у
-    /// человека включена камера или демонстрация экрана.
-    ///
-    /// Окно слоёное (WS_EX_LAYERED) и сквозное для мыши (WS_EX_TRANSPARENT) —
-    /// клики уходят в игру. WS_EX_NOACTIVATE не даёт ему забрать фокус,
-    /// WS_EX_TOOLWINDOW убирает его из Alt+Tab и панели задач.
-    ///
-    /// ОГРАНИЧЕНИЕ: поверх игры в ЭКСКЛЮЗИВНОМ полноэкранном режиме такое окно
-    /// не рисуется — так устроен Windows, обойти это можно только перехватом
-    /// DirectX. Поверх оконного и «полноэкранного оконного» (borderless) режимов,
-    /// в которых играет большинство, всё работает.
+    /// Рисование панели оверлея. Вынесено из формы, потому что этой же картинкой
+    /// живёт превью в окне «Настройка оверлея» — иначе превью и реальная панель
+    /// неизбежно разъехались бы.
     /// </summary>
-    internal sealed class GameOverlayForm : Form
+    internal static class OverlayRenderer
     {
-        // ── Оформление ──────────────────────────────────────────────────
-        private const int Pad = 9;          // внутренние поля карточки
-        private const int RowH = 32;        // высота строки участника
-        private const int AvatarSz = 24;
-        private const int Gap = 8;
-        private const int MuteSz = 20;
-        private const int ScreenMargin = 14;   // отступ от правого края экрана
-        private const int Radius = 12;
+        private const int BasePad = 7;
+        private const int BaseRowH = 28;
+        private const int BaseAvatar = 22;
+        private const int BaseMute = 18;
+        private const int BaseGap = 7;
+        private const int BaseRadius = 10;
 
-        private static readonly Color CardBack = Color.FromArgb(214, 30, 31, 34);
-        private static readonly Color CardEdge = Color.FromArgb(90, 0, 0, 0);
-        private static readonly Color NameFg = Color.FromArgb(236, 238, 242);
-        private static readonly Color SelfFg = Color.FromArgb(120, 200, 140);
-        private static readonly Color BadgeBack = Color.FromArgb(237, 66, 69);
-        private static readonly Color MoreFg = Color.FromArgb(150, 152, 158);
-
-        // Кто говорит — видно по прозрачности строки, а не по зелёному кольцу:
-        // молчит — бледная, говорит — почти непрозрачная.
-        private const float RowAlphaSilent = 0.20f;     // ~80% прозрачности
-        private const float RowAlphaSpeaking = 0.75f;   // ~25% прозрачности
-        // Непрозрачный «двойник» фона карточки — им MuteGlyph рисует вырез под
+        // Непрозрачный «двойник» фона — им MuteGlyph рисует вырез под
         // перечёркивающей линией (полупрозрачный цвет дал бы грязный след).
         private static readonly Color SlashBg = Color.FromArgb(255, 34, 35, 39);
+        private static readonly Color NameFg = Color.FromArgb(236, 238, 242);
+        private static readonly Color SelfFg = Color.FromArgb(140, 210, 160);
+        private static readonly Color MoreFg = Color.FromArgb(150, 152, 158);
 
-        private readonly Font _fName = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
-        private readonly Font _fBadge = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold);
-        private readonly Font _fMore = new Font("Segoe UI", 8.5f);
+        private static int _fontScale = -1;
+        private static Font _fName, _fBadge, _fMore, _fLetter;
 
-        private List<OverlayMember> _members = new();
-
-        public GameOverlayForm()
+        private static void EnsureFonts(int scale)
         {
-            FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            TopMost = true;
-            StartPosition = FormStartPosition.Manual;
-            // Размер/позицию задаёт UpdateLayeredWindow — стартуем «в никуда»,
-            // чтобы пустое окно не мелькнуло в левом верхнем углу.
-            Bounds = new Rectangle(-32000, -32000, 1, 1);
+            if (_fontScale == scale && _fName != null) return;
+            _fName?.Dispose(); _fBadge?.Dispose(); _fMore?.Dispose(); _fLetter?.Dispose();
+            float k = scale / 100f;
+            _fName = new Font("Segoe UI Semibold", 9f * k, FontStyle.Bold);
+            _fBadge = new Font("Segoe UI Semibold", 7f * k, FontStyle.Bold);
+            _fMore = new Font("Segoe UI", 8f * k);
+            _fLetter = new Font("Segoe UI Black", 7.5f * k, FontStyle.Bold);
+            _fontScale = scale;
         }
 
-        /// <summary>Окно не должно забирать фокус у игры при показе.</summary>
-        protected override bool ShowWithoutActivation => true;
+        private static int S(int v, int scale) => Math.Max(1, (int)Math.Round(v * scale / 100.0));
 
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                var cp = base.CreateParams;
-                cp.ExStyle |= WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-                return cp;
-            }
-        }
+        private static Color WithAlpha(Color c, float k)
+            => Color.FromArgb((int)Math.Round(Math.Clamp(k, 0f, 1f) * 255), c.R, c.G, c.B);
 
-        /// <summary>Новый состав участников. Пустой список — окно прячется.</summary>
-        public void SetMembers(List<OverlayMember> members)
+        /// <summary>Собирает картинку панели. null — рисовать нечего.</summary>
+        public static Bitmap BuildCard(IReadOnlyList<OverlayMember> members)
         {
-            _members = members ?? new List<OverlayMember>();
-            Render();
-        }
+            if (members == null || members.Count == 0) return null;
 
-        /// <summary>Пересобирает картинку окна и толкает её в UpdateLayeredWindow.</summary>
-        public void Render()
-        {
-            var members = _members;
-            if (members.Count == 0 || !DeviceSettings.OverlayEnabled)
-            {
-                if (Visible) Visible = false;
-                return;
-            }
+            int scale = DeviceSettings.OverlayScale;
+            EnsureFonts(scale);
+
+            int pad = S(BasePad, scale), rowH = S(BaseRowH, scale);
+            int avatar = S(BaseAvatar, scale), mute = S(BaseMute, scale);
+            int gap = S(BaseGap, scale), radius = S(BaseRadius, scale);
 
             int max = Math.Max(1, DeviceSettings.OverlayMaxParticipants);
             int shown = Math.Min(members.Count, max);
             int hidden = members.Count - shown;
 
-            // Ширина — по самому длинному видимому имени, в разумных пределах:
-            // узкая панель резала бы имена, широкая зря перекрывала бы экран.
-            // Меряем через GDI+ (MeasureString), потому что и рисуем теперь им же.
             int nameW = 0, badgeW;
             using (var mb = new Bitmap(1, 1))
             using (var mg = Graphics.FromImage(mb))
@@ -125,13 +87,15 @@ namespace PISMO
                     int w = (int)Math.Ceiling(mg.MeasureString(members[i].Name ?? "", _fName).Width);
                     if (w > nameW) nameW = w;
                 }
-                badgeW = (int)Math.Ceiling(mg.MeasureString("В ЭФИРЕ", _fBadge).Width) + 12;
+                badgeW = (int)Math.Ceiling(mg.MeasureString("В ЭФИРЕ", _fBadge).Width) + S(12, scale);
             }
-            int width = Pad + AvatarSz + Gap + nameW + Gap + MuteSz + 6 + badgeW + Pad;
-            width = Math.Clamp(width, 200, 360);
-            int height = Pad + shown * RowH + (hidden > 0 ? 18 : 0) + Pad;
 
-            using var bmp = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            int width = pad + avatar + gap + nameW + gap + mute + 6 + badgeW + pad;
+            width = Math.Clamp(width, S(180, scale), S(340, scale));
+            int moreH = hidden > 0 ? S(16, scale) : 0;
+            int height = pad + shown * rowH + moreH + pad;
+
+            var bmp = new Bitmap(width, height, PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(bmp))
             {
                 g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -140,76 +104,73 @@ namespace PISMO
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
                 g.Clear(Color.Transparent);
 
-                using (var path = Rounded(new Rectangle(0, 0, width - 1, height - 1), Radius))
+                // Подложка: при нулевой непрозрачности не рисуем вовсе — остаются
+                // только имена поверх игры.
+                float backK = DeviceSettings.OverlayBackOpacity / 100f;
+                if (backK > 0.01f)
                 {
-                    using var back = new SolidBrush(CardBack);
+                    var bc = DeviceSettings.ParseColor(DeviceSettings.OverlayBackColor, Color.FromArgb(30, 31, 34));
+                    using var path = Rounded(new Rectangle(0, 0, width - 1, height - 1), radius);
+                    using var back = new SolidBrush(WithAlpha(bc, backK));
                     g.FillPath(back, path);
-                    using var edge = new Pen(CardEdge, 1f);
-                    g.DrawPath(edge, path);
                 }
 
+                float aSilent = DeviceSettings.OverlayAlphaSilent / 100f;
+                float aSpeak = DeviceSettings.OverlayAlphaSpeaking / 100f;
+
                 for (int i = 0; i < shown; i++)
-                    DrawRow(g, members[i], new Rectangle(Pad, Pad + i * RowH, width - Pad * 2, RowH));
+                {
+                    var m = members[i];
+                    bool speaking = m.Speaking && !m.MicMuted && !m.Deafened;
+                    DrawRow(g, m, new Rectangle(pad, pad + i * rowH, width - pad * 2, rowH),
+                            speaking ? aSpeak : aSilent, scale, avatar, mute, gap);
+                }
 
                 if (hidden > 0)
                 {
-                    var moreRect = new RectangleF(Pad, Pad + shown * RowH, width - Pad * 2, 18);
-                    using var moreBr = new SolidBrush(WithAlpha(MoreFg, RowAlphaSilent));
-                    using var sf = new StringFormat(StringFormatFlags.NoWrap)
-                    { LineAlignment = StringAlignment.Center };
+                    var moreRect = new RectangleF(pad, pad + shown * rowH, width - pad * 2, moreH);
+                    using var moreBr = new SolidBrush(WithAlpha(MoreFg, aSilent));
+                    using var sf = new StringFormat(StringFormatFlags.NoWrap) { LineAlignment = StringAlignment.Center };
                     g.DrawString($"и ещё {hidden}…", _fMore, moreBr, moreRect, sf);
                 }
             }
-
-            // Правый край рабочей области, по вертикали — по центру: так панель не
-            // спорит ни с игровым HUD сверху, ни со счётчиками FPS.
-            var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
-            int x = wa.Right - width - ScreenMargin;
-            int y = wa.Top + Math.Max(0, (wa.Height - height) / 2);
-
-            if (!Visible) Visible = true;
-            PushLayered(bmp, new Point(x, y));
+            return bmp;
         }
 
-        private static Color WithAlpha(Color c, float k)
-            => Color.FromArgb((int)Math.Round(Math.Clamp(k, 0f, 1f) * 255), c.R, c.G, c.B);
-
-        /// <summary>Рисует строку участника с прозрачностью по признаку «говорит».
-        /// Содержимое собирается в отдельном слое и накладывается целиком с нужной
-        /// альфой: иначе пришлось бы задавать прозрачность каждому элементу по
-        /// отдельности, а картинку аватара так не приглушить.</summary>
-        private void DrawRow(Graphics g, OverlayMember m, Rectangle r)
+        /// <summary>Строка целиком собирается в отдельном слое и накладывается с нужной
+        /// альфой: поэлементно прозрачность не задать — аватар это картинка.</summary>
+        private static void DrawRow(Graphics g, OverlayMember m, Rectangle r, float alpha,
+                                    int scale, int avatarSz, int muteSz, int gap)
         {
-            bool speaking = m.Speaking && !m.MicMuted && !m.Deafened;
-            float alpha = speaking ? RowAlphaSpeaking : RowAlphaSilent;
-
+            if (r.Width <= 0 || r.Height <= 0) return;
             using var layer = new Bitmap(r.Width, r.Height, PixelFormat.Format32bppArgb);
             using (var lg = Graphics.FromImage(layer))
             {
                 lg.SmoothingMode = SmoothingMode.AntiAlias;
                 lg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-                DrawRowContent(lg, m, new Rectangle(0, 0, r.Width, r.Height));
+                DrawRowContent(lg, m, new Rectangle(0, 0, r.Width, r.Height), scale, avatarSz, muteSz, gap);
             }
-
-            var cm = new ColorMatrix { Matrix33 = alpha };   // множитель альфа-канала
+            var cm = new ColorMatrix { Matrix33 = Math.Clamp(alpha, 0f, 1f) };
             using var ia = new ImageAttributes();
             ia.SetColorMatrix(cm);
             g.DrawImage(layer, r, 0, 0, r.Width, r.Height, GraphicsUnit.Pixel, ia);
         }
 
-        /// <summary>Содержимое строки в координатах слоя. Только GDI+: TextRenderer
-        /// (GDI) не пишет альфа-канал, и на прозрачной подложке текст пропал бы.</summary>
-        private void DrawRowContent(Graphics g, OverlayMember m, Rectangle r)
+        /// <summary>Только GDI+: TextRenderer (GDI) не пишет альфа-канал, и на
+        /// прозрачном слое текст пропал бы.</summary>
+        private static void DrawRowContent(Graphics g, OverlayMember m, Rectangle r,
+                                           int scale, int avatarSz, int muteSz, int gap)
         {
             int rightEdge = r.Right;
 
-            // Бейдж «В ЭФИРЕ» — только при включённой камере/демонстрации.
             if (m.Streaming)
             {
-                int bw = (int)Math.Ceiling(g.MeasureString("В ЭФИРЕ", _fBadge).Width) + 12;
-                var br = new Rectangle(rightEdge - bw, r.Y + (r.Height - 17) / 2, bw, 17);
-                using (var path = Rounded(br, 8))
-                using (var b = new SolidBrush(BadgeBack))
+                int bh = S(16, scale);
+                int bw = (int)Math.Ceiling(g.MeasureString("В ЭФИРЕ", _fBadge).Width) + S(12, scale);
+                var br = new Rectangle(rightEdge - bw, r.Y + (r.Height - bh) / 2, bw, bh);
+                var accent = DeviceSettings.ParseColor(DeviceSettings.OverlayAccentColor, Color.FromArgb(237, 66, 69));
+                using (var path = Rounded(br, bh / 2))
+                using (var b = new SolidBrush(accent))
                     g.FillPath(b, path);
                 using (var sf = new StringFormat(StringFormatFlags.NoWrap)
                 { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
@@ -217,15 +178,15 @@ namespace PISMO
                 rightEdge = br.Left - 6;
             }
 
-            // Значок мьюта: наушники важнее микрофона (deafen глушит и то, и другое).
+            // Наушники важнее микрофона: deafen глушит и то, и другое.
             if (m.Deafened || m.MicMuted)
             {
-                var mr = new Rectangle(rightEdge - MuteSz, r.Y + (r.Height - MuteSz) / 2, MuteSz, MuteSz);
+                var mr = new Rectangle(rightEdge - muteSz, r.Y + (r.Height - muteSz) / 2, muteSz, muteSz);
                 MuteGlyph.Draw(g, mr, m.Deafened, SlashBg);
                 rightEdge = mr.Left - 6;
             }
 
-            var av = new Rectangle(r.X, r.Y + (r.Height - AvatarSz) / 2, AvatarSz, AvatarSz);
+            var av = new Rectangle(r.X, r.Y + (r.Height - avatarSz) / 2, avatarSz, avatarSz);
             if (!AvatarStore.DrawAvatar(g, m.Uid, av.X, av.Y, av.Width))
             {
                 string full = m.Name ?? "";
@@ -236,13 +197,12 @@ namespace PISMO
                 using var b = new SolidBrush(pal[h % pal.Length]);
                 g.FillEllipse(b, av);
                 string letter = full.Length > 0 ? full.Substring(0, 1).ToUpper() : "?";
-                using var f = new Font("Segoe UI Black", 8f, FontStyle.Bold);
                 using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                g.DrawString(letter, f, Brushes.White, (RectangleF)av, sf);
+                g.DrawString(letter, _fLetter, Brushes.White, (RectangleF)av, sf);
             }
 
-            var nameRect = RectangleF.FromLTRB(av.Right + Gap, r.Y,
-                                               Math.Max(av.Right + Gap + 20, rightEdge), r.Bottom);
+            var nameRect = RectangleF.FromLTRB(av.Right + gap, r.Y,
+                                               Math.Max(av.Right + gap + 20, rightEdge), r.Bottom);
             using (var nameBr = new SolidBrush(m.IsSelf ? SelfFg : NameFg))
             using (var sfName = new StringFormat(StringFormatFlags.NoWrap)
             { Trimming = StringTrimming.EllipsisCharacter, LineAlignment = StringAlignment.Center })
@@ -252,8 +212,8 @@ namespace PISMO
         private static GraphicsPath Rounded(Rectangle r, int radius)
         {
             var path = new GraphicsPath();
-            int d = radius * 2;
-            if (d <= 0 || r.Width <= d || r.Height <= d) { path.AddRectangle(r); return path; }
+            int d = Math.Max(2, radius * 2);
+            if (r.Width <= d || r.Height <= d) { path.AddRectangle(r); return path; }
             path.AddArc(r.X, r.Y, d, d, 180, 90);
             path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
             path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
@@ -262,8 +222,131 @@ namespace PISMO
             return path;
         }
 
+        /// <summary>Демо-состав для превью и режима перетаскивания, когда звонка нет.</summary>
+        public static List<OverlayMember> SampleMembers() => new()
+        {
+            new OverlayMember { Uid = 0, Name = "Вы",   IsSelf = true, Speaking = true },
+            new OverlayMember { Uid = 0, Name = "Никита", Streaming = true },
+            new OverlayMember { Uid = 0, Name = "Артём",  MicMuted = true },
+        };
+    }
+
+    /// <summary>
+    /// Игровой оверлей: полупрозрачная панель со списком участников голосового
+    /// канала — аватар, имя, значок выключенного микрофона и бейдж «В ЭФИРЕ».
+    ///
+    /// Окно слоёное (WS_EX_LAYERED) и сквозное для мыши (WS_EX_TRANSPARENT) —
+    /// клики уходят в игру. WS_EX_NOACTIVATE не даёт ему забрать фокус,
+    /// WS_EX_TOOLWINDOW убирает его из Alt+Tab и панели задач.
+    ///
+    /// В режиме настройки (<see cref="SetEditMode"/>) сквозной проход
+    /// отключается, и панель можно перетащить мышью.
+    ///
+    /// ОГРАНИЧЕНИЕ: поверх игры в ЭКСКЛЮЗИВНОМ полноэкранном режиме такое окно
+    /// не рисуется — так устроен Windows. Оконный и «полноэкранный оконный»
+    /// (borderless) режимы работают.
+    /// </summary>
+    internal sealed class GameOverlayForm : Form
+    {
+        private const int ScreenMargin = 14;
+
+        private List<OverlayMember> _members = new();
+        private bool _editMode;
+
+        public GameOverlayForm()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            // Размер и позицию задаёт UpdateLayeredWindow — стартуем «в никуда»,
+            // чтобы пустое окно не мелькнуло в левом верхнем углу.
+            Bounds = new Rectangle(-32000, -32000, 1, 1);
+        }
+
+        protected override bool ShowWithoutActivation => true;
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                if (!_editMode) cp.ExStyle |= WS_EX_TRANSPARENT;
+                return cp;
+            }
+        }
+
+        public void SetMembers(List<OverlayMember> members)
+        {
+            _members = members ?? new List<OverlayMember>();
+            Render();
+        }
+
+        /// <summary>Режим настройки: панель ловит мышь и её можно перетащить.</summary>
+        public void SetEditMode(bool on)
+        {
+            if (_editMode == on) return;
+            _editMode = on;
+            try
+            {
+                if (IsHandleCreated)
+                {
+                    int ex = GetWindowLong(Handle, GWL_EXSTYLE);
+                    ex = on ? (ex & ~WS_EX_TRANSPARENT) : (ex | WS_EX_TRANSPARENT);
+                    SetWindowLong(Handle, GWL_EXSTYLE, ex);
+                    // Без SWP_FRAMECHANGED смена расширенного стиля может не
+                    // подхватиться, и панель осталась бы сквозной для мыши.
+                    SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+                }
+            }
+            catch { }
+            Cursor = on ? Cursors.SizeAll : Cursors.Default;
+            Render();
+        }
+
+        public bool EditMode => _editMode;
+
+        /// <summary>Пересобирает картинку окна и толкает её в UpdateLayeredWindow.</summary>
+        public void Render()
+        {
+            var members = _members;
+            if (!DeviceSettings.OverlayEnabled || members.Count == 0)
+            {
+                if (Visible) Visible = false;
+                return;
+            }
+
+            using var bmp = OverlayRenderer.BuildCard(members);
+            if (bmp == null) { if (Visible) Visible = false; return; }
+
+            Point pos;
+            if (_editMode && Visible)
+            {
+                // Пока панель тащат, позиция берётся из самого окна: иначе Render
+                // возвращал бы её обратно в сохранённую точку на каждом кадре.
+                pos = Location;
+            }
+            else
+            {
+                var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+                int x = DeviceSettings.OverlayX >= 0
+                    ? DeviceSettings.OverlayX : wa.Right - bmp.Width - ScreenMargin;
+                int y = DeviceSettings.OverlayY >= 0
+                    ? DeviceSettings.OverlayY : wa.Top + Math.Max(0, (wa.Height - bmp.Height) / 2);
+                // Не даём панели уехать за пределы экрана (сменилось разрешение и т.п.).
+                x = Math.Clamp(x, wa.Left, Math.Max(wa.Left, wa.Right - bmp.Width));
+                y = Math.Clamp(y, wa.Top, Math.Max(wa.Top, wa.Bottom - bmp.Height));
+                pos = new Point(x, y);
+            }
+
+            if (!Visible) Visible = true;
+            PushLayered(bmp, pos);
+        }
+
         /// <summary>Заново переводит окно в topmost — полноэкранные игры при смене
-        /// фокуса перекрывают чужие окна, и без этого оверлей «тонет».</summary>
+        /// фокуса задвигают чужие окна.</summary>
         public void ReassertTopMost()
         {
             if (!IsHandleCreated || !Visible) return;
@@ -271,7 +354,23 @@ namespace PISMO
             catch { }
         }
 
-        // ── UpdateLayeredWindow: попиксельная прозрачность ───────────────
+        protected override void WndProc(ref Message m)
+        {
+            // В режиме настройки всё окно ведёт себя как заголовок — тащим мышью.
+            if (_editMode && m.Msg == WM_NCHITTEST) { m.Result = (IntPtr)HTCAPTION; return; }
+            if (_editMode && m.Msg == WM_EXITSIZEMOVE)
+            {
+                DeviceSettings.OverlayX = Location.X;
+                DeviceSettings.OverlayY = Location.Y;
+                try { DeviceSettings.Save(); } catch { }
+                PositionChanged?.Invoke();
+            }
+            base.WndProc(ref m);
+        }
+
+        /// <summary>Панель перетащили — редактор обновляет подпись с координатами.</summary>
+        public event Action PositionChanged;
+
         private void PushLayered(Bitmap bmp, Point location)
         {
             if (!IsHandleCreated) return;
@@ -282,7 +381,6 @@ namespace PISMO
             {
                 hBitmap = bmp.GetHbitmap(Color.FromArgb(0));   // 0 = сохранить альфу
                 hOld = SelectObject(memDc, hBitmap);
-
                 var size = new SIZE { cx = bmp.Width, cy = bmp.Height };
                 var src = new POINT { X = 0, Y = 0 };
                 var dst = new POINT { X = location.X, Y = location.Y };
@@ -304,25 +402,18 @@ namespace PISMO
             }
         }
 
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                try { _fName.Dispose(); _fBadge.Dispose(); _fMore.Dispose(); } catch { }
-            }
-            base.Dispose(disposing);
-        }
-
-        // ── P/Invoke ────────────────────────────────────────────────────
         private const int WS_EX_LAYERED = 0x00080000;
         private const int WS_EX_TRANSPARENT = 0x00000020;
         private const int WS_EX_TOOLWINDOW = 0x00000080;
         private const int WS_EX_NOACTIVATE = 0x08000000;
+        private const int GWL_EXSTYLE = -20;
+        private const int WM_NCHITTEST = 0x0084, WM_EXITSIZEMOVE = 0x0232, HTCAPTION = 2;
         private const byte AC_SRC_OVER = 0;
         private const byte AC_SRC_ALPHA = 1;
         private const int ULW_ALPHA = 2;
         private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
-        private const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOACTIVATE = 0x0010;
+        private const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOZORDER = 0x0004,
+                           SWP_NOACTIVATE = 0x0010, SWP_FRAMECHANGED = 0x0020;
 
         [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X, Y; }
         [StructLayout(LayoutKind.Sequential)] private struct SIZE { public int cx, cy; }
@@ -334,6 +425,8 @@ namespace PISMO
             ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc, int crKey, ref BLENDFUNCTION pblend, int dwFlags);
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+        [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+        [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
         [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hWnd);
         [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
         [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr hDC);
@@ -343,14 +436,14 @@ namespace PISMO
     }
 
     /// <summary>
-    /// Управление игровым оверлеем: одно окно на всё приложение, живёт только
-    /// пока идёт звонок.
+    /// Управление игровым оверлеем: одно окно на всё приложение.
     ///
-    /// Показывается ТОЛЬКО поверх полноэкранного приложения — то есть в игре.
-    /// На рабочем столе, поверх лаунчера, браузера или самого PISMO панель не
-    /// нужна и только мешает. «Игра» определяется не по списку процессов (он
-    /// всегда неполный), а по признаку, которым пользуется и сам Windows:
-    /// активное окно закрывает монитор целиком.
+    /// Показывается ТОЛЬКО поверх полноэкранного приложения — то есть в игре. На
+    /// рабочем столе, поверх лаунчера, браузера или самого PISMO панель не нужна.
+    /// «Игра» определяется не по списку процессов (он всегда неполный), а по
+    /// признаку, которым пользуется и сам Windows: активное окно закрывает
+    /// монитор целиком. Исключение — режим настройки: там панель видна всегда,
+    /// иначе её было бы не перетащить.
     /// </summary>
     internal static class CallOverlay
     {
@@ -358,19 +451,23 @@ namespace PISMO
         private static System.Windows.Forms.Timer _tick;
         private static List<OverlayMember> _last = new();
         private static bool _showNow;
+        private static bool _editMode;
+        private static bool _sampleShown;   // на экране демо-состав, а не реальный звонок
 
-        /// <summary>Новый состав участников звонка (вызывается из CallForm).</summary>
+        /// <summary>Панель перетащили в режиме настройки.</summary>
+        public static event Action PositionChanged;
+
         public static void Push(List<OverlayMember> members)
         {
             _last = members ?? new List<OverlayMember>();
-            if (!DeviceSettings.OverlayEnabled || _last.Count == 0) { Stop(); return; }
+            if (!DeviceSettings.OverlayEnabled || (_last.Count == 0 && !_editMode)) { Stop(); return; }
             EnsureForm();
             Apply();
         }
 
-        /// <summary>Звонок закончился либо оверлей выключен — убираем окно.</summary>
         public static void Stop()
         {
+            if (_editMode) return;   // окно настройки держит панель на экране
             _last = new List<OverlayMember>();
             try { _tick?.Stop(); _tick?.Dispose(); } catch { }
             _tick = null;
@@ -378,45 +475,77 @@ namespace PISMO
             _form = null;
         }
 
-        /// <summary>Настройки изменились: выключили — гасим, включили — перерисовываем
-        /// с последним известным составом (не дожидаясь следующего тика звонка).</summary>
-        public static void ApplySettings()
+        /// <summary>Перерисовать с текущими настройками (вызывает редактор).</summary>
+        public static void Refresh()
         {
-            if (!DeviceSettings.OverlayEnabled) { Stop(); return; }
-            if (_last.Count == 0) return;
+            if (!DeviceSettings.OverlayEnabled && !_editMode) { Stop(); return; }
+            if (_last.Count == 0 && !_editMode) return;
             EnsureForm();
             Apply();
+        }
+
+        public static void ApplySettings() => Refresh();
+
+        /// <summary>Режим настройки: панель видна всегда и перетаскивается мышью.
+        /// sample — что показывать, если звонка сейчас нет.</summary>
+        public static void SetEditMode(bool on, List<OverlayMember> sample = null)
+        {
+            _editMode = on;
+            if (on)
+            {
+                // Звонка может и не быть — тогда показываем демо-состав, иначе
+                // настраивать было бы нечего.
+                if (_last.Count == 0)
+                {
+                    _last = sample ?? OverlayRenderer.SampleMembers();
+                    _sampleShown = true;
+                }
+                EnsureForm();
+                _form?.SetEditMode(true);
+                _showNow = true;
+                Apply();
+            }
+            else
+            {
+                _form?.SetEditMode(false);
+                // Демо-состав живёт только на время настройки: иначе панель осталась
+                // бы висеть с выдуманными именами после закрытия окна.
+                if (_sampleShown) { _sampleShown = false; _last = new List<OverlayMember>(); }
+                if (_last.Count == 0) { Stop(); return; }
+                _showNow = IsFullscreenAppForeground();
+                Apply();
+            }
         }
 
         private static void EnsureForm()
         {
             if (_form != null && !_form.IsDisposed) return;
             _form = new GameOverlayForm();
+            _form.PositionChanged += () => { try { PositionChanged?.Invoke(); } catch { } };
             _form.Show();
+            if (_editMode) _form.SetEditMode(true);
             _tick = new System.Windows.Forms.Timer { Interval = 700 };
             _tick.Tick += (s, e) =>
             {
-                // Полноэкранные игры при переключении фокуса задвигают чужие окна —
-                // периодически возвращаем себя наверх.
                 try { _form?.ReassertTopMost(); } catch { }
+                if (_editMode) return;             // в настройке видимостью не рулим
                 bool show = IsFullscreenAppForeground();
                 if (show != _showNow) { _showNow = show; Apply(); }
             };
             _tick.Start();
-            _showNow = IsFullscreenAppForeground();
+            _showNow = _editMode || IsFullscreenAppForeground();
         }
 
         private static void Apply()
         {
             if (_form == null || _form.IsDisposed) return;
-            // Не в игре — рисовать нечего (пустой список прячет окно).
             _form.SetMembers(_showNow ? _last : new List<OverlayMember>());
         }
 
-        /// <summary>Активное окно — полноэкранное приложение (игра)? Проверяем ровно
-        /// то, что делает Windows, решая, глушить ли уведомления: окно переднего
-        /// плана закрывает монитор ЦЕЛИКОМ. Развёрнутое на весь экран обычное окно
-        /// сюда не попадает — оно не заходит под панель задач.</summary>
+        /// <summary>Активное окно — полноэкранное приложение (игра)? Проверяем то же,
+        /// что Windows, решая, глушить ли уведомления: окно переднего плана закрывает
+        /// монитор ЦЕЛИКОМ. Развёрнутое обычное окно сюда не попадает — оно не
+        /// заходит под панель задач.</summary>
         private static bool IsFullscreenAppForeground()
         {
             try
@@ -424,28 +553,24 @@ namespace PISMO
                 IntPtr h = GetForegroundWindow();
                 if (h == IntPtr.Zero) return false;
 
-                // Своё же окно игрой не считаем.
                 GetWindowThreadProcessId(h, out uint pid);
                 if (pid == (uint)Environment.ProcessId) return false;
 
-                // Рабочий стол и оболочка Windows занимают весь экран, но игрой не
-                // являются: без этой отсечки панель висела бы прямо на десктопе.
                 var cls = new System.Text.StringBuilder(256);
                 GetClassName(h, cls, cls.Capacity);
                 switch (cls.ToString())
                 {
-                    case "Progman":               // рабочий стол
-                    case "WorkerW":               // подложка обоев
-                    case "Shell_TrayWnd":         // панель задач
-                    case "Windows.UI.Core.CoreWindow":   // меню «Пуск», поиск
+                    case "Progman":                      // рабочий стол
+                    case "WorkerW":                      // подложка обоев
+                    case "Shell_TrayWnd":                // панель задач
+                    case "Windows.UI.Core.CoreWindow":   // «Пуск», поиск
                     case "XamlExplorerHostIslandWindow": // Alt+Tab, представление задач
                         return false;
                 }
 
                 if (!GetWindowRect(h, out RECT r)) return false;
-                var scr = Screen.FromHandle(h);
-                var b = scr.Bounds;   // именно Bounds, а не WorkingArea: полноэкранное
-                                      // окно перекрывает и панель задач
+                var b = Screen.FromHandle(h).Bounds;   // Bounds, а не WorkingArea:
+                                                       // полноэкранное окно кроет и панель задач
                 return r.Left <= b.Left && r.Top <= b.Top
                     && r.Right >= b.Right && r.Bottom >= b.Bottom;
             }

@@ -142,6 +142,46 @@ namespace PISMO
             set => _overlayMax = Math.Clamp(value, 1, 20);
         }
 
+        // ── Внешний вид оверлея (окно «Настройка оверлея») ────────────────
+        /// <summary>Положение панели на экране. −1 = авто: правый край, по центру
+        /// по вертикали. Иначе — координаты, куда её перетащили.</summary>
+        public static int OverlayX { get; set; } = -1;
+        public static int OverlayY { get; set; } = -1;
+
+        /// <summary>Непрозрачность подложки панели, 0..100. 0 — подложки нет вовсе
+        /// (только имена поверх игры).</summary>
+        private static int _ovBack = 45;
+        public static int OverlayBackOpacity { get => _ovBack; set => _ovBack = Math.Clamp(value, 0, 100); }
+
+        /// <summary>Непрозрачность строки участника, когда он молчит (0..100).</summary>
+        private static int _ovSilent = 20;
+        public static int OverlayAlphaSilent { get => _ovSilent; set => _ovSilent = Math.Clamp(value, 0, 100); }
+
+        /// <summary>Непрозрачность строки участника, когда он говорит (0..100).</summary>
+        private static int _ovSpeak = 75;
+        public static int OverlayAlphaSpeaking { get => _ovSpeak; set => _ovSpeak = Math.Clamp(value, 0, 100); }
+
+        /// <summary>Масштаб панели в процентах (75..150): под разные разрешения.</summary>
+        private static int _ovScale = 100;
+        public static int OverlayScale { get => _ovScale; set => _ovScale = Math.Clamp(value, 75, 150); }
+
+        /// <summary>Цвет подложки панели (HEX).</summary>
+        public static string OverlayBackColor { get; set; } = "#1E1F22";
+
+        /// <summary>Цвет бейджа «В ЭФИРЕ» (HEX).</summary>
+        public static string OverlayAccentColor { get; set; } = "#ED4245";
+
+        /// <summary>Разбор HEX-цвета из настроек с запасным значением.</summary>
+        public static System.Drawing.Color ParseColor(string hex, System.Drawing.Color fallback)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(hex)) return fallback;
+                return System.Drawing.ColorTranslator.FromHtml(hex.Trim());
+            }
+            catch { return fallback; }
+        }
+
         /// <summary>Показывать ВСЕ мониторы в выборе демонстрации (захват WGC).
         /// По умолчанию выключено: WGC ограничен ~30 fps, зато DXGI-захват (60 fps)
         /// видит только мониторы «своего» GPU — на мульти-GPU системах часть
@@ -296,6 +336,20 @@ namespace PISMO
                         case "OverlayMaxParticipants":
                             if (int.TryParse(val, out int omp)) OverlayMaxParticipants = omp;
                             break;
+                        case "OverlayX": if (int.TryParse(val, out int ox)) OverlayX = ox; break;
+                        case "OverlayY": if (int.TryParse(val, out int oy)) OverlayY = oy; break;
+                        case "OverlayBackOpacity":
+                            if (int.TryParse(val, out int obo)) OverlayBackOpacity = obo; break;
+                        case "OverlayAlphaSilent":
+                            if (int.TryParse(val, out int oas)) OverlayAlphaSilent = oas; break;
+                        case "OverlayAlphaSpeaking":
+                            if (int.TryParse(val, out int oap)) OverlayAlphaSpeaking = oap; break;
+                        case "OverlayScale":
+                            if (int.TryParse(val, out int osc)) OverlayScale = osc; break;
+                        case "OverlayBackColor":
+                            if (!string.IsNullOrWhiteSpace(val)) OverlayBackColor = val.Trim(); break;
+                        case "OverlayAccentColor":
+                            if (!string.IsNullOrWhiteSpace(val)) OverlayAccentColor = val.Trim(); break;
                         case "HotkeyMic":
                             if (int.TryParse(val, out int hm)) HotkeyMic = hm;
                             break;
@@ -343,6 +397,14 @@ namespace PISMO
                     $"ScreenCaptureAllMonitors={(ScreenCaptureAllMonitors ? 1 : 0)}\n" +
                     $"OverlayEnabled={(OverlayEnabled ? 1 : 0)}\n" +
                     $"OverlayMaxParticipants={OverlayMaxParticipants}\n" +
+                    $"OverlayX={OverlayX}\n" +
+                    $"OverlayY={OverlayY}\n" +
+                    $"OverlayBackOpacity={OverlayBackOpacity}\n" +
+                    $"OverlayAlphaSilent={OverlayAlphaSilent}\n" +
+                    $"OverlayAlphaSpeaking={OverlayAlphaSpeaking}\n" +
+                    $"OverlayScale={OverlayScale}\n" +
+                    $"OverlayBackColor={OverlayBackColor}\n" +
+                    $"OverlayAccentColor={OverlayAccentColor}\n" +
                     $"HotkeyMic={HotkeyMic}\n" +
                     $"HotkeyCamera={HotkeyCamera}\n" +
                     $"HotkeyScreen={HotkeyScreen}\n" +

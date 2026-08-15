@@ -1033,10 +1033,14 @@ namespace PISMO
                         Name = string.IsNullOrWhiteSpace(kv.Value) ? pid : kv.Value,
                         MicMuted = _micMutedPids.Contains(pid),
                         Deafened = _deafenedPids.Contains(pid),
-                        // «В эфире» = демонстрация экрана ИЛИ включённая камера
-                        // (у камеры появляется своя плитка).
+                        // «В эфире» = идёт демонстрация экрана ИЛИ реально идёт
+                        // видео с камеры. Проверять само НАЛИЧИЕ плитки камеры
+                        // нельзя: она создаётся КАЖДОМУ участнику как заглушка с
+                        // аватаром, и бейдж загорался у всех подряд. Признак живого
+                        // видео — HasVideo, он ставится по первому кадру.
                         Streaming = _publishedStreams.ContainsKey(pid)
-                                    || _tiles.ContainsKey(TileKey(pid, "camera")),
+                                    || (_tiles.TryGetValue(TileKey(pid, "camera"), out var camTile)
+                                        && camTile.HasVideo),
                         Speaking = IsSpeakingNow(pid, now)
                     });
                 }
