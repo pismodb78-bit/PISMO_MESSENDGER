@@ -304,15 +304,20 @@ namespace PISMO
 
     /// <summary>
     /// Управление игровым оверлеем: одно окно на всё приложение, живёт только
-    /// пока идёт звонок. Пока активное окно принадлежит самому PISMO, оверлей
-    /// скрыт — он нужен поверх ИГРЫ, а не поверх собственного интерфейса.
+    /// пока идёт звонок.
+    ///
+    /// Показывается ТОЛЬКО поверх полноэкранного приложения — то есть в игре.
+    /// На рабочем столе, поверх лаунчера, браузера или самого PISMO панель не
+    /// нужна и только мешает. «Игра» определяется не по списку процессов (он
+    /// всегда неполный), а по признаку, которым пользуется и сам Windows:
+    /// активное окно закрывает монитор целиком.
     /// </summary>
     internal static class CallOverlay
     {
         private static GameOverlayForm _form;
         private static System.Windows.Forms.Timer _tick;
         private static List<OverlayMember> _last = new();
-        private static bool _selfForeground;
+        private static bool _showNow;
 
         /// <summary>Новый состав участников звонка (вызывается из CallForm).</summary>
         public static void Push(List<OverlayMember> members)
@@ -348,39 +353,72 @@ namespace PISMO
             if (_form != null && !_form.IsDisposed) return;
             _form = new GameOverlayForm();
             _form.Show();
-            _tick = new System.Windows.Forms.Timer { Interval = 900 };
+            _tick = new System.Windows.Forms.Timer { Interval = 700 };
             _tick.Tick += (s, e) =>
             {
                 // Полноэкранные игры при переключении фокуса задвигают чужие окна —
-                // periodически возвращаем себя наверх.
+                // периодически возвращаем себя наверх.
                 try { _form?.ReassertTopMost(); } catch { }
-                bool self = IsOwnProcessForeground();
-                if (self != _selfForeground) { _selfForeground = self; Apply(); }
+                bool show = IsFullscreenAppForeground();
+                if (show != _showNow) { _showNow = show; Apply(); }
             };
             _tick.Start();
-            _selfForeground = IsOwnProcessForeground();
+            _showNow = IsFullscreenAppForeground();
         }
 
         private static void Apply()
         {
             if (_form == null || _form.IsDisposed) return;
-            // Поверх собственных окон оверлей не нужен — там и так виден звонок.
-            _form.SetMembers(_selfForeground ? new List<OverlayMember>() : _last);
+            // Не в игре — рисовать нечего (пустой список прячет окно).
+            _form.SetMembers(_showNow ? _last : new List<OverlayMember>());
         }
 
-        private static bool IsOwnProcessForeground()
+        /// <summary>Активное окно — полноэкранное приложение (игра)? Проверяем ровно
+        /// то, что делает Windows, решая, глушить ли уведомления: окно переднего
+        /// плана закрывает монитор ЦЕЛИКОМ. Развёрнутое на весь экран обычное окно
+        /// сюда не попадает — оно не заходит под панель задач.</summary>
+        private static bool IsFullscreenAppForeground()
         {
             try
             {
                 IntPtr h = GetForegroundWindow();
                 if (h == IntPtr.Zero) return false;
+
+                // Своё же окно игрой не считаем.
                 GetWindowThreadProcessId(h, out uint pid);
-                return pid == (uint)Environment.ProcessId;
+                if (pid == (uint)Environment.ProcessId) return false;
+
+                // Рабочий стол и оболочка Windows занимают весь экран, но игрой не
+                // являются: без этой отсечки панель висела бы прямо на десктопе.
+                var cls = new System.Text.StringBuilder(256);
+                GetClassName(h, cls, cls.Capacity);
+                switch (cls.ToString())
+                {
+                    case "Progman":               // рабочий стол
+                    case "WorkerW":               // подложка обоев
+                    case "Shell_TrayWnd":         // панель задач
+                    case "Windows.UI.Core.CoreWindow":   // меню «Пуск», поиск
+                    case "XamlExplorerHostIslandWindow": // Alt+Tab, представление задач
+                        return false;
+                }
+
+                if (!GetWindowRect(h, out RECT r)) return false;
+                var scr = Screen.FromHandle(h);
+                var b = scr.Bounds;   // именно Bounds, а не WorkingArea: полноэкранное
+                                      // окно перекрывает и панель задач
+                return r.Left <= b.Left && r.Top <= b.Top
+                    && r.Right >= b.Right && r.Bottom >= b.Bottom;
             }
             catch { return false; }
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT { public int Left, Top, Right, Bottom; }
+
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
     }
 }
