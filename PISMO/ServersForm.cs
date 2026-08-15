@@ -60,6 +60,7 @@ namespace PISMO
         private Panel _chPreview;      // полоска-превью над полем ввода
         private Label _chPreviewLbl;
         private System.Windows.Forms.Timer _refresh;
+        private int _permsTick;   // троттлинг фоновой перепроверки прав в _refresh
         private int _lastMsgCount = -1;
 
         // Контейнеры участников «в эфире» под каждым голосовым каналом.
@@ -184,6 +185,9 @@ namespace PISMO
                 RefreshVoicePresence(); // presence нет в WS — обновляем (диффом, дёшево)
                 RefreshMemberPresence(); // статус участников сервера (точки), без пересборки
                 RefreshChannelBadges();  // цифры непрочит./упоминаний у каналов
+                // Права по роли — раз в ~10 с, в фоне: роль могли выдать или забрать
+                // прямо сейчас, и это должно примениться без перезахода на сервер.
+                if ((++_permsTick % 5) == 0) RefreshPermsBackground();
             };
             _refresh.Start();
 
@@ -601,11 +605,13 @@ namespace PISMO
         }
 
         /// <summary>Считает права текущего пользователя на сервере и его mute.</summary>
-        private void ComputePerms()
+        /// <summary>Читает права из БД. Отделено от применения, чтобы этот запрос
+        /// можно было гонять в фоновом потоке (периодическая перепроверка ролей).</summary>
+        private static (bool muted, string role, bool ban, bool kick, bool mute, bool manage)
+            ReadPerms(int serverId, int userId, bool isOwner)
         {
-            _canBan = _canKick = _canMute = _canManage = _isOwner;
-            _serverMuted = false;
-            _myRoleName = "";
+            bool muted = false, ban = isOwner, kick = isOwner, mute = isOwner, manage = isOwner;
+            string role = "";
             try
             {
                 using var conn = DBHelper.OpenConnection();
@@ -613,22 +619,66 @@ namespace PISMO
                     "SELECT m.muted_notifs, r.name AS rname, r.can_ban, r.can_kick, r.can_mute, r.can_manage " +
                     "FROM server_members m LEFT JOIN server_roles r ON r.id=m.role_id " +
                     "WHERE m.server_id=@s AND m.user_id=@u", conn);
-                cmd.Parameters.AddWithValue("@s", _serverId);
-                cmd.Parameters.AddWithValue("@u", _me);
+                cmd.Parameters.AddWithValue("@s", serverId);
+                cmd.Parameters.AddWithValue("@u", userId);
                 using var r = cmd.ExecuteReader();
                 if (r.Read())
                 {
-                    _serverMuted = r["muted_notifs"] != DBNull.Value && Convert.ToInt32(r["muted_notifs"]) == 1;
-                    _myRoleName = r["rname"] == DBNull.Value ? "" : r["rname"].ToString();
-                    if (!_isOwner)
+                    muted = r["muted_notifs"] != DBNull.Value && Convert.ToInt32(r["muted_notifs"]) == 1;
+                    role = r["rname"] == DBNull.Value ? "" : r["rname"].ToString();
+                    if (!isOwner)
                     {
                         bool B(string c) => r[c] != DBNull.Value && Convert.ToInt32(r[c]) == 1;
-                        _canBan |= B("can_ban"); _canKick |= B("can_kick");
-                        _canMute |= B("can_mute"); _canManage |= B("can_manage");
+                        ban |= B("can_ban"); kick |= B("can_kick");
+                        mute |= B("can_mute"); manage |= B("can_manage");
                     }
                 }
             }
             catch { }
+            return (muted, role, ban, kick, mute, manage);
+        }
+
+        /// <summary>Записывает права в поля формы. Возвращает true, если что-то
+        /// изменилось — тогда интерфейс надо пересобрать.</summary>
+        private bool ApplyPerms((bool muted, string role, bool ban, bool kick, bool mute, bool manage) p)
+        {
+            bool changed = _canBan != p.ban || _canKick != p.kick || _canMute != p.mute
+                        || _canManage != p.manage || _serverMuted != p.muted || _myRoleName != p.role;
+            _canBan = p.ban; _canKick = p.kick; _canMute = p.mute; _canManage = p.manage;
+            _serverMuted = p.muted; _myRoleName = p.role;
+            return changed;
+        }
+
+        private void ComputePerms() => ApplyPerms(ReadPerms(_serverId, _me, _isOwner));
+
+        /// <summary>Перечитывает права в фоне и пересобирает интерфейс, если они
+        /// изменились. Без этого выданная (или снятая) роль вступала в силу только
+        /// после перезахода на сервер: ComputePerms звался лишь из SelectServer.</summary>
+        private bool _permsBusy;
+        private void RefreshPermsBackground()
+        {
+            if (_serverId <= 0 || _permsBusy) return;
+            _permsBusy = true;
+            int sid = _serverId, me = _me; bool owner = _isOwner;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var p = ReadPerms(sid, me, owner);
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (_serverId != sid) return;      // успели уйти на другой сервер
+                        if (!ApplyPerms(p)) return;        // ничего не поменялось — UI не трогаем
+                        // Кнопки «➕ Канал»/«⚙ Роли», пункт лимита участников и меню
+                        // участников завязаны на права — пересобираем оба списка.
+                        LoadChannels();
+                        LoadMembers();
+                    }));
+                }
+                catch { }
+                finally { _permsBusy = false; }
+            });
         }
 
         // ── Каналы ──────────────────────────────────────────────────────
@@ -887,6 +937,7 @@ namespace PISMO
         {
             LoadServers();
             if (_serverId <= 0) return;
+            ComputePerms();   // кнопка «Обновить» должна подхватывать и смену роли
             LoadChannels();
             LoadMembers();
             if (_channelId > 0) LoadMessages();
@@ -3139,6 +3190,8 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@s", _serverId);
                 cmd.Parameters.AddWithValue("@u", uid);
                 cmd.ExecuteNonQuery();
+                // Роль могли выдать самому себе — тогда меняются и наши права.
+                if (uid == _me && ApplyPerms(ReadPerms(_serverId, _me, _isOwner))) LoadChannels();
                 LoadMembers();
             }
             catch (Exception ex) { ShowDbError(ex); }
@@ -3335,6 +3388,10 @@ namespace PISMO
             ctrls.AddRange(swatches);
             f.Controls.AddRange(ctrls.ToArray());
             f.ShowDialog(this);
+            // Галочки прав в этом окне могли изменить и НАШУ роль — перечитываем
+            // права и, если они поменялись, пересобираем список каналов (кнопки
+            // «➕ Канал»/«⚙ Роли» и пункт лимита участников зависят от них).
+            if (ApplyPerms(ReadPerms(_serverId, _me, _isOwner))) LoadChannels();
             LoadMembers();
         }
 
