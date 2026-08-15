@@ -61,54 +61,50 @@ namespace PISMO
             int W() => Math.Max(120, Content.ClientSize.Width);
 
             // ── Превью ──────────────────────────────────────────────────
-            Content.Controls.Add(Section("Как это выглядит", ref y, W()));
+            Content.Controls.Add(Stretch(Section("Как это выглядит", ref y, W())));
             _preview = new PictureBox
             {
                 Location = new Point(0, y),
                 Size = new Size(W(), 116),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 BackColor = Color.FromArgb(22, 23, 26),
                 SizeMode = PictureBoxSizeMode.CenterImage
             };
-            Content.Controls.Add(_preview);
+            Content.Controls.Add(Stretch(_preview));
             y += 124;
 
             _lblPos = new Label
             {
                 Location = new Point(0, y),
                 Size = new Size(W(), 18),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 ForeColor = Color.FromArgb(140, 142, 148),
                 Font = new Font("Segoe UI", 8f)
             };
-            Content.Controls.Add(_lblPos);
+            Content.Controls.Add(Stretch(_lblPos));
             y += 22;
 
             var btnRow = new Panel
             {
                 Location = new Point(0, y),
                 Size = new Size(W(), 30),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 BackColor = Color.Transparent
             };
             var btnReset = MkButton("Сбросить положение", 0, 170);
-            btnReset.Anchor = AnchorStyles.Top | AnchorStyles.Left;
             btnReset.Click += (s, e) =>
             {
                 DeviceSettings.OverlayX = -1; DeviceSettings.OverlayY = -1;
                 Save(); RefreshAll();
             };
             btnRow.Controls.Add(btnReset);
-            Content.Controls.Add(btnRow);
+            Content.Controls.Add(Stretch(btnRow));
             y += 38;
 
-            Content.Controls.Add(Hint(
-                "Панель уже на экране — просто перетащите её мышью. Пока это окно открыто,\n" +
+            Content.Controls.Add(Stretch(Hint(
+                "Панель уже на экране — просто перетащите её мышью. Пока это окно открыто, " +
                 "она видна всегда; после закрытия вернётся к показу только поверх игры.",
-                ref y, W()));
+                ref y, W())));
 
             // ── Прозрачность ────────────────────────────────────────────
-            Content.Controls.Add(Section("Прозрачность", ref y, W()));
+            Content.Controls.Add(Stretch(Section("Прозрачность", ref y, W())));
 
             AddSlider("Подложка", 0, 100, DeviceSettings.OverlayBackOpacity, ref y, W(),
                 v => { DeviceSettings.OverlayBackOpacity = v; Save(); RefreshAll(); },
@@ -121,7 +117,7 @@ namespace PISMO
                 v => { DeviceSettings.OverlayAlphaSpeaking = v; Save(); RefreshAll(); });
 
             // ── Размер и состав ─────────────────────────────────────────
-            Content.Controls.Add(Section("Размер и состав", ref y, W()));
+            Content.Controls.Add(Stretch(Section("Размер и состав", ref y, W())));
 
             AddSlider("Масштаб", 75, 150, DeviceSettings.OverlayScale, ref y, W(),
                 v => { DeviceSettings.OverlayScale = v; Save(); RefreshAll(); }, null, "%");
@@ -131,7 +127,7 @@ namespace PISMO
                 "минимум 1 — это вы сами", "");
 
             // ── Цвета ───────────────────────────────────────────────────
-            Content.Controls.Add(Section("Цвета", ref y, W()));
+            Content.Controls.Add(Stretch(Section("Цвета", ref y, W())));
             AddColor("Подложка", () => DeviceSettings.OverlayBackColor,
                      v => { DeviceSettings.OverlayBackColor = v; Save(); RefreshAll(); }, ref y, W());
             AddColor("Бейдж «В ЭФИРЕ»", () => DeviceSettings.OverlayAccentColor,
@@ -139,7 +135,6 @@ namespace PISMO
 
             var btnDefaults = MkButton("Вернуть стандартные настройки", 0, W());
             btnDefaults.Location = new Point(0, y);
-            btnDefaults.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             btnDefaults.Click += (s, e) =>
             {
                 DeviceSettings.OverlayBackOpacity = 45;
@@ -153,7 +148,7 @@ namespace PISMO
                 Close();          // проще пересобрать окно, чем синхронизировать все ползунки
                 Open(Owner);
             };
-            Content.Controls.Add(btnDefaults);
+            Content.Controls.Add(Stretch(btnDefaults));
             y += 40;
 
             FormClosed += (s, e) =>
@@ -170,6 +165,7 @@ namespace PISMO
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            Reflow();   // подогнать ширину под фактическую полосу прокрутки
             CallOverlay.SetEditMode(true, this);
             CallOverlay.PositionChanged += OnOverlayMoved;
             RefreshAll();
@@ -217,7 +213,6 @@ namespace PISMO
                 Text = text.ToUpperInvariant(),
                 Location = new Point(0, y + 6),
                 Size = new Size(w, 18),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 ForeColor = Color.FromArgb(150, 152, 158),
                 Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold)
             };
@@ -227,15 +222,18 @@ namespace PISMO
 
         private static Label Hint(string text, ref int y, int w)
         {
-            int h = 16 * (text.Split('\n').Length + 1);
+            // Высоту меряем по тексту: при «прикидке» по числу строк длинная
+            // подсказка обрезалась на полуслове.
+            var f = new Font("Segoe UI", 8f);
+            int h = TextRenderer.MeasureText(text, f, new Size(w, int.MaxValue),
+                                             TextFormatFlags.WordBreak).Height + 2;
             var l = new Label
             {
                 Text = text,
                 Location = new Point(0, y),
                 Size = new Size(w, h),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 ForeColor = Color.FromArgb(140, 142, 148),
-                Font = new Font("Segoe UI", 8f)
+                Font = f
             };
             y += h + 6;
             return l;
@@ -270,7 +268,6 @@ namespace PISMO
                 Text = caption,
                 Location = new Point(0, y),
                 Size = new Size(w - 60, 18),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 ForeColor = Color.FromArgb(220, 221, 222),
                 Font = new Font("Segoe UI", 9f)
             };
@@ -279,13 +276,12 @@ namespace PISMO
                 Text = val + suffix,
                 Location = new Point(w - 60, y),
                 Size = new Size(60, 18),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 TextAlign = ContentAlignment.MiddleRight,
                 ForeColor = Color.FromArgb(150, 152, 158),
                 Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold)
             };
             Content.Controls.Add(cap);
-            Content.Controls.Add(num);
+            Content.Controls.Add(PinRight(num));
             y += 20;
 
             var sl = new FlatSlider
@@ -295,11 +291,10 @@ namespace PISMO
                 Value = val,
                 Location = new Point(0, y),
                 Size = new Size(w, 20),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 BackColor = Color.FromArgb(32, 34, 37)
             };
             sl.ValueChanged += (s, e) => { num.Text = sl.Value + suffix; onChange(sl.Value); };
-            Content.Controls.Add(sl);
+            Content.Controls.Add(Stretch(sl));
             y += 26;
 
             if (!string.IsNullOrEmpty(hint))
@@ -309,11 +304,10 @@ namespace PISMO
                     Text = hint,
                     Location = new Point(0, y),
                     Size = new Size(w, 16),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                     ForeColor = Color.FromArgb(130, 132, 138),
                     Font = new Font("Segoe UI", 7.5f)
                 };
-                Content.Controls.Add(hl);
+                Content.Controls.Add(Stretch(hl));
                 y += 18;
             }
             y += 6;
@@ -327,7 +321,6 @@ namespace PISMO
                 Text = caption,
                 Location = new Point(0, y + 4),
                 Size = new Size(w - 110, 22),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 ForeColor = Color.FromArgb(220, 221, 222),
                 Font = new Font("Segoe UI", 9f)
             };
@@ -335,7 +328,6 @@ namespace PISMO
             {
                 Location = new Point(w - 104, y + 2),
                 Size = new Size(104, 26),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 BackColor = DeviceSettings.ParseColor(get(), Color.Gray),
                 Cursor = Cursors.Hand,
                 BorderStyle = BorderStyle.FixedSingle
@@ -353,7 +345,7 @@ namespace PISMO
                 set(ColorTranslator.ToHtml(dlg.Color));
             };
             Content.Controls.Add(cap);
-            Content.Controls.Add(sw);
+            Content.Controls.Add(PinRight(sw));
             y += 34;
         }
 

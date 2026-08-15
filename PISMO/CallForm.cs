@@ -1003,50 +1003,49 @@ namespace PISMO
             int y = 0;
             int W() => Math.Max(140, host.ClientSize.Width);
 
-            const AnchorStyles Wide = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-
             void AddSection(string text)
             {
-                host.Controls.Add(new Label
+                host.Controls.Add(win.Stretch(new Label
                 {
                     Text = text.ToUpperInvariant(),
                     Location = new Point(0, y + 8),
                     Size = new Size(W(), 18),
-                    Anchor = Wide,
                     ForeColor = Color.FromArgb(150, 152, 158),
                     Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold)
-                });
+                }));
                 y += 30;
             }
 
             Label AddLabel(string t)
             {
-                var l = new Label
+                var l = win.Stretch(new Label
                 {
                     Text = t,
                     Location = new Point(0, y),
                     Size = new Size(W(), 18),
-                    Anchor = Wide,
                     ForeColor = Color.FromArgb(220, 221, 222),
                     Font = new Font("Segoe UI", 9f)
-                };
+                });
                 host.Controls.Add(l); y += 21; return l;
             }
 
-            // Подсказки — НЕ AutoSize: длинный текст переносится внутри ширины панели,
-            // а не уезжает вправо (из-за этого и появлялась горизонтальная полоса).
-            void AddHint(string t, int lines = 2)
+            // Подсказки — НЕ AutoSize: текст переносится внутри ширины панели, а не
+            // уезжает вправо. Высоту МЕРЯЕМ по тексту: при заданном «на глаз» числе
+            // строк длинная подсказка обрезалась на полуслове.
+            void AddHint(string t)
             {
-                host.Controls.Add(new Label
+                var f = new Font("Segoe UI", 7.5f);
+                int h = TextRenderer.MeasureText(t, f, new Size(W(), int.MaxValue),
+                                                 TextFormatFlags.WordBreak).Height + 2;
+                host.Controls.Add(win.Stretch(new Label
                 {
                     Text = t,
                     Location = new Point(0, y),
-                    Size = new Size(W(), 15 * lines),
-                    Anchor = Wide,
+                    Size = new Size(W(), h),
                     ForeColor = Color.FromArgb(138, 140, 146),
-                    Font = new Font("Segoe UI", 7.5f)
-                });
-                y += 15 * lines + RowGap;
+                    Font = f
+                }));
+                y += h + RowGap;
             }
 
             ComboBox AddCombo(int width = 0, int xOff = 0, bool advance = true)
@@ -1056,13 +1055,12 @@ namespace PISMO
                     DropDownStyle = ComboBoxStyle.DropDownList,
                     Location = new Point(xOff, y),
                     Size = new Size(width > 0 ? width : W(), 24),
-                    Anchor = width > 0 ? AnchorStyles.Top | AnchorStyles.Left : Wide,
                     FlatStyle = FlatStyle.Flat,
                     BackColor = Color.FromArgb(40, 42, 46),
                     ForeColor = Color.FromArgb(226, 228, 232),
                     Font = new Font("Segoe UI", 9f)
                 };
-                host.Controls.Add(cb);
+                host.Controls.Add(width > 0 ? cb : win.Stretch(cb));
                 if (advance) y += 24 + RowGap * 2;
                 return cb;
             }
@@ -1074,14 +1072,13 @@ namespace PISMO
                     Text = text,
                     Location = new Point(0, y),
                     Size = new Size(W(), 22),
-                    Anchor = Wide,
                     ForeColor = Color.FromArgb(220, 221, 222),
                     BackColor = Color.Transparent,
                     Checked = value,
                     Cursor = Cursors.Hand,
                     Font = new Font("Segoe UI", 9f)
                 };
-                host.Controls.Add(c); y += 26; return c;
+                host.Controls.Add(win.Stretch(c)); y += 26; return c;
             }
 
             // Ползунок с подписью и живым значением справа.
@@ -1092,7 +1089,6 @@ namespace PISMO
                     Text = caption,
                     Location = new Point(0, y),
                     Size = new Size(W() - 60, 18),
-                    Anchor = Wide,
                     ForeColor = Color.FromArgb(220, 221, 222),
                     Font = new Font("Segoe UI", 9f)
                 });
@@ -1101,12 +1097,11 @@ namespace PISMO
                     Text = val + "%",
                     Location = new Point(W() - 60, y),
                     Size = new Size(60, 18),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
                     TextAlign = ContentAlignment.MiddleRight,
                     ForeColor = Color.FromArgb(150, 152, 158),
                     Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold)
                 };
-                host.Controls.Add(num);
+                host.Controls.Add(win.PinRight(num));
                 y += 20;
                 var sl = new FlatSlider
                 {
@@ -1115,11 +1110,10 @@ namespace PISMO
                     Value = Math.Min(max, val),
                     Location = new Point(0, y),
                     Size = new Size(W(), 20),
-                    Anchor = Wide,
                     BackColor = Color.FromArgb(32, 34, 37)
                 };
                 sl.ValueChanged += (s, e) => num.Text = sl.Value + "%";
-                host.Controls.Add(sl);
+                host.Controls.Add(win.Stretch(sl));
                 y += 20 + RowGap * 2;
                 return sl;
             }
@@ -1131,7 +1125,6 @@ namespace PISMO
                     Text = text,
                     Location = new Point(0, y),
                     Size = new Size(W(), 30),
-                    Anchor = Wide,
                     FlatStyle = FlatStyle.Flat,
                     BackColor = Color.FromArgb(64, 68, 75),
                     ForeColor = Color.White,
@@ -1141,7 +1134,7 @@ namespace PISMO
                 };
                 b.FlatAppearance.BorderSize = 0;
                 b.FlatAppearance.MouseOverBackColor = Color.FromArgb(79, 84, 92);
-                host.Controls.Add(b); y += 30 + RowGap; return b;
+                host.Controls.Add(win.Stretch(b)); y += 30 + RowGap; return b;
             }
 
             // ── Устройства ──────────────────────────────────────────────
@@ -1182,7 +1175,7 @@ namespace PISMO
                 DeviceSettings.ScreenShareFps = f; try { DeviceSettings.Save(); } catch { }
                 try { _transport?.SetScreenQualityLive(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps); } catch { }
             };
-            AddHint("Применяется сразу, в том числе к идущей демонстрации.", 1);
+            AddHint("Применяется сразу, в том числе к идущей демонстрации.");
 
             AddLabel("Кодек");
             var cmbCodec = AddCombo();
@@ -1208,7 +1201,7 @@ namespace PISMO
                 }
                 catch { }
             };
-            AddHint("Смена перезапустит демонстрацию: зритель повторно нажмёт «Смотреть стрим».", 2);
+            AddHint("Смена перезапустит демонстрацию: зритель повторно нажмёт «Смотреть стрим».");
 
             // ── Звук ────────────────────────────────────────────────────
             AddSection("Звук");
@@ -1255,7 +1248,7 @@ namespace PISMO
                 try { DeviceSettings.Save(); } catch { }
                 PushOverlay();   // включили — появился, выключили — пропал сразу
             };
-            AddHint("Панель у края экрана поверх полноэкранной игры.", 1);
+            AddHint("Панель у края экрана поверх полноэкранной игры.");
             AddButton("Настроить оверлей…").Click += (s, e) => OverlayEditorForm.Open(win);
 
             // ── Список устройств из транспорта ──────────────────────────
@@ -1312,6 +1305,7 @@ namespace PISMO
                         host.AutoScrollPosition = new Point(0, -host.AutoScrollPosition.Y - e.Delta);
                     };
 
+            win.Reflow();   // подогнать ширину под фактическую полосу прокрутки
             win.FormClosed += (s, e) => { try { _transport.DevicesEnumerated -= OnDevices; } catch { } _audioPanel = null; };
             win.Show(this);
             _transport.EnumerateDevices();

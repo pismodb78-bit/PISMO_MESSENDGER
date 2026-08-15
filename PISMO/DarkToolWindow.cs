@@ -94,11 +94,56 @@ namespace PISMO
             Controls.Add(outer);
             Controls.Add(header);   // outer добавлен раньше => докается последним и занимает остаток
 
-            // Тёмная вертикальная полоса + плавная прокрутка + СНЯТИЕ горизонтальной.
-            try { ChatScroll.Attach(Content); } catch { }
+            // Тёмная полоса и снятие горизонтальной — да, а вот ПЛАВНУЮ прокрутку
+            // (ChatScroll.Attach) здесь НЕ включаем. Она анимирует прокрутку по
+            // кадрам и рассчитана на ленту чата; в окне настроек во время
+            // демонстрации экрана кадры не успевают, и прокрутка становится
+            // медленной и рваной. Нативная прокрутка мгновенная.
+            try { ChatScroll.KillHorizontal(Content); } catch { }
+            try { ChatScroll.EnableDoubleBuffer(Content); } catch { }
             Content.HandleCreated += (s, e) => { try { ChatScroll.ApplyDarkScrollbar(Content); } catch { } };
 
+            // Ширину дочерних контролов держим сами (см. Stretch/PinRight).
+            Content.ClientSizeChanged += (s, e) => Reflow();
+
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) Close(); };
+        }
+
+        // ── Раскладка по ширине ─────────────────────────────────────────
+        // Anchor тут не годится: внутри AutoScroll-панели он отсчитывается от
+        // DisplayRectangle (ширина СОДЕРЖИМОГО), поэтому при появлении вертикальной
+        // полосы контролы не сжимались, а уходили под обрез — пропадали стрелки
+        // списков и обрывались подсказки. Ширину пересчитываем вручную от
+        // ClientSize, который полосу уже учитывает.
+        private readonly System.Collections.Generic.List<Control> _stretch = new();
+        private readonly System.Collections.Generic.List<Control> _pinRight = new();
+
+        /// <summary>Контрол тянется во всю ширину панели содержимого.</summary>
+        public T Stretch<T>(T c) where T : Control { _stretch.Add(c); return c; }
+
+        /// <summary>Контрол прижат к правому краю (ширина сохраняется).</summary>
+        public T PinRight<T>(T c) where T : Control { _pinRight.Add(c); return c; }
+
+        /// <summary>Доступная ширина содержимого (без вертикальной полосы).</summary>
+        public int ContentWidth => Math.Max(120, Content.ClientSize.Width);
+
+        /// <summary>Пересчитать ширину/положение зарегистрированных контролов.</summary>
+        public void Reflow()
+        {
+            int w = Content.ClientSize.Width;
+            if (w <= 0) return;
+            foreach (var c in _stretch)
+            {
+                if (c == null || c.IsDisposed) continue;
+                if (c.Left != 0) c.Left = 0;
+                if (c.Width != w) c.Width = w;
+            }
+            foreach (var c in _pinRight)
+            {
+                if (c == null || c.IsDisposed) continue;
+                int x = w - c.Width;
+                if (c.Left != x) c.Left = x;
+            }
         }
 
         /// <summary>Рамка в 1px: без неё тёмное безрамочное окно сливается с тёмным фоном.</summary>
