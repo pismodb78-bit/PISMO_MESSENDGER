@@ -571,7 +571,16 @@ namespace PISMO
                 if (!DeviceSettings.OverlayEnabled) { Stop(true); return; }
                 bool edit = EditActive();          // заодно снимает залипший режим
                 try { _form?.ReassertTopMost(); } catch { }
-                if (edit) return;                  // в настройке видимостью не рулим
+                if (edit)
+                {
+                    // В режиме настройки панель обязана быть на экране ВСЕГДА, а не
+                    // только в игре. Показ повторяем каждый тик: окно редактора
+                    // открывается из МОДАЛЬНОГО диалога настроек, и первая попытка
+                    // показа могла не пройти. Так оно само чинится за один тик.
+                    _showNow = true;
+                    Apply();
+                    return;
+                }
                 bool show = IsFullscreenAppForeground();
                 if (show != _showNow) { _showNow = show; Apply(); }
             };

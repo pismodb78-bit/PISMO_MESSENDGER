@@ -34,7 +34,10 @@ namespace PISMO
                 w = new OverlayEditorForm();
                 _open = w;
                 w.FormClosed += (s, e) => { if (ReferenceEquals(_open, w)) _open = null; };
-                if (owner is Form f && !f.IsDisposed) w.Show(f); else w.Show();
+                // Показываем БЕЗ владельца и поверх остальных окон: настройки
+                // устройств открыты модально (ShowDialog), и окно-потомок модального
+                // диалога то пряталось за него, то не появлялось вовсе.
+                w.Show();
                 w.BringToFront();
                 w.Activate();
             }
@@ -53,6 +56,9 @@ namespace PISMO
 
         private OverlayEditorForm() : base("Настройка оверлея", new Size(400, 620))
         {
+            // Поверх остальных окон: иначе за модальным окном настроек устройств
+            // редактор терялся и выглядел как «не открылся».
+            TopMost = true;
             var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
             Location = new Point(Math.Max(wa.Left, wa.Right - 440), Math.Max(wa.Top, wa.Top + 60));
 
@@ -151,12 +157,26 @@ namespace PISMO
             Content.Controls.Add(Stretch(btnDefaults));
             y += 40;
 
+            // Пока окно открыто, режим настройки подтверждаем раз в секунду. Вызов
+            // идемпотентный, зато плашка гарантированно окажется на экране, даже
+            // если первая попытка пришлась на неудачный момент (модальный диалог,
+            // смена фокуса, конец звонка).
+            _keepAlive = new System.Windows.Forms.Timer { Interval = 1000 };
+            _keepAlive.Tick += (s, e) =>
+            {
+                if (IsDisposed) return;
+                try { CallOverlay.SetEditMode(true, this); } catch { }
+            };
+
             FormClosed += (s, e) =>
             {
+                try { _keepAlive.Stop(); _keepAlive.Dispose(); } catch { }
                 CallOverlay.PositionChanged -= OnOverlayMoved;
                 CallOverlay.SetEditMode(false);
             };
         }
+
+        private readonly System.Windows.Forms.Timer _keepAlive;
 
         /// <summary>Режим перетаскивания включаем только когда окно РЕАЛЬНО показано,
         /// и привязываем его к этому окну. Если бы он взводился в конструкторе, а окно
@@ -168,6 +188,7 @@ namespace PISMO
             Reflow();   // подогнать ширину под фактическую полосу прокрутки
             CallOverlay.SetEditMode(true, this);
             CallOverlay.PositionChanged += OnOverlayMoved;
+            _keepAlive.Start();
             RefreshAll();
         }
 
