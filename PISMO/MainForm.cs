@@ -799,6 +799,18 @@ namespace PISMO
             try { this.Activate(); this.BringToFront(); } catch { }
         }
 
+        /// <summary>Повторный запуск ярлыка/exe: второй процесс не стартует, а шлёт
+        /// это сообщение — разворачиваем уже работающее приложение из трея.</summary>
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == Program.WmPismoShow && Program.WmPismoShow != 0)
+            {
+                try { TrayMenuOpen_Click(this, EventArgs.Empty); } catch { }
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
         private void TrayMenuExit_Click(object sender, EventArgs e)
         {
             // Полный выход из трея.
@@ -5210,10 +5222,14 @@ namespace PISMO
         /// (минуя «сворачивание в трей» и прочие перехваты закрытия).</summary>
         public static void RestartApplication()
         {
+            // Блокировку единственного экземпляра отпускаем ДО старта нового
+            // процесса, иначе он увидит «уже запущено» и сразу выйдет. Флаг
+            // --restart даёт ему подождать, если мы ещё не успели умереть.
+            try { Program.ReleaseSingleInstanceLock(); } catch { }
             try
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                    Application.ExecutablePath) { UseShellExecute = true });
+                    Application.ExecutablePath) { UseShellExecute = true, Arguments = "--restart" });
             }
             catch { }
             try { if (Current?._trayIcon != null) Current._trayIcon.Visible = false; } catch { }
