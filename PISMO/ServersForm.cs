@@ -2655,7 +2655,11 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@s", _me);
                 cmd.Parameters.AddWithValue("@t", Crypto.Enc(rawText));
                 cmd.ExecuteNonQuery();
+                long newMsgId = cmd.LastInsertedId;
                 cmd.Dispose();
+                // Адресатов «@…» вычисляем ЗДЕСЬ, пока текст открытый: в БД он ляжет
+                // зашифрованным, и после этого разобрать упоминания уже невозможно.
+                try { ServerMentions.Record(conn, newMsgId, _channelId, _me, rawText); } catch { }
                 CancelServerReply();
                 WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
                 NotifyMentions(rawText);
@@ -2758,6 +2762,9 @@ namespace PISMO
                     cmd.CommandTimeout = 600;
                     activeCmd = cmd;
                     cmd.ExecuteNonQuery();
+                    // Подпись к вложению тоже может содержать «@…» — разбираем её по
+                    // открытому тексту, до того как он станет шифром в БД.
+                    try { ServerMentions.Record(conn, cmd.LastInsertedId, channel, _me, caption ?? ""); } catch { }
                     activeCmd = null;
                     ok = true;
                 }
