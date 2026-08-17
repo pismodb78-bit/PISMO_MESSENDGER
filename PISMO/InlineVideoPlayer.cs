@@ -150,26 +150,46 @@ namespace PISMO
             if (IsDisposed || Controls.Contains(_lblCodec)) return;
 
             bool hevc = LooksLikeHevc();
+            // БЕЗ жёстких переносов: пузырь бывает узким (~180px), и заранее
+            // расставленные «\n» только мешают — текст переносится сам, а высоту
+            // мы считаем по факту. С фиксированной высотой хвост обрезался.
+            string txt = hevc
+                ? "Видео в HEVC (H.265) — Windows не показывает его без «HEVC Video Extensions», слышен только звук. Нажмите, чтобы открыть во внешнем плеере."
+                : "Этот видеокодек Windows показать не может — слышен только звук. Нажмите, чтобы открыть во внешнем плеере.";
+
             _lblCodec = new Label
             {
                 Dock = DockStyle.Top,
-                Height = 62,
                 BackColor = Color.FromArgb(60, 40, 20),
                 ForeColor = Color.FromArgb(240, 220, 190),
                 Font = new Font("Segoe UI", 8.5f),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(8, 0, 8, 0),
-                Text = hevc
-                    ? "Видео записано в HEVC (H.265) — Windows не умеет его показывать без\n" +
-                      "«HEVC Video Extensions» из Microsoft Store, поэтому слышен только звук.\n" +
-                      "Нажмите здесь, чтобы открыть во внешнем плеере (VLC и т.п.)."
-                    : "Этот видеокодек Windows показать не может — слышен только звук.\n" +
-                      "Нажмите здесь, чтобы открыть во внешнем плеере.",
-                Cursor = Cursors.Hand
+                TextAlign = ContentAlignment.TopLeft,
+                Padding = new Padding(8, 6, 8, 6),
+                Text = txt,
+                Cursor = Cursors.Hand,
+                AutoSize = false
             };
+
+            // Высота — по реально нужной для этой ширины. Пересчитываем и при
+            // изменении размера: пузырь тянется вместе с окном.
+            void FitHeight()
+            {
+                try
+                {
+                    if (_lblCodec == null || _lblCodec.IsDisposed) return;
+                    int w = Math.Max(60, _lblCodec.ClientSize.Width - _lblCodec.Padding.Horizontal);
+                    int h = TextRenderer.MeasureText(_lblCodec.Text, _lblCodec.Font,
+                                new Size(w, int.MaxValue), TextFormatFlags.WordBreak).Height;
+                    _lblCodec.Height = h + _lblCodec.Padding.Vertical;
+                }
+                catch { }
+            }
+            _lblCodec.Resize += (s, e) => FitHeight();
+            Resize += (s, e) => FitHeight();
             _lblCodec.Click += (s, e) => OpenExternally();
             Controls.Add(_lblCodec);
             _lblCodec.BringToFront();
+            FitHeight();   // первый расчёт: ширина уже известна после Add
         }
 
         /// <summary>Открывает видео системным плеером — он может уметь то, чего не
