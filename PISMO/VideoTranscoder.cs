@@ -125,7 +125,9 @@ namespace PISMO
                 string args =
                     $"-y -hide_banner -loglevel error -progress pipe:1 -nostats -i \"{src}\" " +
                     "-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p " +
-                    "-c:a aac -b:a 128k -movflags +faststart " +
+                    // -f mp4 обязателен: пишем во временный «.part», а по такому
+                    // расширению ffmpeg контейнер угадать не может и падает.
+                    "-c:a aac -b:a 128k -movflags +faststart -f mp4 " +
                     $"\"{tmp}\"";
 
                 Log("Конвертация: " + NativeNvenc.FfmpegExe + " " + args);
@@ -209,9 +211,47 @@ namespace PISMO
         // намного быстрее — поэтому они первыми.
         private static readonly string[] FfmpegZipUrls =
         {
-            "https://github.com/GyanD/codexffmpeg/releases/latest/download/ffmpeg-release-essentials.zip",
             "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
         };
+
+        /// <summary>
+        /// Ищет тот же архив в релизах GyanD/codexffmpeg на GitHub — он раздаётся
+        /// заметно быстрее. Прямую ссылку «latest/download/имя» здесь построить
+        /// нельзя: имя файла содержит версию (ffmpeg-7.1-essentials_build.zip),
+        /// поэтому спрашиваем список файлов релиза у API.
+        /// </summary>
+        private static async Task<string> ResolveGithubMirrorAsync()
+        {
+            try
+            {
+                using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+                http.DefaultRequestHeaders.UserAgent.ParseAdd("PISMO");
+                string json = await http.GetStringAsync(
+                    "https://api.github.com/repos/GyanD/codexffmpeg/releases/latest");
+
+                // Без JSON-парсера: берём первый browser_download_url, который
+                // указывает на essentials-сборку.
+                const string key = "\"browser_download_url\":\"";
+                int i = 0;
+                while ((i = json.IndexOf(key, i, StringComparison.Ordinal)) >= 0)
+                {
+                    i += key.Length;
+                    int end = json.IndexOf('"', i);
+                    if (end < 0) break;
+                    string url = json.Substring(i, end - i);
+                    if (url.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) &&
+                        url.IndexOf("essentials", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        Log("Зеркало GitHub: " + url);
+                        return url;
+                    }
+                    i = end;
+                }
+                Log("В релизе GitHub не нашлось essentials-архива.");
+            }
+            catch (Exception ex) { Log("GitHub API недоступен: " + ex.Message); }
+            return null;
+        }
 
         /// <summary>
         /// Заранее подтягивает конвертер в фоне (без плашки), чтобы к моменту
@@ -290,7 +330,13 @@ namespace PISMO
             string dir = Path.GetDirectoryName(exe);
             string zip = Path.Combine(dir, "ffmpeg.zip");
 
-            foreach (var url in FfmpegZipUrls)
+            // Быстрое зеркало — первым, если его удалось найти.
+            var urls = new System.Collections.Generic.List<string>();
+            string gh = await ResolveGithubMirrorAsync();
+            if (gh != null) urls.Add(gh);
+            urls.AddRange(FfmpegZipUrls);
+
+            foreach (var url in urls)
             {
                 try
                 {
