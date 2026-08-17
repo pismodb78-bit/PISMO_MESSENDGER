@@ -84,6 +84,17 @@ namespace PISMO
                     "</style></head><body>" +
                     $"<video src='https://{Host}/{_safeName}' autoplay playsinline controls " +
                     "controlslist='nodownload' preload='auto'></video>" +
+                    // Сообщаем хосту, если видеодорожку декодировать нечем: Chromium в
+                    // этом случае молча играет ОДИН ЗВУК и показывает чёрный
+                    // прямоугольник (и другой, компактный набор кнопок) — со стороны
+                    // выглядит как «сломалось приложение». Признак — videoWidth == 0
+                    // при уже прочитанных метаданных.
+                    "<script>" +
+                    "var v=document.querySelector('video');" +
+                    "function say(k){try{window.chrome.webview.postMessage(k);}catch(e){}}" +
+                    "v.addEventListener('loadedmetadata',function(){if(!v.videoWidth)say('novideo');});" +
+                    "v.addEventListener('error',function(){say('novideo');});" +
+                    "</script>" +
                     "</body></html>";
                 File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
 
@@ -94,11 +105,96 @@ namespace PISMO
                     Host, _tempDir, CoreWebView2HostResourceAccessKind.Allow);
                 _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                _web.CoreWebView2.WebMessageReceived += (s, e) =>
+                {
+                    string msg = null;
+                    try { msg = e.TryGetWebMessageAsString(); } catch { }
+                    if (msg == "novideo") { try { ShowCodecNotice(); } catch { } }
+                };
                 _web.CoreWebView2.ContainsFullScreenElementChanged += OnFullScreenChanged;
                 _web.CoreWebView2.Navigate($"https://{Host}/index.html");
             }
             catch { _playing = false; }
         }
+
+        /// <summary>Определяет кодек видеодорожки по контейнеру MP4: в таблице
+        /// описаний (stsd) лежит fourcc — «hvc1»/«hev1» у HEVC, «avc1» у H.264.</summary>
+        private bool LooksLikeHevc()
+        {
+            try
+            {
+                if (_data == null) return false;
+                // Ищем по всему буферу: stsd лежит в moov, а он бывает и в конце файла
+                // (запись с телефона часто оставляет его там).
+                byte[][] tags =
+                {
+                    System.Text.Encoding.ASCII.GetBytes("hvc1"),
+                    System.Text.Encoding.ASCII.GetBytes("hev1")
+                };
+                foreach (var tag in tags)
+                    for (int i = 0; i + tag.Length <= _data.Length; i++)
+                    {
+                        int k = 0;
+                        while (k < tag.Length && _data[i + k] == tag[k]) k++;
+                        if (k == tag.Length) return true;
+                    }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>Поверх плеера — объяснение, почему видно только чёрный экран, и
+        /// кнопка открыть файл во внешнем плеере (VLC и подобные HEVC умеют).</summary>
+        private void ShowCodecNotice()
+        {
+            if (IsDisposed || Controls.Contains(_lblCodec)) return;
+
+            bool hevc = LooksLikeHevc();
+            _lblCodec = new Label
+            {
+                Dock = DockStyle.Top,
+                Height = 62,
+                BackColor = Color.FromArgb(60, 40, 20),
+                ForeColor = Color.FromArgb(240, 220, 190),
+                Font = new Font("Segoe UI", 8.5f),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 8, 0),
+                Text = hevc
+                    ? "Видео записано в HEVC (H.265) — Windows не умеет его показывать без\n" +
+                      "«HEVC Video Extensions» из Microsoft Store, поэтому слышен только звук.\n" +
+                      "Нажмите здесь, чтобы открыть во внешнем плеере (VLC и т.п.)."
+                    : "Этот видеокодек Windows показать не может — слышен только звук.\n" +
+                      "Нажмите здесь, чтобы открыть во внешнем плеере.",
+                Cursor = Cursors.Hand
+            };
+            _lblCodec.Click += (s, e) => OpenExternally();
+            Controls.Add(_lblCodec);
+            _lblCodec.BringToFront();
+        }
+
+        /// <summary>Открывает видео системным плеером — он может уметь то, чего не
+        /// умеет встроенный в Windows декодер.</summary>
+        private void OpenExternally()
+        {
+            try
+            {
+                string path = Path.Combine(_tempDir ?? Path.GetTempPath(), _safeName ?? "video.mp4");
+                if (!File.Exists(path))
+                {
+                    path = Path.Combine(Path.GetTempPath(), "pismo_" + Path.GetFileName(_fileName));
+                    File.WriteAllBytes(path, _data);
+                }
+                System.Diagnostics.Process.Start(
+                    new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Не удалось открыть видео: " + ex.Message,
+                    "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private Label _lblCodec;
 
         private void OnFullScreenChanged(object sender, object e)
         {
