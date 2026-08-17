@@ -24,6 +24,33 @@ namespace PISMO
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                          "PISMO", "vidcache");
 
+        /// <summary>
+        /// Кодек видеодорожки по контейнеру MP4: в таблице описаний (stsd) лежит
+        /// fourcc — «hvc1»/«hev1» у HEVC, «avc1» у H.264. Ищем по всему буферу:
+        /// moov бывает и в конце файла (запись с телефона часто оставляет его там).
+        /// </summary>
+        public static bool LooksLikeHevc(byte[] data)
+        {
+            try
+            {
+                if (data == null) return false;
+                byte[][] tags =
+                {
+                    System.Text.Encoding.ASCII.GetBytes("hvc1"),
+                    System.Text.Encoding.ASCII.GetBytes("hev1")
+                };
+                foreach (var tag in tags)
+                    for (int i = 0; i + tag.Length <= data.Length; i++)
+                    {
+                        int k = 0;
+                        while (k < tag.Length && data[i + k] == tag[k]) k++;
+                        if (k == tag.Length) return true;
+                    }
+            }
+            catch { }
+            return false;
+        }
+
         /// <summary>Уже сконвертированный ранее файл, если он есть в кэше.</summary>
         public static string CachedPath(byte[] data)
         {

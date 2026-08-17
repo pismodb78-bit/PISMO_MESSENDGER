@@ -157,31 +157,8 @@ namespace PISMO
             catch { _playing = false; }
         }
 
-        /// <summary>Определяет кодек видеодорожки по контейнеру MP4: в таблице
-        /// описаний (stsd) лежит fourcc — «hvc1»/«hev1» у HEVC, «avc1» у H.264.</summary>
-        private bool LooksLikeHevc()
-        {
-            try
-            {
-                if (_data == null) return false;
-                // Ищем по всему буферу: stsd лежит в moov, а он бывает и в конце файла
-                // (запись с телефона часто оставляет его там).
-                byte[][] tags =
-                {
-                    System.Text.Encoding.ASCII.GetBytes("hvc1"),
-                    System.Text.Encoding.ASCII.GetBytes("hev1")
-                };
-                foreach (var tag in tags)
-                    for (int i = 0; i + tag.Length <= _data.Length; i++)
-                    {
-                        int k = 0;
-                        while (k < tag.Length && _data[i + k] == tag[k]) k++;
-                        if (k == tag.Length) return true;
-                    }
-            }
-            catch { }
-            return false;
-        }
+        /// <summary>Кодек этого видео — HEVC? Определение общее с конвертером.</summary>
+        private bool LooksLikeHevc() => VideoTranscoder.LooksLikeHevc(_data);
 
         /// <summary>
         /// Chromium сообщил, что видеодорожку показать нечем. Ставить кодек из

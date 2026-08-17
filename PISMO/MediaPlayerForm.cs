@@ -17,9 +17,14 @@ namespace PISMO
         private readonly WebView2 _web;
         private readonly string _tempDir;
         private const string Host = "pismo-media.local";
+        private readonly byte[] _data;
+        private readonly string _fileName;
+        private readonly bool _isVideo;
+        private Label _lblStatus;
 
         public MediaPlayerForm(byte[] data, string fileName, bool isVideo)
         {
+            _data = data; _fileName = fileName; _isVideo = isVideo;
             Text = "PISMO — " + (fileName ?? (isVideo ? "Видео" : "Музыка"));
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             BackColor = Color.FromArgb(20, 21, 24);
@@ -32,10 +37,37 @@ namespace PISMO
 
             _tempDir = Path.Combine(Path.GetTempPath(), "pismo_media_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_tempDir);
-            string safeName = "media" + Path.GetExtension(fileName ?? "");
-            string filePath = Path.Combine(_tempDir, safeName);
-            File.WriteAllBytes(filePath, data);
 
+            Load += async (s, e) => await InitAsync();
+        }
+
+        /// <summary>Раскладывает файл во временную папку и пишет страницу плеера.
+        /// HEVC перед этим перегоняется в H.264 — Chromium его не покажет.</summary>
+        private async System.Threading.Tasks.Task<string> PrepareAsync()
+        {
+            byte[] data = _data;
+            string safeName = "media" + Path.GetExtension(_fileName ?? "");
+
+            if (_isVideo)
+            {
+                string h264 = VideoTranscoder.CachedPath(data);
+                if (h264 == null && VideoTranscoder.LooksLikeHevc(data))
+                {
+                    ShowStatus("Готовим видео к показу…");
+                    try { h264 = await VideoTranscoder.ToH264Async(data, ShowStatus); } catch { }
+                }
+                if (h264 != null)
+                {
+                    safeName = "media264.mp4";
+                    File.Copy(h264, Path.Combine(_tempDir, safeName), true);
+                    data = null;
+                }
+                HideStatus();
+            }
+
+            if (data != null) File.WriteAllBytes(Path.Combine(_tempDir, safeName), data);
+
+            bool isVideo = _isVideo;
             string tag = isVideo ? "video" : "audio";
             string html =
                 "<!doctype html><html><head><meta charset='utf-8'><style>" +
@@ -46,14 +78,42 @@ namespace PISMO
                 $"<{tag} src='https://{Host}/{safeName}' controls autoplay></{tag}>" +
                 "</body></html>";
             File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
+            return safeName;
+        }
 
-            Load += async (s, e) => await InitAsync();
+        private void ShowStatus(string text)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired) { try { BeginInvoke(new Action<string>(ShowStatus), text); } catch { } return; }
+            if (_lblStatus == null)
+            {
+                _lblStatus = new Label
+                {
+                    Dock = DockStyle.Top,
+                    Height = 46,
+                    BackColor = Color.FromArgb(40, 44, 52),
+                    ForeColor = Color.FromArgb(225, 228, 234),
+                    Font = new Font("Segoe UI", 9.5f),
+                    TextAlign = ContentAlignment.MiddleCenter
+                };
+                Controls.Add(_lblStatus);
+                _lblStatus.BringToFront();
+            }
+            _lblStatus.Text = text;
+        }
+
+        private void HideStatus()
+        {
+            try { if (_lblStatus != null) { Controls.Remove(_lblStatus); _lblStatus.Dispose(); } } catch { }
+            _lblStatus = null;
         }
 
         private async System.Threading.Tasks.Task InitAsync()
         {
             try
             {
+                await PrepareAsync();
+                if (IsDisposed) return;
                 await _web.EnsureCoreWebView2Async(await WebViewShared.GetAsync());
                 _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
                     Host, _tempDir, CoreWebView2HostResourceAccessKind.Allow);
