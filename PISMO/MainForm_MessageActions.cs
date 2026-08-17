@@ -435,7 +435,21 @@ namespace PISMO
             if (file != null && file.Length > 0)
             { caption = "⬇  Скачать файл"; data = file; name = string.IsNullOrWhiteSpace(fileName) ? "pismo_file" : fileName; }
             else if (video != null && video.Length > 0)
-            { caption = "⬇  Скачать видео"; data = video; name = MediaSaver.VideoName(msgId); }
+            {
+                // Кружок лежит в своём контейнере PSMOVID1 — переупаковываем его в
+                // AVI (MJPG + PCM), иначе скачанный файл не открывает ни один плеер.
+                if (VideoCircleExport.IsCircle(video))
+                {
+                    caption = "⬇  Скачать кружок";
+                    data = video;                       // конвертация — в момент сохранения
+                    name = MediaSaver.VideoName(msgId, circle: true);
+                }
+                else
+                {
+                    caption = "⬇  Скачать видео"; data = video;
+                    name = $"pismo_video_{(msgId > 0 ? msgId.ToString() : "file")}.{MediaSaver.VideoExt(video)}";
+                }
+            }
             else if (img != null && img.Length > 0)
             { caption = "⬇  Скачать изображение"; data = img; name = MediaSaver.ImageName(img, msgId); }
             else if (audio != null && audio.Length > 0)
