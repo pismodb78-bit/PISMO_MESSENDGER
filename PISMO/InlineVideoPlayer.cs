@@ -24,6 +24,7 @@ namespace PISMO
         private Form _fsForm;
         private bool _playing;
         private bool _converting, _converted;
+        private bool _statusMode;   // в плашке сейчас прогресс, а не финальное сообщение
 
         private Label _lblPlay, _lblName;
 
@@ -208,7 +209,7 @@ namespace PISMO
 
             // Прогресс приходит часто (на каждый процент) — панель не пересоздаём,
             // только меняем текст, иначе чат заметно моргает.
-            if (_pnlCodec != null && !_pnlCodec.IsDisposed && _lnkCodec == null && _lblCodec != null)
+            if (_pnlCodec != null && !_pnlCodec.IsDisposed && _statusMode && _lblCodec != null)
             {
                 _lblCodec.Text = text;
                 FitNotice();
@@ -216,6 +217,7 @@ namespace PISMO
             }
 
             HideNotice();
+            _statusMode = true;
             _pnlCodec = new Panel { Dock = DockStyle.Top, BackColor = Color.FromArgb(40, 44, 52), Height = 24 };
             _lblCodec = new Label
             {
@@ -228,6 +230,22 @@ namespace PISMO
                 Text = text,
                 AutoSize = false
             };
+            // Раздача бывает медленной независимо от канала — даём выход тем, у
+            // кого ffmpeg уже есть или кто скачает его сам, быстрее и как удобно.
+            _lnkCodec = new Label
+            {
+                Dock = DockStyle.Top,
+                BackColor = Color.FromArgb(40, 44, 52),
+                ForeColor = Color.FromArgb(150, 205, 255),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Underline),
+                TextAlign = ContentAlignment.TopLeft,
+                Padding = new Padding(8, 0, 8, 6),
+                Text = "Долго? Указать свой ffmpeg.exe",
+                Cursor = Cursors.Hand,
+                AutoSize = false
+            };
+            _lnkCodec.Click += (s, e) => PickFfmpegManually();
+            _pnlCodec.Controls.Add(_lnkCodec);
             _pnlCodec.Controls.Add(_lblCodec);
             Controls.Add(_pnlCodec);
             _pnlCodec.BringToFront();
@@ -238,7 +256,32 @@ namespace PISMO
         private void HideNotice()
         {
             try { if (_pnlCodec != null) { Controls.Remove(_pnlCodec); _pnlCodec.Dispose(); } } catch { }
-            _pnlCodec = null; _lblCodec = null; _lnkCodec = null;
+            _pnlCodec = null; _lblCodec = null; _lnkCodec = null; _lnkManual = null; _statusMode = false;
+        }
+
+        /// <summary>Пользователь показывает свой ffmpeg.exe — копируем его туда,
+        /// где приложение его ищет, и сразу пробуем сконвертировать снова.</summary>
+        private void PickFfmpegManually()
+        {
+            try
+            {
+                using var dlg = new OpenFileDialog
+                {
+                    Title = "Выберите ffmpeg.exe",
+                    Filter = "ffmpeg.exe|ffmpeg.exe|Программы (*.exe)|*.exe",
+                    CheckFileExists = true
+                };
+                if (dlg.ShowDialog(FindForm()) != DialogResult.OK) return;
+                if (!VideoTranscoder.UseFfmpegFrom(dlg.FileName))
+                {
+                    MessageBox.Show("Не удалось использовать этот файл.",
+                        "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                _converting = false;
+                OnNoVideo();     // конвертер на месте — повторяем попытку
+            }
+            catch { }
         }
 
         /// <summary>Высота плашки — по реально нужной для текущей ширины пузыря.</summary>
@@ -248,7 +291,7 @@ namespace PISMO
             {
                 if (_pnlCodec == null || _pnlCodec.IsDisposed) return;
                 int total = 0;
-                foreach (var lbl in new[] { _lblCodec, _lnkCodec })
+                foreach (var lbl in new[] { _lblCodec, _lnkCodec, _lnkManual })
                 {
                     if (lbl == null || lbl.IsDisposed) continue;
                     int w = Math.Max(60, _pnlCodec.ClientSize.Width - lbl.Padding.Horizontal);
@@ -319,6 +362,22 @@ namespace PISMO
                 _lnkCodec.Click += (s, e) => OpenHevcStorePage();
                 _pnlCodec.Controls.Add(_lnkCodec);
             }
+
+            // Свой ffmpeg — самый быстрый выход, если наша раздача не далась.
+            _lnkManual = new Label
+            {
+                Dock = DockStyle.Top,
+                BackColor = Color.FromArgb(60, 40, 20),
+                ForeColor = Color.FromArgb(150, 205, 255),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Underline),
+                TextAlign = ContentAlignment.TopLeft,
+                Padding = new Padding(8, 0, 8, 6),
+                Text = "Указать свой ffmpeg.exe",
+                Cursor = Cursors.Hand,
+                AutoSize = false
+            };
+            _lnkManual.Click += (s, e) => PickFfmpegManually();
+            _pnlCodec.Controls.Add(_lnkManual);
             _pnlCodec.Controls.Add(_lblCodec);   // добавлен последним → лежит выше ссылки
 
             // Высоту считаем по факту (FitNotice) и пересчитываем при изменении
@@ -378,7 +437,7 @@ namespace PISMO
         }
 
         private Panel _pnlCodec;
-        private Label _lblCodec, _lnkCodec;
+        private Label _lblCodec, _lnkCodec, _lnkManual;
 
         private void OnFullScreenChanged(object sender, object e)
         {

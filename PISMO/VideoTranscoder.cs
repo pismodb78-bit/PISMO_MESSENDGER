@@ -211,9 +211,67 @@ namespace PISMO
             try { _ = EnsureFfmpegSharedAsync(); } catch { }
         }
 
+        /// <summary>
+        /// Ищет уже установленный ffmpeg.exe: у многих он есть (winget, choco,
+        /// scoop, просто распакован рядом). Качать 40 МБ с медленной раздачи
+        /// в таком случае незачем.
+        /// </summary>
+        public static string FindExistingFfmpeg()
+        {
+            try
+            {
+                var candidates = new System.Collections.Generic.List<string>();
+
+                // Рядом с приложением — сюда же кладём файл, выбранный вручную.
+                string appDir = AppDomain.CurrentDomain.BaseDirectory;
+                candidates.Add(Path.Combine(appDir, "ffmpeg.exe"));
+                candidates.Add(Path.Combine(appDir, "ffmpeg", "ffmpeg.exe"));
+
+                // PATH.
+                foreach (var p in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
+                    if (!string.IsNullOrWhiteSpace(p))
+                        candidates.Add(Path.Combine(p.Trim(), "ffmpeg.exe"));
+
+                // Типовые места пакетных менеджеров.
+                string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string user = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                candidates.Add(Path.Combine(pf, "ffmpeg", "bin", "ffmpeg.exe"));
+                candidates.Add(Path.Combine(@"C:\ffmpeg\bin", "ffmpeg.exe"));
+                candidates.Add(Path.Combine(@"C:\ProgramData\chocolatey\bin", "ffmpeg.exe"));
+                candidates.Add(Path.Combine(user, "scoop", "shims", "ffmpeg.exe"));
+                candidates.Add(Path.Combine(local, "Microsoft", "WinGet", "Links", "ffmpeg.exe"));
+
+                foreach (var c in candidates)
+                    try { if (File.Exists(c)) return c; } catch { }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>Принимает ffmpeg.exe, выбранный пользователем вручную (или
+        /// найденный в системе), и кладёт его туда, где приложение его ищет.</summary>
+        public static bool UseFfmpegFrom(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+                string exe = NativeNvenc.FfmpegExe;
+                Directory.CreateDirectory(Path.GetDirectoryName(exe));
+                File.Copy(path, exe, true);
+                Log("Взят готовый ffmpeg: " + path);
+                return true;
+            }
+            catch (Exception ex) { Log("Не удалось взять ffmpeg из " + path + ": " + ex.Message); return false; }
+        }
+
         private static async Task<bool> EnsureFfmpegAsync(Action<string> Say)
         {
             if (NativeNvenc.FfmpegReady) return true;
+
+            // Сначала — бесплатно и мгновенно: вдруг конвертер уже есть в системе.
+            string found = FindExistingFfmpeg();
+            if (found != null && UseFfmpegFrom(found)) return true;
 
             string exe = NativeNvenc.FfmpegExe;
             string dir = Path.GetDirectoryName(exe);
@@ -261,7 +319,7 @@ namespace PISMO
         /// </summary>
         private static async Task<bool> DownloadAsync(string url, string dest, Action<string> Say)
         {
-            const int Parts = 4;
+            const int Parts = 8;   // раздача режет каждое соединение — берём больше
             long got = 0, total = 0;
             var sw = Stopwatch.StartNew();
             int lastPct = -1;
