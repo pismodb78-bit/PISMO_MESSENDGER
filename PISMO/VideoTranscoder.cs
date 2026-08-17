@@ -49,21 +49,58 @@ namespace PISMO
 
             void Say(string s) { try { progress?.Invoke(s); } catch { } }
 
-            // Один конвертер на всё приложение: если открыть подряд несколько
-            // «чёрных» видео, они не должны качать FFmpeg и грузить процессор
-            // одновременно — встают в очередь.
+            // Загрузка конвертера — ОБЩАЯ на всё приложение и идёт вне семафора:
+            // её мог уже начать фоновый Prefetch. Подписываемся на её статус,
+            // иначе плашка молча ждала бы чужую загрузку («Готовим видео…» и
+            // ничего дальше).
+            if (!NativeNvenc.FfmpegReady)
+            {
+                Say(_status ?? "Загружаем конвертер видео (один раз)…");
+                Action<string> relay = s => Say(s);
+                Status += relay;
+                try { if (!await EnsureFfmpegSharedAsync()) { Say("Не удалось загрузить конвертер видео."); return null; } }
+                finally { Status -= relay; }
+            }
+
+            // А вот сама перекодировка — по одной за раз: несколько видео разом
+            // просто задушили бы процессор.
             await _gate.WaitAsync();
             try
             {
                 done = CachedPath(data);           // мог сконвертировать сосед по очереди
                 if (done != null) return done;
-                if (!await EnsureFfmpegAsync(Say)) return null;
                 return await ConvertAsync(data, Say);
             }
             finally { _gate.Release(); }
         }
 
         private static readonly System.Threading.SemaphoreSlim _gate = new(1, 1);
+
+        /// <summary>Последний статус загрузки конвертера и подписка на него —
+        /// чтобы плашка показывала прогресс общей, в том числе фоновой, загрузки.</summary>
+        private static string _status;
+        private static event Action<string> Status;
+        private static void Publish(string s)
+        {
+            _status = s;
+            try { Status?.Invoke(s); } catch { }
+        }
+
+        private static readonly object _ffmpegLock = new();
+        private static Task<bool> _ffmpegTask;
+
+        /// <summary>Одна общая задача загрузки: сколько бы плееров ни попросило
+        /// конвертер, качается он ровно один раз.</summary>
+        private static Task<bool> EnsureFfmpegSharedAsync()
+        {
+            if (NativeNvenc.FfmpegReady) return Task.FromResult(true);
+            lock (_ffmpegLock)
+            {
+                if (_ffmpegTask == null || (_ffmpegTask.IsCompleted && _ffmpegTask.Result == false))
+                    _ffmpegTask = Task.Run(() => EnsureFfmpegAsync(Publish));
+                return _ffmpegTask;
+            }
+        }
 
         private static async Task<string> ConvertAsync(byte[] data, Action<string> Say)
         {
@@ -170,20 +207,9 @@ namespace PISMO
         /// </summary>
         public static void Prefetch()
         {
-            if (NativeNvenc.FfmpegReady || _prefetching) return;
-            _prefetching = true;
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await _gate.WaitAsync();
-                    try { await EnsureFfmpegAsync(null); }
-                    finally { _gate.Release(); }
-                }
-                catch { }
-            });
+            if (NativeNvenc.FfmpegReady) return;
+            try { _ = EnsureFfmpegSharedAsync(); } catch { }
         }
-        private static bool _prefetching;
 
         private static async Task<bool> EnsureFfmpegAsync(Action<string> Say)
         {
@@ -198,7 +224,9 @@ namespace PISMO
                 try
                 {
                     Directory.CreateDirectory(dir);
-                    if (!await DownloadAsync(url, zip, Say)) continue;
+                    Log("Загрузка конвертера: " + url);
+                    if (!await DownloadAsync(url, zip, Say)) { Log("Зеркало не отдало файл, пробуем следующее"); continue; }
+                    Log("Скачано, байт: " + new FileInfo(zip).Length);
 
                     Say?.Invoke("Распаковываем конвертер…");
                     string tmp = Path.Combine(dir, "extract");
@@ -213,13 +241,15 @@ namespace PISMO
                     TryClean(zip, tmp);
                     return true;
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Log("Ошибка зеркала: " + ex.Message);
                     try { if (File.Exists(zip)) File.Delete(zip); } catch { }
                     // пробуем следующее зеркало
                 }
             }
 
+            Log("Все зеркала не отработали.");
             Say?.Invoke("Не удалось загрузить конвертер видео.");
             return false;
         }
@@ -263,8 +293,9 @@ namespace PISMO
                     total = head.Content.Headers.ContentLength ?? 0;
                     ranges = head.Headers.AcceptRanges.Contains("bytes");
                 }
+                Log($"HEAD: {(int)head.StatusCode}, размер {total}, Range {ranges}");
             }
-            catch { }
+            catch (Exception ex) { Log("HEAD не прошёл: " + ex.Message); }
 
             Say?.Invoke("Загружаем конвертер видео (один раз)… 0%");
 
@@ -309,8 +340,9 @@ namespace PISMO
                     foreach (var p in parts) { try { File.Delete(p); } catch { } }
                     return new FileInfo(dest).Length == total;
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Log("Многопоточная загрузка не удалась: " + ex.Message);
                     foreach (var p in parts) { try { if (p != null) File.Delete(p); } catch { } }
                     // не вышло — падаем в обычную загрузку ниже
                     got = 0; lastPct = -1; sw.Restart();
@@ -334,13 +366,28 @@ namespace PISMO
                 }
                 return true;
             }
-            catch { return false; }
+            catch (Exception ex) { Log("Загрузка не удалась: " + ex.Message); return false; }
         }
 
         private static void TryClean(string zip, string tmp)
         {
             try { File.Delete(zip); } catch { }
             try { Directory.Delete(tmp, true); } catch { }
+        }
+
+        /// <summary>Диагностика в %LOCALAPPDATA%\PISMO\video_convert.log: без неё
+        /// любая сетевая ошибка выглядела просто как «ничего не происходит».</summary>
+        private static void Log(string s)
+        {
+            try
+            {
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PISMO");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(Path.Combine(dir, "video_convert.log"),
+                    DateTime.Now.ToString("HH:mm:ss") + "  " + s + Environment.NewLine);
+            }
+            catch { }
         }
 
         private static string Hash(byte[] data)
