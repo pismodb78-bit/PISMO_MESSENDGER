@@ -200,6 +200,16 @@ namespace PISMO
         {
             if (IsDisposed) return;
             if (InvokeRequired) { try { BeginInvoke(new Action<string>(ShowStatus), text); } catch { } return; }
+
+            // Прогресс приходит часто (на каждый процент) — панель не пересоздаём,
+            // только меняем текст, иначе чат заметно моргает.
+            if (_pnlCodec != null && !_pnlCodec.IsDisposed && _lnkCodec == null && _lblCodec != null)
+            {
+                _lblCodec.Text = text;
+                FitNotice();
+                return;
+            }
+
             HideNotice();
             _pnlCodec = new Panel { Dock = DockStyle.Top, BackColor = Color.FromArgb(40, 44, 52), Height = 24 };
             _lblCodec = new Label
