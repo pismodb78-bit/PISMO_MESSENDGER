@@ -270,8 +270,8 @@ namespace PISMO
             if (NativeNvenc.FfmpegReady) return true;
 
             // Сначала — бесплатно и мгновенно: вдруг конвертер уже есть в системе.
-            string found = FindExistingFfmpeg();
-            if (found != null && UseFfmpegFrom(found)) return true;
+            string preinstalled = FindExistingFfmpeg();
+            if (preinstalled != null && UseFfmpegFrom(preinstalled)) return true;
 
             string exe = NativeNvenc.FfmpegExe;
             string dir = Path.GetDirectoryName(exe);
