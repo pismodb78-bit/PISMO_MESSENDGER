@@ -128,6 +128,8 @@ namespace PISMO
                     "-c:a aac -b:a 128k -movflags +faststart " +
                     $"\"{tmp}\"";
 
+                Log("Конвертация: " + NativeNvenc.FfmpegExe + " " + args);
+                var err = new System.Text.StringBuilder();
                 int code = await RunAsync(NativeNvenc.FfmpegExe, args, line =>
                 {
                     // out_time_us=1234567 / out_time_ms=… — сколько видео пройдено.
@@ -140,25 +142,36 @@ namespace PISMO
                     // out_time_ms у ffmpeg на самом деле в микросекундах — обе
                     // ветки делим одинаково.
                     Say($"Перекодируем видео… {v / 1_000_000} с");
-                });
+                }, e => { if (err.Length < 4000) err.AppendLine(e); });
+
                 if (code != 0 || !File.Exists(tmp) || new FileInfo(tmp).Length == 0)
                 {
+                    // Без stderr причина сбоя была не видна вообще: ffmpeg пишет
+                    // туда и «нет такого кодека», и «файл не читается».
+                    string tail = err.ToString().Trim();
+                    Log($"Конвертация не удалась, код {code}. Вывод ffmpeg:\r\n" + tail);
+                    LastError = string.IsNullOrWhiteSpace(tail)
+                        ? $"ffmpeg завершился с кодом {code}"
+                        : tail.Split('\n')[^1].Trim();
                     try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
                     return null;
                 }
+                Log("Готово: " + dst + ", байт " + new FileInfo(tmp).Length);
 
                 try { if (File.Exists(dst)) File.Delete(dst); } catch { }
                 File.Move(tmp, dst);
                 try { File.Delete(src); } catch { }   // исходник больше не нужен
                 return dst;
             }
-            catch
+            catch (Exception ex)
             {
+                Log("Ошибка конвертации: " + ex.Message);
                 return null;
             }
         }
 
-        private static Task<int> RunAsync(string exe, string args, Action<string> onLine = null)
+        private static Task<int> RunAsync(string exe, string args,
+                                          Action<string> onLine = null, Action<string> onError = null)
         {
             var tcs = new TaskCompletionSource<int>();
             try
@@ -177,12 +190,12 @@ namespace PISMO
                 p.Exited += (s, e) => { try { tcs.TrySetResult(p.ExitCode); } catch { tcs.TrySetResult(-1); } finally { try { p.Dispose(); } catch { } } };
                 // Потоки нужно вычитывать, иначе процесс встанет на заполненном буфере.
                 p.OutputDataReceived += (s, e) => { if (e.Data != null) { try { onLine?.Invoke(e.Data); } catch { } } };
-                p.ErrorDataReceived += (s, e) => { };
+                p.ErrorDataReceived += (s, e) => { if (e.Data != null) { try { onError?.Invoke(e.Data); } catch { } } };
                 p.Start();
                 p.BeginOutputReadLine();
                 p.BeginErrorReadLine();
             }
-            catch { tcs.TrySetResult(-1); }
+            catch (Exception ex) { Log("Не удалось запустить ffmpeg: " + ex.Message); tcs.TrySetResult(-1); }
             return tcs.Task;
         }
 
@@ -308,6 +321,7 @@ namespace PISMO
             }
 
             Log("Все зеркала не отработали.");
+            LastError = "не удалось скачать конвертер";
             Say?.Invoke("Не удалось загрузить конвертер видео.");
             return false;
         }
@@ -435,6 +449,15 @@ namespace PISMO
 
         /// <summary>Диагностика в %LOCALAPPDATA%\PISMO\video_convert.log: без неё
         /// любая сетевая ошибка выглядела просто как «ничего не происходит».</summary>
+        /// <summary>Короткая причина последнего сбоя — показывается в плашке,
+        /// чтобы не гонять пользователя в лог за каждой мелочью.</summary>
+        public static string LastError { get; private set; }
+
+        /// <summary>Путь к логу — по нему открывается «Открыть лог» в плашке.</summary>
+        public static string LogPath => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PISMO", "video_convert.log");
+
         private static void Log(string s)
         {
             try

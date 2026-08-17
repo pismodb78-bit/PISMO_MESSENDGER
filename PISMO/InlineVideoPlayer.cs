@@ -256,7 +256,7 @@ namespace PISMO
         private void HideNotice()
         {
             try { if (_pnlCodec != null) { Controls.Remove(_pnlCodec); _pnlCodec.Dispose(); } } catch { }
-            _pnlCodec = null; _lblCodec = null; _lnkCodec = null; _lnkManual = null; _statusMode = false;
+            _pnlCodec = null; _lblCodec = null; _lnkCodec = null; _lnkManual = null; _lnkLog = null; _statusMode = false;
         }
 
         /// <summary>Пользователь показывает свой ffmpeg.exe — копируем его туда,
@@ -291,7 +291,7 @@ namespace PISMO
             {
                 if (_pnlCodec == null || _pnlCodec.IsDisposed) return;
                 int total = 0;
-                foreach (var lbl in new[] { _lblCodec, _lnkCodec, _lnkManual })
+                foreach (var lbl in new[] { _lblCodec, _lnkCodec, _lnkManual, _lnkLog })
                 {
                     if (lbl == null || lbl.IsDisposed) continue;
                     int w = Math.Max(60, _pnlCodec.ClientSize.Width - lbl.Padding.Horizontal);
@@ -320,6 +320,9 @@ namespace PISMO
             string txt = hevc
                 ? "Видео в HEVC (H.265) — не удалось перекодировать его для показа, слышен только звук. Нажмите, чтобы открыть во внешнем плеере."
                 : "Этот видеокодек показать не удалось — слышен только звук. Нажмите, чтобы открыть во внешнем плеере.";
+            // Причина сбоя прямо в плашке: без неё оставалось только гадать.
+            string why = VideoTranscoder.LastError;
+            if (!string.IsNullOrWhiteSpace(why)) txt += "  Причина: " + why;
 
             _pnlCodec = new Panel
             {
@@ -378,6 +381,29 @@ namespace PISMO
             };
             _lnkManual.Click += (s, e) => PickFfmpegManually();
             _pnlCodec.Controls.Add(_lnkManual);
+
+            _lnkLog = new Label
+            {
+                Dock = DockStyle.Top,
+                BackColor = Color.FromArgb(60, 40, 20),
+                ForeColor = Color.FromArgb(150, 205, 255),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Underline),
+                TextAlign = ContentAlignment.TopLeft,
+                Padding = new Padding(8, 0, 8, 6),
+                Text = "Открыть лог конвертации",
+                Cursor = Cursors.Hand,
+                AutoSize = false
+            };
+            _lnkLog.Click += (s, e) =>
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                        VideoTranscoder.LogPath) { UseShellExecute = true });
+                }
+                catch { }
+            };
+            _pnlCodec.Controls.Add(_lnkLog);
             _pnlCodec.Controls.Add(_lblCodec);   // добавлен последним → лежит выше ссылки
 
             // Высоту считаем по факту (FitNotice) и пересчитываем при изменении
@@ -437,7 +463,7 @@ namespace PISMO
         }
 
         private Panel _pnlCodec;
-        private Label _lblCodec, _lnkCodec, _lnkManual;
+        private Label _lblCodec, _lnkCodec, _lnkManual, _lnkLog;
 
         private void OnFullScreenChanged(object sender, object e)
         {
