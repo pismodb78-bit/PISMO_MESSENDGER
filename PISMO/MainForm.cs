@@ -3891,7 +3891,8 @@ namespace PISMO
 
             // Контекстное меню (реакция/ответ/пересылка/копировать/редактировать/удалить)
             if (msgId > 0)
-                AttachBubbleContextMenu(bubble, msgId, isGroup, isMine, text, senderName);
+                AttachBubbleContextMenu(bubble, msgId, isGroup, isMine, text, senderName,
+                                        imgBytes, audioBytes, videoBytes, fileData, fileName);
 
             return bubble;
         }
@@ -4996,8 +4997,7 @@ namespace PISMO
 
         // Единственное окно просмотра — повторные клики по картинкам не плодят
         // окна, а обновляют изображение в уже открытом окне.
-        private static Form _imageViewer;
-        private static PictureBox _imageViewerBox;
+        private static ImageViewerForm _imageViewer;
 
         internal static void ShowImageFullscreen(byte[] imgBytes)
         {
@@ -5005,48 +5005,22 @@ namespace PISMO
             var img = Image.FromStream(ms);
 
             // Уже открыто — просто меняем картинку и выводим на передний план.
-            if (_imageViewer != null && !_imageViewer.IsDisposed && _imageViewerBox != null)
+            if (_imageViewer != null && !_imageViewer.IsDisposed)
             {
-                var oldImg = _imageViewerBox.Image;
-                var oldMs = _imageViewerBox.Tag as IDisposable;
-                _imageViewerBox.Image = img;
-                _imageViewerBox.Tag = ms;   // держим поток живым
-                try { oldImg?.Dispose(); } catch { }
-                try { oldMs?.Dispose(); } catch { }
-                if (_imageViewer.WindowState == FormWindowState.Minimized)
-                    _imageViewer.WindowState = FormWindowState.Normal;
-                _imageViewer.BringToFront();
-                _imageViewer.Activate();
+                var live = _imageViewer;
+                live.SetImage(img, ms);
+                if (live.WindowState == FormWindowState.Minimized)
+                    live.WindowState = FormWindowState.Normal;
+                live.BringToFront();
+                live.Activate();
                 return;
             }
 
-            var v = new Form
-            {
-                Text = "Просмотр",
-                Size = new Size(900, 700),
-                StartPosition = FormStartPosition.CenterScreen,
-                BackColor = Color.Black
-            };
-            var pb = new PictureBox
-            {
-                Dock = DockStyle.Fill,
-                SizeMode = PictureBoxSizeMode.Zoom,
-                BackColor = Color.Black,
-                Image = img,
-                Tag = ms
-            };
-            v.Controls.Add(pb);
-            v.FormClosed += (s, e) =>
-            {
-                try { pb.Image?.Dispose(); } catch { }
-                try { (pb.Tag as IDisposable)?.Dispose(); } catch { }
-                _imageViewer = null;
-                _imageViewerBox = null;
-            };
-
+            var v = new ImageViewerForm();
+            v.FormClosed += (s, e) => _imageViewer = null;
             _imageViewer = v;
-            _imageViewerBox = pb;
             v.Show();
+            v.SetImage(img, ms);   // после Show: «вписать» считается по размеру окна
         }
 
         // Ctrl+V — вставить изображение или файл из буфера

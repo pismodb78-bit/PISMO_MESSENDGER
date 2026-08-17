@@ -423,8 +423,37 @@ namespace PISMO
             txtMessage.Focus();
         }
 
+        /// <summary>Добавляет в меню «Скачать» для того вложения, которое реально есть
+        /// в сообщении. Общий код для ЛС, групп и каналов серверов.</summary>
+        internal static void AddDownloadItem(ContextMenuStrip menu, int msgId,
+            byte[] img, byte[] audio, byte[] video, byte[] file, string fileName)
+        {
+            string caption = null; byte[] data = null; string name = null;
+
+            // Порядок важен: у видео-кружка и видео байты лежат в одном поле, а
+            // подпись к файлу может идти вместе с картинкой.
+            if (file != null && file.Length > 0)
+            { caption = "⬇  Скачать файл"; data = file; name = string.IsNullOrWhiteSpace(fileName) ? "pismo_file" : fileName; }
+            else if (video != null && video.Length > 0)
+            { caption = "⬇  Скачать видео"; data = video; name = MediaSaver.VideoName(msgId); }
+            else if (img != null && img.Length > 0)
+            { caption = "⬇  Скачать изображение"; data = img; name = MediaSaver.ImageName(img, msgId); }
+            else if (audio != null && audio.Length > 0)
+            { caption = "⬇  Скачать голосовое"; data = audio; name = MediaSaver.AudioName(msgId); }
+
+            if (caption == null) return;
+
+            var item = new ToolStripMenuItem(caption);
+            byte[] capData = data; string capName = name;
+            item.Click += (s, e) => MediaSaver.Save(menu.SourceControl?.FindForm(), capData, capName);
+            menu.Items.Add(item);
+            menu.Items.Add(new ToolStripSeparator());
+        }
+
         public void AttachBubbleContextMenu(Panel bubble, int msgId, bool isGroup,
-    bool isMine, string text, string senderName)
+    bool isMine, string text, string senderName,
+    byte[] imgBytes = null, byte[] audioBytes = null, byte[] videoBytes = null,
+    byte[] fileData = null, string fileName = null)
         {
             // Запоминаем текст/отправителя — понадобится для пакетной пересылки.
             if (msgId > 0) _msgMeta[msgId] = (senderName ?? "", text ?? "", isGroup ? 1 : 0);
@@ -446,6 +475,11 @@ namespace PISMO
                 menu.Items.Add(itemSelect);
                 menu.Items.Add(new ToolStripSeparator());
             }
+
+            // ── Скачать вложение ─────────────────────────────────────────
+            // Байты уже у клиента (пришли вместе с сообщением) — обращаться к БД
+            // не нужно, только диалог сохранения.
+            AddDownloadItem(menu, msgId, imgBytes, audioBytes, videoBytes, fileData, fileName);
 
             // ── Реакция (эмодзи) ─────────────────────────────────────────
             if (msgId > 0)

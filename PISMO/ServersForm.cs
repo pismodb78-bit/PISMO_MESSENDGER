@@ -2036,6 +2036,11 @@ namespace PISMO
             menu.Items.Add(new ToolStripSeparator());
 
             // ── Реакция (как в ЛС) ───────────────────────────────────────
+            // «Скачать» — байты этого сообщения уже лежат в _serverMedia (пришли
+            // вместе с лентой), так что запрос к БД не нужен.
+            if (_serverMedia.TryGetValue(id, out var med))
+                MainForm.AddDownloadItem(menu, id, med.img, med.audio, med.video, med.file, med.fname);
+
             menu.Items.Add("😀  Реакция", null, (s, e) =>
             {
                 string emo = EmojiPickerForm.Pick(this, Cursor.Position);
