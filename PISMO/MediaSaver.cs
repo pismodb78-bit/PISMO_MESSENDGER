@@ -40,6 +40,21 @@ namespace PISMO
                 catch { /* не смогли — сохраним как есть, чем ничего */ }
             }
 
+            // Если это видео уже перекодировали для показа (HEVC → H.264), отдаём
+            // на диск именно эту версию: исходник у половины плееров Windows
+            // открывается чёрным экраном.
+            try
+            {
+                string h264 = VideoTranscoder.CachedPath(data);
+                if (h264 != null)
+                {
+                    data = File.ReadAllBytes(h264);
+                    suggestedName = Path.ChangeExtension(
+                        string.IsNullOrWhiteSpace(suggestedName) ? "pismo_video" : suggestedName, ".mp4");
+                }
+            }
+            catch { }
+
             string name = SafeName(suggestedName);
             string ext = Path.GetExtension(name).TrimStart('.').ToLowerInvariant();
 

@@ -23,6 +23,7 @@ namespace PISMO
         private string _safeName;
         private Form _fsForm;
         private bool _playing;
+        private bool _converting, _converted;
 
         private Label _lblPlay, _lblName;
 
@@ -66,6 +67,32 @@ namespace PISMO
             Controls.Add(_lblName);
         }
 
+        /// <summary>Страница плеера. Пишется заново после перекодирования — там
+        /// зашито имя файла, а оно меняется на сконвертированное.</summary>
+        private void WriteHtml()
+        {
+            string html =
+                "<!doctype html><html><head><meta charset='utf-8'><style>" +
+                "html,body{margin:0;height:100%;background:#141518;overflow:hidden;}" +
+                "video{width:100%;height:100%;object-fit:contain;background:#141518;outline:none;}" +
+                "</style></head><body>" +
+                $"<video src='https://{Host}/{_safeName}' autoplay playsinline controls " +
+                "controlslist='nodownload' preload='auto'></video>" +
+                // Сообщаем хосту, если видеодорожку декодировать нечем: Chromium в
+                // этом случае молча играет ОДИН ЗВУК и показывает чёрный
+                // прямоугольник (и другой, компактный набор кнопок) — со стороны
+                // выглядит как «сломалось приложение». Признак — videoWidth == 0
+                // при уже прочитанных метаданных.
+                "<script>" +
+                "var v=document.querySelector('video');" +
+                "function say(k){try{window.chrome.webview.postMessage(k);}catch(e){}}" +
+                "v.addEventListener('loadedmetadata',function(){if(!v.videoWidth)say('novideo');});" +
+                "v.addEventListener('error',function(){say('novideo');});" +
+                "</script>" +
+                "</body></html>";
+            File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
+        }
+
         private async void StartPlayer()
         {
             if (_playing) return;
@@ -76,27 +103,17 @@ namespace PISMO
                 _tempDir = Path.Combine(Path.GetTempPath(), "pismo_inline_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(_tempDir);
                 _safeName = "v" + Path.GetExtension(_fileName);
-                File.WriteAllBytes(Path.Combine(_tempDir, _safeName), _data);
-                string html =
-                    "<!doctype html><html><head><meta charset='utf-8'><style>" +
-                    "html,body{margin:0;height:100%;background:#141518;overflow:hidden;}" +
-                    "video{width:100%;height:100%;object-fit:contain;background:#141518;outline:none;}" +
-                    "</style></head><body>" +
-                    $"<video src='https://{Host}/{_safeName}' autoplay playsinline controls " +
-                    "controlslist='nodownload' preload='auto'></video>" +
-                    // Сообщаем хосту, если видеодорожку декодировать нечем: Chromium в
-                    // этом случае молча играет ОДИН ЗВУК и показывает чёрный
-                    // прямоугольник (и другой, компактный набор кнопок) — со стороны
-                    // выглядит как «сломалось приложение». Признак — videoWidth == 0
-                    // при уже прочитанных метаданных.
-                    "<script>" +
-                    "var v=document.querySelector('video');" +
-                    "function say(k){try{window.chrome.webview.postMessage(k);}catch(e){}}" +
-                    "v.addEventListener('loadedmetadata',function(){if(!v.videoWidth)say('novideo');});" +
-                    "v.addEventListener('error',function(){say('novideo');});" +
-                    "</script>" +
-                    "</body></html>";
-                File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
+                // Если это видео уже перекодировали раньше — сразу берём готовый
+                // H.264, не показывая чёрный экран и не гоняя конвертер снова.
+                string ready = VideoTranscoder.CachedPath(_data);
+                if (ready != null)
+                {
+                    _safeName = "v264.mp4";
+                    File.Copy(ready, Path.Combine(_tempDir, _safeName), true);
+                    _converted = true;
+                }
+                else File.WriteAllBytes(Path.Combine(_tempDir, _safeName), _data);
+                WriteHtml();
 
                 _web = new WebView2 { Dock = DockStyle.Fill };
                 Controls.Add(_web);
@@ -109,7 +126,7 @@ namespace PISMO
                 {
                     string msg = null;
                     try { msg = e.TryGetWebMessageAsString(); } catch { }
-                    if (msg == "novideo") { try { ShowCodecNotice(); } catch { } }
+                    if (msg == "novideo") { try { OnNoVideo(); } catch { } }
                 };
                 _web.CoreWebView2.ContainsFullScreenElementChanged += OnFullScreenChanged;
                 _web.CoreWebView2.Navigate($"https://{Host}/index.html");
@@ -143,19 +160,108 @@ namespace PISMO
             return false;
         }
 
+        /// <summary>
+        /// Chromium сообщил, что видеодорожку показать нечем. Ставить кодек из
+        /// Store руками не заставляем: молча перегоняем файл в H.264 своим
+        /// конвертером и перезапускаем плеер. Плашка нужна только чтобы человек
+        /// понимал, почему пару секунд ничего не происходит, и как поступить,
+        /// если конвертация всё-таки не удалась.
+        /// </summary>
+        private async void OnNoVideo()
+        {
+            if (_converted || _converting) return;
+            _converting = true;
+
+            ShowStatus("Готовим видео к показу…");
+            string h264 = null;
+            try { h264 = await VideoTranscoder.ToH264Async(_data, ShowStatus); } catch { }
+
+            if (IsDisposed) return;
+
+            if (h264 == null) { _converting = false; ShowCodecNotice(); return; }
+
+            try
+            {
+                _safeName = "v264.mp4";
+                File.Copy(h264, Path.Combine(_tempDir, _safeName), true);
+                _converted = true;
+                WriteHtml();
+                HideNotice();
+                // ?v= — чтобы WebView2 не отдал страницу из кэша: файл тот же,
+                // а содержимое уже другое.
+                _web?.CoreWebView2?.Navigate($"https://{Host}/index.html?v={Environment.TickCount}");
+            }
+            catch { ShowCodecNotice(); }
+            finally { _converting = false; }
+        }
+
+        /// <summary>Короткая строка состояния поверх плеера (без кнопок).</summary>
+        private void ShowStatus(string text)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired) { try { BeginInvoke(new Action<string>(ShowStatus), text); } catch { } return; }
+            HideNotice();
+            _pnlCodec = new Panel { Dock = DockStyle.Top, BackColor = Color.FromArgb(40, 44, 52), Height = 24 };
+            _lblCodec = new Label
+            {
+                Dock = DockStyle.Top,
+                BackColor = Color.FromArgb(40, 44, 52),
+                ForeColor = Color.FromArgb(225, 228, 234),
+                Font = new Font("Segoe UI", 8.5f),
+                TextAlign = ContentAlignment.TopLeft,
+                Padding = new Padding(8, 6, 8, 6),
+                Text = text,
+                AutoSize = false
+            };
+            _pnlCodec.Controls.Add(_lblCodec);
+            Controls.Add(_pnlCodec);
+            _pnlCodec.BringToFront();
+            FitNotice();
+            _pnlCodec.Resize += (s, e) => FitNotice();
+        }
+
+        private void HideNotice()
+        {
+            try { if (_pnlCodec != null) { Controls.Remove(_pnlCodec); _pnlCodec.Dispose(); } } catch { }
+            _pnlCodec = null; _lblCodec = null; _lnkCodec = null;
+        }
+
+        /// <summary>Высота плашки — по реально нужной для текущей ширины пузыря.</summary>
+        private void FitNotice()
+        {
+            try
+            {
+                if (_pnlCodec == null || _pnlCodec.IsDisposed) return;
+                int total = 0;
+                foreach (var lbl in new[] { _lblCodec, _lnkCodec })
+                {
+                    if (lbl == null || lbl.IsDisposed) continue;
+                    int w = Math.Max(60, _pnlCodec.ClientSize.Width - lbl.Padding.Horizontal);
+                    int h = TextRenderer.MeasureText(lbl.Text, lbl.Font,
+                                new Size(w, int.MaxValue), TextFormatFlags.WordBreak).Height;
+                    lbl.Height = h + lbl.Padding.Vertical;
+                    total += lbl.Height;
+                }
+                _pnlCodec.Height = total;
+            }
+            catch { }
+        }
+
         /// <summary>Поверх плеера — объяснение, почему видно только чёрный экран, и
-        /// кнопка открыть файл во внешнем плеере (VLC и подобные HEVC умеют).</summary>
+        /// кнопка открыть файл во внешнем плеере (VLC и подобные HEVC умеют).
+        /// Запасной вариант: показывается, только если автоконвертация не вышла.</summary>
         private void ShowCodecNotice()
         {
-            if (IsDisposed || _pnlCodec != null) return;
+            if (IsDisposed) return;
+            HideNotice();
 
             bool hevc = LooksLikeHevc();
             // БЕЗ жёстких переносов: пузырь бывает узким (~180px), и заранее
             // расставленные «\n» только мешают — текст переносится сам, а высоту
             // мы считаем по факту. С фиксированной высотой хвост обрезался.
             string txt = hevc
-                ? "Видео в HEVC (H.265) — Windows не показывает его без кодека, слышен только звук. Нажмите, чтобы открыть во внешнем плеере."
-                : "Этот видеокодек Windows показать не может — слышен только звук. Нажмите, чтобы открыть во внешнем плеере.";
+                ? "Видео в HEVC (H.265) — не удалось перекодировать его для показа, слышен только звук. Нажмите, чтобы открыть во внешнем плеере."
+                : "Этот видеокодек показать не удалось — слышен только звук. Нажмите, чтобы открыть во внешнем плеере.";
 
             _pnlCodec = new Panel
             {
@@ -200,32 +306,12 @@ namespace PISMO
             }
             _pnlCodec.Controls.Add(_lblCodec);   // добавлен последним → лежит выше ссылки
 
-            // Высота — по реально нужной для этой ширины. Пересчитываем и при
-            // изменении размера: пузырь тянется вместе с окном.
-            void FitHeight()
-            {
-                try
-                {
-                    if (_pnlCodec == null || _pnlCodec.IsDisposed) return;
-                    int total = 0;
-                    foreach (var lbl in new[] { _lblCodec, _lnkCodec })
-                    {
-                        if (lbl == null || lbl.IsDisposed) continue;
-                        int w = Math.Max(60, _pnlCodec.ClientSize.Width - lbl.Padding.Horizontal);
-                        int h = TextRenderer.MeasureText(lbl.Text, lbl.Font,
-                                    new Size(w, int.MaxValue), TextFormatFlags.WordBreak).Height;
-                        lbl.Height = h + lbl.Padding.Vertical;
-                        total += lbl.Height;
-                    }
-                    _pnlCodec.Height = total;
-                }
-                catch { }
-            }
-            _pnlCodec.Resize += (s, e) => FitHeight();
-            Resize += (s, e) => FitHeight();
+            // Высоту считаем по факту (FitNotice) и пересчитываем при изменении
+            // размера: пузырь тянется вместе с окном.
+            _pnlCodec.Resize += (s, e) => FitNotice();
             Controls.Add(_pnlCodec);
             _pnlCodec.BringToFront();
-            FitHeight();   // первый расчёт: ширина уже известна после Add
+            FitNotice();   // первый расчёт: ширина уже известна после Add
         }
 
         /// <summary>Открывает карточку бесплатного HEVC-декодера «from Device
