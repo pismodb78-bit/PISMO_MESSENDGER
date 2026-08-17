@@ -25,6 +25,7 @@ namespace PISMO
         private bool _playing;
         private bool _converting, _converted;
         private bool _statusMode;   // в плашке сейчас прогресс, а не финальное сообщение
+        private bool _convertFailed;
 
         private Label _lblPlay, _lblName;
 
@@ -112,6 +113,22 @@ namespace PISMO
                 // Если это видео уже перекодировали раньше — сразу берём готовый
                 // H.264, не показывая чёрный экран и не гоняя конвертер снова.
                 string ready = VideoTranscoder.CachedPath(_data);
+
+                // HEVC системе показать нечем — это известно ЗАРАНЕЕ, по самому
+                // файлу. Раньше мы всё равно запускали плеер, он играл один звук
+                // на чёрном фоне, и только потом шла конвертация с перезапуском.
+                // Теперь конвертируем сразу и открываем уже готовое видео.
+                if (ready == null && LooksLikeHevc())
+                {
+                    _converting = true;
+                    try { ready = await VideoTranscoder.ToH264Async(_data, ShowStatus); }
+                    catch { }
+                    _converting = false;
+                    if (IsDisposed) return;
+                    if (ready != null) { _converted = true; HideNotice(); }
+                    else _convertFailed = true;   // не пробуем второй раз по 'novideo'
+                }
+
                 if (ready != null)
                 {
                     _safeName = "v264.mp4";
@@ -176,6 +193,7 @@ namespace PISMO
         private async void OnNoVideo()
         {
             if (_converted || _converting) return;
+            if (_convertFailed) { ShowCodecNotice(); return; }
             _converting = true;
 
             ShowStatus("Готовим видео к показу…");
@@ -279,6 +297,7 @@ namespace PISMO
                     return;
                 }
                 _converting = false;
+                _convertFailed = false;
                 OnNoVideo();     // конвертер на месте — повторяем попытку
             }
             catch { }
