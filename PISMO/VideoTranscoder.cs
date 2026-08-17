@@ -154,11 +154,36 @@ namespace PISMO
         // (плашка молча висела), нет запасного зеркала и таймаут в 10 минут.
         // Кладём в ту же папку, что и NVENC-путь, — конвертер общий.
 
+        // Порядок важен: gyan.dev раздаёт медленно (заметно режет одно
+        // соединение), GitHub-релизы того же самого архива идут через CDN и
+        // намного быстрее — поэтому они первыми.
         private static readonly string[] FfmpegZipUrls =
         {
-            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-            "https://github.com/GyanD/codexffmpeg/releases/latest/download/ffmpeg-release-essentials.zip"
+            "https://github.com/GyanD/codexffmpeg/releases/latest/download/ffmpeg-release-essentials.zip",
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
         };
+
+        /// <summary>
+        /// Заранее подтягивает конвертер в фоне (без плашки), чтобы к моменту
+        /// клика по видео он уже лежал на диске. Вызывается, когда в чате
+        /// появилось видео, которое системе показать нечем.
+        /// </summary>
+        public static void Prefetch()
+        {
+            if (NativeNvenc.FfmpegReady || _prefetching) return;
+            _prefetching = true;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _gate.WaitAsync();
+                    try { await EnsureFfmpegAsync(null); }
+                    finally { _gate.Release(); }
+                }
+                catch { }
+            });
+        }
+        private static bool _prefetching;
 
         private static async Task<bool> EnsureFfmpegAsync(Action<string> Say)
         {
@@ -173,38 +198,9 @@ namespace PISMO
                 try
                 {
                     Directory.CreateDirectory(dir);
-                    Say("Загружаем конвертер видео (один раз)… 0%");
+                    if (!await DownloadAsync(url, zip, Say)) continue;
 
-                    using (var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromMinutes(15) })
-                    {
-                        http.DefaultRequestHeaders.UserAgent.ParseAdd("PISMO");
-                        using var resp = await http.GetAsync(url, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
-                        resp.EnsureSuccessStatusCode();
-                        long total = resp.Content.Headers.ContentLength ?? 0;
-
-                        using var net = await resp.Content.ReadAsStreamAsync();
-                        using var file = File.Create(zip);
-                        var buf = new byte[128 * 1024];
-                        long got = 0;
-                        int last = -1, n;
-                        while ((n = await net.ReadAsync(buf, 0, buf.Length)) > 0)
-                        {
-                            await file.WriteAsync(buf, 0, n);
-                            got += n;
-                            int pct = total > 0 ? (int)(got * 100 / total) : -1;
-                            // Обновляем текст не чаще, чем раз в процент: иначе
-                            // забьём очередь сообщений UI-потока.
-                            if (pct != last)
-                            {
-                                last = pct;
-                                Say(pct >= 0
-                                    ? $"Загружаем конвертер видео (один раз)… {pct}%"
-                                    : $"Загружаем конвертер видео (один раз)… {got / (1024 * 1024)} МБ");
-                            }
-                        }
-                    }
-
-                    Say("Распаковываем конвертер…");
+                    Say?.Invoke("Распаковываем конвертер…");
                     string tmp = Path.Combine(dir, "extract");
                     if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
                     System.IO.Compression.ZipFile.ExtractToDirectory(zip, tmp);
@@ -224,8 +220,121 @@ namespace PISMO
                 }
             }
 
-            Say("Не удалось загрузить конвертер видео.");
+            Say?.Invoke("Не удалось загрузить конвертер видео.");
             return false;
+        }
+
+        /// <summary>
+        /// Качает файл, по возможности в НЕСКОЛЬКО потоков: раздачи обычно режут
+        /// скорость на одно соединение, и 40 МБ в один поток тянутся минутами.
+        /// Если сервер не поддерживает Range — обычная последовательная загрузка.
+        /// </summary>
+        private static async Task<bool> DownloadAsync(string url, string dest, Action<string> Say)
+        {
+            const int Parts = 4;
+            long got = 0, total = 0;
+            var sw = Stopwatch.StartNew();
+            int lastPct = -1;
+
+            void Tick(int add)
+            {
+                long g = System.Threading.Interlocked.Add(ref got, add);
+                int pct = total > 0 ? (int)(g * 100 / total) : -1;
+                if (pct == lastPct) return;          // не чаще раза на процент
+                lastPct = pct;
+                double mbps = sw.Elapsed.TotalSeconds > 0.5 ? g / 1024.0 / 1024.0 / sw.Elapsed.TotalSeconds : 0;
+                string speed = mbps > 0.05 ? $", {mbps:0.0} МБ/с" : "";
+                Say?.Invoke(pct >= 0
+                    ? $"Загружаем конвертер видео (один раз)… {pct}%{speed}"
+                    : $"Загружаем конвертер видео (один раз)… {g / (1024 * 1024)} МБ{speed}");
+            }
+
+            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromMinutes(15) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("PISMO");
+
+            bool ranges = false;
+            try
+            {
+                using var head = await http.SendAsync(
+                    new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Head, url),
+                    System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+                if (head.IsSuccessStatusCode)
+                {
+                    total = head.Content.Headers.ContentLength ?? 0;
+                    ranges = head.Headers.AcceptRanges.Contains("bytes");
+                }
+            }
+            catch { }
+
+            Say?.Invoke("Загружаем конвертер видео (один раз)… 0%");
+
+            if (ranges && total > 8L * 1024 * 1024)
+            {
+                var parts = new string[Parts];
+                try
+                {
+                    long chunk = total / Parts;
+                    var jobs = new Task[Parts];
+                    for (int i = 0; i < Parts; i++)
+                    {
+                        long from = i * chunk;
+                        long to = (i == Parts - 1) ? total - 1 : from + chunk - 1;
+                        parts[i] = dest + ".p" + i;
+                        string path = parts[i];
+                        jobs[i] = Task.Run(async () =>
+                        {
+                            var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, url);
+                            req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(from, to);
+                            using var r = await http.SendAsync(req, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+                            r.EnsureSuccessStatusCode();
+                            using var net = await r.Content.ReadAsStreamAsync();
+                            using var f = File.Create(path);
+                            var buf = new byte[128 * 1024];
+                            int n;
+                            while ((n = await net.ReadAsync(buf, 0, buf.Length)) > 0)
+                            {
+                                await f.WriteAsync(buf, 0, n);
+                                Tick(n);
+                            }
+                        });
+                    }
+                    await Task.WhenAll(jobs);
+
+                    // Склеиваем куски по порядку.
+                    using (var outf = File.Create(dest))
+                        foreach (var p in parts)
+                            using (var inf = File.OpenRead(p))
+                                await inf.CopyToAsync(outf);
+
+                    foreach (var p in parts) { try { File.Delete(p); } catch { } }
+                    return new FileInfo(dest).Length == total;
+                }
+                catch
+                {
+                    foreach (var p in parts) { try { if (p != null) File.Delete(p); } catch { } }
+                    // не вышло — падаем в обычную загрузку ниже
+                    got = 0; lastPct = -1; sw.Restart();
+                }
+            }
+
+            try
+            {
+                using var resp = await http.GetAsync(url, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+                resp.EnsureSuccessStatusCode();
+                if (total == 0) total = resp.Content.Headers.ContentLength ?? 0;
+
+                using var net = await resp.Content.ReadAsStreamAsync();
+                using var file = File.Create(dest);
+                var buf = new byte[128 * 1024];
+                int n;
+                while ((n = await net.ReadAsync(buf, 0, buf.Length)) > 0)
+                {
+                    await file.WriteAsync(buf, 0, n);
+                    Tick(n);
+                }
+                return true;
+            }
+            catch { return false; }
         }
 
         private static void TryClean(string zip, string tmp)
