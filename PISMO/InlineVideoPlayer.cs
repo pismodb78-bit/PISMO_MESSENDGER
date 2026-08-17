@@ -147,15 +147,22 @@ namespace PISMO
         /// кнопка открыть файл во внешнем плеере (VLC и подобные HEVC умеют).</summary>
         private void ShowCodecNotice()
         {
-            if (IsDisposed || Controls.Contains(_lblCodec)) return;
+            if (IsDisposed || _pnlCodec != null) return;
 
             bool hevc = LooksLikeHevc();
             // БЕЗ жёстких переносов: пузырь бывает узким (~180px), и заранее
             // расставленные «\n» только мешают — текст переносится сам, а высоту
             // мы считаем по факту. С фиксированной высотой хвост обрезался.
             string txt = hevc
-                ? "Видео в HEVC (H.265) — Windows не показывает его без «HEVC Video Extensions», слышен только звук. Нажмите, чтобы открыть во внешнем плеере."
+                ? "Видео в HEVC (H.265) — Windows не показывает его без кодека, слышен только звук. Нажмите, чтобы открыть во внешнем плеере."
                 : "Этот видеокодек Windows показать не может — слышен только звук. Нажмите, чтобы открыть во внешнем плеере.";
+
+            _pnlCodec = new Panel
+            {
+                Dock = DockStyle.Top,
+                BackColor = Color.FromArgb(60, 40, 20),
+                Height = 24
+            };
 
             _lblCodec = new Label
             {
@@ -169,6 +176,29 @@ namespace PISMO
                 Cursor = Cursors.Hand,
                 AutoSize = false
             };
+            _lblCodec.Click += (s, e) => OpenExternally();
+
+            // У HEVC есть БЕСПЛАТНАЯ сборка кодека от производителей устройств —
+            // тот же декодер, что и в платном «HEVC Video Extensions», но её не
+            // видно поиском в Store, только по прямой ссылке на карточку товара.
+            if (hevc)
+            {
+                _lnkCodec = new Label
+                {
+                    Dock = DockStyle.Top,
+                    BackColor = Color.FromArgb(60, 40, 20),
+                    ForeColor = Color.FromArgb(150, 205, 255),
+                    Font = new Font("Segoe UI", 8.5f, FontStyle.Underline),
+                    TextAlign = ContentAlignment.TopLeft,
+                    Padding = new Padding(8, 0, 8, 6),
+                    Text = "Установить бесплатный кодек HEVC (Microsoft Store)",
+                    Cursor = Cursors.Hand,
+                    AutoSize = false
+                };
+                _lnkCodec.Click += (s, e) => OpenHevcStorePage();
+                _pnlCodec.Controls.Add(_lnkCodec);
+            }
+            _pnlCodec.Controls.Add(_lblCodec);   // добавлен последним → лежит выше ссылки
 
             // Высота — по реально нужной для этой ширины. Пересчитываем и при
             // изменении размера: пузырь тянется вместе с окном.
@@ -176,20 +206,52 @@ namespace PISMO
             {
                 try
                 {
-                    if (_lblCodec == null || _lblCodec.IsDisposed) return;
-                    int w = Math.Max(60, _lblCodec.ClientSize.Width - _lblCodec.Padding.Horizontal);
-                    int h = TextRenderer.MeasureText(_lblCodec.Text, _lblCodec.Font,
-                                new Size(w, int.MaxValue), TextFormatFlags.WordBreak).Height;
-                    _lblCodec.Height = h + _lblCodec.Padding.Vertical;
+                    if (_pnlCodec == null || _pnlCodec.IsDisposed) return;
+                    int total = 0;
+                    foreach (var lbl in new[] { _lblCodec, _lnkCodec })
+                    {
+                        if (lbl == null || lbl.IsDisposed) continue;
+                        int w = Math.Max(60, _pnlCodec.ClientSize.Width - lbl.Padding.Horizontal);
+                        int h = TextRenderer.MeasureText(lbl.Text, lbl.Font,
+                                    new Size(w, int.MaxValue), TextFormatFlags.WordBreak).Height;
+                        lbl.Height = h + lbl.Padding.Vertical;
+                        total += lbl.Height;
+                    }
+                    _pnlCodec.Height = total;
                 }
                 catch { }
             }
-            _lblCodec.Resize += (s, e) => FitHeight();
+            _pnlCodec.Resize += (s, e) => FitHeight();
             Resize += (s, e) => FitHeight();
-            _lblCodec.Click += (s, e) => OpenExternally();
-            Controls.Add(_lblCodec);
-            _lblCodec.BringToFront();
+            Controls.Add(_pnlCodec);
+            _pnlCodec.BringToFront();
             FitHeight();   // первый расчёт: ширина уже известна после Add
+        }
+
+        /// <summary>Открывает карточку бесплатного HEVC-декодера «from Device
+        /// Manufacturer» — по поиску в Store её нет, только по прямой ссылке.
+        /// Сначала пробуем протокол Store, при неудаче — сайт в браузере.</summary>
+        private void OpenHevcStorePage()
+        {
+            const string productId = "9n4wgh0z6vhq";
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                    "ms-windows-store://pdp/?ProductId=" + productId) { UseShellExecute = true });
+            }
+            catch
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                        "https://apps.microsoft.com/detail/" + productId) { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Не удалось открыть Microsoft Store: " + ex.Message,
+                        "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
         }
 
         /// <summary>Открывает видео системным плеером — он может уметь то, чего не
@@ -214,7 +276,8 @@ namespace PISMO
             }
         }
 
-        private Label _lblCodec;
+        private Panel _pnlCodec;
+        private Label _lblCodec, _lnkCodec;
 
         private void OnFullScreenChanged(object sender, object e)
         {
