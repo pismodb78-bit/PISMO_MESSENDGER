@@ -26,28 +26,38 @@ namespace PISMO
 
         /// <summary>
         /// Кодек видеодорожки по контейнеру MP4: в таблице описаний (stsd) лежит
-        /// fourcc — «hvc1»/«hev1» у HEVC, «avc1» у H.264. Ищем по всему буферу:
-        /// moov бывает и в конце файла (запись с телефона часто оставляет его там).
+        /// fourcc — «hvc1»/«hev1» у HEVC, «avc1» у H.264.
+        ///
+        /// Смотрим только НАЧАЛО и КОНЕЦ файла: moov лежит либо там, либо там
+        /// (запись с телефона часто оставляет его в конце), а середина — это
+        /// сплошной mdat с самим видео. Полный проход по 200-мегабайтному
+        /// буферу выполнялся при отрисовке КАЖДОГО видео в ленте, прямо в
+        /// UI-потоке, и на сервере с несколькими роликами это ощутимая пауза.
         /// </summary>
         public static bool LooksLikeHevc(byte[] data)
         {
             try
             {
-                if (data == null) return false;
-                byte[][] tags =
-                {
-                    System.Text.Encoding.ASCII.GetBytes("hvc1"),
-                    System.Text.Encoding.ASCII.GetBytes("hev1")
-                };
-                foreach (var tag in tags)
-                    for (int i = 0; i + tag.Length <= data.Length; i++)
-                    {
-                        int k = 0;
-                        while (k < tag.Length && data[i + k] == tag[k]) k++;
-                        if (k == tag.Length) return true;
-                    }
+                if (data == null || data.Length < 8) return false;
+                const int Window = 2 * 1024 * 1024;
+                if (Scan(data, 0, Math.Min(Window, data.Length))) return true;
+                if (data.Length > Window)
+                    return Scan(data, Math.Max(0, data.Length - Window), data.Length);
             }
             catch { }
+            return false;
+        }
+
+        private static bool Scan(byte[] d, int from, int to)
+        {
+            // «hvc1» / «hev1» — сравниваем по байтам, без выделения строк.
+            for (int i = from; i + 4 <= to; i++)
+            {
+                if (d[i] != (byte)'h' || d[i + 3] != (byte)'1') continue;
+                bool hvc1 = d[i + 1] == (byte)'v' && d[i + 2] == (byte)'c';
+                bool hev1 = d[i + 1] == (byte)'e' && d[i + 2] == (byte)'v';
+                if (hvc1 || hev1) return true;
+            }
             return false;
         }
 
@@ -190,6 +200,7 @@ namespace PISMO
                 try { if (File.Exists(dst)) File.Delete(dst); } catch { }
                 File.Move(tmp, dst);
                 try { File.Delete(src); } catch { }   // исходник больше не нужен
+                TrimCache();
                 return dst;
             }
             catch (Exception ex)
@@ -522,6 +533,42 @@ namespace PISMO
 
         /// <summary>Диагностика в %LOCALAPPDATA%\PISMO\video_convert.log: без неё
         /// любая сетевая ошибка выглядела просто как «ничего не происходит».</summary>
+        /// <summary>
+        /// Держит кэш конвертаций в разумных рамках: копия каждого просмотренного
+        /// HEVC-видео иначе оставалась бы на диске навсегда. Чистим по дате
+        /// последнего обращения, пока не уложимся в лимит; заодно убираем мусор
+        /// от прерванных попыток (.src и .part).
+        /// </summary>
+        private static void TrimCache()
+        {
+            const long Limit = 2L * 1024 * 1024 * 1024;   // 2 ГБ
+            try
+            {
+                var dir = new DirectoryInfo(CacheDir);
+                if (!dir.Exists) return;
+
+                foreach (var junk in dir.GetFiles())
+                    if (junk.Extension is ".src" or ".part"
+                        && junk.LastWriteTimeUtc < DateTime.UtcNow.AddHours(-6))
+                        try { junk.Delete(); } catch { }
+
+                var files = new System.Collections.Generic.List<FileInfo>(dir.GetFiles("*.mp4"));
+                long total = 0;
+                foreach (var f in files) total += f.Length;
+                if (total <= Limit) return;
+
+                files.Sort((a, b) => a.LastAccessTimeUtc.CompareTo(b.LastAccessTimeUtc));
+                foreach (var f in files)
+                {
+                    if (total <= Limit) break;
+                    long len = f.Length;
+                    try { f.Delete(); total -= len; } catch { }
+                }
+                Log("Кэш конвертаций почищен, осталось байт: " + total);
+            }
+            catch { }
+        }
+
         /// <summary>Короткая причина последнего сбоя — показывается в плашке,
         /// чтобы не гонять пользователя в лог за каждой мелочью.</summary>
         public static string LastError { get; private set; }
