@@ -1706,11 +1706,11 @@ namespace PISMO
                         }
                         if (sm.audio is { Length: > 0 })
                         {
-                            var bp = new Button { Text = "▶  Голосовое", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(47, 49, 54), ForeColor = Color.FromArgb(220, 221, 222), Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Size = new Size(170, 34), Location = new Point(LEFT, y), Cursor = Cursors.Hand };
-                            bp.FlatAppearance.BorderSize = 0;
-                            var ca = sm.audio;
-                            bp.Click += (s, e) => MainForm.PlayVoiceClip(ca, bp);
-                            holder.Controls.Add(bp); y += 40;
+                            // Голосовое — с перемоткой, как в ЛС.
+                            var vp2 = new InlineAudioPlayer(sm.audio, null, "Голосовое",
+                                                            Math.Min(msgWidth - 10, 340))
+                                      { Location = new Point(LEFT, y) };
+                            holder.Controls.Add(vp2); y += vp2.Height + 6;
                         }
                         if (sm.video is { Length: > 0 })
                         {

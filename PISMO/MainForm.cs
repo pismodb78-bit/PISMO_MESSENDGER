@@ -125,7 +125,6 @@ namespace PISMO
         private WaveInEvent _waveIn;
         private MemoryStream _audioStream;
         private WaveFileWriter _waveWriter;
-        private WaveOutEvent _waveOut;
 
         // ════════════════════════════════════════════════════════════════
         //  ИНИЦИАЛИЗАЦИЯ
@@ -3677,27 +3676,17 @@ namespace PISMO
                 }
             }
 
-            // Голосовое сообщение
+            // Голосовое сообщение — тем же плеером, что и музыка: с полосой
+            // перемотки, временем и громкостью вместо одной кнопки «играть».
             if (audioBytes is { Length: > 0 })
             {
-                var btnPlay = new Button
+                var voice = new InlineAudioPlayer(audioBytes, null, "Голосовое", Math.Min(innerW, 340))
                 {
-                    Text = "▶  Голосовое",
-                    FlatStyle = FlatStyle.Flat,
-                    BackColor = isMine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(47, 49, 54),
-                    ForeColor = Color.FromArgb(220, 221, 222),
-                    Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
-                    Size = new Size(170, 36),
                     Location = new Point(PAD, innerY),
-                    Cursor = Cursors.Hand
+                    BackColor = isMine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(47, 49, 54)
                 };
-                btnPlay.FlatAppearance.BorderSize = 0;
-
-                var capturedAudio = audioBytes;
-                btnPlay.Click += (s, e) => PlayAudio(capturedAudio, btnPlay);
-
-                bubble.Controls.Add(btnPlay);
-                innerY += btnPlay.Height + 6;
+                bubble.Controls.Add(voice);
+                innerY += voice.Height + 6;
             }
 
             // Видео-файл со встроенным проигрывателем (как в Telegram): если байты
@@ -4074,81 +4063,6 @@ namespace PISMO
             return result;
         }
 
-        // Статический проигрыватель голосовых (для переиспользования в ServersForm).
-        private static WaveOutEvent _voiceOutStatic;
-        internal static void PlayVoiceClip(byte[] audioBytes, Button btn)
-        {
-            if (_voiceOutStatic != null)
-            {
-                try { _voiceOutStatic.Stop(); _voiceOutStatic.Dispose(); } catch { }
-                _voiceOutStatic = null;
-                btn.Text = "▶  Голосовое";
-                return;
-            }
-            try
-            {
-                var ms = new MemoryStream(audioBytes);
-                var reader = new WaveFileReader(ms);
-                _voiceOutStatic = new WaveOutEvent();
-                _voiceOutStatic.Init(new PISMO.Native.TapWaveProvider(reader));
-                _voiceOutStatic.Play();
-                btn.Text = "⏹  Остановить";
-                _voiceOutStatic.PlaybackStopped += (s, ev) =>
-                {
-                    try { btn.BeginInvoke(new Action(() => {
-                        btn.Text = "▶  Голосовое";
-                        try { _voiceOutStatic?.Dispose(); } catch { }
-                        _voiceOutStatic = null;
-                        try { reader.Dispose(); ms.Dispose(); } catch { }
-                    })); } catch { }
-                };
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Ошибка воспроизведения: " + ex.Message);
-            }
-        }
-
-        private void PlayAudio(byte[] audioBytes, Button btn)
-        {
-            if (_waveOut != null)
-            {
-                _waveOut.Stop();
-                _waveOut.Dispose();
-                _waveOut = null;
-                btn.Text = "▶  Голосовое";
-                return;
-            }
-
-            try
-            {
-                var ms = new MemoryStream(audioBytes);
-                var reader = new WaveFileReader(ms);
-                _waveOut = new WaveOutEvent();
-                _waveOut.Init(new PISMO.Native.TapWaveProvider(reader));
-                _waveOut.Play();
-
-                btn.Text = "⏹  Остановить";
-
-                _waveOut.PlaybackStopped += (s, ev) =>
-                {
-                    try
-                    {
-                        this.Invoke(() =>
-                        {
-                            btn.Text = "▶  Голосовое";
-                            _waveOut?.Dispose();
-                            _waveOut = null;
-                        });
-                    }
-                    catch { }
-                };
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Ошибка воспроизведения: " + ex.Message);
-            }
-        }
 
         // ════════════════════════════════════════════════════════════════
         //  ОТПРАВКА
@@ -5356,7 +5270,6 @@ namespace PISMO
             MarkSelfOffline();
             try { _trayIcon.Visible = false; _trayIcon.Dispose(); } catch { }
             _waveIn?.Dispose();
-            _waveOut?.Dispose();
             base.OnFormClosed(e);
             // Приложение живёт на ApplicationContext (Splash→Login→Main), поэтому
             // закрытие главного окна крестиком НЕ завершало процесс — оставался
