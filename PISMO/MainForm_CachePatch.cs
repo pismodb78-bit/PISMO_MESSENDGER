@@ -99,45 +99,9 @@ namespace PISMO
         //  ОПТИМИЗИРОВАННЫЙ SQL: не грузим BLOB если есть в кеше
         // ────────────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Строит SELECT для личных сообщений.
-        /// Для каждого msgId, у которого все медиа уже в кеше,
-        /// заменяем тяжёлые BLOB-колонки на NULL — экономим трафик к БД.
-        ///
-        /// Вызов: используй вместо хардкоженного SQL в LoadMessages().
-        /// </summary>
-        public static string BuildMessagesSql(bool forGroup = false)
-        {
-            // Базовый SELECT — всегда тянем BLOB (простой вариант).
-            // Оптимизированный вариант с CASE WHEN ниже.
-            if (forGroup)
-            {
-                return @"
-                    SELECT gm.id, gm.sender_id, gm.text,
-                           gm.image_data, gm.audio_data, gm.video_data,
-                           gm.file_data, gm.file_name,
-                           gm.reply_to_id, gm.is_deleted, gm.edited_at, gm.created_at,
-                           TRIM(CONCAT(u.Name,' ',u.Surname)) AS sender_name, u.login
-                    FROM group_messages gm
-                    JOIN users u ON u.id = gm.sender_id
-                    WHERE gm.group_id=@g
-                    ORDER BY gm.created_at ASC";
-            }
-            else
-            {
-                return @"
-                    SELECT m.id, m.sender_id, m.text,
-                           m.image_data, m.audio_data, m.video_data,
-                           m.file_data, m.file_name,
-                           m.reply_to_id, m.is_deleted, m.edited_at, m.created_at,
-                           TRIM(CONCAT(u.Name,' ',u.Surname)) AS sender_name, u.login
-                    FROM messages m
-                    JOIN users u ON u.id = m.sender_id
-                    WHERE (m.sender_id=@me AND m.receiver_id=@them)
-                       OR (m.sender_id=@them AND m.receiver_id=@me)
-                    ORDER BY m.created_at ASC";
-            }
-        }
+        // Прежний BuildMessagesSql удалён: он тянул все четыре BLOB-колонки
+        // разом и не вызывался ни из одного места — но лежал готовой ловушкой
+        // рядом с двухэтапной загрузкой ниже.
 
         // ────────────────────────────────────────────────────────────────
         //  ДВУХЭТАПНАЯ ЗАГРУЗКА (продвинутая оптимизация)

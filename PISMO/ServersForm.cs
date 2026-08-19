@@ -1702,7 +1702,8 @@ namespace PISMO
             Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut)
         {
             bool Flag(DataRow r, string c) => dt.Columns.Contains(c) && r[c] != DBNull.Value && Convert.ToBoolean(r[c]);
-            var need = new List<(int id, bool ni, bool na, bool nv, bool nf, string fn)>();
+            // nf в этом списке больше нет: файл в ленту не подгружается вовсе.
+            var need = new List<(int id, bool ni, bool na, bool nv, string fn)>();
 
             foreach (DataRow r in dt.Rows)
             {
@@ -1726,24 +1727,27 @@ namespace PISMO
                     || (fileLazy && !string.IsNullOrWhiteSpace(fn)))
                     mediaOut[id] = (img, aud, vid, fil, fn);
 
-                bool ni = hi && img == null, na = ha && aud == null, nv = hv && vid == null, nf = hf && fil == null;
-                if (ni || na || nv || nf) need.Add((id, ni, na, nv, nf, fn));
+                bool ni = hi && img == null, na = ha && aud == null, nv = hv && vid == null;
+                if (ni || na || nv) need.Add((id, ni, na, nv, fn));
             }
             if (need.Count == 0) return;
 
             var sb = new System.Text.StringBuilder();
             foreach (var n in need) { if (sb.Length > 0) sb.Append(','); sb.Append(n.id); }
+            // file_data в выборке НЕТ намеренно: иначе вложение каждого сообщения
+            // страницы поднималось бы с диска только потому, что у соседней строки
+            // не хватало картинки.
             using var c2 = new MySqlCommand(
-                $"SELECT id, image_data, audio_data, video_data, file_data, file_name FROM server_messages WHERE id IN ({sb})", conn);
-            var fetched = new Dictionary<int, (byte[] i, byte[] a, byte[] v, byte[] f, string fn)>();
+                $"SELECT id, image_data, audio_data, video_data, file_name FROM server_messages WHERE id IN ({sb})", conn);
+            var fetched = new Dictionary<int, (byte[] i, byte[] a, byte[] v, string fn)>();
             using (var rd = c2.ExecuteReader())
             {
                 byte[] B(System.Data.IDataReader rr, int i) => rr.IsDBNull(i) ? null : (byte[])rr.GetValue(i);
                 while (rd.Read())
                 {
                     int id = rd.GetInt32(0);
-                    string fn = rd.IsDBNull(5) ? null : rd.GetString(5);
-                    fetched[id] = (B(rd, 1), B(rd, 2), B(rd, 3), B(rd, 4), fn);
+                    string fn = rd.IsDBNull(4) ? null : rd.GetString(4);
+                    fetched[id] = (B(rd, 1), B(rd, 2), B(rd, 3), fn);
                 }
             }
             foreach (var n in need)
@@ -1753,13 +1757,11 @@ namespace PISMO
                 byte[] img = n.ni ? fb.i : cur.img;
                 byte[] aud = n.na ? fb.a : cur.audio;
                 byte[] vid = n.nv ? fb.v : cur.video;
-                byte[] fil = n.nf ? fb.f : cur.file;
                 string fn = n.fn ?? fb.fn;
-                mediaOut[n.id] = (img, aud, vid, fil, fn);
+                mediaOut[n.id] = (img, aud, vid, cur.file, fn);
                 if (n.ni && fb.i != null) MediaCache.Put(n.id, "simg", fb.i);
                 if (n.na && fb.a != null) MediaCache.Put(n.id, "saudio", fb.a);
                 if (n.nv && fb.v != null) MediaCache.Put(n.id, "svideo", fb.v);
-                if (n.nf && fb.f != null) MediaCache.Put(n.id, "sfile", fb.f, fn);
             }
         }
 
