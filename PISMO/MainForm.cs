@@ -3704,7 +3704,7 @@ namespace PISMO
             // уже загружены — показываем видео прямо в пузыре; иначе обычная карточка.
             bool inlineVideoShown = false;
             if (!string.IsNullOrWhiteSpace(fileName)
-                && MediaKinds.IsVideo(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
+                && MediaPlayerForm.IsVideo(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
                 && (fileData is { Length: > 0 } || (msgId > 0 && fileSize > 0)))
             {
                 try
@@ -3727,25 +3727,23 @@ namespace PISMO
                 catch { inlineVideoShown = false; }
             }
 
-            // Музыка — таким же плеером прямо в пузыре, только вместо кадра
-            // компактная полоса воспроизведения. Отдельное окно для этого больше
-            // не открывается.
+            // Музыка — плеером прямо в пузыре: кнопка, перемотка, громкость.
+            // Отдельного окна для неё нет.
             if (!inlineVideoShown && !string.IsNullOrWhiteSpace(fileName)
-                && MediaKinds.IsAudio(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
+                && MediaPlayerForm.IsAudio(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
                 && (fileData is { Length: > 0 } || (msgId > 0 && fileSize > 0)))
             {
                 try
                 {
-                    int boxW = Math.Min(innerW, 320);
-                    const int boxH = 54;
+                    int boxW = Math.Min(innerW, 340);
                     int audioId = msgId; bool audioGroup = isGroup; string audioName = fileName;
-                    var ap = fileData is { Length: > 0 }
-                        ? new InlineVideoPlayer(fileData, fileName, boxW, boxH, audioOnly: true)
-                        : new InlineVideoPlayer(() => LoadFileBytes(audioId, audioName, audioGroup),
-                                                fileName, boxW, boxH, audioOnly: true);
-                    ap.Location = new Point(PAD, innerY);
+                    var ap = new InlineAudioPlayer(
+                        fileData is { Length: > 0 } ? fileData : null,
+                        fileData is { Length: > 0 } ? null : () => LoadFileBytes(audioId, audioName, audioGroup),
+                        fileName, boxW)
+                    { Location = new Point(PAD, innerY) };
                     bubble.Controls.Add(ap);
-                    innerY += boxH + 6;
+                    innerY += ap.Height + 6;
                     inlineVideoShown = true;   // карточку файла уже не рисуем
                 }
                 catch { }
@@ -4803,14 +4801,14 @@ namespace PISMO
         internal static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup, long knownSize = -1)
         {
             string ext = Path.GetExtension(fileName).ToLowerInvariant().TrimStart('.');
+            bool isVideoMedia = MediaPlayerForm.IsVideo(ext);
             long displaySize = fileData != null ? fileData.Length : knownSize;
             // Размер показываем сразу (если известен), даже до загрузки самого файла.
-            // Карточка теперь всегда именно сохраняет файл: воспроизведение
-            // переехало в сам пузырь, отдельного окна плеера нет.
+            string actionHint = isVideoMedia ? "нажмите для воспроизведения" : "нажмите для загрузки";
             string szStr = fileData != null
                 ? FormatFileSize(fileData.Length)
-                : (displaySize > 0 ? $"{FormatFileSize(displaySize)} · нажмите для загрузки"
-                                   : "💾 Нажмите для загрузки");
+                : (displaySize > 0 ? $"{FormatFileSize(displaySize)} · {actionHint}"
+                                   : (isVideoMedia ? "▶ Нажмите, чтобы открыть" : "💾 Нажмите для загрузки"));
 
             // Прогресс загрузки: -1 = не идёт, 0..1 = доля. Рисуется поверх иконки.
             double dlProgress = -1;   // -1 = не идёт; >=0 = идёт (значение не важно)
@@ -4894,10 +4892,17 @@ namespace PISMO
                 }
             }
 
-            // Отдельного окна плеера больше нет: видео и музыка играют прямо в
-            // пузыре сообщения. Карточка остаётся только у тех файлов, которые
-            // проигрывать нечем, — их сохраняем и открываем системно.
-            void OpenIt() => SaveAndOpen();
+            // Видео по-прежнему можно открыть отдельным окном (перемотка, полный
+            // экран). Музыка играет прямо в пузыре, окна для неё нет.
+            void OpenIt()
+            {
+                if (MediaPlayerForm.IsVideo(ext) && fileData != null)
+                {
+                    try { new MediaPlayerForm(fileData, fileName, true).Show(); return; }
+                    catch { }
+                }
+                SaveAndOpen();
+            }
 
             void DoOpen(object s, EventArgs ev)
             {

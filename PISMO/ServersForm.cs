@@ -1720,7 +1720,7 @@ namespace PISMO
                         if (sm.file is { Length: > 0 } && !string.IsNullOrWhiteSpace(sm.fname))
                         {
                             string fext = Path.GetExtension(sm.fname).TrimStart('.').ToLowerInvariant();
-                            if (MediaKinds.IsVideo(fext))
+                            if (MediaPlayerForm.IsVideo(fext))
                             {
                                 try
                                 {
@@ -1730,15 +1730,15 @@ namespace PISMO
                                 }
                                 catch { }
                             }
-                            else if (MediaKinds.IsAudio(fext))
+                            else if (MediaPlayerForm.IsAudio(fext))
                             {
-                                // Музыка — компактной полосой прямо в ленте, как в ЛС.
+                                // Музыка — плеером прямо в ленте, как в ЛС.
                                 try
                                 {
-                                    int bw = Math.Min(msgWidth - 10, 320);
-                                    var ap = new InlineVideoPlayer(sm.file, sm.fname, bw, 54, audioOnly: true)
+                                    int bw = Math.Min(msgWidth - 10, 340);
+                                    var ap = new InlineAudioPlayer(sm.file, null, sm.fname, bw)
                                              { Location = new Point(LEFT, y) };
-                                    holder.Controls.Add(ap); y += 60;
+                                    holder.Controls.Add(ap); y += ap.Height + 6;
                                 }
                                 catch { }
                             }
