@@ -37,6 +37,9 @@ namespace PISMO
 
         // Права текущего пользователя на выбранном сервере и заглушение.
         private bool _canBan, _canKick, _canMute, _canManage, _serverMuted;
+        private bool _canChannels;   // отдельное право: создавать/менять/удалять каналы
+        // Колонка can_channels появилась позже — на старой базе её может не быть.
+        private static bool _chanPermColOk = true;
 
         private readonly int _me = UserSession.EffectiveId;
         private string _myLogin = "";
@@ -403,6 +406,15 @@ namespace PISMO
             {
                 try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(LoadMessages)); } catch { }
             }
+            else if (type == "channels_changed" && sessionId == _serverId)
+            {
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke(new Action(OnChannelsChangedRemotely));
+                }
+                catch { }
+            }
         }
 
 
@@ -607,44 +619,60 @@ namespace PISMO
         /// <summary>Считает права текущего пользователя на сервере и его mute.</summary>
         /// <summary>Читает права из БД. Отделено от применения, чтобы этот запрос
         /// можно было гонять в фоновом потоке (периодическая перепроверка ролей).</summary>
-        private static (bool muted, string role, bool ban, bool kick, bool mute, bool manage)
+        private static (bool muted, string role, bool ban, bool kick, bool mute, bool manage, bool channels)
             ReadPerms(int serverId, int userId, bool isOwner)
         {
             bool muted = false, ban = isOwner, kick = isOwner, mute = isOwner, manage = isOwner;
+            bool channels = isOwner;
             string role = "";
-            try
+            for (int attempt = 0; attempt < 2; attempt++)
             {
-                using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand(
-                    "SELECT m.muted_notifs, r.name AS rname, r.can_ban, r.can_kick, r.can_mute, r.can_manage " +
-                    "FROM server_members m LEFT JOIN server_roles r ON r.id=m.role_id " +
-                    "WHERE m.server_id=@s AND m.user_id=@u", conn);
-                cmd.Parameters.AddWithValue("@s", serverId);
-                cmd.Parameters.AddWithValue("@u", userId);
-                using var r = cmd.ExecuteReader();
-                if (r.Read())
+                bool withChan = _chanPermColOk;
+                try
                 {
-                    muted = r["muted_notifs"] != DBNull.Value && Convert.ToInt32(r["muted_notifs"]) == 1;
-                    role = r["rname"] == DBNull.Value ? "" : r["rname"].ToString();
-                    if (!isOwner)
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "SELECT m.muted_notifs, r.name AS rname, r.can_ban, r.can_kick, r.can_mute, r.can_manage" +
+                        (withChan ? ", r.can_channels" : "") +
+                        " FROM server_members m LEFT JOIN server_roles r ON r.id=m.role_id " +
+                        "WHERE m.server_id=@s AND m.user_id=@u", conn);
+                    cmd.Parameters.AddWithValue("@s", serverId);
+                    cmd.Parameters.AddWithValue("@u", userId);
+                    using var r = cmd.ExecuteReader();
+                    if (r.Read())
                     {
-                        bool B(string c) => r[c] != DBNull.Value && Convert.ToInt32(r[c]) == 1;
-                        ban |= B("can_ban"); kick |= B("can_kick");
-                        mute |= B("can_mute"); manage |= B("can_manage");
+                        muted = r["muted_notifs"] != DBNull.Value && Convert.ToInt32(r["muted_notifs"]) == 1;
+                        role = r["rname"] == DBNull.Value ? "" : r["rname"].ToString();
+                        if (!isOwner)
+                        {
+                            bool B(string c) => r[c] != DBNull.Value && Convert.ToInt32(r[c]) == 1;
+                            ban |= B("can_ban"); kick |= B("can_kick");
+                            mute |= B("can_mute"); manage |= B("can_manage");
+                            // Управление сервером по-прежнему включает и каналы.
+                            channels |= manage || (withChan && B("can_channels"));
+                        }
                     }
                 }
+                catch (MySqlException mex) when (mex.Number == 1054 && withChan)
+                {
+                    _chanPermColOk = false;   // старая база — читаем без нового права
+                    continue;
+                }
+                catch { }
+                break;
             }
-            catch { }
-            return (muted, role, ban, kick, mute, manage);
+            return (muted, role, ban, kick, mute, manage, channels);
         }
 
         /// <summary>Записывает права в поля формы. Возвращает true, если что-то
         /// изменилось — тогда интерфейс надо пересобрать.</summary>
-        private bool ApplyPerms((bool muted, string role, bool ban, bool kick, bool mute, bool manage) p)
+        private bool ApplyPerms((bool muted, string role, bool ban, bool kick, bool mute, bool manage, bool channels) p)
         {
             bool changed = _canBan != p.ban || _canKick != p.kick || _canMute != p.mute
-                        || _canManage != p.manage || _serverMuted != p.muted || _myRoleName != p.role;
+                        || _canManage != p.manage || _canChannels != p.channels
+                        || _serverMuted != p.muted || _myRoleName != p.role;
             _canBan = p.ban; _canKick = p.kick; _canMute = p.mute; _canManage = p.manage;
+            _canChannels = p.channels;
             _serverMuted = p.muted; _myRoleName = p.role;
             return changed;
         }
@@ -693,11 +721,16 @@ namespace PISMO
             mute.Click += (s, e) => ToggleServerMute();
             _pnlChannels.Controls.Add(mute);
 
-            if (_canManage)
+            // Каналы и роли — теперь разные права: канальному модератору кнопка
+            // «Роли» ни к чему.
+            if (_canChannels)
             {
                 var add = MakeSideButton("➕ Канал", Color.FromArgb(59, 165, 93));
                 add.Click += (s, e) => CreateChannel();
                 _pnlChannels.Controls.Add(add);
+            }
+            if (_canManage)
+            {
                 var roles = MakeSideButton("⚙ Роли", Color.FromArgb(88, 101, 242));
                 roles.Click += (s, e) => ManageRoles();
                 _pnlChannels.Controls.Add(roles);
@@ -1134,6 +1167,7 @@ namespace PISMO
 
         private void CreateChannel()
         {
+            if (!_canChannels) return;
             string name = Prompt("Название канала");
             if (string.IsNullOrWhiteSpace(name)) return;
             var voice = MessageBox.Show("Голосовой канал?\nДа — голосовой, Нет — текстовый.", "Тип канала",
@@ -1147,6 +1181,7 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@t", voice ? "voice" : "text");
                 cmd.ExecuteNonQuery();
                 LoadChannels();
+                BroadcastChannelsChanged();
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
@@ -1192,9 +1227,9 @@ namespace PISMO
             menu.Items.Add("💬  Открыть чат", null, (s, e) => SelectChannel(cid, ctype, cname, joinVoice: false));
             if (ctype == "voice")
                 menu.Items.Add("🔊  Присоединиться к звонку", null, (s, e) => SelectChannel(cid, ctype, cname));
-            if (ctype == "voice" && _canManage)
+            if (ctype == "voice" && _canChannels)
                 menu.Items.Add("👥  Лимит участников…", null, (s, e) => EditChannelLimit(cid, cname));
-            if (_canManage)
+            if (_canChannels)
             {
                 menu.Items.Add(new ToolStripSeparator());
                 menu.Items.Add("✏  Переименовать канал…", null, (s, e) => RenameChannel(cid, cname));
@@ -1215,7 +1250,7 @@ namespace PISMO
         /// поэтому после правки перечитываем список у себя и просим остальных.</summary>
         private void RenameChannel(int cid, string cname)
         {
-            if (!_canManage) return;
+            if (!_canChannels) return;
             string name = Prompt("Новое название канала", cname);
             if (name == null) return;                       // отмена
             name = name.Trim();
@@ -1238,6 +1273,7 @@ namespace PISMO
                     _lblTitle.Text = (_channelType == "voice" ? "🔊 " : "# ") + name;
                 }
                 LoadChannels();
+                BroadcastChannelsChanged();
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
@@ -1250,7 +1286,7 @@ namespace PISMO
         /// </summary>
         private void DeleteChannel(int cid, string cname, string ctype)
         {
-            if (!_canManage) return;
+            if (!_canChannels) return;
 
             int msgs = 0;
             try
@@ -1313,12 +1349,62 @@ namespace PISMO
             }
 
             LoadChannels();
+            BroadcastChannelsChanged();
+        }
+
+        /// <summary>Список каналов изменился — просим остальных перечитать его.
+        /// Отдельный тип события: «new_message» здесь не годится, у него в
+        /// sessionId лежит канал, а нам нужен сервер. Ретранслятор (ws-server)
+        /// пересылает любые типы как есть, поэтому менять его не требуется.</summary>
+        /// <summary>Пришло чужое изменение списка каналов: перечитываем список, а
+        /// если удалили тот канал, который у нас открыт, — освобождаем ленту,
+        /// иначе окно осталось бы висеть на несуществующей строке.</summary>
+        private void OnChannelsChangedRemotely()
+        {
+            int open = _channelId;
+            LoadChannels();
+            if (open <= 0) return;
+
+            bool stillExists = false;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT COUNT(*) FROM server_channels WHERE id=@c AND server_id=@s", conn);
+                cmd.Parameters.AddWithValue("@c", open);
+                cmd.Parameters.AddWithValue("@s", _serverId);
+                stillExists = Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+            }
+            catch { return; }   // не смогли проверить — ничего не ломаем
+
+            if (stillExists) return;
+            _channelId = -1; _channelType = null; _channelName = null;
+            _renderedKey = null; _renderedSig = null;
+            try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
+            try { _lblTitle.Text = "Канал удалён"; } catch { }
+        }
+
+        /// <summary>Права на каналы не сохранились: в базе ещё нет колонки.</summary>
+        private void WarnNoChannelPermColumn()
+        {
+            _chanPermColOk = false;
+            MessageBox.Show(this,
+                "Право «Каналы» не сохранено: в таблице server_roles нет колонки can_channels.\n" +
+                "Выполните sql/2026-08-19_server_roles_can_channels.sql — остальные права сохранены.",
+                "Роли", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private void BroadcastChannelsChanged()
+        {
+            try { WebSocketSignalingClient.Instance.SendMessage("channels_changed", 0, _serverId, "server"); }
+            catch { }
         }
 
         /// <summary>Вместимость голосового канала: 0 (или пусто) — без ограничения,
         /// иначе столько человек максимум может находиться в канале одновременно.</summary>
         private void EditChannelLimit(int cid, string cname)
         {
+            if (!_canChannels) return;
             int cur = _channelLimits.TryGetValue(cid, out var l) ? l : 0;
             string ans = Prompt($"Лимит участников «{cname}» (0 — без ограничения)",
                                 cur > 0 ? cur.ToString() : "0");
@@ -1341,6 +1427,7 @@ namespace PISMO
                 cmd.ExecuteNonQuery();
                 _channelLimits[cid] = limit;
                 LoadChannels();       // пилюля появляется/исчезает вместе с лимитом
+                BroadcastChannelsChanged();
             }
             catch (MySqlException mex) when (mex.Number == 1054)
             {
@@ -3534,17 +3621,20 @@ namespace PISMO
             var cbBan = new CheckBox { Text = "Банить", ForeColor = Color.White, Location = new Point(12, 324), AutoSize = true };
             var cbKick = new CheckBox { Text = "Выгонять", ForeColor = Color.White, Location = new Point(120, 324), AutoSize = true };
             var cbMute = new CheckBox { Text = "Мьютить", ForeColor = Color.White, Location = new Point(232, 324), AutoSize = true };
-            var cbManage = new CheckBox { Text = "Управление (каналы/роли)", ForeColor = Color.White, Location = new Point(12, 352), AutoSize = true };
+            var cbManage = new CheckBox { Text = "Управление (роли, сервер)", ForeColor = Color.White, Location = new Point(12, 352), AutoSize = true };
+            // Отдельное право только на каналы — чтобы можно было доверить их
+            // человеку, не отдавая ему настройки ролей и сервера.
+            var cbChannels = new CheckBox { Text = "Каналы (создавать, менять, удалять)", ForeColor = Color.White, Location = new Point(12, 376), AutoSize = true };
 
             // Какая роль сейчас редактируется (null — режим создания новой).
             int? editingId = null;
-            var btnSave = new Button { Text = "Сохранить", Location = new Point(138, 388), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, Enabled = false };
+            var btnSave = new Button { Text = "Сохранить", Location = new Point(138, 408), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, Enabled = false };
 
             void ResetForm()
             {
                 editingId = null;
                 txtN.Clear(); txtC.Text = "#3BA55D";
-                cbBan.Checked = cbKick.Checked = cbMute.Checked = cbManage.Checked = false;
+                cbBan.Checked = cbKick.Checked = cbMute.Checked = cbManage.Checked = cbChannels.Checked = false;
                 btnSave.Enabled = false;
                 try { list.ClearSelected(); } catch { }
             }
@@ -3559,7 +3649,8 @@ namespace PISMO
                 {
                     using var conn = DBHelper.OpenConnection();
                     using var cmd = new MySqlCommand(
-                        "SELECT name,color,can_ban,can_kick,can_mute,can_manage FROM server_roles WHERE id=@r", conn);
+                        "SELECT name,color,can_ban,can_kick,can_mute,can_manage" +
+                        (_chanPermColOk ? ",can_channels" : "") + " FROM server_roles WHERE id=@r", conn);
                     cmd.Parameters.AddWithValue("@r", rid);
                     using var rd = cmd.ExecuteReader();
                     if (rd.Read())
@@ -3571,13 +3662,15 @@ namespace PISMO
                         cbKick.Checked = Convert.ToInt32(rd["can_kick"]) != 0;
                         cbMute.Checked = Convert.ToInt32(rd["can_mute"]) != 0;
                         cbManage.Checked = Convert.ToInt32(rd["can_manage"]) != 0;
+                        cbChannels.Checked = _chanPermColOk && rd["can_channels"] != DBNull.Value
+                                             && Convert.ToInt32(rd["can_channels"]) != 0;
                         btnSave.Enabled = true;
                     }
                 }
                 catch (Exception ex) { ShowDbError(ex); }
             };
 
-            var btnCreate = new Button { Text = "Создать роль", Location = new Point(12, 388), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(59, 165, 93), ForeColor = Color.White };
+            var btnCreate = new Button { Text = "Создать роль", Location = new Point(12, 408), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(59, 165, 93), ForeColor = Color.White };
             btnCreate.Click += (s, e) =>
             {
                 string n = txtN.Text.Trim();
@@ -3586,8 +3679,9 @@ namespace PISMO
                 {
                     using var conn = DBHelper.OpenConnection();
                     using var cmd = new MySqlCommand(
-                        "INSERT INTO server_roles (server_id,name,color,can_ban,can_kick,can_mute,can_manage,position) " +
-                        "VALUES (@s,@n,@c,@b,@k,@mu,@mg,10)", conn);
+                        "INSERT INTO server_roles (server_id,name,color,can_ban,can_kick,can_mute,can_manage" +
+                        (_chanPermColOk ? ",can_channels" : "") + ",position) " +
+                        "VALUES (@s,@n,@c,@b,@k,@mu,@mg" + (_chanPermColOk ? ",@ch" : "") + ",10)", conn);
                     cmd.Parameters.AddWithValue("@s", _serverId);
                     cmd.Parameters.AddWithValue("@n", n);
                     cmd.Parameters.AddWithValue("@c", string.IsNullOrWhiteSpace(txtC.Text) ? "#99AAB5" : txtC.Text.Trim());
@@ -3595,9 +3689,11 @@ namespace PISMO
                     cmd.Parameters.AddWithValue("@k", cbKick.Checked ? 1 : 0);
                     cmd.Parameters.AddWithValue("@mu", cbMute.Checked ? 1 : 0);
                     cmd.Parameters.AddWithValue("@mg", cbManage.Checked ? 1 : 0);
+                    if (_chanPermColOk) cmd.Parameters.AddWithValue("@ch", cbChannels.Checked ? 1 : 0);
                     cmd.ExecuteNonQuery();
                     ResetForm(); Reload();
                 }
+                catch (MySqlException mex) when (mex.Number == 1054) { WarnNoChannelPermColumn(); }
                 catch (Exception ex) { ShowDbError(ex); }
             };
 
@@ -3610,22 +3706,24 @@ namespace PISMO
                 {
                     using var conn = DBHelper.OpenConnection();
                     using var cmd = new MySqlCommand(
-                        "UPDATE server_roles SET name=@n,color=@c,can_ban=@b,can_kick=@k,can_mute=@mu,can_manage=@mg " +
-                        "WHERE id=@r", conn);
+                        "UPDATE server_roles SET name=@n,color=@c,can_ban=@b,can_kick=@k,can_mute=@mu,can_manage=@mg" +
+                        (_chanPermColOk ? ",can_channels=@ch" : "") + " WHERE id=@r", conn);
                     cmd.Parameters.AddWithValue("@n", n);
                     cmd.Parameters.AddWithValue("@c", string.IsNullOrWhiteSpace(txtC.Text) ? "#99AAB5" : txtC.Text.Trim());
                     cmd.Parameters.AddWithValue("@b", cbBan.Checked ? 1 : 0);
                     cmd.Parameters.AddWithValue("@k", cbKick.Checked ? 1 : 0);
                     cmd.Parameters.AddWithValue("@mu", cbMute.Checked ? 1 : 0);
                     cmd.Parameters.AddWithValue("@mg", cbManage.Checked ? 1 : 0);
+                    if (_chanPermColOk) cmd.Parameters.AddWithValue("@ch", cbChannels.Checked ? 1 : 0);
                     cmd.Parameters.AddWithValue("@r", editingId.Value);
                     cmd.ExecuteNonQuery();
                     ResetForm(); Reload();
                 }
+                catch (MySqlException mex) when (mex.Number == 1054) { WarnNoChannelPermColumn(); }
                 catch (Exception ex) { ShowDbError(ex); }
             };
 
-            var btnDel = new Button { Text = "Удалить", Location = new Point(264, 388), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(240, 71, 71), ForeColor = Color.White };
+            var btnDel = new Button { Text = "Удалить", Location = new Point(264, 408), Size = new Size(120, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(240, 71, 71), ForeColor = Color.White };
             btnDel.Click += (s, e) =>
             {
                 if (list.SelectedItem == null) return;
@@ -3642,7 +3740,7 @@ namespace PISMO
             };
 
             var ctrls = new List<Control> { list, lblN, txtN, lblC, txtC, swPreview, lblPal, btnMore,
-                cbBan, cbKick, cbMute, cbManage, btnCreate, btnSave, btnDel };
+                cbBan, cbKick, cbMute, cbManage, cbChannels, btnCreate, btnSave, btnDel };
             ctrls.AddRange(swatches);
             f.Controls.AddRange(ctrls.ToArray());
             f.ShowDialog(this);
