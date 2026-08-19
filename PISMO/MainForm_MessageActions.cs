@@ -426,9 +426,11 @@ namespace PISMO
         /// <summary>Добавляет в меню «Скачать» для того вложения, которое реально есть
         /// в сообщении. Общий код для ЛС, групп и каналов серверов.</summary>
         internal static void AddDownloadItem(ContextMenuStrip menu, int msgId,
-            byte[] img, byte[] audio, byte[] video, byte[] file, string fileName)
+            byte[] img, byte[] audio, byte[] video, byte[] file, string fileName,
+            Func<byte[]> fileLoader = null)
         {
             string caption = null; byte[] data = null; string name = null;
+            Func<byte[]> loader = null;
 
             // Порядок важен: у видео-кружка и видео байты лежат в одном поле, а
             // подпись к файлу может идти вместе с картинкой.
@@ -454,12 +456,36 @@ namespace PISMO
             { caption = "⬇  Скачать изображение"; data = img; name = MediaSaver.ImageName(img, msgId); }
             else if (audio != null && audio.Length > 0)
             { caption = "⬇  Скачать голосовое"; data = audio; name = MediaSaver.AudioName(msgId); }
+            else if (fileLoader != null && !string.IsNullOrWhiteSpace(fileName))
+            {
+                // Крупные вложения в ленту не подгружаются — байтов тут ещё нет.
+                // Пункт всё равно показываем, файл читается уже по нажатию.
+                caption = "⬇  Скачать файл"; name = fileName; loader = fileLoader;
+            }
 
             if (caption == null) return;
 
             var item = new ToolStripMenuItem(caption);
-            byte[] capData = data; string capName = name;
-            item.Click += (s, e) => MediaSaver.Save(menu.SourceControl?.FindForm(), capData, capName);
+            byte[] capData = data; string capName = name; var capLoader = loader;
+            item.Click += (s, e) =>
+            {
+                var owner = menu.SourceControl?.FindForm();
+                byte[] bytes = capData;
+                if (bytes == null && capLoader != null)
+                {
+                    var prev = Cursor.Current;
+                    try { Cursor.Current = Cursors.WaitCursor; bytes = capLoader(); }
+                    catch { }
+                    finally { Cursor.Current = prev; }
+                }
+                if (bytes == null || bytes.Length == 0)
+                {
+                    MessageBox.Show(owner, "Не удалось получить файл.", "PISMO",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                MediaSaver.Save(owner, bytes, capName);
+            };
             menu.Items.Add(item);
             menu.Items.Add(new ToolStripSeparator());
         }
@@ -493,7 +519,12 @@ namespace PISMO
             // ── Скачать вложение ─────────────────────────────────────────
             // Байты уже у клиента (пришли вместе с сообщением) — обращаться к БД
             // не нужно, только диалог сохранения.
-            AddDownloadItem(menu, msgId, imgBytes, audioBytes, videoBytes, fileData, fileName);
+            // fileData бывает пустым намеренно: большие файлы читаются по клику.
+            Func<byte[]> lazyFile = (msgId > 0 && !string.IsNullOrWhiteSpace(fileName)
+                                     && !(fileData is { Length: > 0 }))
+                ? () => LoadFileBytes(msgId, fileName, isGroup)
+                : null;
+            AddDownloadItem(menu, msgId, imgBytes, audioBytes, videoBytes, fileData, fileName, lazyFile);
 
             // ── Реакция (эмодзи) ─────────────────────────────────────────
             if (msgId > 0)
