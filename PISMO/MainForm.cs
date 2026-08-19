@@ -3705,16 +3705,21 @@ namespace PISMO
             bool inlineVideoShown = false;
             if (!string.IsNullOrWhiteSpace(fileName)
                 && MediaPlayerForm.IsVideo(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
-                && fileData is { Length: > 0 })
+                && (fileData is { Length: > 0 } || (msgId > 0 && fileSize > 0)))
             {
                 try
                 {
                     int boxW = Math.Min(innerW, 280);
                     int boxH = (int)(boxW * 1.2); // вертикальный бокс с леттербоксом
-                    var vp = new InlineVideoPlayer(fileData, fileName, boxW, boxH)
-                    {
-                        Location = new Point(PAD, innerY)
-                    };
+                    // Крупное видео в ленту не подгружается (иначе открытие чата
+                    // тянуло бы сотни мегабайт), но выглядеть оно должно так же —
+                    // плеером, а не карточкой файла. Байты читаются по клику.
+                    int capturedId = msgId; bool capturedGroup = isGroup; string capturedName = fileName;
+                    var vp = fileData is { Length: > 0 }
+                        ? new InlineVideoPlayer(fileData, fileName, boxW, boxH)
+                        : new InlineVideoPlayer(() => LoadFileBytes(capturedId, capturedName, capturedGroup),
+                                                fileName, boxW, boxH);
+                    vp.Location = new Point(PAD, innerY);
                     bubble.Controls.Add(vp);
                     innerY += boxH + 6;
                     inlineVideoShown = true;
@@ -5053,9 +5058,9 @@ namespace PISMO
                     try
                     {
                         var bytes = File.ReadAllBytes(path);
-                        if (bytes.Length > 64L * 1024 * 1024)
+                        if (bytes.Length > 200L * 1024 * 1024)
                         {
-                            MessageBox.Show("Файл > 64 МБ.");
+                            MessageBox.Show("Файл > 200 МБ.");
                             return;
                         }
 

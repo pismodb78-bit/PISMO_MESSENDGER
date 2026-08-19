@@ -276,6 +276,35 @@ namespace PISMO
             catch { }   // не смогли — не беда, отрисовка догрузит по-старому
         }
 
+        /// <summary>
+        /// Читает вложение сообщения по требованию — для видео, которые слишком
+        /// велики, чтобы тянуть их при отрисовке ленты. Кладёт результат в кеш,
+        /// поэтому повторный просмотр уже не идёт в БД.
+        /// </summary>
+        public static byte[] LoadFileBytes(int msgId, string fileName, bool isGroup)
+        {
+            try
+            {
+                if (MediaCache.Has(msgId, "file", fileName))
+                {
+                    var cached = MediaCache.Get(msgId, "file", fileName);
+                    if (cached != null && cached.Length > 0) return cached;
+                }
+
+                string table = isGroup ? "group_messages" : "messages";
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand($"SELECT file_data FROM {table} WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", msgId);
+                cmd.CommandTimeout = 600;
+                using var rd = cmd.ExecuteReader();
+                if (!rd.Read() || rd.IsDBNull(0)) return null;
+                var data = (byte[])rd[0];
+                if (data is { Length: > 0 }) MediaCache.Put(msgId, "file", data, fileName);
+                return data;
+            }
+            catch { return null; }
+        }
+
         public static (byte[] img, byte[] audio, byte[] video, byte[] fileData)
             LoadMediaForMessage(int msgId, string fileName,
                                 bool hasImg, bool hasAudio, bool hasVideo, bool hasFile,

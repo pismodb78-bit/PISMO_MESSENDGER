@@ -15,7 +15,8 @@ namespace PISMO
     /// </summary>
     public sealed class InlineVideoPlayer : Panel
     {
-        private readonly byte[] _data;
+        private byte[] _data;
+        private readonly Func<byte[]> _loader;   // для больших видео: байты берём по клику
         private readonly string _fileName;
         private WebView2 _web;
         private string _tempDir;
@@ -28,6 +29,18 @@ namespace PISMO
         private bool _convertFailed;
 
         private Label _lblPlay, _lblName;
+
+        /// <summary>
+        /// Видео, байты которого ещё не загружены: в ленте показывается такая же
+        /// обложка, а файл читается из БД по клику. Иначе крупный ролик пришлось
+        /// бы тянуть при каждом открытии чата — ради превью, которое, может, и не
+        /// станут смотреть.
+        /// </summary>
+        public InlineVideoPlayer(Func<byte[]> loader, string fileName, int boxW, int boxH)
+            : this((byte[])null, fileName, boxW, boxH)
+        {
+            _loader = loader;
+        }
 
         public InlineVideoPlayer(byte[] data, string fileName, int boxW, int boxH)
         {
@@ -65,7 +78,7 @@ namespace PISMO
             // Если видео в HEVC, показать его без конвертации почти наверняка не
             // выйдет. Начинаем тянуть конвертер сразу, пока человек только
             // смотрит на обложку, — к клику он обычно уже на диске.
-            try { if (LooksLikeHevc()) VideoTranscoder.Prefetch(); } catch { }
+            try { if (_data != null && LooksLikeHevc()) VideoTranscoder.Prefetch(); } catch { }
 
             _lblPlay.Click += (s, e) => StartPlayer();
             _lblName.Click += (s, e) => StartPlayer();
@@ -106,6 +119,26 @@ namespace PISMO
             _playing = true;
             try
             {
+                // Ленивое видео: сначала достаём байты, и только потом всё остальное.
+                if (_data == null && _loader != null)
+                {
+                    if (_lblPlay != null) _lblPlay.Text = "Загрузка…";
+                    var loader = _loader;
+                    byte[] loaded = null;
+                    await System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { loaded = loader(); } catch { }
+                    });
+                    if (IsDisposed) return;
+                    if (loaded == null || loaded.Length == 0)
+                    {
+                        if (_lblPlay != null) _lblPlay.Text = "Не удалось загрузить";
+                        _playing = false;
+                        return;
+                    }
+                    _data = loaded;
+                }
+
                 try { _lblPlay?.Dispose(); _lblName?.Dispose(); } catch { }
                 _tempDir = Path.Combine(Path.GetTempPath(), "pismo_inline_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(_tempDir);
