@@ -1487,7 +1487,9 @@ namespace PISMO
                 // Когда открыт встроенный вид сервера, ЛС-чат не виден — уведомляем
                 // обо ВСЕХ входящих ЛС, включая «текущего» собеседника.
                 int openPartner = OnServerView ? -1 : _currentChatPartnerId;
-                if (cnt > prev && sid != openPartner)
+                // Игнорируемые собеседники не шумят: сообщения приходят и
+                // копятся в чате, но ни звука, ни всплывашки, ни мигания окна.
+                if (cnt > prev && sid != openPartner && !ChatMutes.IsMuted(sid))
                     grew.Add((sid, cnt - prev));
             }
             if (grew.Count > 0) ShowAggregatedNotification(grew);
@@ -2290,8 +2292,8 @@ namespace PISMO
 
             var lblName = new Label
             {
-                // 📌 — визуальный признак закреплённого чата (2.1).
-                Text = (pinned ? "📌 " : "") + name,
+                // 📌 — закреплённый чат, 🔕 — игнорируемый (уведомления выключены).
+                Text = (pinned ? "📌 " : "") + (ChatMutes.IsMuted(uid) ? "🔕 " : "") + name,
                 Font = unread > 0
                     ? new Font("Segoe UI Semibold", 10f, FontStyle.Bold)
                     : new Font("Segoe UI", 10f),
@@ -2382,7 +2384,8 @@ namespace PISMO
             var lblName = new Label
             {
                 // 📌 — закреплённый чат (2.1.1): работает и в админском списке.
-                Text = (ChatPins.IsPinned(uid) ? "📌 " : "") + (isAdminCard ? $"{name} (Вы)" : name),
+                Text = (ChatPins.IsPinned(uid) ? "📌 " : "") + (ChatMutes.IsMuted(uid) ? "🔕 " : "")
+                       + (isAdminCard ? $"{name} (Вы)" : name),
                 Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 Location = new Point(54, 18),  // по центру по вертикали (нет подписи роли)
@@ -2441,6 +2444,17 @@ namespace PISMO
                     try { LoadAllUsersForAdmin(); } catch { }
                 };
                 ctxMenu.Items.Add(itemPinChat);
+
+                // Игнорирование — и здесь тоже, иначе в админском списке пункта
+                // просто не было бы.
+                var itemMuteChat = new ToolStripMenuItem(
+                    ChatMutes.IsMuted(uid) ? "🔔 Больше не игнорировать" : "🔕 Игнорировать");
+                itemMuteChat.Click += (s, ev) =>
+                {
+                    ChatMutes.Toggle(uid);
+                    try { LoadAllUsersForAdmin(); } catch { }
+                };
+                ctxMenu.Items.Add(itemMuteChat);
 
                 // Дополнительно: пункты блокировки/очистки переписки в админской таблице
                 ctxMenu.Items.Add(new ToolStripSeparator());

@@ -1379,6 +1379,11 @@ namespace PISMO
                     string cname = row["caller_name"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(cname)) cname = row["login"].ToString();
 
+                    // Игнорируемый собеседник: звонок не показываем и не звеним.
+                    // Сессию не отклоняем — у звонящего просто идут гудки, как
+                    // если бы нас не было на месте.
+                    if (ChatMutes.IsMuted(callerId)) return;
+
                     // Показываем входящий звонок
                     var incoming = new IncomingCallForm(sid, cname, callerId);
                     incoming.FormClosed += (s, e) =>
@@ -1500,6 +1505,27 @@ namespace PISMO
                         catch { }
                     };
                     menu.Items.Add(itemPinChat);
+                }
+                catch { }
+
+                // Игнорирование собеседника (локально): от него не приходят ни
+                // уведомления о сообщениях, ни входящие звонки.
+                try
+                {
+                    bool muted = ChatMutes.IsMuted(partnerId);
+                    var itemMute = new ToolStripMenuItem(
+                        muted ? "🔔 Больше не игнорировать" : "🔕 Игнорировать");
+                    itemMute.Click += (s2, e2) =>
+                    {
+                        ChatMutes.Toggle(partnerId);
+                        try
+                        {
+                            if (UserSession.Role == "admin" && !UserSession.IsImpersonating) LoadAllUsersForAdmin();
+                            else LoadConversations();
+                        }
+                        catch { }
+                    };
+                    menu.Items.Add(itemMute);
                 }
                 catch { }
 
