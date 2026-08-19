@@ -1720,7 +1720,7 @@ namespace PISMO
                         if (sm.file is { Length: > 0 } && !string.IsNullOrWhiteSpace(sm.fname))
                         {
                             string fext = Path.GetExtension(sm.fname).TrimStart('.').ToLowerInvariant();
-                            if (MediaPlayerForm.IsVideo(fext))
+                            if (MediaKinds.IsVideo(fext))
                             {
                                 try
                                 {
@@ -1730,7 +1730,7 @@ namespace PISMO
                                 }
                                 catch { }
                             }
-                            else if (MediaPlayerForm.IsAudio(fext))
+                            else if (MediaKinds.IsAudio(fext))
                             {
                                 // Музыка — компактной полосой прямо в ленте, как в ЛС.
                                 try

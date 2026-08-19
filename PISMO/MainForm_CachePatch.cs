@@ -312,7 +312,7 @@ namespace PISMO
         {
             // Видео-файл небольшого размера — грузим сразу для встроенного плеера.
             string ext = string.IsNullOrEmpty(fileName) ? "" : Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant();
-            bool autoVideoFile = hasFile && MediaPlayerForm.IsVideo(ext)
+            bool autoVideoFile = hasFile && MediaKinds.IsVideo(ext)
                                  && fileSize > 0 && fileSize <= InlineVideoMaxBytes;
 
             // Проверяем кеш для каждого типа

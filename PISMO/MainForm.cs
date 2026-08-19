@@ -3704,7 +3704,7 @@ namespace PISMO
             // уже загружены — показываем видео прямо в пузыре; иначе обычная карточка.
             bool inlineVideoShown = false;
             if (!string.IsNullOrWhiteSpace(fileName)
-                && MediaPlayerForm.IsVideo(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
+                && MediaKinds.IsVideo(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
                 && (fileData is { Length: > 0 } || (msgId > 0 && fileSize > 0)))
             {
                 try
@@ -3731,7 +3731,7 @@ namespace PISMO
             // компактная полоса воспроизведения. Отдельное окно для этого больше
             // не открывается.
             if (!inlineVideoShown && !string.IsNullOrWhiteSpace(fileName)
-                && MediaPlayerForm.IsAudio(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
+                && MediaKinds.IsAudio(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
                 && (fileData is { Length: > 0 } || (msgId > 0 && fileSize > 0)))
             {
                 try
@@ -4803,14 +4803,14 @@ namespace PISMO
         internal static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup, long knownSize = -1)
         {
             string ext = Path.GetExtension(fileName).ToLowerInvariant().TrimStart('.');
-            bool isMedia = MediaPlayerForm.IsMedia(ext);
-            bool isVideoMedia = MediaPlayerForm.IsVideo(ext);
             long displaySize = fileData != null ? fileData.Length : knownSize;
             // Размер показываем сразу (если известен), даже до загрузки самого файла.
-            string actionHint = isMedia ? "нажмите для воспроизведения" : "нажмите для загрузки";
+            // Карточка теперь всегда именно сохраняет файл: воспроизведение
+            // переехало в сам пузырь, отдельного окна плеера нет.
             string szStr = fileData != null
                 ? FormatFileSize(fileData.Length)
-                : (displaySize > 0 ? $"{FormatFileSize(displaySize)} · {actionHint}" : (isMedia ? "▶ Нажмите, чтобы открыть" : "💾 Нажмите для загрузки"));
+                : (displaySize > 0 ? $"{FormatFileSize(displaySize)} · нажмите для загрузки"
+                                   : "💾 Нажмите для загрузки");
 
             // Прогресс загрузки: -1 = не идёт, 0..1 = доля. Рисуется поверх иконки.
             double dlProgress = -1;   // -1 = не идёт; >=0 = идёт (значение не важно)
@@ -4894,17 +4894,10 @@ namespace PISMO
                 }
             }
 
-            // Видео/музыку открываем во встроенном проигрывателе (перемотка/громкость),
-            // остальные файлы — сохраняем и открываем системно.
-            void OpenIt()
-            {
-                if (isMedia && fileData != null)
-                {
-                    try { new MediaPlayerForm(fileData, fileName, isVideoMedia).Show(); }
-                    catch { SaveAndOpen(); }
-                }
-                else SaveAndOpen();
-            }
+            // Отдельного окна плеера больше нет: видео и музыка играют прямо в
+            // пузыре сообщения. Карточка остаётся только у тех файлов, которые
+            // проигрывать нечем, — их сохраняем и открываем системно.
+            void OpenIt() => SaveAndOpen();
 
             void DoOpen(object s, EventArgs ev)
             {
