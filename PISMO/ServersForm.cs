@@ -648,8 +648,12 @@ namespace PISMO
                             bool B(string c) => r[c] != DBNull.Value && Convert.ToInt32(r[c]) == 1;
                             ban |= B("can_ban"); kick |= B("can_kick");
                             mute |= B("can_mute"); manage |= B("can_manage");
-                            // Управление сервером по-прежнему включает и каналы.
-                            channels |= manage || (withChan && B("can_channels"));
+                            // Право на каналы — самостоятельное: снял галочку, и
+                            // человек их не трогает, даже если он управляет ролями.
+                            // Исключение одно — владелец сервера (см. isOwner).
+                            // Пока колонки нет, поведение прежнее: каналы у тех,
+                            // кто управляет сервером, иначе право негде хранить.
+                            channels |= withChan ? B("can_channels") : manage;
                         }
                     }
                 }
@@ -1382,6 +1386,22 @@ namespace PISMO
             _renderedKey = null; _renderedSig = null;
             try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
             try { _lblTitle.Text = "Канал удалён"; } catch { }
+        }
+
+        /// <summary>Есть ли в server_roles колонка can_channels. Пробуем прочитать
+        /// её напрямую: information_schema на хостинге закрыт даже для root.</summary>
+        private static bool ChannelPermColumnExists()
+        {
+            if (!_chanPermColOk) return false;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT can_channels FROM server_roles LIMIT 1", conn);
+                cmd.ExecuteScalar();
+                return true;
+            }
+            catch (MySqlException mex) when (mex.Number == 1054) { _chanPermColOk = false; return false; }
+            catch { return _chanPermColOk; }
         }
 
         /// <summary>Права на каналы не сохранились: в базе ещё нет колонки.</summary>
@@ -3625,6 +3645,14 @@ namespace PISMO
             // Отдельное право только на каналы — чтобы можно было доверить их
             // человеку, не отдавая ему настройки ролей и сервера.
             var cbChannels = new CheckBox { Text = "Каналы (создавать, менять, удалять)", ForeColor = Color.White, Location = new Point(12, 376), AutoSize = true };
+            // Если колонки в базе нет, галочка всё равно бы не сохранилась —
+            // честнее показать это сразу, а не молча терять выбор.
+            if (!ChannelPermColumnExists())
+            {
+                cbChannels.Enabled = false;
+                cbChannels.Text = "Каналы — нужна миграция can_channels (см. sql/)";
+                cbChannels.ForeColor = Color.FromArgb(190, 140, 120);
+            }
 
             // Какая роль сейчас редактируется (null — режим создания новой).
             int? editingId = null;
