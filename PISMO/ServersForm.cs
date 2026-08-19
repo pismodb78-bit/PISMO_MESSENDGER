@@ -725,8 +725,8 @@ namespace PISMO
             mute.Click += (s, e) => ToggleServerMute();
             _pnlChannels.Controls.Add(mute);
 
-            // Каналы и роли — теперь разные права: канальному модератору кнопка
-            // «Роли» ни к чему.
+            // Каналы и роли — разные права: канальному модератору кнопка «Роли»
+            // ни к чему, и наоборот.
             if (_canChannels)
             {
                 var add = MakeSideButton("➕ Канал", Color.FromArgb(59, 165, 93));
@@ -3641,7 +3641,7 @@ namespace PISMO
             var cbBan = new CheckBox { Text = "Банить", ForeColor = Color.White, Location = new Point(12, 324), AutoSize = true };
             var cbKick = new CheckBox { Text = "Выгонять", ForeColor = Color.White, Location = new Point(120, 324), AutoSize = true };
             var cbMute = new CheckBox { Text = "Мьютить", ForeColor = Color.White, Location = new Point(232, 324), AutoSize = true };
-            var cbManage = new CheckBox { Text = "Управление (роли, сервер)", ForeColor = Color.White, Location = new Point(12, 352), AutoSize = true };
+            var cbManage = new CheckBox { Text = "Роли (создавать, менять, удалять)", ForeColor = Color.White, Location = new Point(12, 352), AutoSize = true };
             // Отдельное право только на каналы — чтобы можно было доверить их
             // человеку, не отдавая ему настройки ролей и сервера.
             var cbChannels = new CheckBox { Text = "Каналы (создавать, менять, удалять)", ForeColor = Color.White, Location = new Point(12, 376), AutoSize = true };
