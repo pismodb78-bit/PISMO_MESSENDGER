@@ -1642,7 +1642,7 @@ namespace PISMO
                 // Тянем только лёгкие метаданные (наличие медиа), а сами байты —
                 // из локального кеша; из БД догружаем ТОЛЬКО то, чего нет в кеше.
                 string mediaCols = media
-                    ? ", sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video, (sm.file_data IS NOT NULL) AS has_file, OCTET_LENGTH(sm.file_data) AS file_size"
+                    ? ", sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video, (sm.file_data IS NOT NULL) AS has_file"
                     : "";
 
                 // Постранично: последние `limit` (по id DESC), затем вернуть ASC.
@@ -1677,9 +1677,6 @@ namespace PISMO
 
         /// <summary>Заполняет mediaOut байтами медиа канала: сначала из локального
         /// кеша, недостающее догружает из БД одним запросом и кеширует на диск.</summary>
-        /// <summary>До какого размера вложение канала подгружается вместе с лентой.</summary>
-        private const long SrvInlineMaxBytes = 30L * 1024 * 1024;
-
         /// <summary>Читает файл сообщения канала по требованию (для крупных вложений).</summary>
         internal static byte[] LoadServerFileBytes(int msgId, string fileName)
         {
@@ -1717,16 +1714,16 @@ namespace PISMO
                 byte[] img = hi ? MediaCache.Get(id, "simg", null) : null;
                 byte[] aud = ha ? MediaCache.Get(id, "saudio", null) : null;
                 byte[] vid = hv ? MediaCache.Get(id, "svideo", null) : null;
-                // Файл может весить сотни мегабайт: тянуть его при открытии канала
-                // (да ещё для каждого сообщения страницы) нельзя — читаем по клику.
-                long fsz = dt.Columns.Contains("file_size") && r["file_size"] != DBNull.Value
-                           ? Convert.ToInt64(r["file_size"]) : -1;
-                bool fileTooBig = fsz > SrvInlineMaxBytes;
-                byte[] fil = hf && !fileTooBig ? MediaCache.Get(id, "sfile", fn) : null;
-                if (fileTooBig) hf = false;
+                // Вложение-файл вместе с лентой не тянем НИКОГДА: он может весить
+                // сотни мегабайт, а узнать размер заранее нельзя — OCTET_LENGTH по
+                // LONGBLOB сам поднимает данные с диска. Берём только то, что уже
+                // лежит в локальном кеше; остальное — по клику.
+                byte[] fil = hf ? MediaCache.Get(id, "sfile", fn) : null;
+                bool fileLazy = hf && fil == null;
+                if (fileLazy) hf = false;
 
                 if (img != null || aud != null || vid != null || fil != null
-                    || (fileTooBig && !string.IsNullOrWhiteSpace(fn)))
+                    || (fileLazy && !string.IsNullOrWhiteSpace(fn)))
                     mediaOut[id] = (img, aud, vid, fil, fn);
 
                 bool ni = hi && img == null, na = ha && aud == null, nv = hv && vid == null, nf = hf && fil == null;

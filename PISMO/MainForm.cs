@@ -3738,7 +3738,7 @@ namespace PISMO
             bool inlineVideoShown = false;
             if (!string.IsNullOrWhiteSpace(fileName)
                 && MediaPlayerForm.IsVideo(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
-                && (fileData is { Length: > 0 } || (msgId > 0 && fileSize > 0)))
+                && (fileData is { Length: > 0 } || msgId > 0))
             {
                 try
                 {
@@ -3764,7 +3764,7 @@ namespace PISMO
             // Отдельного окна для неё нет.
             if (!inlineVideoShown && !string.IsNullOrWhiteSpace(fileName)
                 && MediaPlayerForm.IsAudio(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
-                && (fileData is { Length: > 0 } || (msgId > 0 && fileSize > 0)))
+                && (fileData is { Length: > 0 } || msgId > 0))
             {
                 try
                 {

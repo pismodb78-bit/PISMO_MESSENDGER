@@ -169,8 +169,7 @@ namespace PISMO
                        (m.image_data IS NOT NULL) AS has_img,
                        (m.audio_data IS NOT NULL) AS has_audio,
                        (m.video_data IS NOT NULL) AS has_video,
-                       (m.file_data  IS NOT NULL) AS has_file,
-                       OCTET_LENGTH(m.file_data) AS file_size
+                       (m.file_data  IS NOT NULL) AS has_file
                 FROM messages m
                 JOIN users u ON u.id = m.sender_id
                 WHERE (m.sender_id=@me AND m.receiver_id=@them)
@@ -203,8 +202,7 @@ namespace PISMO
                        (gm.image_data IS NOT NULL) AS has_img,
                        (gm.audio_data IS NOT NULL) AS has_audio,
                        (gm.video_data IS NOT NULL) AS has_video,
-                       (gm.file_data  IS NOT NULL) AS has_file,
-                       OCTET_LENGTH(gm.file_data) AS file_size
+                       (gm.file_data  IS NOT NULL) AS has_file
                 FROM group_messages gm
                 JOIN users u ON u.id = gm.sender_id
                 WHERE gm.group_id=@g
@@ -221,10 +219,6 @@ namespace PISMO
         /// <summary>
         /// Шаг 2: Для одного сообщения по id — загружаем только нужные BLOB (которых нет в кеше).
         /// </summary>
-        // Видео-файлы до этого размера подгружаются автоматически, чтобы показать
-        // встроенный проигрыватель прямо в пузыре (как в Telegram). Большие — по клику.
-        private const long InlineVideoMaxBytes = 30L * 1024 * 1024;
-
         /// <summary>
         /// Пакетная предзагрузка картинок и голосовых для ЦЕЛОЙ страницы сообщений.
         /// Раньше медиа тянулось по ОДНОМУ запросу на сообщение прямо в цикле отрисовки:
@@ -310,21 +304,23 @@ namespace PISMO
                                 bool hasImg, bool hasAudio, bool hasVideo, bool hasFile,
                                 bool isGroup, long fileSize = -1)
         {
-            // Видео-файл небольшого размера — грузим сразу для встроенного плеера.
-            string ext = string.IsNullOrEmpty(fileName) ? "" : Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant();
-            bool autoVideoFile = hasFile && MediaPlayerForm.IsVideo(ext)
-                                 && fileSize > 0 && fileSize <= InlineVideoMaxBytes;
-
+            // Раньше видео до 30 МБ подгружалось вместе с лентой. Чтобы узнать
+            // размер, в запрос входил OCTET_LENGTH(file_data), а длину LONGBLOB
+            // нельзя получить, не подняв вложение с диска целиком — и так на
+            // КАЖДУЮ перерисовку ленты. Теперь размер не спрашиваем вовсе:
+            // вложения-файлы читаются по клику (см. LoadFileBytes).
             // Проверяем кеш для каждого типа
             bool needImg   = hasImg   && !MediaCache.Has(msgId, "img",   fileName);
             bool needAudio = hasAudio && !MediaCache.Has(msgId, "audio", null);
             bool needVideo = hasVideo && !MediaCache.Has(msgId, "video", null);
-            bool needFile  = autoVideoFile && !MediaCache.Has(msgId, "file", fileName);
+            bool needFile  = false;   // из БД файл тянем только по клику
 
             byte[] img      = hasImg   ? MediaCache.Get(msgId, "img",   fileName) : null;
             byte[] audio    = hasAudio ? MediaCache.Get(msgId, "audio", null)     : null;
             byte[] video    = hasVideo ? MediaCache.Get(msgId, "video", null)     : null;
-            byte[] fileData = autoVideoFile ? MediaCache.Get(msgId, "file", fileName) : null;
+            // Если файл уже лежит в локальном кеше — показываем сразу, это бесплатно.
+            byte[] fileData = hasFile && MediaCache.Has(msgId, "file", fileName)
+                              ? MediaCache.Get(msgId, "file", fileName) : null;
 
             // Если всё уже в кеше — не идём в БД вообще
             if (!needImg && !needAudio && !needVideo && !needFile)
