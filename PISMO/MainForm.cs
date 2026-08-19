@@ -4724,7 +4724,10 @@ namespace PISMO
         /// <summary>Карточка документа/архива внутри пузырька — клик загружает с сервера
         /// (с круговым индикатором прогресса), сохраняет и открывает файл.
         /// knownSize — размер файла в байтах (показывается ДО загрузки).</summary>
-        internal static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup, long knownSize = -1)
+        /// <param name="loader">Откуда взять байты, если их ещё нет. Нужен там, где
+        /// сообщение лежит не в messages/group_messages (например, в канале сервера).</param>
+        internal static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup, long knownSize = -1,
+                                            Func<byte[]> loader = null)
         {
             string ext = Path.GetExtension(fileName).ToLowerInvariant().TrimStart('.');
             bool isVideoMedia = MediaPlayerForm.IsVideo(ext);
@@ -4860,6 +4863,35 @@ namespace PISMO
                     try { iconPnl.Invalidate(); } catch { }
                 };
                 dlAnim.Start();
+
+                // Свой загрузчик — если сообщение живёт в другой таблице (канал
+                // сервера). Читаем в фоне: сотни мегабайт в UI-потоке — это фриз.
+                if (loader != null)
+                {
+                    var ldr = loader;
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        byte[] got = null;
+                        try { got = ldr(); } catch { }
+                        try
+                        {
+                            card.BeginInvoke(new Action(() =>
+                            {
+                                downloading = false;
+                                if (got is { Length: > 0 })
+                                {
+                                    fileData = got;
+                                    lblSz.Text = FormatFileSize(fileData.Length);
+                                    try { iconPnl.Invalidate(); } catch { }
+                                    OpenIt();
+                                }
+                                else lblSz.Text = "Не удалось загрузить";
+                            }));
+                        }
+                        catch { }
+                    });
+                    return;
+                }
 
                 string table = isGroup ? "group_messages" : "messages";
                 System.Threading.Tasks.Task.Run(() =>

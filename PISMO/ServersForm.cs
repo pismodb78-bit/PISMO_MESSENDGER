@@ -1423,7 +1423,7 @@ namespace PISMO
                 // Тянем только лёгкие метаданные (наличие медиа), а сами байты —
                 // из локального кеша; из БД догружаем ТОЛЬКО то, чего нет в кеше.
                 string mediaCols = media
-                    ? ", sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video, (sm.file_data IS NOT NULL) AS has_file"
+                    ? ", sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video, (sm.file_data IS NOT NULL) AS has_file, OCTET_LENGTH(sm.file_data) AS file_size"
                     : "";
 
                 // Постранично: последние `limit` (по id DESC), затем вернуть ASC.
@@ -1458,6 +1458,30 @@ namespace PISMO
 
         /// <summary>Заполняет mediaOut байтами медиа канала: сначала из локального
         /// кеша, недостающее догружает из БД одним запросом и кеширует на диск.</summary>
+        /// <summary>До какого размера вложение канала подгружается вместе с лентой.</summary>
+        private const long SrvInlineMaxBytes = 30L * 1024 * 1024;
+
+        /// <summary>Читает файл сообщения канала по требованию (для крупных вложений).</summary>
+        internal static byte[] LoadServerFileBytes(int msgId, string fileName)
+        {
+            try
+            {
+                var cached = MediaCache.Get(msgId, "sfile", fileName);
+                if (cached is { Length: > 0 }) return cached;
+
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT file_data FROM server_messages WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", msgId);
+                cmd.CommandTimeout = 600;
+                using var rd = cmd.ExecuteReader();
+                if (!rd.Read() || rd.IsDBNull(0)) return null;
+                var data = (byte[])rd[0];
+                if (data is { Length: > 0 }) MediaCache.Put(msgId, "sfile", data, fileName);
+                return data;
+            }
+            catch { return null; }
+        }
+
         private void LoadChannelMedia(MySqlConnection conn, DataTable dt,
             Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut)
         {
@@ -1474,9 +1498,16 @@ namespace PISMO
                 byte[] img = hi ? MediaCache.Get(id, "simg", null) : null;
                 byte[] aud = ha ? MediaCache.Get(id, "saudio", null) : null;
                 byte[] vid = hv ? MediaCache.Get(id, "svideo", null) : null;
-                byte[] fil = hf ? MediaCache.Get(id, "sfile", fn) : null;
+                // Файл может весить сотни мегабайт: тянуть его при открытии канала
+                // (да ещё для каждого сообщения страницы) нельзя — читаем по клику.
+                long fsz = dt.Columns.Contains("file_size") && r["file_size"] != DBNull.Value
+                           ? Convert.ToInt64(r["file_size"]) : -1;
+                bool fileTooBig = fsz > SrvInlineMaxBytes;
+                byte[] fil = hf && !fileTooBig ? MediaCache.Get(id, "sfile", fn) : null;
+                if (fileTooBig) hf = false;
 
-                if (img != null || aud != null || vid != null || fil != null)
+                if (img != null || aud != null || vid != null || fil != null
+                    || (fileTooBig && !string.IsNullOrWhiteSpace(fn)))
                     mediaOut[id] = (img, aud, vid, fil, fn);
 
                 bool ni = hi && img == null, na = ha && aud == null, nv = hv && vid == null, nf = hf && fil == null;
@@ -1717,15 +1748,23 @@ namespace PISMO
                             try { var pl = new VideoCirclePlayer(sm.video, 180) { Location = new Point(LEFT, y) }; holder.Controls.Add(pl); y += 186; }
                             catch { }
                         }
-                        if (sm.file is { Length: > 0 } && !string.IsNullOrWhiteSpace(sm.fname))
+                        if (!string.IsNullOrWhiteSpace(sm.fname))
                         {
                             string fext = Path.GetExtension(sm.fname).TrimStart('.').ToLowerInvariant();
+                            // Крупные вложения в ленту не тянутся: байтов ещё нет, и
+                            // плеер получает загрузчик — прочитает по клику.
+                            bool haveBytes = sm.file is { Length: > 0 };
+                            int mid = id; string mname = sm.fname;
+                            Func<byte[]> lazySrv = haveBytes ? null : () => LoadServerFileBytes(mid, mname);
                             if (MediaPlayerForm.IsVideo(fext))
                             {
                                 try
                                 {
                                     int bw = Math.Min(msgWidth - 10, 280), bh = (int)(bw * 1.2);
-                                    var vp = new InlineVideoPlayer(sm.file, sm.fname, bw, bh) { Location = new Point(LEFT, y) };
+                                    var vp = haveBytes
+                                        ? new InlineVideoPlayer(sm.file, sm.fname, bw, bh)
+                                        : new InlineVideoPlayer(lazySrv, sm.fname, bw, bh);
+                                    vp.Location = new Point(LEFT, y);
                                     holder.Controls.Add(vp); y += bh + 6;
                                 }
                                 catch { }
@@ -1736,7 +1775,8 @@ namespace PISMO
                                 try
                                 {
                                     int bw = Math.Min(msgWidth - 10, 340);
-                                    var ap = new InlineAudioPlayer(sm.file, null, sm.fname, bw, key: "sa" + id)
+                                    var ap = new InlineAudioPlayer(haveBytes ? sm.file : null, lazySrv,
+                                                                   sm.fname, bw, key: "sa" + id)
                                              { Location = new Point(LEFT, y) };
                                     holder.Controls.Add(ap); y += ap.Height + 6;
                                 }
@@ -1744,7 +1784,8 @@ namespace PISMO
                             }
                             else
                             {
-                                var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false);
+                                var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false,
+                                                                  loader: lazySrv);
                                 card.Location = new Point(LEFT, y);
                                 holder.Controls.Add(card); y += card.Height + 6;
                             }
@@ -1899,16 +1940,22 @@ namespace PISMO
             // Колесо перехватывается до панели (плавная прокрутка) — логику догрузки и
             // кнопки «вниз» передаём колбэком, т.к. событие MouseWheel уже не придёт.
             try { ChatScroll.AttachChat(_pnlMessages, OnSrvScrolled); } catch { }
-            _lastSrvTop = int.MaxValue;
+            _lastSrvTop = -_pnlMessages.AutoScrollPosition.Y;
             if (_srvScrollHooked || _pnlMessages == null) return;
             _srvScrollHooked = true;
             _pnlMessages.Scroll += (s, e) => OnSrvScrolled();
         }
 
+        private DateTime _lastSrvOlderLoad = DateTime.MinValue;
+
         private void OnSrvScrolled()
         {
             int top = -_pnlMessages.AutoScrollPosition.Y;
-            bool movingUp = top < _lastSrvTop;   // догрузка ТОЛЬКО при движении вверх
+            // Событие Scroll приходит и не от пользователя (фокус, раскладка,
+            // пересборка ленты). Раньше любое такое срабатывание считалось
+            // движением вверх и запускало догрузку — то есть полную перезагрузку
+            // канала. Реагируем только на заметный сдвиг вверх.
+            bool movingUp = top < _lastSrvTop - 4;
             _lastSrvTop = top;
             if (movingUp) MaybeLoadOlderSrv();
             UpdateSrvScrollDownButton();
@@ -1920,6 +1967,8 @@ namespace PISMO
         {
             if (_channelId <= 0 || _srvLoadingOlder || !_srvHasMore) return;
             if (-_pnlMessages.AutoScrollPosition.Y > 60) return;   // ещё не у верха
+            if ((DateTime.UtcNow - _lastSrvOlderLoad).TotalMilliseconds < 800) return;
+            _lastSrvOlderLoad = DateTime.UtcNow;
             _srvLoadingOlder = true;
             int viewport = _pnlMessages.ClientSize.Height;
             int curTop = -_pnlMessages.AutoScrollPosition.Y;
@@ -2051,7 +2100,14 @@ namespace PISMO
             // «Скачать» — байты этого сообщения уже лежат в _serverMedia (пришли
             // вместе с лентой), так что запрос к БД не нужен.
             if (_serverMedia.TryGetValue(id, out var med))
-                MainForm.AddDownloadItem(menu, id, med.img, med.audio, med.video, med.file, med.fname);
+            {
+                // Крупные вложения в ленту не грузятся — «Скачать» должно уметь
+                // прочитать файл само, иначе пункт просто пропадал бы из меню.
+                int dlId = id; string dlName = med.fname;
+                Func<byte[]> dlLazy = med.file is { Length: > 0 } || string.IsNullOrWhiteSpace(dlName)
+                    ? null : () => LoadServerFileBytes(dlId, dlName);
+                MainForm.AddDownloadItem(menu, id, med.img, med.audio, med.video, med.file, med.fname, dlLazy);
+            }
 
             menu.Items.Add("😀  Реакция", null, (s, e) =>
             {
