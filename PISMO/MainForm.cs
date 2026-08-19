@@ -3680,7 +3680,8 @@ namespace PISMO
             // перемотки, временем и громкостью вместо одной кнопки «играть».
             if (audioBytes is { Length: > 0 })
             {
-                var voice = new InlineAudioPlayer(audioBytes, null, "Голосовое", Math.Min(innerW, 340))
+                var voice = new InlineAudioPlayer(audioBytes, null, "Голосовое", Math.Min(innerW, 340),
+                                                  key: (isGroup ? "gv" : "dv") + msgId)
                 {
                     Location = new Point(PAD, innerY),
                     BackColor = isMine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(47, 49, 54)
@@ -3729,7 +3730,7 @@ namespace PISMO
                     var ap = new InlineAudioPlayer(
                         fileData is { Length: > 0 } ? fileData : null,
                         fileData is { Length: > 0 } ? null : () => LoadFileBytes(audioId, audioName, audioGroup),
-                        fileName, boxW)
+                        fileName, boxW, key: (isGroup ? "ga" : "da") + msgId)
                     { Location = new Point(PAD, innerY) };
                     bubble.Controls.Add(ap);
                     innerY += ap.Height + 6;

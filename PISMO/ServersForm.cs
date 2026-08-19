@@ -1708,7 +1708,7 @@ namespace PISMO
                         {
                             // Голосовое — с перемоткой, как в ЛС.
                             var vp2 = new InlineAudioPlayer(sm.audio, null, "Голосовое",
-                                                            Math.Min(msgWidth - 10, 340))
+                                                            Math.Min(msgWidth - 10, 340), key: "sv" + id)
                                       { Location = new Point(LEFT, y) };
                             holder.Controls.Add(vp2); y += vp2.Height + 6;
                         }
@@ -1736,7 +1736,7 @@ namespace PISMO
                                 try
                                 {
                                     int bw = Math.Min(msgWidth - 10, 340);
-                                    var ap = new InlineAudioPlayer(sm.file, null, sm.fname, bw)
+                                    var ap = new InlineAudioPlayer(sm.file, null, sm.fname, bw, key: "sa" + id)
                                              { Location = new Point(LEFT, y) };
                                     holder.Controls.Add(ap); y += ap.Height + 6;
                                 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
@@ -7,40 +8,74 @@ using NAudio.Wave;
 namespace PISMO
 {
     /// <summary>
-    /// Плеер музыки прямо в пузыре сообщения: кнопка ▶/⏸, полоса перемотки со
-    /// временем и громкость. Рисуется своими руками поверх NAudio — WebView2
-    /// здесь не годится: его собственная панель управления в маленьком пузыре
-    /// показывалась пустым чёрным прямоугольником.
+    /// Плеер голосовых и музыки прямо в пузыре сообщения: кнопка ▶/⏸, полоса
+    /// перемотки со временем и громкость. Рисуется своими руками поверх NAudio —
+    /// панель управления Chromium в маленьком пузыре показывалась пустой.
     ///
     /// Декодирование — через Media Foundation (mp3, m4a/aac, wma, flac…), с
     /// откатом на обычный WAV-ридер: голосовые у нас пишутся именно в WAV.
+    ///
+    /// ВАЖНО про автообновление: лента перерисовывается целиком раз в несколько
+    /// секунд, и вместе с ней пересоздаются эти контролы. Поэтому само
+    /// воспроизведение живёт не в контроле, а в статической сессии, привязанной
+    /// к сообщению: заново созданный плеер подхватывает её и продолжает играть с
+    /// той же секунды. Иначе звук обрывался на каждом обновлении, а открытие и
+    /// закрытие звукового устройства на каждой отрисовке заметно подлагивало.
     /// </summary>
     internal sealed class InlineAudioPlayer : Panel
     {
+        // ── Сессия воспроизведения (переживает перерисовку ленты) ────────────
+        private sealed class Session
+        {
+            public WaveOutEvent Out;
+            public WaveStream Reader;
+            public MemoryStream Stream;
+            public float Volume = 0.8f;
+
+            public void Dispose()
+            {
+                try { Out?.Dispose(); } catch { }
+                try { Reader?.Dispose(); } catch { }
+                try { Stream?.Dispose(); } catch { }
+                Out = null; Reader = null; Stream = null;
+            }
+        }
+
+        private static readonly Dictionary<string, Session> _sessions = new();
+
+        private static void DropSession(string key)
+        {
+            if (key == null) return;
+            if (_sessions.TryGetValue(key, out var s)) { s.Dispose(); _sessions.Remove(key); }
+        }
+
+        // ── Состояние контрола ──────────────────────────────────────────────
         private readonly string _fileName;
         private readonly Func<byte[]> _loader;
+        private readonly string _key;
         private byte[] _data;
+        private Session _sess;
 
-        private WaveOutEvent _out;
-        private WaveStream _reader;
-        private MemoryStream _ms;
-        private readonly System.Windows.Forms.Timer _tick;
-
+        private System.Windows.Forms.Timer _tick;
         private bool _loading, _seeking, _volDrag;
         private float _volume = 0.8f;
         private string _error;
 
-        // Геометрия: кнопка слева, дальше полоса, справа время и громкость.
+        // Геометрия: кнопка слева, дальше полоса, справа время/имя и громкость.
         private const int BtnSize = 28;
         private const int Pad = 8;
         private const int VolW = 54;
-        private const int TimeW = 82;
+        private const int TimeW = 110;
 
-        public InlineAudioPlayer(byte[] data, Func<byte[]> loader, string fileName, int width)
+        /// <param name="key">Идентификатор сообщения — по нему воспроизведение
+        /// находит себя после перерисовки. null — сессия не сохраняется.</param>
+        public InlineAudioPlayer(byte[] data, Func<byte[]> loader, string fileName, int width,
+                                 string key = null)
         {
             _data = data;
             _loader = loader;
-            _fileName = fileName ?? "audio";
+            _fileName = string.IsNullOrWhiteSpace(fileName) ? "Аудио" : fileName;
+            _key = key;
 
             Size = new Size(width, 44);
             BackColor = Color.FromArgb(30, 31, 34);
@@ -48,8 +83,42 @@ namespace PISMO
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
                      | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
 
-            _tick = new System.Windows.Forms.Timer { Interval = 200 };
-            _tick.Tick += (s, e) => { if (!_seeking) Invalidate(); };
+            // Продолжаем то, что уже играло до перерисовки.
+            if (_key != null && _sessions.TryGetValue(_key, out var live))
+            {
+                _sess = live;
+                _volume = live.Volume;
+                if (live.Out != null && live.Out.PlaybackState == PlaybackState.Playing) EnsureTick(true);
+            }
+        }
+
+        private void EnsureTick(bool start)
+        {
+            _tick ??= NewTick();
+            if (start) _tick.Start(); else _tick.Stop();
+        }
+
+        private System.Windows.Forms.Timer NewTick()
+        {
+            var t = new System.Windows.Forms.Timer { Interval = 200 };
+            t.Tick += (s, e) =>
+            {
+                // Дошли до конца — возвращаем полосу в исходный вид: подпись
+                // «Голосовое» / имя файла вместо «0:03 / 0:03».
+                if (_sess?.Out != null && _sess.Out.PlaybackState == PlaybackState.Stopped)
+                { Reset(); return; }
+                if (!_seeking) Invalidate();
+            };
+            return t;
+        }
+
+        private void Reset()
+        {
+            EnsureTick(false);
+            DropSession(_key);
+            if (_key == null) _sess?.Dispose();
+            _sess = null;
+            Invalidate();
         }
 
         // ── Раскладка ────────────────────────────────────────────────────────
@@ -72,16 +141,14 @@ namespace PISMO
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.Clear(BackColor);
 
-            bool playing = _out != null && _out.PlaybackState == PlaybackState.Playing;
+            bool playing = _sess?.Out != null && _sess.Out.PlaybackState == PlaybackState.Playing;
 
-            // Кнопка
             var btn = BtnRect;
             using (var b = new SolidBrush(Color.FromArgb(88, 101, 242))) g.FillEllipse(b, btn);
             if (_loading)
             {
                 using var p = new Pen(Color.White, 2);
-                g.DrawArc(p, Rectangle.Inflate(btn, -8, -8),
-                          (Environment.TickCount / 3) % 360, 100);
+                g.DrawArc(p, Rectangle.Inflate(btn, -8, -8), (Environment.TickCount / 3) % 360, 100);
             }
             else if (playing)
             {
@@ -100,7 +167,6 @@ namespace PISMO
                 });
             }
 
-            // Ошибка вместо полосы — чтобы не гадать, почему тишина.
             if (_error != null)
             {
                 using var f = new Font("Segoe UI", 8.5f);
@@ -112,15 +178,14 @@ namespace PISMO
             double pos = 0, dur = 0;
             try
             {
-                if (_reader != null)
+                if (_sess?.Reader != null)
                 {
-                    dur = _reader.TotalTime.TotalSeconds;
-                    pos = _reader.CurrentTime.TotalSeconds;
+                    dur = _sess.Reader.TotalTime.TotalSeconds;
+                    pos = _sess.Reader.CurrentTime.TotalSeconds;
                 }
             }
             catch { }
 
-            // Полоса воспроизведения
             var bar = BarRect;
             using (var track = new SolidBrush(Color.FromArgb(58, 60, 66)))
                 g.FillRectangle(track, bar);
@@ -133,17 +198,20 @@ namespace PISMO
                 g.FillEllipse(knob, bar.X + w - 5, bar.Y - 3, 10, 10);
             }
 
-            // Время
+            // Пока не играем — подпись (имя файла / «Голосовое»), в процессе — время.
             using (var f = new Font("Segoe UI", 8f))
             using (var b = new SolidBrush(Color.FromArgb(190, 192, 198)))
             {
                 string t = dur > 0 ? $"{Fmt(pos)} / {Fmt(dur)}" : Path.GetFileName(_fileName);
                 var rect = new RectangleF(bar.Right + Pad, Height / 2 - 8, TimeW, 16);
-                var sf = new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
+                using var sf = new StringFormat
+                {
+                    Trimming = StringTrimming.EllipsisCharacter,
+                    FormatFlags = StringFormatFlags.NoWrap
+                };
                 g.DrawString(t, f, b, rect, sf);
             }
 
-            // Громкость
             var vol = VolRect;
             using (var track = new SolidBrush(Color.FromArgb(58, 60, 66)))
                 g.FillRectangle(track, vol);
@@ -190,19 +258,18 @@ namespace PISMO
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
-            _seeking = false;
-            _volDrag = false;
-            Capture = false;
+            _seeking = false; _volDrag = false; Capture = false;
         }
 
         private void SeekTo(int x)
         {
             try
             {
-                if (_reader == null || _reader.TotalTime.TotalSeconds <= 0) return;
+                var rd = _sess?.Reader;
+                if (rd == null || rd.TotalTime.TotalSeconds <= 0) return;
                 var bar = BarRect;
                 double frac = Math.Min(1.0, Math.Max(0.0, (x - bar.X) / (double)bar.Width));
-                _reader.CurrentTime = TimeSpan.FromSeconds(_reader.TotalTime.TotalSeconds * frac);
+                rd.CurrentTime = TimeSpan.FromSeconds(rd.TotalTime.TotalSeconds * frac);
                 Invalidate();
             }
             catch { }
@@ -212,7 +279,11 @@ namespace PISMO
         {
             var vol = VolRect;
             _volume = (float)Math.Min(1.0, Math.Max(0.0, (x - vol.X) / (double)vol.Width));
-            try { if (_out != null) _out.Volume = _volume; } catch { }
+            try
+            {
+                if (_sess != null) { _sess.Volume = _volume; if (_sess.Out != null) _sess.Out.Volume = _volume; }
+            }
+            catch { }
             Invalidate();
         }
 
@@ -221,10 +292,10 @@ namespace PISMO
         {
             if (_loading) return;
 
-            if (_out != null)
+            if (_sess?.Out != null)
             {
-                if (_out.PlaybackState == PlaybackState.Playing) { _out.Pause(); _tick.Stop(); }
-                else { _out.Play(); _tick.Start(); }
+                if (_sess.Out.PlaybackState == PlaybackState.Playing) { _sess.Out.Pause(); EnsureTick(false); }
+                else { _sess.Out.Play(); EnsureTick(true); }
                 Invalidate();
                 return;
             }
@@ -244,21 +315,21 @@ namespace PISMO
 
             try
             {
-                _ms = new MemoryStream(_data, writable: false);
-                _reader = OpenReader(_ms);
-                _out = new WaveOutEvent();
-                _out.Init(_reader);
-                _out.Volume = _volume;
-                _out.PlaybackStopped += (s, e) =>
-                {
-                    try { BeginInvoke(new Action(() => { _tick.Stop(); Invalidate(); })); } catch { }
-                };
-                _out.Play();
-                _tick.Start();
+                var sess = new Session { Volume = _volume };
+                sess.Stream = new MemoryStream(_data, writable: false);
+                sess.Reader = OpenReader(sess.Stream);
+                sess.Out = new WaveOutEvent();
+                sess.Out.Init(sess.Reader);
+                sess.Out.Volume = _volume;
+                sess.Out.Play();
+
+                _sess = sess;
+                if (_key != null) { DropSession(_key); _sessions[_key] = sess; }
+                EnsureTick(true);
             }
             catch (Exception ex)
             {
-                Cleanup();
+                _sess?.Dispose(); _sess = null;
                 _error = "Не удалось воспроизвести: " + ex.Message;
             }
             Invalidate();
@@ -276,18 +347,16 @@ namespace PISMO
             }
         }
 
-        private void Cleanup()
-        {
-            try { _tick.Stop(); } catch { }
-            try { _out?.Dispose(); } catch { }
-            try { _reader?.Dispose(); } catch { }
-            try { _ms?.Dispose(); } catch { }
-            _out = null; _reader = null; _ms = null;
-        }
-
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { Cleanup(); try { _tick.Dispose(); } catch { } }
+            if (disposing)
+            {
+                try { _tick?.Stop(); _tick?.Dispose(); } catch { }
+                _tick = null;
+                // Звук НЕ останавливаем: сессия переживает перерисовку ленты и
+                // будет подхвачена новым контролом. Без ключа держать её негде.
+                if (_key == null) { _sess?.Dispose(); _sess = null; }
+            }
             base.Dispose(disposing);
         }
     }

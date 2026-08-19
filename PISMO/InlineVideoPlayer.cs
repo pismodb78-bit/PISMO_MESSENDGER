@@ -75,11 +75,6 @@ namespace PISMO
                 AutoEllipsis = true,
                 Cursor = Cursors.Hand
             };
-            // Если видео в HEVC, показать его без конвертации почти наверняка не
-            // выйдет. Начинаем тянуть конвертер сразу, пока человек только
-            // смотрит на обложку, — к клику он обычно уже на диске.
-            try { if (_data != null && LooksLikeHevc()) VideoTranscoder.Prefetch(); } catch { }
-
             _lblPlay.Click += (s, e) => StartPlayer();
             _lblName.Click += (s, e) => StartPlayer();
             Click += (s, e) => StartPlayer();
