@@ -313,25 +313,34 @@ namespace PISMO
                 _data = loaded;
             }
 
-            try
+            // Открытие декодера и звукового устройства занимает десятки
+            // миллисекунд — в UI-потоке это заметный рывок ленты при нажатии.
+            _loading = true; Invalidate();
+            var bytes = _data; float vol = _volume;
+            Session made = null; string err = null;
+            await System.Threading.Tasks.Task.Run(() =>
             {
-                var sess = new Session { Volume = _volume };
-                sess.Stream = new MemoryStream(_data, writable: false);
-                sess.Reader = OpenReader(sess.Stream);
-                sess.Out = new WaveOutEvent();
-                sess.Out.Init(sess.Reader);
-                sess.Out.Volume = _volume;
-                sess.Out.Play();
+                try
+                {
+                    var sess = new Session { Volume = vol };
+                    sess.Stream = new MemoryStream(bytes, writable: false);
+                    sess.Reader = OpenReader(sess.Stream);
+                    sess.Out = new WaveOutEvent();
+                    sess.Out.Init(sess.Reader);
+                    sess.Out.Volume = vol;
+                    sess.Out.Play();
+                    made = sess;
+                }
+                catch (Exception ex) { err = ex.Message; }
+            });
+            _loading = false;
 
-                _sess = sess;
-                if (_key != null) { DropSession(_key); _sessions[_key] = sess; }
-                EnsureTick(true);
-            }
-            catch (Exception ex)
-            {
-                _sess?.Dispose(); _sess = null;
-                _error = "Не удалось воспроизвести: " + ex.Message;
-            }
+            if (IsDisposed) { made?.Dispose(); return; }
+            if (made == null) { _error = "Не удалось воспроизвести: " + err; Invalidate(); return; }
+
+            _sess = made;
+            if (_key != null) { DropSession(_key); _sessions[_key] = made; }
+            EnsureTick(true);
             Invalidate();
         }
 

@@ -3126,6 +3126,7 @@ namespace PISMO
         // Подписка на прокрутку панели чата — догрузка старых у верха + кнопка «вниз».
         private bool _dmScrollHooked;
         private int _lastDmTop = int.MaxValue;   // предыдущая позиция прокрутки (для направления)
+        private DateTime _lastOlderLoad = DateTime.MinValue;   // когда последний раз догружали
         private void EnsureDmScrollHook()
         {
             // Кнопка «вниз к новым» убрана из приложения: как отдельное окно поверх
@@ -3135,7 +3136,7 @@ namespace PISMO
             // Колесо перехватывается до панели (плавная прокрутка), поэтому логику
             // догрузки/кнопки «вниз» отдаём колбэком — событие MouseWheel уже не придёт.
             try { ChatScroll.AttachChat(pnlMessages, OnChatScrolled); } catch { }
-            _lastDmTop = int.MaxValue;
+            _lastDmTop = -pnlMessages.AutoScrollPosition.Y;
             if (_dmScrollHooked || pnlMessages == null) return;
             _dmScrollHooked = true;
             pnlMessages.Scroll += (s, e) => OnChatScrolled();
@@ -3144,7 +3145,13 @@ namespace PISMO
         private void OnChatScrolled()
         {
             int top = -pnlMessages.AutoScrollPosition.Y;
-            bool movingUp = top < _lastDmTop;      // догружаем ТОЛЬКО при движении вверх
+            // Событие Scroll приходит не только от пользователя: панель сама
+            // прокручивается при смене фокуса, изменении раскладки и пересборке
+            // ленты. Раньше любой такой «сдвиг» считался движением вверх и мог
+            // запустить догрузку — то есть ПОЛНУЮ перезагрузку чата, отсюда и
+            // подлагивания на пустом месте (например, при клике по кнопке
+            // воспроизведения). Считаем движением только заметный сдвиг вверх.
+            bool movingUp = top < _lastDmTop - 4;
             _lastDmTop = top;
             if (movingUp) MaybeLoadOlder();
             UpdateScrollDownButton();
@@ -3159,6 +3166,10 @@ namespace PISMO
             if (!grp && !dm) return;
             if (_dmLoadingOlder || !_dmHasMore) return;
             if (-pnlMessages.AutoScrollPosition.Y > 60) return;   // ещё не у верха
+            // Пауза между догрузками: каждая увеличивает страницу и перерисовывает
+            // всю ленту, поэтому серия срабатываний подряд ощущается как фриз.
+            if ((DateTime.UtcNow - _lastOlderLoad).TotalMilliseconds < 800) return;
+            _lastOlderLoad = DateTime.UtcNow;
 
             _dmLoadingOlder = true;
             int viewport = pnlMessages.ClientSize.Height;
