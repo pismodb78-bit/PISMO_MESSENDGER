@@ -1779,28 +1779,46 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
+                // ВАЖНО про производительность. Прежний вариант джойнил messages
+                // условием «(sender=@me AND receiver=u.id) OR (sender=u.id AND
+                // receiver=@me)». OR в ON не даёт использовать индекс, поэтому на
+                // КАЖДУЮ строку users шло полное сканирование messages — а там
+                // лежат LONGBLOB-вложения, то есть с диска поднимались и они.
+                // Плюс к этому коррелированный подзапрос за текстом последнего
+                // сообщения и EXISTS — тоже на каждого пользователя. При живой
+                // переписке этот запрос выполняется на каждую галочку «прочитано»,
+                // отсюда и полки по 50–90 МБ/с на диске.
+                //
+                // Теперь: агрегат считается ОДИН раз по своим сообщениям (две
+                // ветки UNION ALL, каждая ложится на индекс), а текст последнего
+                // сообщения берётся одной выборкой по первичному ключу.
                 string sql = @"
                     SELECT u.id, u.Name, u.Surname, u.login,
-                           MAX(m.created_at) AS last_time,
-                           (SELECT m2.text FROM messages m2
-                            WHERE (m2.sender_id = @me AND m2.receiver_id = u.id)
-                               OR (m2.sender_id = u.id AND m2.receiver_id = @me)
-                            ORDER BY m2.created_at DESC LIMIT 1) AS last_msg,
-                           SUM(CASE WHEN m.sender_id=u.id
-                                     AND m.receiver_id=@me
-                                     AND m.is_read=0 THEN 1 ELSE 0 END) AS unread
+                           c.last_time AS last_time,
+                           mm.text     AS last_msg,
+                           IFNULL(c.unread, 0) AS unread
                     FROM users u
-                    LEFT JOIN messages m
-                           ON (m.sender_id=@me AND m.receiver_id=u.id)
-                           OR (m.sender_id=u.id AND m.receiver_id=@me)
+                    LEFT JOIN (
+                        SELECT partner_id,
+                               MAX(created_at) AS last_time,
+                               MAX(id)         AS last_id,
+                               SUM(unread)     AS unread
+                        FROM (
+                            SELECT receiver_id AS partner_id, created_at, id, 0 AS unread
+                            FROM messages WHERE sender_id = @me
+                            UNION ALL
+                            SELECT sender_id AS partner_id, created_at, id,
+                                   CASE WHEN is_read = 0 THEN 1 ELSE 0 END AS unread
+                            FROM messages WHERE receiver_id = @me
+                        ) t
+                        GROUP BY partner_id
+                    ) c ON c.partner_id = u.id
+                    LEFT JOIN messages mm ON mm.id = c.last_id
                     WHERE u.id <> @me
-                      AND ( EXISTS (SELECT 1 FROM friends f
+                      AND ( c.partner_id IS NOT NULL
+                         OR EXISTS (SELECT 1 FROM friends f
                                     WHERE " + FriendsRepository.AcceptedPredicate("f") + @" AND ((f.user_id=@me AND f.friend_id=u.id)
-                                                       OR (f.user_id=u.id AND f.friend_id=@me)))
-                         OR EXISTS (SELECT 1 FROM messages mm
-                                    WHERE (mm.sender_id=@me AND mm.receiver_id=u.id)
-                                       OR (mm.sender_id=u.id AND mm.receiver_id=@me)) )
-                    GROUP BY u.id, u.Name, u.Surname, u.login
+                                                       OR (f.user_id=u.id AND f.friend_id=@me))) )
                     ORDER BY last_time DESC, u.Name ASC";
 
                 using var cmd = new MySqlCommand(sql, conn);
