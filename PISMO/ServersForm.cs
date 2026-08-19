@@ -3080,6 +3080,18 @@ namespace PISMO
                             return;
                         }
                     }
+                    // Отправленное — сразу в локальный кеш: байты уже здесь, иначе
+                    // своё же вложение поедет обратно из базы при первом открытии.
+                    try
+                    {
+                        int mid = (int)cmd.LastInsertedId;
+                        if (image is { Length: > 0 }) MediaCache.Put(mid, "simg", image);
+                        if (audio is { Length: > 0 }) MediaCache.Put(mid, "saudio", audio);
+                        if (video is { Length: > 0 }) MediaCache.Put(mid, "svideo", video);
+                        if (file  is { Length: > 0 }) MediaCache.Put(mid, "sfile", file, fileName);
+                    }
+                    catch { }
+
                     // Подпись к вложению тоже может содержать «@…» — разбираем её по
                     // открытому тексту, до того как он станет шифром в БД.
                     try { ServerMentions.Record(conn, cmd.LastInsertedId, channel, _me, caption ?? ""); } catch { }

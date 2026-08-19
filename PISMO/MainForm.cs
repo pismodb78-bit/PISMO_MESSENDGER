@@ -4472,6 +4472,19 @@ namespace PISMO
                         }
                     }
 
+                    // Только что отправленное кладём в локальный кеш: байты уже в
+                    // руках, а иначе своё же вложение пришлось бы качать обратно из
+                    // базы при первом же открытии.
+                    try
+                    {
+                        int mid = (int)newId;
+                        if (fileData is { Length: > 0 }) MediaCache.Put(mid, "file", fileData, fileName);
+                        if (imageData is { Length: > 0 }) MediaCache.Put(mid, "img", imageData, fileName);
+                        if (audioData is { Length: > 0 }) MediaCache.Put(mid, "audio", audioData);
+                        if (videoData is { Length: > 0 }) MediaCache.Put(mid, "video", videoData);
+                    }
+                    catch { }
+
                     success = true;
                 }
                 catch (Exception ex) { if (!cancelled) err = ex.Message; }
