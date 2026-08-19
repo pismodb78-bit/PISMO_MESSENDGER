@@ -2758,15 +2758,44 @@ namespace PISMO
                     cmd.Parameters.AddWithValue("@c", channel);
                     cmd.Parameters.AddWithValue("@s", _me);
                     cmd.Parameters.AddWithValue("@t", Crypto.Enc(caption ?? ""));
-                    AddBlobParam(cmd, "@img", image);
-                    AddBlobParam(cmd, "@aud", audio);
-                    AddBlobParam(cmd, "@vid", video);
-                    AddBlobParam(cmd, "@fd", file);
+                    // Крупное вложение одним пакетом не проходит: сервер режет по
+                    // max_allowed_packet (в ЛС это давно обходится дозаписью).
+                    // Поэтому большие блобы вставляем пустыми, а данные дописываем
+                    // кусками по 4 МБ.
+                    byte[] bigData = null; string bigCol = null;
+                    foreach (var (col, data) in new[] { ("image_data", image), ("audio_data", audio),
+                                                        ("video_data", video), ("file_data", file) })
+                        if (data != null && data.LongLength > ChunkThreshold) { bigCol = col; bigData = data; break; }
+
+                    AddBlobParam(cmd, "@img", bigCol == "image_data" ? null : image);
+                    AddBlobParam(cmd, "@aud", bigCol == "audio_data" ? null : audio);
+                    AddBlobParam(cmd, "@vid", bigCol == "video_data" ? null : video);
+                    AddBlobParam(cmd, "@fd",  bigCol == "file_data"  ? null : file);
                     cmd.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
                     if (withReply) cmd.Parameters.AddWithValue("@r", replyId);
                     cmd.CommandTimeout = 600;
                     activeCmd = cmd;
                     cmd.ExecuteNonQuery();
+
+                    if (bigCol != null)
+                    {
+                        long msgId = cmd.LastInsertedId;
+                        if (!AppendBlobInChunks(conn, msgId, bigCol, bigData,
+                                                () => cancelled, c => activeCmd = c))
+                        {
+                            // Не дописали — строка без вложения никому не нужна.
+                            try
+                            {
+                                using var del = new MySqlCommand(
+                                    "DELETE FROM server_messages WHERE id=@id", conn);
+                                del.Parameters.AddWithValue("@id", msgId);
+                                del.ExecuteNonQuery();
+                            }
+                            catch { }
+                            if (!cancelled) err = "Не удалось загрузить файл целиком.";
+                            return;
+                        }
+                    }
                     // Подпись к вложению тоже может содержать «@…» — разбираем её по
                     // открытому тексту, до того как он станет шифром в БД.
                     try { ServerMentions.Record(conn, cmd.LastInsertedId, channel, _me, caption ?? ""); } catch { }
@@ -2822,9 +2851,9 @@ namespace PISMO
             try
             {
                 var bytes = File.ReadAllBytes(path);
-                if (bytes.LongLength > 30L * 1024 * 1024)
+                if (bytes.LongLength > 200L * 1024 * 1024)
                 {
-                    MessageBox.Show("Файл слишком большой (>30 МБ).", "PISMO");
+                    MessageBox.Show("Файл слишком большой (>200 МБ).", "PISMO");
                     return;
                 }
                 string ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
@@ -2836,6 +2865,43 @@ namespace PISMO
 
         /// <summary>Кладёт вложение в ожидание и показывает полоску-превью над вводом.
         /// Второе вложение заменяет первое (как в мессенджере — одно за раз).</summary>
+        /// <summary>Начиная с какого размера вложение заливается кусками.</summary>
+        private const long ChunkThreshold = 4L * 1024 * 1024;
+
+        /// <summary>
+        /// Дозаписывает блоб порциями по 4 МБ: 200-мегабайтный файл одним пакетом
+        /// сервер не примет (max_allowed_packet обычно кратно меньше). Возвращает
+        /// false, если отменили или что-то упало — вызывающий удалит строку.
+        /// </summary>
+        private static bool AppendBlobInChunks(MySqlConnection conn, long msgId, string column,
+                                               byte[] data, Func<bool> cancelled,
+                                               Action<MySqlCommand> track)
+        {
+            try
+            {
+                const int CHUNK = 4 * 1024 * 1024;
+                long off = 0, total = data.LongLength;
+                while (off < total)
+                {
+                    if (cancelled()) return false;
+                    int len = (int)Math.Min(CHUNK, total - off);
+                    var part = new byte[len];
+                    Array.Copy(data, off, part, 0, len);
+                    using var up = new MySqlCommand(
+                        $"UPDATE server_messages SET {column} = CONCAT(IFNULL({column}, _binary''), @c) WHERE id=@id", conn);
+                    up.Parameters.Add("@c", MySqlDbType.LongBlob).Value = part;
+                    up.Parameters.AddWithValue("@id", msgId);
+                    up.CommandTimeout = 600;
+                    track(up);
+                    up.ExecuteNonQuery();
+                    track(null);
+                    off += len;
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
         private void StageChannelAttachment(byte[] bytes, string fileName, bool isImg)
         {
             if (bytes == null || bytes.Length == 0) return;
@@ -2934,9 +3000,9 @@ namespace PISMO
             try
             {
                 var bytes = File.ReadAllBytes(ofd.FileName);
-                if (bytes.LongLength > 30L * 1024 * 1024)
+                if (bytes.LongLength > 200L * 1024 * 1024)
                 {
-                    MessageBox.Show("Файл слишком большой (>30 МБ).", "PISMO");
+                    MessageBox.Show("Файл слишком большой (>200 МБ).", "PISMO");
                     return;
                 }
                 string ext = Path.GetExtension(ofd.FileName).TrimStart('.').ToLowerInvariant();

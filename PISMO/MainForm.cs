@@ -1943,8 +1943,11 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
+                // Себя в списке чатов не показываем: писать самому себе незачем,
+                // а карточка «… (Вы)» только занимала место. Параметр @me тут уже
+                // передавался, но в запросе не использовался.
                 const string sql =
-                    "SELECT id, Name, Surname, login, role FROM users ORDER BY Name";
+                    "SELECT id, Name, Surname, login, role FROM users WHERE id <> @me ORDER BY Name";
                 using var cmd = new MySqlCommand(sql, conn);
                 cmd.Parameters.AddWithValue("@me", UserSession.UserId);
 
@@ -4581,10 +4584,10 @@ namespace PISMO
                 return;
             }
 
-            const long MAX = 64L * 1024 * 1024; // 64 МБ
+            const long MAX = 200L * 1024 * 1024; // 200 МБ
             if (bytes.Length > MAX)
             {
-                MessageBox.Show($"Файл слишком большой ({bytes.Length / 1024 / 1024} МБ).\nМаксимум — 64 МБ.");
+                MessageBox.Show($"Файл слишком большой ({bytes.Length / 1024 / 1024} МБ).\nМаксимум — 200 МБ.");
                 return;
             }
 
