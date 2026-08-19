@@ -27,6 +27,7 @@ namespace PISMO
         private bool _converting, _converted;
         private bool _statusMode;   // в плашке сейчас прогресс, а не финальное сообщение
         private bool _convertFailed;
+        private readonly bool _audioOnly;   // музыка: та же логика, но без кадра
 
         private Label _lblPlay, _lblName;
 
@@ -36,15 +37,18 @@ namespace PISMO
         /// бы тянуть при каждом открытии чата — ради превью, которое, может, и не
         /// станут смотреть.
         /// </summary>
-        public InlineVideoPlayer(Func<byte[]> loader, string fileName, int boxW, int boxH)
-            : this((byte[])null, fileName, boxW, boxH)
+        public InlineVideoPlayer(Func<byte[]> loader, string fileName, int boxW, int boxH,
+                                 bool audioOnly = false)
+            : this((byte[])null, fileName, boxW, boxH, audioOnly)
         {
             _loader = loader;
         }
 
-        public InlineVideoPlayer(byte[] data, string fileName, int boxW, int boxH)
+        public InlineVideoPlayer(byte[] data, string fileName, int boxW, int boxH,
+                                 bool audioOnly = false)
         {
             _data = data;
+            _audioOnly = audioOnly;
             _fileName = fileName ?? "video.mp4";
             Size = new Size(boxW, boxH);
             BackColor = Color.FromArgb(20, 21, 24);
@@ -55,11 +59,15 @@ namespace PISMO
             _lblPlay = new Label
             {
                 Dock = DockStyle.Fill,
-                Text = "▶",
-                Font = new Font("Segoe UI", Math.Max(18f, Math.Min(boxW, boxH) / 6f), FontStyle.Bold),
+                Text = audioOnly ? "▶  " + Path.GetFileName(fileName ?? "") : "▶",
+                Font = audioOnly
+                    ? new Font("Segoe UI", 9.5f)
+                    : new Font("Segoe UI", Math.Max(18f, Math.Min(boxW, boxH) / 6f), FontStyle.Bold),
                 ForeColor = Color.White,
                 BackColor = Color.FromArgb(20, 21, 24),
-                TextAlign = ContentAlignment.MiddleCenter,
+                TextAlign = audioOnly ? ContentAlignment.MiddleLeft : ContentAlignment.MiddleCenter,
+                Padding = audioOnly ? new Padding(10, 0, 6, 0) : new Padding(0),
+                AutoEllipsis = audioOnly,
                 Cursor = Cursors.Hand
             };
             _lblName = new Label
@@ -78,38 +86,45 @@ namespace PISMO
             // Если видео в HEVC, показать его без конвертации почти наверняка не
             // выйдет. Начинаем тянуть конвертер сразу, пока человек только
             // смотрит на обложку, — к клику он обычно уже на диске.
-            try { if (_data != null && LooksLikeHevc()) VideoTranscoder.Prefetch(); } catch { }
+            try { if (!audioOnly && _data != null && LooksLikeHevc()) VideoTranscoder.Prefetch(); } catch { }
 
             _lblPlay.Click += (s, e) => StartPlayer();
             _lblName.Click += (s, e) => StartPlayer();
             Click += (s, e) => StartPlayer();
             Controls.Add(_lblPlay);
-            Controls.Add(_lblName);
+            if (!audioOnly) Controls.Add(_lblName); else _lblName.Dispose();
         }
 
         /// <summary>Страница плеера. Пишется заново после перекодирования — там
         /// зашито имя файла, а оно меняется на сконвертированное.</summary>
         private void WriteHtml()
         {
-            string html =
-                "<!doctype html><html><head><meta charset='utf-8'><style>" +
-                "html,body{margin:0;height:100%;background:#141518;overflow:hidden;}" +
-                "video{width:100%;height:100%;object-fit:contain;background:#141518;outline:none;}" +
-                "</style></head><body>" +
-                $"<video src='https://{Host}/{_safeName}' autoplay playsinline controls " +
-                "controlslist='nodownload' preload='auto'></video>" +
-                // Сообщаем хосту, если видеодорожку декодировать нечем: Chromium в
-                // этом случае молча играет ОДИН ЗВУК и показывает чёрный
-                // прямоугольник (и другой, компактный набор кнопок) — со стороны
-                // выглядит как «сломалось приложение». Признак — videoWidth == 0
-                // при уже прочитанных метаданных.
-                "<script>" +
-                "var v=document.querySelector('video');" +
-                "function say(k){try{window.chrome.webview.postMessage(k);}catch(e){}}" +
-                "v.addEventListener('loadedmetadata',function(){if(!v.videoWidth)say('novideo');});" +
-                "v.addEventListener('error',function(){say('novideo');});" +
-                "</script>" +
-                "</body></html>";
+            string html = _audioOnly
+                ? "<!doctype html><html><head><meta charset='utf-8'><style>" +
+                  "html,body{margin:0;height:100%;background:#141518;display:flex;" +
+                  "align-items:center;justify-content:center;overflow:hidden;}" +
+                  "audio{width:96%;}" +
+                  "</style></head><body>" +
+                  $"<audio src='https://{Host}/{_safeName}' controls autoplay preload='auto'></audio>" +
+                  "</body></html>"
+                : "<!doctype html><html><head><meta charset='utf-8'><style>" +
+                  "html,body{margin:0;height:100%;background:#141518;overflow:hidden;}" +
+                  "video{width:100%;height:100%;object-fit:contain;background:#141518;outline:none;}" +
+                  "</style></head><body>" +
+                  $"<video src='https://{Host}/{_safeName}' autoplay playsinline controls " +
+                  "controlslist='nodownload' preload='auto'></video>" +
+                  // Сообщаем хосту, если видеодорожку декодировать нечем: Chromium в
+                  // этом случае молча играет ОДИН ЗВУК и показывает чёрный
+                  // прямоугольник (и другой, компактный набор кнопок) — со стороны
+                  // выглядит как «сломалось приложение». Признак — videoWidth == 0
+                  // при уже прочитанных метаданных.
+                  "<script>" +
+                  "var v=document.querySelector('video');" +
+                  "function say(k){try{window.chrome.webview.postMessage(k);}catch(e){}}" +
+                  "v.addEventListener('loadedmetadata',function(){if(!v.videoWidth)say('novideo');});" +
+                  "v.addEventListener('error',function(){say('novideo');});" +
+                  "</script>" +
+                  "</body></html>";
             File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
         }
 
@@ -145,13 +160,15 @@ namespace PISMO
                 _safeName = "v" + Path.GetExtension(_fileName);
                 // Если это видео уже перекодировали раньше — сразу берём готовый
                 // H.264, не показывая чёрный экран и не гоняя конвертер снова.
-                string ready = VideoTranscoder.CachedPath(_data);
+                // Для музыки кэш конвертаций не смотрим — там только видео, а хэш
+                // по стомегабайтному файлу считать незачем.
+                string ready = _audioOnly ? null : VideoTranscoder.CachedPath(_data);
 
                 // HEVC системе показать нечем — это известно ЗАРАНЕЕ, по самому
                 // файлу. Раньше мы всё равно запускали плеер, он играл один звук
                 // на чёрном фоне, и только потом шла конвертация с перезапуском.
                 // Теперь конвертируем сразу и открываем уже готовое видео.
-                if (ready == null && LooksLikeHevc())
+                if (!_audioOnly && ready == null && LooksLikeHevc())
                 {
                     _converting = true;
                     try { ready = await VideoTranscoder.ToH264Async(_data, ShowStatus); }

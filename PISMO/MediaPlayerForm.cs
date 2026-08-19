@@ -119,6 +119,13 @@ namespace PISMO
                     Host, _tempDir, CoreWebView2HostResourceAccessKind.Allow);
                 _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                // Без этого неудачная навигация выглядела как просто пустое чёрное
+                // окно — ни ошибки, ни подсказки, что делать.
+                _web.CoreWebView2.NavigationCompleted += (s2, e2) =>
+                {
+                    if (e2.IsSuccess) return;
+                    ShowStatus("Не удалось открыть файл во встроенном плеере (" + e2.WebErrorStatus + ").");
+                };
                 _web.CoreWebView2.Navigate($"https://{Host}/index.html");
             }
             catch (Exception ex)

@@ -1730,6 +1730,18 @@ namespace PISMO
                                 }
                                 catch { }
                             }
+                            else if (MediaPlayerForm.IsAudio(fext))
+                            {
+                                // Музыка — компактной полосой прямо в ленте, как в ЛС.
+                                try
+                                {
+                                    int bw = Math.Min(msgWidth - 10, 320);
+                                    var ap = new InlineVideoPlayer(sm.file, sm.fname, bw, 54, audioOnly: true)
+                                             { Location = new Point(LEFT, y) };
+                                    holder.Controls.Add(ap); y += 60;
+                                }
+                                catch { }
+                            }
                             else
                             {
                                 var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false);

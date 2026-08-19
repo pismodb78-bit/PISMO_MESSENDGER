@@ -3727,6 +3727,30 @@ namespace PISMO
                 catch { inlineVideoShown = false; }
             }
 
+            // Музыка — таким же плеером прямо в пузыре, только вместо кадра
+            // компактная полоса воспроизведения. Отдельное окно для этого больше
+            // не открывается.
+            if (!inlineVideoShown && !string.IsNullOrWhiteSpace(fileName)
+                && MediaPlayerForm.IsAudio(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant())
+                && (fileData is { Length: > 0 } || (msgId > 0 && fileSize > 0)))
+            {
+                try
+                {
+                    int boxW = Math.Min(innerW, 320);
+                    const int boxH = 54;
+                    int audioId = msgId; bool audioGroup = isGroup; string audioName = fileName;
+                    var ap = fileData is { Length: > 0 }
+                        ? new InlineVideoPlayer(fileData, fileName, boxW, boxH, audioOnly: true)
+                        : new InlineVideoPlayer(() => LoadFileBytes(audioId, audioName, audioGroup),
+                                                fileName, boxW, boxH, audioOnly: true);
+                    ap.Location = new Point(PAD, innerY);
+                    bubble.Controls.Add(ap);
+                    innerY += boxH + 6;
+                    inlineVideoShown = true;   // карточку файла уже не рисуем
+                }
+                catch { }
+            }
+
             // Документ / архив (теперь проверяем только fileName, так как fileData загружается по требованию)
             if (!inlineVideoShown && !string.IsNullOrWhiteSpace(fileName))
             {
