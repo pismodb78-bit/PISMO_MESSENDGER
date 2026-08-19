@@ -26,7 +26,7 @@ namespace PISMO
         private MemoryStream _ms;
         private readonly System.Windows.Forms.Timer _tick;
 
-        private bool _loading, _seeking;
+        private bool _loading, _seeking, _volDrag;
         private float _volume = 0.8f;
         private string _error;
 
@@ -147,8 +147,11 @@ namespace PISMO
             var vol = VolRect;
             using (var track = new SolidBrush(Color.FromArgb(58, 60, 66)))
                 g.FillRectangle(track, vol);
+            int vw = (int)(vol.Width * _volume);
             using (var done = new SolidBrush(Color.FromArgb(140, 146, 160)))
-                g.FillRectangle(done, vol.X, vol.Y, (int)(vol.Width * _volume), vol.Height);
+                g.FillRectangle(done, vol.X, vol.Y, vw, vol.Height);
+            using (var knob = new SolidBrush(Color.FromArgb(225, 227, 232)))
+                g.FillEllipse(knob, vol.X + vw - 4, vol.Y - 2, 9, 9);
         }
 
         private static string Fmt(double sec)
@@ -167,23 +170,29 @@ namespace PISMO
 
             var bar = BarRect;
             if (e.Y >= bar.Y - 6 && e.Y <= bar.Bottom + 6 && e.X >= bar.X && e.X <= bar.Right)
-            { _seeking = true; SeekTo(e.X); return; }
+            { _seeking = true; Capture = true; SeekTo(e.X); return; }
 
             var vol = VolRect;
-            if (e.Y >= vol.Y - 6 && e.Y <= vol.Bottom + 6 && e.X >= vol.X && e.X <= vol.Right)
-            { SetVolume(e.X); return; }
+            if (e.Y >= vol.Y - 8 && e.Y <= vol.Bottom + 8 && e.X >= vol.X - 6 && e.X <= vol.Right + 6)
+            { _volDrag = true; Capture = true; SetVolume(e.X); return; }
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            if (_seeking && e.Button == MouseButtons.Left) SeekTo(e.X);
+            if (e.Button != MouseButtons.Left) return;
+            // Тянуть, а не только кликать: пока кнопка зажата, ползунок следует за
+            // курсором — даже если он ушёл за пределы дорожки (значение зажимается).
+            if (_seeking) SeekTo(e.X);
+            else if (_volDrag) SetVolume(e.X);
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
             _seeking = false;
+            _volDrag = false;
+            Capture = false;
         }
 
         private void SeekTo(int x)
