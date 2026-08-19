@@ -1194,6 +1194,14 @@ namespace PISMO
                 menu.Items.Add("🔊  Присоединиться к звонку", null, (s, e) => SelectChannel(cid, ctype, cname));
             if (ctype == "voice" && _canManage)
                 menu.Items.Add("👥  Лимит участников…", null, (s, e) => EditChannelLimit(cid, cname));
+            if (_canManage)
+            {
+                menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add("✏  Переименовать канал…", null, (s, e) => RenameChannel(cid, cname));
+                var del = new ToolStripMenuItem("🗑  Удалить канал", null, (s, e) => DeleteChannel(cid, cname, ctype))
+                { ForeColor = Color.FromArgb(237, 66, 69) };
+                menu.Items.Add(del);
+            }
             menu.Items.Add("🔕  Заглушить уведомления сервера", null, (s, e) => ToggleServerMute());
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("✓  Пометить прочитанным", null, (s, e) =>
@@ -1201,6 +1209,110 @@ namespace PISMO
             menu.Items.Add("✓✓  Пометить ВЕСЬ сервер прочитанным", null, (s, e) =>
                 System.Threading.Tasks.Task.Run(() => ServerReads.MarkServerRead(_me, _serverId)));
             menu.Show(Cursor.Position);
+        }
+
+        /// <summary>Переименование канала. Имя видно всем участникам сервера,
+        /// поэтому после правки перечитываем список у себя и просим остальных.</summary>
+        private void RenameChannel(int cid, string cname)
+        {
+            if (!_canManage) return;
+            string name = Prompt("Новое название канала", cname);
+            if (name == null) return;                       // отмена
+            name = name.Trim();
+            if (name.Length == 0) return;
+            if (name == cname) return;                      // ничего не изменилось
+
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "UPDATE server_channels SET name=@n WHERE id=@c AND server_id=@s", conn);
+                cmd.Parameters.AddWithValue("@n", name);
+                cmd.Parameters.AddWithValue("@c", cid);
+                cmd.Parameters.AddWithValue("@s", _serverId);
+                cmd.ExecuteNonQuery();
+
+                if (_channelId == cid)
+                {
+                    _channelName = name;
+                    _lblTitle.Text = (_channelType == "voice" ? "🔊 " : "# ") + name;
+                }
+                LoadChannels();
+            }
+            catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        /// <summary>
+        /// Удаление канала вместе со всем, что к нему привязано: сообщениями,
+        /// упоминаниями, метками прочитанного и присутствием в голосовом.
+        /// Внешних ключей с каскадом в схеме нет, поэтому чистим руками — иначе
+        /// в базе остались бы висеть сообщения несуществующего канала.
+        /// </summary>
+        private void DeleteChannel(int cid, string cname, string ctype)
+        {
+            if (!_canManage) return;
+
+            int msgs = 0;
+            try
+            {
+                using var c0 = DBHelper.OpenConnection();
+                using var cnt = new MySqlCommand(
+                    "SELECT COUNT(*) FROM server_messages WHERE channel_id=@c", c0);
+                cnt.Parameters.AddWithValue("@c", cid);
+                msgs = Convert.ToInt32(cnt.ExecuteScalar());
+            }
+            catch { }
+
+            string warn = $"Удалить канал «{cname}»?";
+            if (msgs > 0) warn += $"\n\nВместе с ним будут удалены все сообщения канала ({msgs}).";
+            warn += "\n\nЭто действие необратимо.";
+            if (MessageBox.Show(this, warn, "Удаление канала",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+
+                // Порядок: сначала зависимые записи, потом сам канал.
+                void Del(string sql)
+                {
+                    try
+                    {
+                        using var c = new MySqlCommand(sql, conn);
+                        c.Parameters.AddWithValue("@c", cid);
+                        c.CommandTimeout = 600;
+                        c.ExecuteNonQuery();
+                    }
+                    catch (MySqlException mex) when (mex.Number == 1146) { /* таблицы нет — нечего чистить */ }
+                }
+
+                Del("DELETE FROM server_mentions WHERE channel_id=@c");
+                Del("DELETE FROM server_reads    WHERE channel_id=@c");
+                Del("DELETE FROM voice_presence  WHERE channel_id=@c");
+                Del("DELETE FROM server_messages WHERE channel_id=@c");
+
+                using (var c = new MySqlCommand(
+                    "DELETE FROM server_channels WHERE id=@c AND server_id=@s", conn))
+                {
+                    c.Parameters.AddWithValue("@c", cid);
+                    c.Parameters.AddWithValue("@s", _serverId);
+                    c.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex) { ShowDbError(ex); return; }
+
+            // Удалили открытый канал — освобождаем ленту и выходим из звонка.
+            if (_channelId == cid)
+            {
+                if (ctype == "voice") { try { _joinedVoice.Remove(cid); } catch { } }
+                _channelId = -1; _channelType = null; _channelName = null;
+                _renderedKey = null; _renderedSig = null;
+                try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
+                try { _lblTitle.Text = "Выберите канал"; } catch { }
+            }
+
+            LoadChannels();
         }
 
         /// <summary>Вместимость голосового канала: 0 (или пусто) — без ограничения,
