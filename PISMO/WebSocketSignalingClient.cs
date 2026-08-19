@@ -21,8 +21,49 @@ namespace PISMO
         private CancellationTokenSource _cts;
         private int _myUserId;
         private bool _isConnecting;
+        private bool _softToken; // true → регистрируемся без токена (после auth_error)
 
         public bool IsConnected => _ws?.State == WebSocketState.Open;
+
+        // ── Health-check (ping/pong с ожиданием по таймеру) ─────────────────
+        // «Сокет открыт» ещё не значит «доставляет». Поэтому раз в PingIntervalMs
+        // шлём {type:'ping'} и ждём {type:'pong'}. IsHealthy = сокет открыт И pong
+        // приходил недавно. Пока pong не пришёл (или перестал приходить) — считаем
+        // WS нерабочим, и MainForm включает опрос-фолбэк.
+        private DateTime _lastPongUtc = DateTime.MinValue;
+        private bool _pongEverReceived;           // сервер поддерживает ping/pong?
+        private System.Threading.Timer _pingTimer;
+        private const int PingIntervalMs = 7000;
+        private const int HealthWindowSec = 20;   // ~2–3 пропущенных pong => нездоров
+
+        // ВАЖНО: если сервер СТАРЫЙ и не отвечает на {type:'ping'}, pong не придёт
+        // НИКОГДА — раньше из-за этого IsHealthy был вечно false и фоновый опрос БД
+        // молотил каждые 3 секунды (подлагивание), хотя WS исправно доставлял
+        // сообщения. Поэтому строгий режим (окно по pong) включается только после
+        // ПЕРВОГО полученного pong; до этого здоровье = «сокет открыт».
+        // _lastPongUtc также обновляется ЛЮБЫМ входящим сообщением — живой трафик
+        // сам по себе доказывает, что канал доставляет.
+        public bool IsHealthy => IsConnected
+            && (!_pongEverReceived
+                || (DateTime.UtcNow - _lastPongUtc).TotalSeconds < HealthWindowSec);
+
+        private void StartPing()
+        {
+            SendPing(); // сразу после подключения — чтобы быстро подтвердить живость
+            try { _pingTimer?.Dispose(); } catch { }
+            _pingTimer = new System.Threading.Timer(_ => SendPing(), null, PingIntervalMs, PingIntervalMs);
+        }
+
+        private void SendPing()
+        {
+            if (!IsConnected) return;
+            try
+            {
+                var bytes = Encoding.UTF8.GetBytes("{\"type\":\"ping\"}");
+                _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+            catch { }
+        }
 
         /// <summary>Событие приёма сигнального сообщения: type, senderUserId, sessionId, payload</summary>
         public event Action<string, int, int, string> OnMessageReceived;
@@ -43,12 +84,18 @@ namespace PISMO
                 await _ws.ConnectAsync(new Uri(wsUrl), _cts.Token);
                 System.Diagnostics.Debug.WriteLine($"[WS CLIENT] ✓ Подключено к {wsUrl}");
 
-                // Отправляем пакет регистрации
-                var regMsg = JsonSerializer.Serialize(new { type = "register", userId = _myUserId });
+                // Отправляем пакет регистрации с JWT — сервер проверяет подпись
+                // и совпадение userId с токеном (защита от подделки чужого id).
+                // После auth_error регистрируемся без токена (мягкий режим сервера),
+                // чтобы сообщения всё равно доставлялись.
+                string regToken = _softToken ? "" : (UserSession.AuthToken ?? "");
+                var regMsg = JsonSerializer.Serialize(new { type = "register", userId = _myUserId, token = regToken });
                 var regBytes = Encoding.UTF8.GetBytes(regMsg);
                 await _ws.SendAsync(new ArraySegment<byte>(regBytes), WebSocketMessageType.Text, true, _cts.Token);
+                System.Diagnostics.Debug.WriteLine($"[WS] register отправлен: userId={_myUserId}, token={(string.IsNullOrEmpty(regToken) ? "ПУСТОЙ" : "есть")}");
 
                 _ = Task.Run(() => ReceiveLoop(_cts.Token));
+                StartPing();   // health-check ping/pong
             }
             catch (Exception ex)
             {
@@ -144,11 +191,31 @@ namespace PISMO
                 });
                 var bytes = Encoding.UTF8.GetBytes(msg);
                 _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                System.Diagnostics.Debug.WriteLine($"[WS SEND] type={type} target={targetUserId} session={sessionId} payload={payload}");
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[WS CLIENT SEND ERROR] {ex.Message}");
             }
+        }
+
+        // Безопасное чтение полей JSON (ключ может отсутствовать / иметь иной тип).
+        private static string TryStr(JsonElement root, string name)
+        {
+            if (!root.TryGetProperty(name, out var v)) return "";
+            try { return v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString(); }
+            catch { return ""; }
+        }
+        private static int TryInt(JsonElement root, string name)
+        {
+            if (!root.TryGetProperty(name, out var v)) return 0;
+            try
+            {
+                if (v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out int n)) return n;
+                if (v.ValueKind == JsonValueKind.String && int.TryParse(v.GetString(), out int m)) return m;
+            }
+            catch { }
+            return 0;
         }
 
         private async Task ReceiveLoop(CancellationToken token)
@@ -169,10 +236,24 @@ namespace PISMO
                         {
                             using var doc = JsonDocument.Parse(json);
                             var root = doc.RootElement;
-                            string type = root.GetProperty("type").GetString();
-                            int senderUserId = root.GetProperty("userId").GetInt32();
-                            int sessionId = root.GetProperty("sessionId").GetInt32();
-                            string payload = root.GetProperty("payload").GetString();
+                            // ТОЛЕРАНТНЫЙ разбор: отсутствие любого ключа НЕ роняет приём
+                            // (раньше GetProperty кидал KeyNotFoundException и сообщение терялось).
+                            string type = TryStr(root, "type");
+                            if (string.IsNullOrEmpty(type)) continue; // без типа — игнор
+
+                            // Любое входящее сообщение подтверждает живость канала.
+                            _lastPongUtc = DateTime.UtcNow;
+
+                            // Ответ на health-check: WS реально доставляет. Не релеим дальше.
+                            if (type == "pong") { _pongEverReceived = true; continue; }
+                            int senderUserId = TryInt(root, "userId");
+                            int sessionId = TryInt(root, "sessionId");
+                            string payload = TryStr(root, "payload");
+
+                            System.Diagnostics.Debug.WriteLine($"[WS RECV] type={type} from={senderUserId} session={sessionId} payload={payload}");
+
+                            // Сервер отклонил JWT → следующий коннект без токена.
+                            if (type == "auth_error") _softToken = true;
 
                             OnMessageReceived?.Invoke(type, senderUserId, sessionId, payload);
                         }
@@ -190,6 +271,9 @@ namespace PISMO
             finally
             {
                 _isConnecting = false;
+                try { _pingTimer?.Dispose(); _pingTimer = null; } catch { }
+                _lastPongUtc = DateTime.MinValue; // обрыв → сразу «нездоров» (опрос включится)
+                _pongEverReceived = false;        // новое соединение заново определит поддержку pong
                 if (!token.IsCancellationRequested)
                 {
                     // Запускаем переподключение при обрыве

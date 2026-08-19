@@ -1,0 +1,69 @@
+name: build
+
+# Автосборка PISMO при каждом пуше/PR — ловит ошибки компиляции до ручного
+# билда в Visual Studio (актуально для активной разработки 2.0).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # CI коммитит собранный билд обратно в ветку
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore PISMO.sln
+
+      - name: Build (Release)
+        run: dotnet build PISMO.sln -c Release --no-restore
+
+      # Проверяем, что рядом с PISMO.exe действительно лежат все рантайм-файлы,
+      # которые нужны нативному звонку. Именно эту папку сборки заливают в git
+      # для скачивания — если файла нет, у пользователя звонок не запустится.
+      - name: Verify runtime files next to exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter PISMO.exe -Path PISMO\bin\Release | Select-Object -First 1
+          if (-not $exe) { throw "PISMO.exe не найден в PISMO\bin\Release" }
+          $dir = $exe.Directory.FullName
+          Write-Host "Папка сборки: $dir"
+          $need = @('livekit_ffi.dll','Google.Protobuf.dll','NAudio.dll',
+                    'AForge.Video.DirectShow.dll','MySql.Data.dll')
+          $missing = @()
+          foreach ($f in $need) {
+            $p = Join-Path $dir $f
+            if (Test-Path $p) { Write-Host ("OK   {0}  ({1:N0} bytes)" -f $f, (Get-Item $p).Length) }
+            else { $missing += $f; Write-Host "НЕТ  $f" }
+          }
+          if ($missing.Count -gt 0) { throw ("В сборке нет файлов: " + ($missing -join ', ')) }
+          Write-Host "Все рантайм-файлы на месте."
+
+      # Готовую сборку кладём ПРЯМО В ВЕТКУ (как раньше, без артефактов): CI
+      # собирает на Windows и коммитит PISMO/bin/Release обратно. Пользователь
+      # просто делает git pull и запускает PISMO.exe. Коммит помечен [skip ci],
+      # чтобы не зациклить сборку.
+      - name: Commit build back to branch
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f PISMO/bin/Release
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) { Write-Host "Сборка не изменилась — коммитить нечего."; exit 0 }
+          git commit -m "CI: собранный билд PISMO/bin/Release [skip ci]"
+          git push origin "HEAD:${{ github.ref_name }}"

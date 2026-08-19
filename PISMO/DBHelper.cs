@@ -48,7 +48,10 @@ namespace PISMO
                 {
                     try
                     {
-                        var builder = new MySqlConnectionStringBuilder(ipLine);
+                        // Убираем не-СУБД ключи (ws=/websocket=), которые читает
+                        // WebSocketSignalingClient напрямую из файла — иначе
+                        // MySqlConnectionStringBuilder падает с "Option not supported (ws)".
+                        var builder = new MySqlConnectionStringBuilder(StripNonDbKeys(ipLine));
 
                         // Если в файле указана серверная часть — корректируем порт по локальной логике
                         var server = builder.Server;
@@ -57,6 +60,7 @@ namespace PISMO
 
                         if (uint.TryParse(actualPort, out var p)) builder.Port = p;
                         if (string.IsNullOrWhiteSpace(builder.CharacterSet)) builder.CharacterSet = "utf8mb4";
+                        builder.Pooling = true; builder.MinimumPoolSize = 2; builder.MaximumPoolSize = 30;
 
                         // Сохраняем строку подключения (оставляем пользовательские credentials из ip.txt)
                         _connectionString = builder.ConnectionString;
@@ -90,7 +94,10 @@ namespace PISMO
                     Database = "bdauth",
                     UserID = "root",
                     Password = string.Empty,
-                    CharacterSet = "utf8mb4"
+                    CharacterSet = "utf8mb4",
+                    Pooling = true,
+                    MinimumPoolSize = 2,
+                    MaximumPoolSize = 30
                 };
 
                 _connectionString = defaultBuilder.ConnectionString;
@@ -104,6 +111,25 @@ namespace PISMO
                 System.Diagnostics.Debug.WriteLine($"[DBHelper ERROR] {ex.Message}");
                 _connectionString = "Server=localhost;Port=3306;Database=bdauth;Uid=root;Pwd=;CharSet=utf8mb4;";
             }
+        }
+
+        /// <summary>Удаляет из строки ip.txt ключи, которые не относятся к
+        /// подключению MySQL (ws=, websocket=). Остальные пары ключ=значение
+        /// сохраняет в исходном порядке.</summary>
+        private static string StripNonDbKeys(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return raw;
+            var keep = new System.Collections.Generic.List<string>();
+            foreach (var part in raw.Split(';'))
+            {
+                var seg = part.Trim();
+                if (seg.Length == 0) continue;
+                int eq = seg.IndexOf('=');
+                string key = (eq >= 0 ? seg.Substring(0, eq) : seg).Trim().ToLowerInvariant();
+                if (key == "ws" || key == "websocket") continue;
+                keep.Add(seg);
+            }
+            return string.Join(";", keep);
         }
 
         /// <summary>Определяет правильный порт для подключения.</summary>
@@ -195,19 +221,40 @@ namespace PISMO
             }
         }
 
+        private static string _compressedConnString;
+
+        /// <summary>Соединение со сжатием протокола MySQL — для передачи КРУПНЫХ
+        /// плохо сжатых форматов (документы, wav, bmp): меньше байт по сети.
+        /// Для уже сжатых (zip/jpg/mp4) включать НЕ стоит — только трата CPU.</summary>
+        public static MySqlConnection OpenCompressedConnection()
+        {
+            try
+            {
+                if (_compressedConnString == null)
+                {
+                    var b = new MySqlConnectionStringBuilder(_connectionString) { UseCompression = true };
+                    _compressedConnString = b.ConnectionString;
+                }
+                var conn = new MySqlConnection(_compressedConnString);
+                conn.Open();
+                return conn;
+            }
+            catch { return OpenConnection(); }
+        }
+
         public static MySqlConnection OpenConnection()
         {
             var conn = new MySqlConnection(_connectionString);
             try
             {
                 conn.Open();
-                System.Diagnostics.Debug.WriteLine("[DBHelper] ✓ Соединение успешно открыто");
+                ConnectionGuard.NotifyOk();   // связь есть — спрятать окно «нет связи», если было
                 return conn;
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[DBHelper] ✗ ОШИБКА ПОДКЛЮЧЕНИЯ: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"[DBHelper] Строка подключения: {_connectionString}");
+                ConnectionGuard.NotifyLost();  // нет связи — показать окно + начать переподключение
                 throw;
             }
         }

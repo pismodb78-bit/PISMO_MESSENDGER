@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>            <!-- WinExe у Avalonia = GUI-приложение и на Linux (без консоли) -->
+    <TargetFramework>net8.0</TargetFramework>  <!-- БЕЗ -windows: кроссплатформенно -->
+    <Nullable>enable</Nullable>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <AssemblyName>pismo</AssemblyName>
+    <RootNamespace>PISMO.Linux</RootNamespace>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.0.10" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.0.10" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.0.10" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.0.10" />
+    <!-- Та же версия, что в Windows-клиенте — единая логика доступа к БД. -->
+    <PackageReference Include="MySql.Data" Version="9.7.0" />
+  </ItemGroup>
+
+  <!-- ПЕРЕИСПОЛЬЗУЕМ логику Windows-клиента БЕЗ дублирования: линкуем ровно те
+       .cs, что не зависят от WinForms/WPF (проверено — чистые). Один физический
+       файл, правки в PISMO/ автоматически попадают и сюда. WinForms-зависимый
+       ConnectionGuard заменяется заглушкой в Compat/. -->
+  <ItemGroup>
+    <Compile Include="..\..\PISMO\Crypto.cs"          Link="Shared\Crypto.cs" />
+    <Compile Include="..\..\PISMO\UserSession.cs"     Link="Shared\UserSession.cs" />
+    <Compile Include="..\..\PISMO\PasswordHasher.cs"  Link="Shared\PasswordHasher.cs" />
+    <Compile Include="..\..\PISMO\JwtAuth.cs"         Link="Shared\JwtAuth.cs" />
+    <Compile Include="..\..\PISMO\AppConfig.cs"       Link="Shared\AppConfig.cs" />
+    <Compile Include="..\..\PISMO\RateLimiter.cs"     Link="Shared\RateLimiter.cs" />
+    <Compile Include="..\..\PISMO\DBHelper.cs"        Link="Shared\DBHelper.cs" />
+  </ItemGroup>
+
+  <!-- Настройки подключения кладутся рядом с бинарником. Файлы НЕ коммитятся
+       (содержат адрес БД и секрет) — положи их в папку проекта, сборка скопирует
+       их в output, и DBHelper/AppConfig подхватят из BaseDirectory. -->
+  <ItemGroup>
+    <None Include="ip.txt" Condition="Exists('ip.txt')" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="pismo.config" Condition="Exists('pismo.config')" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

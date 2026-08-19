@@ -43,22 +43,24 @@ namespace PISMO
             {
                 using (var conn = DBHelper.OpenConnection())
                 {
+                    // Проверяем старый пароль в коде (хеш bcrypt или старый plaintext).
+                    string stored = "";
                     using (var chk = new MySqlCommand(
-                        "SELECT COUNT(*) FROM users WHERE id=@uid AND password=@old", conn))
+                        "SELECT password FROM users WHERE id=@uid", conn))
                     {
                         chk.Parameters.AddWithValue("@uid", UserSession.UserId);
-                        chk.Parameters.AddWithValue("@old", oldP);
-                        if (Convert.ToInt32(chk.ExecuteScalar()) == 0)
-                        {
-                            ShowError("Старый пароль неверен!");
-                            return;
-                        }
+                        stored = chk.ExecuteScalar()?.ToString() ?? "";
+                    }
+                    if (!PasswordHasher.Verify(oldP, stored))
+                    {
+                        ShowError("Старый пароль неверен!");
+                        return;
                     }
 
                     using (var upd = new MySqlCommand(
                         "UPDATE users SET password=@new WHERE id=@uid", conn))
                     {
-                        upd.Parameters.AddWithValue("@new", newP);
+                        upd.Parameters.AddWithValue("@new", PasswordHasher.Hash(newP)); // bcrypt
                         upd.Parameters.AddWithValue("@uid", UserSession.UserId);
                         upd.ExecuteNonQuery();
                     }

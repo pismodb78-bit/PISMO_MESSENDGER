@@ -1,0 +1,6 @@
+# PISMO local secrets — скопируйте этот файл как pismo.config рядом с exe
+# (или в %LOCALAPPDATA%\PISMO\pismo.config). Он НЕ коммитится в репозиторий.
+# Значения переопределяются переменными окружения (напр. PISMO_JWT_SECRET).
+
+# Секрет подписи JWT. Должен ПОБАЙТНО совпадать с JWT_SECRET на ws-server.
+jwt_secret=uc5KT2e+qYwa6tb0HUXnLZwsC55VuB93szkSpkucr8i1BFjKA6RXbyIrjk0+ign9

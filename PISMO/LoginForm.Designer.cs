@@ -15,8 +15,6 @@ namespace PISMO
         private Button    btnLogin;
         private LinkLabel lnkRegister;
         private CheckBox  chkRemember;
-        private Button    btnSaveCreds;
-        private Button    btnClearCreds;
 
         protected override void Dispose(bool disposing)
         {
@@ -42,15 +40,13 @@ namespace PISMO
             btnLogin     = new Button();
             lnkRegister  = new LinkLabel();
             chkRemember  = new CheckBox();
-            btnSaveCreds = new Button();
-            btnClearCreds = new Button();
 
             pnlCard.SuspendLayout();
             SuspendLayout();
 
             // Form
             BackColor       = Color.FromArgb(54, 57, 63);
-            ClientSize      = new Size(480, 610);
+            ClientSize      = new Size(480, 540);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox     = false;
             StartPosition   = FormStartPosition.CenterScreen;
@@ -59,7 +55,7 @@ namespace PISMO
 
             // pnlCard
             pnlCard.BackColor = Color.FromArgb(47, 49, 54);
-            pnlCard.Size      = new Size(400, 520);
+            pnlCard.Size      = new Size(400, 450);
             pnlCard.Location  = new Point(40, 45);
             pnlCard.Controls.AddRange(new Control[]
             {
@@ -67,11 +63,10 @@ namespace PISMO
                 lblLoginHint, txtLogin,
                 lblPassHint, txtPass,
                 lblError, chkRemember,
-                btnSaveCreds, btnClearCreds,
                 btnLogin, lnkRegister
             });
 
-            // App name
+            // App name (центрируем по карточке после расчёта ширины — см. конец метода)
             lblAppName.Text      = "PISMO";
             lblAppName.Font      = new Font("Segoe UI Black", 26f, FontStyle.Bold);
             lblAppName.ForeColor = Color.FromArgb(88, 101, 242);
@@ -132,34 +127,6 @@ namespace PISMO
             chkRemember.AutoSize  = true;
             chkRemember.Cursor    = Cursors.Hand;
 
-            // btnSaveCreds — сохранить данные вручную
-            btnSaveCreds.Text      = "💾 Сохранить";
-            btnSaveCreds.BackColor = Color.FromArgb(67, 181, 129);
-            btnSaveCreds.ForeColor = Color.White;
-            btnSaveCreds.FlatStyle = FlatStyle.Flat;
-            btnSaveCreds.FlatAppearance.BorderSize = 0;
-            btnSaveCreds.Font      = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
-            btnSaveCreds.Location  = new Point(30, 340);
-            btnSaveCreds.Size      = new Size(160, 36);
-            btnSaveCreds.Cursor    = Cursors.Hand;
-            btnSaveCreds.Click    += btnSaveCreds_Click;
-            btnSaveCreds.MouseEnter += (s, e) => btnSaveCreds.BackColor = Color.FromArgb(50, 160, 110);
-            btnSaveCreds.MouseLeave += (s, e) => btnSaveCreds.BackColor = Color.FromArgb(67, 181, 129);
-
-            // btnClearCreds — очистить сохранённые данные
-            btnClearCreds.Text      = "🗑 Очистить";
-            btnClearCreds.BackColor = Color.FromArgb(240, 71, 71);
-            btnClearCreds.ForeColor = Color.White;
-            btnClearCreds.FlatStyle = FlatStyle.Flat;
-            btnClearCreds.FlatAppearance.BorderSize = 0;
-            btnClearCreds.Font      = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
-            btnClearCreds.Location  = new Point(210, 340);
-            btnClearCreds.Size      = new Size(160, 36);
-            btnClearCreds.Cursor    = Cursors.Hand;
-            btnClearCreds.Click    += btnClearCreds_Click;
-            btnClearCreds.MouseEnter += (s, e) => btnClearCreds.BackColor = Color.FromArgb(200, 50, 50);
-            btnClearCreds.MouseLeave += (s, e) => btnClearCreds.BackColor = Color.FromArgb(240, 71, 71);
-
             // btnLogin
             btnLogin.Text      = "Войти";
             btnLogin.BackColor = Color.FromArgb(88, 101, 242);
@@ -167,7 +134,7 @@ namespace PISMO
             btnLogin.FlatStyle = FlatStyle.Flat;
             btnLogin.FlatAppearance.BorderSize = 0;
             btnLogin.Font      = new Font("Segoe UI Semibold", 11f, FontStyle.Bold);
-            btnLogin.Location  = new Point(30, 395);
+            btnLogin.Location  = new Point(30, 345);
             btnLogin.Size      = new Size(340, 44);
             btnLogin.Cursor    = Cursors.Hand;
             btnLogin.Click    += btnLogin_Click;
@@ -179,13 +146,16 @@ namespace PISMO
             lnkRegister.Font            = new Font("Segoe UI", 9.5f);
             lnkRegister.LinkColor       = Color.FromArgb(0, 176, 244);
             lnkRegister.ActiveLinkColor = Color.White;
-            lnkRegister.Location        = new Point(80, 458);
+            lnkRegister.Location        = new Point(80, 405);
             lnkRegister.AutoSize        = true;
             lnkRegister.LinkClicked    += lnkRegister_LinkClicked;
 
             Controls.Add(pnlCard);
             pnlCard.ResumeLayout(false);
             ResumeLayout(false);
+
+            // Центрируем заголовок «PISMO» по карточке (ширина известна после layout).
+            lblAppName.Left = (pnlCard.Width - lblAppName.Width) / 2;
         }
     }
 }

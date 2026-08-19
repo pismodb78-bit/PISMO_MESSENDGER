@@ -2,6 +2,7 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Text.Json;
@@ -9,45 +10,64 @@ using System.Text.Json;
 namespace PISMO
 {
     /// <summary>
-    /// WebRTC транспорт через браузерный движок WebView2.
-    /// Использует нативный JavaScript WebRTC API — DTLS/ICE/TURN работают идеально.
+    /// Транспорт звонков на основе LiveKit SFU (через браузерный движок WebView2 и
+    /// официальный livekit-client JS SDK).
+    ///
+    /// LiveKit полностью заменяет прежний самописный WebRTC-пайплайн (coturn +
+    /// offer/answer/ICE/renegotiation через БД). Сервер сам берёт на себя
+    /// сигналинг, ICE/TURN и многосторонние звонки (SFU): все участники одной
+    /// комнаты слышат и видят друг друга. Это решает сразу:
+    ///   • баг с камерой — публикация/подписка треков единообразны на всех сторонах;
+    ///   • баг с групповыми звонками («кто успел тот и съел») — нет привязки
+    ///     ровно к двум caller/callee.
+    ///
+    /// Публичный контракт (события камеры/демки/превью/кадров) сохранён, чтобы
+    /// существующий PictureBox/JPEG-based UI в CallForm работал без переписывания:
+    /// кадры извлекаются из удалённых video-треков через canvas внутри WebView2.
+    /// Аудио (микрофон и звук демонстрации) LiveKit передаёт и воспроизводит сам,
+    /// поэтому старый путь через DataChannel + NAudio больше не используется.
     /// </summary>
     public class WebRtcTransport : IDisposable
     {
-        public const byte TypeAudio = 1;
-        public const byte TypeVideo = 2;
-        public const byte TypeScreen = 3;
-        public const byte TypeScreenAudio = 4; // звук демонстрации экрана (системный звук), отдельно от микрофона
-        public const byte TypeScreenStop = 5;  // явный сигнал об остановке демонстрации экрана
-        public const byte TypeHangup = 99;
-        public const byte TypeKeepAlive = 98;
-
         private WebView2 _webView;
-        private bool _initialized = false;
         private bool _disposed = false;
 
-        public event Action<byte, byte[]> FrameReceived;
+        // Захват выбранного монитора (режим «список экранов»): фоновый поток
+        // снимает монитор через GDI и шлёт JPEG-кадры в canvas WebView.
+        private System.Threading.Thread _monThread;
+        private volatile bool _monRun;
+        private int _monPending;   // кадры «в полёте» на UI-поток (защита от backlog)
+
         public event Action Disconnected;
         public event Action Connected;
-        public event Action<string> IceCandidateReady;
-        public event Action GatheringComplete;
+        public event Action RemoteParticipantLeft;
 
-        // --- Видео-трек демонстрации экрана (настоящий WebRTC, не DataChannel) ---
+        // --- Многоучастниковая «плитка» (Discord-grid) ---
+        public event Action<string, string> ParticipantJoined;   // (pid, name)
+        public event Action<string> ParticipantLeftById;          // (pid)
+        public event Action<string, string, string> RemoteTileStarted; // (pid, name, source: camera|screen)
+        public event Action<string, string> RemoteTileStopped;    // (pid, source)
+        public event Action<string, string, byte[]> RemoteTileFrame;  // (pid, source, jpeg)
+        public event Action<string> ActiveSpeakers;               // JSON-массив pid говорящих
+        public event Action<int> PingUpdated;                      // RTT в миллисекундах
+        public event Action<string, string> ParticipantRenamed;    // (pid, новое имя)
+
+        // --- «Смотреть стрим» (подключение к идущей демке, как в Discord) ---
+        public event Action<string, string> RemoteStreamPublished;   // (pid, name) — у участника начался стрим
+        public event Action<string> RemoteStreamUnpublished;         // (pid) — стрим завершён
+        public event Action<string, string> WatchFailed;             // (pid, причина) — подключиться не удалось
+        public event Action<int> StreamWatchersChanged;              // сколько человек смотрят НАШУ демку
+        public event Action<bool, string> ScreenSourceSwitched;      // (ok, error) — итог смены источника
+
+        // --- Видео-трек демонстрации экрана ---
         public event Action<byte[]> RemoteScreenFrameReceived; // декодированный JPEG-кадр из видео-трека
         public event Action RemoteScreenStarted;
         public event Action RemoteScreenStopped;
         public event Action LocalScreenStarted;
         public event Action LocalScreenStopped;
         public event Action<string> LocalScreenError;
-        // Renegotiation SDP нужно передать через тот же сигнальный канал (БД),
-        // что и первоначальный offer/answer — эти события дают вызывающему
-        // коду (CallForm) точку подключения для записи SDP в БД. trackKinds —
-        // JSON-карта track.id -> "screen"/"camera", нужна собеседнику, чтобы
-        // надёжно различить входящие видео-треки в pc.ontrack.
-        public event Action<string, string> RenegotiationOfferReady;
-        public event Action<string, string> RenegotiationAnswerReady;
 
-        // --- Камера (настоящий WebRTC video track вместо AForge+JPEG) ---
+        // --- Камера ---
         public event Action<byte[]> LocalCameraFrameReceived;  // для своего превью (_pbLocal)
         public event Action<byte[]> RemoteCameraFrameReceived; // декодированный кадр камеры собеседника
         public event Action RemoteCameraStarted;
@@ -56,172 +76,56 @@ namespace PISMO
         public event Action LocalCameraStopped;
         public event Action<string> LocalCameraError;
 
-        // --- Превью перед включением (показ "что увидит собеседник" с
-        // подтверждением через кнопки "Включить"/"Отмена") ---
-        public event Action<byte[]> ScreenPreviewFrameReceived; // переиспользует канал кадров демки до подтверждения
-        public event Action ScreenPreviewReady; // поток реально захвачен, можно разрешить подтверждение
+        // Диагностика захвата демонстрации (fps, ширина, высота).
+        public event Action<int, int, int> ScreenCaptureInfo;
+
+        /// <summary>Статистика отправки демки (что реально видят собеседники).</summary>
+        public event Action<string> ScreenSendStats;
+
+        /// <summary>Статистика приёма демки (что реально приходит зрителю).</summary>
+        public event Action<string> ScreenRecvStats;
+        // Запрос выхода из «театра» (двойной клик / крестик внутри WebView).
+        public event Action TheaterExitRequested;
+        // Запрос развернуть/свернуть театр на весь экран (кнопка ⛶).
+        public event Action TheaterFullscreenToggle;
+
+        /// <summary>Процесс рендера WebView упал (чёрный экран/нет звука) — звонок мёртв.</summary>
+        public event Action<string> RendererCrashed;
+
+        /// <summary>GPU-процесс Chromium упал и восстановлен — звонок продолжается,
+        /// но идущая демонстрация экрана прервалась (её надо откатить в UI).</summary>
+        public event Action ScreenEngineRecovered;
+
+        // --- Превью перед включением ---
+        public event Action<byte[]> ScreenPreviewFrameReceived;
+        public event Action ScreenPreviewReady;
         public event Action CameraPreviewReady;
         public event Action CameraDeviceSwitched;
-        public event Action<string, string> DevicesEnumerated; // (camerasJson, micsJson)
-
-        private string _turnUrlUdp;
-        private string _turnUrlTcp;
-
-        private string _turnUrl;
-        private string _turnUsername;
-        private string _turnPassword;
-
-        public WebRtcTransport()
-        {
-            // ВАЖНО: генерируем креды заново непосредственно перед звонком,
-            // а не используем то, что было сгенерировано когда-то раньше (например,
-            // при старте приложения в MainForm). Если объект WebRtcTransport
-            // создаётся не сразу, старые креды могут быть ближе к истечению TTL —
-            // на практике это редко успевает стать проблемой при TTL=86400, но
-            // принцип "свежие креды на каждый звонок" убирает целый класс багов.
-            var (username, password) = TurnSettings.GetCredentials();
-
-            // Приводим транспорт к нижнему регистру для безопасного сравнения
-            string transportType = (TurnSettings.TurnTransport ?? "udp").ToLower().Trim();
-
-            if (transportType == "udp")
-            {
-                // Для UDP оставляем чистый turn-адрес. Chromium по умолчанию использует UDP.
-                _turnUrl = $"turn:{TurnSettings.TurnServerAddress}:{TurnSettings.TurnServerPort}";
-            }
-            else
-            {
-                // Для TCP оставляем явное указание транспорта
-                _turnUrl = $"turn:{TurnSettings.TurnServerAddress}:{TurnSettings.TurnServerPort}?transport={transportType}";
-            }
-
-            _turnUsername = username;
-            _turnPassword = password;
-
-            LogTurnDiagnostics(transportType);
-        }
-
-        /// <summary>
-        /// Полная диагностика TURN-кредов: пишет в Debug.WriteLine И в файл
-        /// %AppData%\PISMO\turn_debug.log, чтобы можно было сверить байт-в-байт
-        /// то, что приложение реально отправляет, с тем, что ожидает coturn.
-        /// Если 401 продолжается — пришли содержимое этого файла.
-        /// </summary>
-        private void LogTurnDiagnostics(string transportType)
-        {
-            try
-            {
-                // Независимо пересчитываем HMAC здесь же, чтобы исключить
-                // любое искажение между генерацией в TurnSettings и тем,
-                // что попало в _turnUsername/_turnPassword.
-                string secret = TurnSettings.TurnSecret ?? "";
-                string verifyPassword = "";
-                string verifyError = "";
-                try
-                {
-                    if (!string.IsNullOrWhiteSpace(secret) && _turnUsername.Contains(":"))
-                    {
-                        byte[] keyBytes = System.Text.Encoding.UTF8.GetBytes(secret);
-                        using var hmac = new System.Security.Cryptography.HMACSHA1(keyBytes);
-                        byte[] hash = hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(_turnUsername));
-                        verifyPassword = Convert.ToBase64String(hash);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    verifyError = ex.Message;
-                }
-
-                bool passwordMatches = verifyPassword == _turnPassword;
-
-                // Парсим timestamp из username, чтобы видеть просрочен он или нет
-                string expiryInfo = "н/д";
-                var parts = (_turnUsername ?? "").Split(':');
-                if (parts.Length == 2 && long.TryParse(parts[0], out long expiryUnix))
-                {
-                    var expiryUtc = DateTimeOffset.FromUnixTimeSeconds(expiryUnix);
-                    var nowUtc = DateTimeOffset.UtcNow;
-                    var diff = expiryUtc - nowUtc;
-                    expiryInfo = $"{expiryUtc:O} (через {diff.TotalHours:F1} ч от текущего момента; протух={diff.TotalSeconds < 0})";
-                }
-
-                string report =
-                    $"=== TURN DEBUG [{DateTime.UtcNow:O}] ===\r\n" +
-                    $"Enabled        : {TurnSettings.TurnEnabled}\r\n" +
-                    $"Address:Port   : {TurnSettings.TurnServerAddress}:{TurnSettings.TurnServerPort}\r\n" +
-                    $"TurnUrl        : {_turnUrl}\r\n" +
-                    $"Transport      : {transportType}\r\n" +
-                    $"Username       : [{_turnUsername}] (len={_turnUsername?.Length ?? 0})\r\n" +
-                    $"Password       : [{_turnPassword}] (len={_turnPassword?.Length ?? 0})\r\n" +
-                    $"Secret (head)  : {(secret.Length >= 8 ? secret.Substring(0, 8) : secret)}... (len={secret.Length})\r\n" +
-                    $"Expiry         : {expiryInfo}\r\n" +
-                    $"Self-check HMAC: {verifyPassword}\r\n" +
-                    $"Совпадает?     : {passwordMatches}\r\n" +
-                    (string.IsNullOrEmpty(verifyError) ? "" : $"Verify error   : {verifyError}\r\n") +
-                    "==========================================";
-
-                System.Diagnostics.Debug.WriteLine(report);
-
-                if (!passwordMatches)
-                {
-                    System.Diagnostics.Debug.WriteLine(
-                        "[WebRTC] ⚠️ ВНИМАНИЕ: пароль, переданный в WebRtcTransport, " +
-                        "НЕ совпадает с тем, что HMAC должен дать для этого username+secret. " +
-                        "Креды были подменены/искажены между генерацией и использованием.");
-                }
-
-                try
-                {
-                    string appData = System.IO.Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                        "PISMO");
-                    System.IO.Directory.CreateDirectory(appData);
-                    string logPath = System.IO.Path.Combine(appData, "turn_debug.log");
-                    System.IO.File.AppendAllText(logPath, report + "\r\n\r\n", System.Text.Encoding.UTF8);
-                }
-                catch
-                {
-                    // не критично, если лог-файл не записался
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[WebRTC] Ошибка диагностики TURN: {ex.Message}");
-            }
-        }
+        public event Action<string, string, string> DevicesEnumerated; // (camerasJson, micsJson, speakersJson)
 
         private string _tempHtmlDir;
         private const string VirtualHostName = "pismo-webrtc.local";
 
-        /// <summary>Инициализирует WebView2 — должен вызываться в UI потоке</summary>
-        public async Task InitAsync(Form parentForm)
+        private string _pendingUrl;
+        private string _pendingToken;
+
+        public WebRtcTransport()
         {
-            // _webView должен оставаться полностью невидимым и за пределами
-            // экрана — это транспортный движок WebRTC, не UI. Явно задаём
-            // Location далеко за пределами видимой области и Anchor=None,
-            // чтобы исключить пересчёт позиции/размера при ресайзе формы
-            // (что могло привести к случайному отображению сырого
-            // HTML/JS-документа на экране, как видно на скрине пользователя).
-            // ВАЖНО: системный диалог выбора экрана/окна для getDisplayMedia()
-            // это диалог уровня Windows, привязанный к HWND родительского
-            // WebView2-контрола — это НЕ браузерный UI, в отличие от
-            // permission-prompt для камеры/микрофона. При полностью невидимом
-            // окне нулевого размера (Visible=false, 1×1) этот системный
-            // диалог может не отрисовываться вообще, из-за чего "выбора
-            // окон нет" даже после исправления secure-context проблемы.
-            // Даём видимый размер, но размещаем далеко за пределами видимой
-            // клиентской области формы, чтобы пользователь не видел сам
-            // WebView2 в обычной работе звонка.
-            // КРИТИЧНО: WebView должен быть Visible=true всегда, даже когда
-            // спрятан за пределами экрана. requestAnimationFrame в JS полностью
-            // останавливается когда элемент невидим (Visible=false), что
-            // замораживает все frame-extraction loops (превью, извлечение кадров
-            // из remote video, local camera preview) — пользователь видит
-            // статичную картинку вместо живого видео.
-            // Используем минимальный видимый размер 1×1 — этого достаточно
-            // для Chromium чтобы не замораживать rAF, но пользователь ничего не видит.
-            // Устанавливаем Size и MinimumSize в 1×1 — Chromium не скейлит
-            // элемент к 0×0 при таком минимальном размере.
+        }
+
+        /// <summary>Инициализирует WebView2 и подключается к комнате LiveKit —
+        /// должен вызываться в UI потоке.</summary>
+        /// <param name="parentForm">Родительская форма (для размещения скрытого WebView2).</param>
+        /// <param name="livekitUrl">ws://host:port или wss://… адрес LiveKit-сервера.</param>
+        /// <param name="token">JWT access-токен (см. LiveKitSettings.CreateToken).</param>
+        public async Task InitAsync(Form parentForm, string livekitUrl, string token)
+        {
+            _pendingUrl = livekitUrl;
+            _pendingToken = token;
+
+            // WebView2 — транспортный движок, держим невидимым и за пределами
+            // экрана. Visible=true обязателен: requestAnimationFrame останавливается
+            // для невидимых элементов, что заморозило бы извлечение кадров видео.
             _webView = new WebView2
             {
                 Visible = true,
@@ -233,15 +137,68 @@ namespace PISMO
             parentForm.Controls.Add(_webView);
             _webView.SendToBack();
 
-            await _webView.EnsureCoreWebView2Async();
+            // ЕДИНОЕ окружение WebView2 на весь процесс (WebViewShared): и плееры
+            // GIF/видео, и транспорт берут ОДНО окружение с нужными звонку флагами
+            // (--allow-running-insecure-content для ws:// LiveKit + GPU/feature из
+            // настроек). WebView2 не даёт создать в одном процессе второе окружение
+            // с другими опциями — общий env убирает этот конфликт.
+            var env = await WebViewShared.GetAsync();
+
+            // 0x8007139F (ERROR_INVALID_STATE) на CreateCoreWebView2ControllerAsync:
+            // контроллер WebView2 привязывается к HWND контрола, а звонок стартует
+            // из КОНСТРУКТОРА формы — до её показа валидного хэндла ещё нет, и
+            // создание контроллера падает. Принудительно материализуем HWND
+            // формы-хоста и самого контрола, затем ретраим на транзиентный сбой
+            // (между попытками message-loop успевает показать форму).
+            try { var hf = _webView.FindForm(); if (hf != null && !hf.IsHandleCreated) { _ = hf.Handle; } } catch { }
+            try { if (!_webView.IsHandleCreated) { _ = _webView.Handle; } } catch { }
+            Exception ctrlEx = null;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                try { await _webView.EnsureCoreWebView2Async(env); ctrlEx = null; break; }
+                catch (Exception ex)
+                {
+                    ctrlEx = ex;
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[WebView2 controller retry {attempt}] " +
+                        $"0x{System.Runtime.InteropServices.Marshal.GetHRForException(ex):X8} {ex.Message}");
+                    try { await Task.Delay(300 * (attempt + 1)); } catch { }
+                    try { if (!_webView.IsHandleCreated) { _ = _webView.Handle; } } catch { }
+                }
+            }
+            if (ctrlEx != null) throw ctrlEx;
+
             _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
 
-            // КРИТИЧНО: WebView2, в отличие от обычного Chrome-окна, не выдаёт
-            // доступ к камере/микрофону/демонстрации экрана автоматически.
-            // Без этих обработчиков getUserMedia()/getDisplayMedia() либо тихо
-            // отказывают, либо просто никогда не резолвятся — снаружи это
-            // выглядит как "камера не работает" и "демка не запускается без
-            // диалога выбора окна", хотя сам JS-код корректен.
+            // Сбой процесса WebView. КРИТИЧНО различать вид: раньше ЛЮБОЙ сбой
+            // (в т.ч. падение GPU-процесса) закрывал весь звонок — «всё умирало».
+            // Но GPU-процесс Chromium восстанавливает сам, и звонок (аудио, комната
+            // LiveKit, рендер-процесс) продолжает жить. GPU часто валится именно при
+            // захвате экрана на нестандартных дисплеях (VR/виртуальные рабочие столы
+            // Virtual Desktop): демонстрация обрывается, но звонок должен остаться.
+            _webView.CoreWebView2.ProcessFailed += (s, e) =>
+            {
+                var kind = e.ProcessFailedKind;
+                switch (kind)
+                {
+                    // GPU восстановится сам — звонок жив, откатываем только демку.
+                    case CoreWebView2ProcessFailedKind.GpuProcessExited:
+                        try { ScreenEngineRecovered?.Invoke(); } catch { }
+                        return;
+                    // Вспомогательные/подкадровые процессы — не фатально для звонка.
+                    case CoreWebView2ProcessFailedKind.FrameRenderProcessExited:
+                    case CoreWebView2ProcessFailedKind.SandboxHelperProcessExited:
+                    case CoreWebView2ProcessFailedKind.RenderProcessUnresponsive:
+                        System.Diagnostics.Debug.WriteLine($"[WebView2] несмертельный сбой процесса: {kind}");
+                        return;
+                    // Умер сам рендер-процесс страницы или браузер — звонок мёртв.
+                    default:
+                        try { RendererCrashed?.Invoke(kind.ToString()); } catch { }
+                        return;
+                }
+            };
+
+            // WebView2 не выдаёт доступ к камере/микрофону/экрану автоматически.
             _webView.CoreWebView2.PermissionRequested += (s, e) =>
             {
                 if (e.PermissionKind == CoreWebView2PermissionKind.Camera ||
@@ -250,54 +207,28 @@ namespace PISMO
                     e.State = CoreWebView2PermissionState.Allow;
                 }
             };
-
             _webView.CoreWebView2.ScreenCaptureStarting += (s, e) =>
             {
-                // Явно разрешаем показ системного UI выбора экрана/окна.
-                // Документация WebView2 описывает Cancel как явный механизм
-                // блокировки — оставлять его неявным (пустое тело обработчика)
-                // могло давать непредсказуемое поведение в зависимости от
-                // версии runtime, что и было вероятной причиной отсутствия
-                // диалога выбора экрана.
                 e.Cancel = false;
             };
 
-            // Пробрасываем console.log / console.error из WebView2 в Debug-лог,
-            // чтобы видеть реальные ошибки ICE/TURN из Chromium, а не только
-            // то, что явно прислано через postMessage.
+            // Пробрасываем console.log/error из Chromium в Debug-лог.
             try
             {
                 await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
                     (function() {
-                        const origLog = console.log;
-                        const origError = console.error;
-                        console.log = function(...args) {
-                            origLog.apply(console, args);
-                            try { window.chrome.webview.postMessage({ type: 'jsLog', text: args.map(String).join(' ') }); } catch(e) {}
-                        };
-                        console.error = function(...args) {
-                            origError.apply(console, args);
-                            try { window.chrome.webview.postMessage({ type: 'jsError', text: args.map(String).join(' ') }); } catch(e) {}
-                        };
+                        const origLog = console.log, origError = console.error;
+                        console.log = function(...a){ origLog.apply(console,a); try{ window.chrome.webview.postMessage({type:'jsLog',text:a.map(String).join(' ')}); }catch(e){} };
+                        console.error = function(...a){ origError.apply(console,a); try{ window.chrome.webview.postMessage({type:'jsError',text:a.map(String).join(' ')}); }catch(e){} };
                     })();
                 ");
             }
-            catch { /* не критично */ }
+            catch { }
 
-            // КРИТИЧНО: NavigateToString() создаёт страницу с origin
-            // about:blank/null, который Chromium НЕ считает secure context —
-            // именно из-за этого navigator.mediaDevices был полностью
-            // undefined (не отдельный метод, а весь объект), что и давало
-            // ошибку "Cannot read properties of undefined (reading
-            // 'getDisplayMedia')". getUserMedia/getDisplayMedia требуют
-            // secure context (https: или localhost).
-            //
-            // Решение: пишем HTML во временный файл и грузим через
-            // SetVirtualHostNameToFolderMapping — это даёт странице
-            // настоящий https-подобный origin, при котором mediaDevices
-            // полноценно доступен.
+            // Страница грузится через SetVirtualHostNameToFolderMapping для
+            // настоящего https-origin (secure context для mediaDevices).
             string html = BuildHtml();
-            _tempHtmlDir = Path.Combine(Path.GetTempPath(), "pismo_webrtc_" + Guid.NewGuid().ToString("N"));
+            _tempHtmlDir = Path.Combine(Path.GetTempPath(), "pismo_livekit_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_tempHtmlDir);
             string htmlPath = Path.Combine(_tempHtmlDir, "index.html");
             File.WriteAllText(htmlPath, html, System.Text.Encoding.UTF8);
@@ -305,10 +236,16 @@ namespace PISMO
             _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                 VirtualHostName, _tempHtmlDir, CoreWebView2HostResourceAccessKind.Allow);
 
-            // Navigate() не возвращает Task — ждём NavigationCompleted явно,
-            // чтобы гарантировать полную загрузку страницы и inline-скрипта
-            // перед тем, как CallForm начнёт вызывать CreateOfferAsync() и
-            // другие методы, которые шлют сообщения в JS.
+            // Локальная папка noise рядом с exe (офлайн-Krisp), если присутствует.
+            try
+            {
+                string noiseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "noise");
+                if (Directory.Exists(noiseDir))
+                    _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                        "pismo-noise.local", noiseDir, CoreWebView2HostResourceAccessKind.Allow);
+            }
+            catch { }
+
             var navDone = new TaskCompletionSource<bool>();
             void OnNavDone(object s, CoreWebView2NavigationCompletedEventArgs e)
             {
@@ -318,708 +255,1746 @@ namespace PISMO
             _webView.CoreWebView2.NavigationCompleted += OnNavDone;
             _webView.CoreWebView2.Navigate($"https://{VirtualHostName}/index.html");
             await navDone.Task;
-            await Task.Delay(200); // Даем JavaScript движку Chromium время на полную привязку addEventListener('message')
+            await Task.Delay(200);
 
-            _initialized = true;
+            // Сохранённые индивидуальные громкости/мьюты собеседников — ДО connect,
+            // чтобы применились к любому участнику при подписке на его аудио (в т.ч.
+            // без камеры и к тем, кто уже был в звонке).
+            try
+            {
+                var prefs = UserAudioPrefs.Snapshot()
+                    .Select(p => new { pid = p.pid, v = p.volume, m = p.muted }).ToArray();
+                if (prefs.Length > 0)
+                    SendToJs(JsonSerializer.Serialize(new { cmd = "voicePrefs", prefs }));
+            }
+            catch { }
+
+            // Запускаем подключение к комнате.
+            SendToJs(JsonSerializer.Serialize(new
+            {
+                cmd = "connect",
+                url = _pendingUrl,
+                token = _pendingToken,
+                voiceAuto = DeviceSettings.VoiceAutoSensitivity,
+                voiceThreshold = DeviceSettings.VoiceThreshold,
+                noiseSuppress = DeviceSettings.NoiseSuppression,
+                micGain = DeviceSettings.MicrophoneGain
+            }));
         }
 
         private string BuildHtml()
         {
-            // Сериализуем креды через JSON, а не вставляем как "сырые" строки в JS-литерал.
-            // Это устраняет риск поломки синтаксиса, если username/password когда-либо
-            // будут содержать кавычки, обратные слеши или другие спецсимволы.
-            string turnUrlJson = JsonSerializer.Serialize(_turnUrl);
-            string turnUsernameJson = JsonSerializer.Serialize(_turnUsername);
-            string turnPasswordJson = JsonSerializer.Serialize(_turnPassword);
-
+            // livekit-client грузится с CDN. Страница имеет https-origin, поэтому
+            // внешний https-скрипт загружается без проблем. Если CDN недоступен —
+            // событие connect завершится ошибкой, которая придёт в Disconnected.
             string html = @"<!DOCTYPE html>
 <html>
-<head><meta charset='utf-8'></head>
+<head>
+<meta charset='utf-8'>
+<script src='https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js'></script>
+</head>
 <body>
 <script>
-let pc = null;
-let dc = null;       // канал для control-сообщений и совместимости (сейчас не используется для видео)
-let dcAudio = null;  // отдельный высокоприоритетный канал для аудио (микрофон + звук демки)
+let room = null;
+let LK = null;
 
-// Карта track.id -> 'screen'|'camera'. track.id одинаков на обеих сторонах
-// WebRTC-соединения (сохраняется при передаче через RTCRtpSender/Receiver),
-// поэтому достаточно передать эту карту через renegotiation-сигнал, и
-// приёмная сторона будет точно знать, какой входящий трек к чему относится
-// — надёжнее, чем угадывать по stream id или track.label.
-let trackKindById = {};
-let remoteTrackKindById = {}; // карта, присланная собеседником через renegotiation
+// Локальные треки.
+let cameraTrack = null;     // LocalVideoTrack камеры (превью и/или опубликован)
+let cameraPublished = false;
+let screenVideoTrack = null;
+let screenAudioTrack = null;
+let screenPublished = false;
+let screenQualityH = 1080;  // выбранное разрешение демонстрации (высота)
+let screenQualityF = 30;    // выбранный fps демонстрации
 
-// --- Демонстрация экрана: настоящий WebRTC video track, не DataChannel ---
-let screenStream = null;     // локальный поток getDisplayMedia()
-let screenSender = null;     // RTCRtpSender для трека демонстрации
-let remoteScreenVideoEl = null;  // <video> для приёма удалённого видео-трека демки
-let screenFrameLoopHandle = null;
-
-// --- Камера: настоящий WebRTC video track вместо AForge+JPEG ---
-let cameraStream = null;
-let cameraSender = null;
-let localCameraVideoEl = null;   // <video> для локального превью своей камеры
-let remoteCameraVideoEl = null;  // <video> для приёма удалённого видео-трека камеры
-let localCameraFrameLoopHandle = null;
-let remoteCameraFrameLoopHandle = null;
-
-const iceConfig = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        {
-            urls: __TURN_URL__,
-            username: __TURN_USERNAME__,
-            credential: __TURN_PASSWORD__
-        }
-    ],
-    iceTransportPolicy: 'all' // Принудительно пускаем весь трафик через TURN-сервер
-};
-
-console.log('[WebRTC] iceConfig:', JSON.stringify(iceConfig));
-
-// ИСПРАВЛЕНО: Убран JSON.stringify, так как WebView2 автоматически сериализует объекты,
-// передаваемые в window.chrome.webview.postMessage
-function post(msg) {
-    window.chrome.webview.postMessage(msg);
-}
-
-function createPc() {
-    pc = new RTCPeerConnection(iceConfig);
-
-    pc.onicecandidate = (e) => {
-        if (e.candidate) {
-            post({ type: 'candidate', candidate: JSON.stringify(e.candidate) });
-        } else {
-            post({ type: 'gatheringComplete' });
-        }
-    };
-
-    pc.onconnectionstatechange = () => {
-        post({ type: 'connectionState', state: pc.connectionState });
-    };
-
-    pc.ondatachannel = (e) => {
-        if (e.channel.label === 'audio') bindAudioDc(e.channel);
-        else bindMainDc(e.channel);
-    };
-
-    pc.ontrack = (e) => {
-        console.log('[DIAG] pc.ontrack СРАБОТАЛ, kind=', e.track.kind, 'trackId=', e.track.id, 'remoteTrackKindById=', JSON.stringify(remoteTrackKindById));
-        if (e.track.kind !== 'video') return;
-        const kind = remoteTrackKindById[e.track.id] || 'camera'; // camera как безопасный fallback
-        const isScreen = kind === 'screen';
-        console.log('[DIAG] resolved kind=', kind, 'isScreen=', isScreen);
-
-        if (isScreen) {
-            if (!remoteScreenVideoEl) {
-                remoteScreenVideoEl = document.createElement('video');
-                remoteScreenVideoEl.autoplay = true;
-                remoteScreenVideoEl.muted = true;
-                remoteScreenVideoEl.style.display = 'none';
-                document.body.appendChild(remoteScreenVideoEl);
-            }
-            remoteScreenVideoEl.srcObject = e.streams[0];
-            post({ type: 'remoteScreenStart' });
-            startScreenFrameExtraction();
-            e.track.onended = () => stopScreenFrameExtraction();
-        } else {
-            if (!remoteCameraVideoEl) {
-                remoteCameraVideoEl = document.createElement('video');
-                remoteCameraVideoEl.autoplay = true;
-                remoteCameraVideoEl.muted = true;
-                remoteCameraVideoEl.style.display = 'none';
-                document.body.appendChild(remoteCameraVideoEl);
-            }
-            remoteCameraVideoEl.srcObject = e.streams[0];
-            post({ type: 'remoteCameraStart' });
-            startRemoteCameraFrameExtraction();
-            e.track.onended = () => stopRemoteCameraFrameExtraction();
-        }
-    };
-}
-
-// Извлекаем кадры из удалённого <video> через canvas и шлём в C#.
-// Это позволяет встроить настоящий, аппаратно декодированный WebRTC-видеопоток
-// в существующий PictureBox-based UI без переписывания всего отображения.
-// Декодирование самого видео (H.264) идёт через GPU силами Chromium —
-// здесь только периодическое чтение уже готового декодированного кадра.
-function startScreenFrameExtraction() {
-    if (screenFrameLoopHandle) return;
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    let lastSent = 0;
-    const targetIntervalMs = 1000 / 20;
-
-    function loop() {
-        if (!remoteScreenVideoEl || remoteScreenVideoEl.readyState < 2) {
-            screenFrameLoopHandle = requestAnimationFrame(loop);
-            return;
-        }
-        const now = performance.now();
-        if (now - lastSent >= targetIntervalMs) {
-            const vw = remoteScreenVideoEl.videoWidth, vh = remoteScreenVideoEl.videoHeight;
-            if (vw > 0 && vh > 0) {
-                if (canvas.width !== vw || canvas.height !== vh) {
-                    canvas.width = vw; canvas.height = vh;
-                }
-                ctx.drawImage(remoteScreenVideoEl, 0, 0, vw, vh);
-                canvas.toBlob((blob) => {
-                    if (!blob) return;
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                        const b64 = reader.result.split(',')[1];
-                        post({ type: 'remoteScreenFrame', data: b64 });
-                    };
-                    reader.readAsDataURL(blob);
-                }, 'image/jpeg', 0.85);
-                lastSent = now;
-            }
-        }
-        screenFrameLoopHandle = requestAnimationFrame(loop);
-    }
-    screenFrameLoopHandle = requestAnimationFrame(loop);
-}
-
-function stopScreenFrameExtraction() {
-    if (screenFrameLoopHandle) {
-        cancelAnimationFrame(screenFrameLoopHandle);
-        screenFrameLoopHandle = null;
-    }
-    if (remoteScreenVideoEl) {
-        remoteScreenVideoEl.srcObject = null;
-    }
-    post({ type: 'remoteScreenStop' });
-}
-
-// То же самое для удалённой камеры собеседника.
-function startRemoteCameraFrameExtraction() {
-    if (remoteCameraFrameLoopHandle) return;
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    let lastSent = 0;
-    const targetIntervalMs = 1000 / 20;
-
-    function loop() {
-        if (!remoteCameraVideoEl || remoteCameraVideoEl.readyState < 2) {
-            remoteCameraFrameLoopHandle = requestAnimationFrame(loop);
-            return;
-        }
-        const now = performance.now();
-        if (now - lastSent >= targetIntervalMs) {
-            const vw = remoteCameraVideoEl.videoWidth, vh = remoteCameraVideoEl.videoHeight;
-            if (vw > 0 && vh > 0) {
-                if (canvas.width !== vw || canvas.height !== vh) {
-                    canvas.width = vw; canvas.height = vh;
-                }
-                ctx.drawImage(remoteCameraVideoEl, 0, 0, vw, vh);
-                canvas.toBlob((blob) => {
-                    if (!blob) return;
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                        const b64 = reader.result.split(',')[1];
-                        post({ type: 'remoteCameraFrame', data: b64 });
-                    };
-                    reader.readAsDataURL(blob);
-                }, 'image/jpeg', 0.85);
-                lastSent = now;
-            }
-        }
-        remoteCameraFrameLoopHandle = requestAnimationFrame(loop);
-    }
-    remoteCameraFrameLoopHandle = requestAnimationFrame(loop);
-}
-
-function stopRemoteCameraFrameExtraction() {
-    if (remoteCameraFrameLoopHandle) {
-        cancelAnimationFrame(remoteCameraFrameLoopHandle);
-        remoteCameraFrameLoopHandle = null;
-    }
-    if (remoteCameraVideoEl) {
-        remoteCameraVideoEl.srcObject = null;
-    }
-    post({ type: 'remoteCameraStop' });
-}
-
-// --- Демонстрация экрана: двухфазный флоу. Сначала previewScreen()
-// захватывает поток (показывает системный диалог выбора экрана/окна) и
-// шлёт кадры в C# для окна превью с
-// уже захвачен, но ЕЩЁ НЕ добавлен в PeerConnection, так что собеседник
-// ничего не видит до подтверждения. confirmScreenShare() добавляет тот же
-// поток в PeerConnection. cancelScreenPreview() останавливает захват, если
-// пользовател
-let screenPreviewLoopHandle = null;
+// Скрытые <video> для извлечения кадров.
+let localCameraVideoEl = null;
+let remoteCameraVideoEl = null;
+let remoteScreenVideoEl = null;
 let screenPreviewVideoEl = null;
 
-async function previewScreen() {
-    try {
-        screenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: { frameRate: { ideal: 24, max: 30 } },
-            audio: false
-        });
-        const track = screenStream.getVideoTracks()[0];
-        track.onended = () => {
-            // Пользователь остановил демку через системный диалог Chrome
-            // ('Stop sharing') — работает и во время превью, и после
-            // подтверждения (когда screenSender уже существует).
-            if (screenSender) stopScreenShareTrack();
-            else cancelScreenPreview();
-        };
+// Демонстрация ВЫБРАННОГО монитора: кадры приходят из C# (свой захват), рисуем
+// их в этот canvas и публикуем его поток как обычную демку.
+let canvasScreenEl = null, canvasScreenCtx = null, canvasScreenStream = null;
 
-        if (!screenPreviewVideoEl) {
-            screenPreviewVideoEl = document.createElement('video');
-            screenPreviewVideoEl.autoplay = true;
-            screenPreviewVideoEl.muted = true;
-            screenPreviewVideoEl.style.display = 'none';
-            document.body.appendChild(screenPreviewVideoEl);
-        }
-        screenPreviewVideoEl.srcObject = screenStream;
-        startScreenPreviewFrameLoop();
-        post({ type: 'screenPreviewReady' });
-    } catch (err) {
-        post({ type: 'localScreenError', error: String(err) });
+let localCameraLoop = null, remoteCameraLoop = null, remoteScreenLoop = null, screenPreviewLoop = null;
+
+let remoteScreenAudioTrack = null;
+let remoteScreenAudioVolume = 1.0;
+let remoteVoiceTracks = [];   // голосовые аудио-треки всех собеседников
+let remoteVoiceVolume = 1.0;
+let remoteVoiceMuted = false;
+let remoteAudioByPid = {};    // pid -> [audioTrack,...]
+let perUserVolume = {};       // pid -> громкость 0..5 (усилитель до 500%)
+let perUserMuted = {};        // pid -> bool
+
+// ── Свой усилитель звука (WebAudio) ─────────────────────────────────────
+// LiveKit-микшер (webAudioMix) выключен из-за бага «звук в одном ухе».
+// Вместо него — собственный граф на КАЖДЫЙ трек: MediaStreamSource -> Gain
+// (буст >100% возможен) -> общий лимитер -> выход. Моно корректно
+// раскладывается в оба уха, а лимитер (DynamicsCompressor) убирает
+// клиппинг/хрип при усилении.
+let _mixCtx = null, _mixLimiter = null;
+let mixByPid = {};            // pid -> [ {track, src, gain, el}, ... ]
+let screenMix = null;         // { track, src, gain, el }
+
+function mixCtx(){
+    if (!_mixCtx){
+        _mixCtx = new (window.AudioContext || window.webkitAudioContext)();
+        _mixLimiter = _mixCtx.createDynamicsCompressor();
+        _mixLimiter.threshold.value = -3;   // лимитер у потолка
+        _mixLimiter.knee.value = 0;
+        _mixLimiter.ratio.value = 20;
+        _mixLimiter.attack.value = 0.003;
+        _mixLimiter.release.value = 0.25;
+        _mixLimiter.connect(_mixCtx.destination);
     }
+    try { if (_mixCtx.state === 'suspended') _mixCtx.resume(); } catch(e){}
+    return _mixCtx;
 }
 
-function startScreenPreviewFrameLoop() {
-    if (screenPreviewLoopHandle) return;
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    let lastSent = 0;
-    const targetIntervalMs = 1000 / 10; // превью не нужен высокий fps
-
-    function loop() {
-        if (!screenPreviewVideoEl || screenPreviewVideoEl.readyState < 2) {
-            screenPreviewLoopHandle = requestAnimationFrame(loop);
-            return;
-        }
-        const now = performance.now();
-        if (now - lastSent >= targetIntervalMs) {
-            const vw = screenPreviewVideoEl.videoWidth, vh = screenPreviewVideoEl.videoHeight;
-            if (vw > 0 && vh > 0) {
-                // Снижаем размер холста для превью до 400px по ширине.
-                // Это снижает объем IPC данных в десятки раз и устраняет лаги аудио!
-                const targetW = Math.min(vw, 400);
-                const targetH = Math.round(vh * (targetW / vw));
-                if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
-                ctx.drawImage(screenPreviewVideoEl, 0, 0, targetW, targetH);
-                canvas.toBlob((blob) => {
-                    if (!blob) return;
-                    const reader = new FileReader();
-                    reader.onload = () => post({ type: 'screenPreviewFrame', data: reader.result.split(',')[1] });
-                    reader.readAsDataURL(blob);
-                }, 'image/jpeg', 0.7);
-                lastSent = now;
-            }
-        }
-        screenPreviewLoopHandle = requestAnimationFrame(loop);
-    }
-    screenPreviewLoopHandle = requestAnimationFrame(loop);
+// Подключить аудио-трек через собственный GainNode (усилитель). Возвращает узел.
+function attachAmplified(track, initialGain){
+    const ctx = mixCtx();
+    const mst = track.mediaStreamTrack || track;
+    // Элемент нужен, чтобы Chromium не «засыпал» на WebRTC-дорожке; сам его глушим,
+    // звук идёт ТОЛЬКО через наш GainNode (иначе был бы двойной звук).
+    const el = track.attach();
+    el.style.display = 'none';
+    el.muted = true; el.volume = 0;
+    document.body.appendChild(el);
+    const source = ctx.createMediaStreamSource(new MediaStream([mst]));
+    const gain = ctx.createGain();
+    gain.gain.value = initialGain;
+    source.connect(gain); gain.connect(_mixLimiter);
+    return { track, src: source, gain, el };
 }
 
-function stopScreenPreviewFrameLoop() {
-    if (screenPreviewLoopHandle) { cancelAnimationFrame(screenPreviewLoopHandle); screenPreviewLoopHandle = null; }
-    if (screenPreviewVideoEl) screenPreviewVideoEl.srcObject = null;
+function detachAmplified(node){
+    if (!node) return;
+    try { node.src.disconnect(); } catch(e){}
+    try { node.gain.disconnect(); } catch(e){}
+    try { if (node.el){ node.el.srcObject = null; node.el.remove(); } } catch(e){}
 }
 
-async function confirmScreenShare() {
-    try {
-        if (!screenStream) { post({ type: 'localScreenError', error: 'no preview stream' }); return; }
-        // Preview frame loop НЕ останавливаем — кадры продолжают идти и
-        // после подтверждения, чтобы 
-        // работал в течение всей демонстрации, не только до подтверждения.
-        const track = screenStream.getVideoTracks()[0];
+function post(msg){ window.chrome.webview.postMessage(msg); }
 
-        screenSender = pc.addTrack(track, screenStream);
-        trackKindById[track.id] = 'screen';
-
-        // Щедрый битрейт для экрана — сервер пропускает ~2 Гбит, не экономим.
-        const params = screenSender.getParameters();
-        // ВАЖНО: getParameters() сразу после addTrack() может вернуть
-        // encodings как пустой массив (length 0), а не undefined — пустой
-        // массив truthy в JS, поэтому пров
-        // пропускала этот случай, и params.encodings[0] был undefined.
-        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-        params.encodings[0].maxBitrate = 8_000_000; // 8 Мбит/с — заметно лучше JPEG-пайплайна
-        await screenSender.setParameters(params);
-
-        await renegotiate();
-        post({ type: 'localScreenStarted' });
-    } catch (err) {
-        post({ type: 'localScreenError', error: String(err) });
-    }
-}
-
-function cancelScreenPreview() {
-    stopScreenPreviewFrameLoop();
-    if (screenStream) {
-        screenStream.getTracks().forEach(t => t.stop());
-        screenStream = null;
-    }
-    post({ type: 'localScreenStopped' });
-}
-
-async function stopScreenShareTrack() {
-    try {
-        if (screenSender) {
-            pc.removeTrack(screenSender);
-            screenSender = null;
-        }
-        if (screenStream) {
-            screenStream.getTracks().forEach(t => t.stop());
-            screenStream = null;
-        }
-        stopScreenPreviewFrameLoop();
-        await renegotiate();
-    } catch (err) {
-        console.error('stopScreenShareTrack error', err);
-    }
-    post({ type: 'localScreenStopped' });
-}
-
-// --- Камера: getUserMedia + addTrack, с выбором устройства по имени (label),
-// чтобы сохранить совместимость с текущим выбором камеры в настройках
-// приложения (DeviceSettings.CameraName), сделанным ДО звонка.
-async function previewCamera(deviceLabel) {
-    try {
-        // КРИТИЧНО: в Chromium имена устройств (label) скрыты (пустые строки) до тех пор,
-        // пока разрешение на камеру/микрофон не получено хотя бы раз. Сначала запрашиваем
-        // временный поток, чтобы разблокировать label, иначе поиск по deviceLabel не сработает!
-        try {
-            const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-            tempStream.getTracks().forEach(t => t.stop());
-        } catch(e) {}
-
-        let deviceId = null;
-        if (deviceLabel) {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const match = devices.find(d => d.kind === 'videoinput' && d.label === deviceLabel);
-            if (match) deviceId = match.deviceId;
-        }
-        await openCameraStream(deviceId);
-        post({ type: 'cameraPreviewReady' });
-    } catch (err) {
-        post({ type: 'localCameraError', error: String(err) });
-    }
-}
-
-async function openCameraStream(deviceId) {
-    const constraints = {
-        video: deviceId ? { deviceId: { exact: deviceId } } : true,
-        audio: false
+// Опции захвата микрофона с шумоподавлением/эхоподавлением/авто-усилением.
+// Передаём и стандартные флаги, и Chromium-специфичные goog-констрейнты,
+// чтобы шумодав точно включился в движке WebView2.
+function micCaptureOpts(){
+    // Если включён наш RNNoise — захватываем СЫРОЙ сигнал (без браузерного
+    // noiseSuppression/AGC), иначе браузер уже почистит звук и RNNoise не на чем
+    // будет показать разницу. Эхоподавление оставляем (оно про колонки, не про шум).
+    return {
+        echoCancellation: true,
+        noiseSuppression: !useNoise,
+        autoGainControl: !useNoise,
+        deviceId: selectedMicId ? { exact: selectedMicId } : undefined
     };
-    if (cameraStream) {
-        cameraStream.getTracks().forEach(t => t.stop());
-    }
-    cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
-    const track = cameraStream.getVideoTracks()[0];
-    track.onended = () => {
-        if (cameraSender) stopCameraTrack();
-        else cancelCameraPreview();
-    };
-
-    if (!localCameraVideoEl) {
-        localCameraVideoEl = document.createElement('video');
-        localCameraVideoEl.autoplay = true;
-        localCameraVideoEl.muted = true;
-        localCameraVideoEl.style.display = 'none';
-        document.body.appendChild(localCameraVideoEl);
-    }
-    localCameraVideoEl.srcObject = cameraStream;
-    startLocalCameraFrameExtraction(); // используется и для превью, и после подтверждения
 }
 
-// Смена устройства камеры прямо во время превью или во время уже идущей
-// демонстрации — переоткрывает поток на новом устройстве; если трек уже
-// добавлен в PeerConnection (cameraSender существует), заменяем его через
-// replaceTrack без полной renegotiation.
-async function switchCameraDevice(deviceLabel) {
-    try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const match = devices.find(d => d.kind === 'videoinput' && d.label === deviceLabel);
-        const deviceId = match ? match.deviceId : null;
+// ── Микрофон: СТАНДАРТНЫЙ путь LiveKit + RNNoise-шумодав (processor) ──
+// Микрофон — обычный setMicrophoneEnabled (mute работает штатно). Шум давит
+// RNNoise (open-source, wasm самодостаточен → реально фильтрует), оформленный
+// как LiveKit TrackProcessor (setProcessor), поэтому mute/голос не ломаются.
+let useNoise = false;        // включать ли шумодав (из настроек)
+let selectedMicId = undefined;
+let _rnnoise = null;         // {mod, wasm, workletUrl}
+let micGainValue = 1;        // множитель усиления из ползунка настроек
+let _liveGain = null;        // живой GainNode текущего процессора
+let gateThreshold = 0.02;    // порог шумового гейта (RMS, 0..1)
 
-        const wasLive = !!cameraSender;
-        await openCameraStream(deviceId);
-
-        if (wasLive) {
-            const newTrack = cameraStream.getVideoTracks()[0];
-            await cameraSender.replaceTrack(newTrack);
-            trackKindById[newTrack.id] = 'camera';
-        }
-        post({ type: 'cameraDeviceSwitched' });
-    } catch (err) {
-        post({ type: 'localCameraError', error: String(err) });
-    }
+function localMicPub(){
+    try { return room && room.localParticipant ? room.localParticipant.getTrackPublication(LK.Track.Source.Microphone) : null; }
+    catch(e){ return null; }
 }
 
-async function confirmCameraShare() {
-    console.log('[DIAG] confirmCameraShare() вызван, cameraStream =', cameraStream ? 'есть' : 'NULL');
-    try {
-        if (!cameraStream) { post({ type: 'localCameraError', error: 'no preview stream' }); return; }
-        const track = cameraStream.getVideoTracks()[0];
-        console.log('[DIAG] track =', track ? track.readyState : 'NULL');
-
-        cameraSender = pc.addTrack(track, cameraStream);
-        trackKindById[track.id] = 'camera';
-        console.log('[DIAG] addTrack успешен, вызываю renegotiate()');
-
-        await renegotiate();
-        console.log('[DIAG] renegotiate() завершён успешно');
-        post({ type: 'localCameraStarted' });
-    } catch (err) {
-        console.log('[DIAG] confirmCameraShare ОШИБКА:', String(err));
-        post({ type: 'localCameraError', error: String(err) });
-    }
-}
-
-function cancelCameraPreview() {
-    stopLocalCameraFrameExtraction();
-    if (cameraStream) {
-        cameraStream.getTracks().forEach(t => t.stop());
-        cameraStream = null;
-    }
-    post({ type: 'localCameraStopped' });
-}
-
-async function stopCameraTrack() {
-    try {
-        if (cameraSender) {
-            pc.removeTrack(cameraSender);
-            cameraSender = null;
-        }
-        if (cameraStream) {
-            cameraStream.getTracks().forEach(t => t.stop());
-            cameraStream = null;
-        }
-        stopLocalCameraFrameExtraction();
-        await renegotiate();
-    } catch (err) {
-        console.error('stopCameraTrack error', err);
-    }
-    post({ type: 'localCameraStopped' });
-}
-
-// Список доступных камер/микрофонов для device picker во время звонка.
-// label доступен только после того, как разрешение на медиа уже было
-// выдано хотя бы раз в этой сессии (см. PermissionRequested на стороне
-// C#, который выдаёт его автоматически).
-async function enumerateAndPostDevices() {
-    try {
-        // Сначала запрашиваем временный поток, чтобы разблокировать label в Chromium
+// Загрузка @sapphi-red/web-noise-suppressor (RNNoise) с фолбэком по CDN.
+async function loadRnnoise(){
+    if (_rnnoise) return _rnnoise;
+    const to = (p, ms) => Promise.race([p, new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')), ms))]);
+    // ВАЖНО: esm-модуль, wasm и worklet ДОЛЖНЫ грузиться из ОДНОГО источника/версии,
+    // иначе RnnoiseWorkletNode и workletProcessor.js несовместимы -> узел молчит.
+    const providers = [
+        { esm:'https://pismo-noise.local/wns.mjs', base:'https://pismo-noise.local' },
+        { esm:'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5', base:'https://esm.sh/@sapphi-red/web-noise-suppressor@0.3.5/dist' },
+        { esm:'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm', base:'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist' },
+        { esm:'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist/index.mjs', base:'https://unpkg.com/@sapphi-red/web-noise-suppressor@0.3.5/dist' }
+    ];
+    let lastErr;
+    for (const p of providers){
         try {
-            const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            tempStream.getTracks().forEach(t => t.stop());
-        } catch(e) {}
-
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const cameras = devices.filter(d => d.kind === 'videoinput').map(d => d.label).filter(Boolean);
-        const mics = devices.filter(d => d.kind === 'audioinput').map(d => d.label).filter(Boolean);
-        post({ type: 'devicesEnumerated', cameras: JSON.stringify(cameras), mics: JSON.stringify(mics) });
-    } catch (err) {
-        console.error('enumerateAndPostDevices error', err);
+            const mod = await to(import(p.esm), 8000);
+            if (!mod || !mod.loadRnnoise || !mod.RnnoiseWorkletNode) throw new Error('нет экспортов rnnoise');
+            const wasm = await to(mod.loadRnnoise({ url: p.base + '/rnnoise.wasm', simdUrl: p.base + '/rnnoise_simd.wasm' }), 8000);
+            const workletUrl = p.base + '/rnnoise/workletProcessor.js';
+            _rnnoise = { mod, wasm, workletUrl };
+            return _rnnoise;
+        } catch(e){ lastErr = e; }
     }
+    throw lastErr || new Error('rnnoise не загрузился');
 }
 
-function startLocalCameraFrameExtraction() {
-    if (localCameraFrameLoopHandle) return;
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    let lastSent = 0;
-    const targetIntervalMs = 1000 / 15; // локальное превью, 15fps достаточно
-
-    function loop() {
-        if (!localCameraVideoEl || localCameraVideoEl.readyState < 2) {
-            localCameraFrameLoopHandle = requestAnimationFrame(loop);
-            return;
+// LiveKit-совместимый процессор на основе RNNoise.
+function createRnnoiseProcessor(){
+    let ctx, src, node, node2, dest, gain, gateTimer;
+    return {
+        name: 'rnnoise',
+        processedTrack: undefined,
+        async init(opts){
+            const r = await loadRnnoise();
+            ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+            try { if (ctx.state === 'suspended') await ctx.resume(); } catch(e){}
+            await ctx.audioWorklet.addModule(r.workletUrl);
+            src = ctx.createMediaStreamSource(new MediaStream([opts.track]));
+            // ДВА прохода RNNoise — заметно сильнее давит клавиатуру/мышь/фон.
+            node = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
+            node2 = new r.mod.RnnoiseWorkletNode(ctx, { wasmBinary: r.wasm, maxChannels: 1 });
+            // Усиление после шумодава: компенсирует выключенный браузерный AGC и
+            // тихий выход RNNoise. Базовый множитель *1.6, дальше — ползунок настроек.
+            gain = ctx.createGain();
+            gain.gain.value = 1.6 * (micGainValue || 1);
+            _liveGain = gain;
+            dest = ctx.createMediaStreamDestination();
+            src.connect(node).connect(node2).connect(gain);
+            // Шумовой гейт: в паузах речи приглушает остаточные щелчки клавы/мыши.
+            gateTimer = buildNoiseGate(ctx, gain, dest);
+            this.processedTrack = dest.stream.getAudioTracks()[0];
+        },
+        async restart(opts){ await this.destroy(); await this.init(opts); },
+        async destroy(){
+            try { if (gateTimer) clearInterval(gateTimer); } catch(e){}
+            try { node && node.disconnect(); } catch(e){}
+            try { node2 && node2.disconnect(); } catch(e){}
+            try { gain && gain.disconnect(); } catch(e){}
+            try { src && src.disconnect(); } catch(e){}
+            try { ctx && ctx.close(); } catch(e){}
+            if (_liveGain === gain) _liveGain = null;
+            this.processedTrack = undefined;
         }
-        const now = performance.now();
-        if (now - lastSent >= targetIntervalMs) {
-            const vw = localCameraVideoEl.videoWidth, vh = localCameraVideoEl.videoHeight;
-            if (vw > 0 && vh > 0) {
-                // Снижаем размер холста для локального превью до 320px по ширине.
-                // Это снижает объем IPC данных в 10-20 раз и полностью убирает задержку звука!
-                const targetW = Math.min(vw, 320);
-                const targetH = Math.round(vh * (targetW / vw));
-                if (canvas.width !== targetW || canvas.height !== targetH) {
-                    canvas.width = targetW; canvas.height = targetH;
+    };
+}
+
+// Шумовой гейт: source -> gate -> destination. Анализирует RMS source и плавно
+// приглушает звук, когда речи нет (target = floor), открывая при речи (=1).
+// Порог берётся из gateThreshold (ползунок настроек, 0..1).
+function buildNoiseGate(ctx, source, destination){
+    const gate = ctx.createGain(); gate.gain.value = 1;
+    const an = ctx.createAnalyser(); an.fftSize = 512;
+    source.connect(an);
+    source.connect(gate);
+    gate.connect(destination);
+    const buf = new Uint8Array(an.fftSize);
+    let openUntil = 0;
+    const timer = setInterval(() => {
+        an.getByteTimeDomainData(buf);
+        let s = 0; for (let i = 0; i < buf.length; i++){ const x = (buf[i]-128)/128; s += x*x; }
+        const rms = Math.sqrt(s/buf.length);
+        const now = ctx.currentTime;
+        const thr = (typeof gateThreshold === 'number' ? gateThreshold : 0.02);
+        if (rms > thr) openUntil = now + 0.25; // держим открытым 250мс после речи (hold)
+        const open = now < openUntil;
+        const target = open ? 1 : 0.03;        // floor: почти тишина в паузах
+        gate.gain.setTargetAtTime(target, now, open ? 0.006 : 0.05);
+    }, 20);
+    return timer;
+}
+
+// Навесить/снять шумодав на текущий микрофонный трек.
+async function applyNoiseFilter(){
+    const pub = localMicPub();
+    if (!pub || !pub.track) return;
+    try {
+        if (useNoise){
+            const proc = createRnnoiseProcessor();
+            await pub.track.setProcessor(proc);
+            post({type:'jsLog', text:'RNNoise шумодав активен'});
+            // Сторож: если обработанный трек молчит при наличии входного сигнала —
+            // снимаем процессор, чтобы не потерять голос в звонке.
+            try {
+                const mt = pub.track.mediaStreamTrack;
+                if (mt && proc.processedTrack){
+                    const wctx = new (window.AudioContext||window.webkitAudioContext)();
+                    try { if (wctx.state==='suspended') await wctx.resume(); } catch(e){}
+                    const aOut = wctx.createAnalyser(); aOut.fftSize=512;
+                    wctx.createMediaStreamSource(new MediaStream([proc.processedTrack])).connect(aOut);
+                    const bo = new Uint8Array(aOut.fftSize);
+                    let sum=0,n=0; const tm=setInterval(async()=>{
+                        aOut.getByteTimeDomainData(bo);
+                        let s=0; for(let i=0;i<bo.length;i++){const x=(bo[i]-128)/128;s+=x*x;}
+                        sum+=Math.sqrt(s/bo.length); n++;
+                        if(n>=40){ clearInterval(tm); try{ wctx.close(); }catch(e){}
+                            if(sum<0.0008 && useNoise){
+                                try{ await pub.track.stopProcessor(); }catch(e){}
+                                post({type:'jsLog', text:'RNNoise молчал — откат на чистый микрофон'});
+                            }
+                        }
+                    },50);
                 }
-                ctx.drawImage(localCameraVideoEl, 0, 0, targetW, targetH);
-                canvas.toBlob((blob) => {
-                    if (!blob) return;
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                        const b64 = reader.result.split(',')[1];
-                        post({ type: 'localCameraFrame', data: b64 });
-                    };
-                    reader.readAsDataURL(blob);
-                }, 'image/jpeg', 0.7);
-                lastSent = now;
-            }
+            } catch(e){}
+        } else {
+            try { await pub.track.stopProcessor(); } catch(e){}
+            post({type:'jsLog', text:'Шумодав выключен'});
         }
-        localCameraFrameLoopHandle = requestAnimationFrame(loop);
-    }
-    localCameraFrameLoopHandle = requestAnimationFrame(loop);
-}
-
-function stopLocalCameraFrameExtraction() {
-    if (localCameraFrameLoopHandle) {
-        cancelAnimationFrame(localCameraFrameLoopHandle);
-        localCameraFrameLoopHandle = null;
-    }
-    if (localCameraVideoEl) {
-        localCameraVideoEl.srcObject = null;
+    } catch(e){
+        post({type:'jsLog', text:'Шумодав недоступен: ' + String(e)});
     }
 }
 
-// Renegotiation: при добавлении/удалении трека после первоначального
-// offer/answer нужен новый цикл SDP, иначе изменение не дойдёт до собеседника.
-// Сторона, инициировавшая изменение, шлёт новый offer через тот же
-// сигнальный канал (БД), который уже используется для первоначального обмена.
-async function renegotiate() {
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    // КРИТИЧНО: НЕ ждём завершения ICE gathering при renegotiation!
-    // При renegotiation соединение уже установлено, и trickle ICE
-    // автоматически доставит новые кандидаты собеседнику через события
-    // onicecandidate (которые уже отправляются в C# и пишутся в БД).
-    // Ожидание gathering completion здесь (waitGathering) было причиной
-    // разрыва звонков: 10-секундный таймаут не успевал собрать все
-    // TURN-кандидаты при renegotiation камеры/демонстрации, SDP уходил
-    // с неполными кандидатами → connection state failed.
-    post({ type: 'renegotiationOffer', sdp: pc.localDescription.sdp, trackKinds: JSON.stringify(trackKindById) });
+// Желаемое состояние микрофона. КРИТИЧНО против гонки при входе с выключенным
+// микрофоном: если C# успел прислать setMicEnabled(false) до/во время публикации,
+// publishMic опубликует РОВНО желаемое состояние, а не «включён».
+let micDesiredEnabled = true;
+
+// Публикация микрофона — публикуем в ЖЕЛАЕМОМ состоянии (не всегда «включён»).
+async function publishMic(){
+    try { await room.localParticipant.setMicrophoneEnabled(micDesiredEnabled, micCaptureOpts()); }
+    catch(e){ console.error('mic enable', String(e)); return; }
+    // Навешиваем шумодав только если микрофон включён (иначе трека нет).
+    if (micDesiredEnabled) setTimeout(() => { applyNoiseFilter(); }, 300);
 }
 
-async function applyRenegotiationOffer(offerSdp, trackKindsJson) {
-    console.log('[DIAG] applyRenegotiationOffer вызван, trackKindsJson=', trackKindsJson);
-    if (trackKindsJson) {
-        try { Object.assign(remoteTrackKindById, JSON.parse(trackKindsJson)); } catch(e) { console.log('[DIAG] ошибка парсинга trackKindsJson:', String(e)); }
-    }
-    console.log('[DIAG] remoteTrackKindById после применения:', JSON.stringify(remoteTrackKindById));
-    await pc.setRemoteDescription({ type: 'offer', sdp: offerSdp });
-    console.log('[DIAG] setRemoteDescription(offer) завершён, senders/receivers count:', pc.getReceivers().length);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    // КРИТИЧНО: НЕ ждём завершения ICE gathering — trickle ICE автоматически
-    // доставит кандидаты через onicecandidate события (уже отправляются в C#).
-    // Ожидание gathering completion было причиной разрыва звонков.
-    post({ type: 'renegotiationAnswer', sdp: pc.localDescription.sdp, trackKinds: JSON.stringify(trackKindById) });
+function setMicGain(v){
+    micGainValue = (v && v > 0) ? v : 1;
+    // Живое применение к текущему графу шумодава (если активен).
+    try { if (_liveGain) _liveGain.gain.value = 1.6 * micGainValue; } catch(e){}
 }
 
-async function applyRenegotiationAnswer(answerSdp, trackKindsJson) {
-    if (trackKindsJson) {
-        try { Object.assign(remoteTrackKindById, JSON.parse(trackKindsJson)); } catch(e) {}
-    }
-    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+function setNoiseSuppression(on){
+    useNoise = !!on;
+    applyNoiseFilter();
 }
 
-function bindMainDc(channel) {
-    dc = channel;
-    dc.binaryType = 'arraybuffer';
-    dc.onopen = () => post({ type: 'dcOpen' });
-    dc.onclose = () => post({ type: 'dcClose' });
-    dc.onmessage = (e) => {
-        let arr = new Uint8Array(e.data);
-        let b64 = btoa(String.fromCharCode(...arr));
-        post({ type: 'data', data: b64 });
-    };
-}
-
-function bindAudioDc(channel) {
-    dcAudio = channel;
-    dcAudio.binaryType = 'arraybuffer';
-    dcAudio.onmessage = (e) => {
-        let arr = new Uint8Array(e.data);
-        let b64 = btoa(String.fromCharCode(...arr));
-        post({ type: 'data', data: b64 });
-    };
-}
-
-async function createOffer() {
-    createPc();
-    dc = pc.createDataChannel('media', { ordered: false });
-    bindMainDc(dc);
-    dcAudio = pc.createDataChannel('audio', { ordered: false, maxRetransmits: 0, priority: 'high' });
-    bindAudioDc(dcAudio);
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await waitGathering();
-    post({ type: 'offerReady', sdp: pc.localDescription.sdp });
-}
-
-async function createAnswer(offerSdp) {
-    createPc();
-    await pc.setRemoteDescription({ type: 'offer', sdp: offerSdp });
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    await waitGathering();
-    post({ type: 'answerReady', sdp: pc.localDescription.sdp });
-}
-
-function applyAnswer(answerSdp) {
-    pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-}
-
-function addCandidate(candidateJson) {
-    try {
-        const c = JSON.parse(candidateJson);
-        pc.addIceCandidate(c);
-    } catch(e) { console.error(e); }
-}
-
-function sendData(b64) {
-    const binary = atob(b64);
-    const arr = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
-
-    const packetType = arr[0];
-    const isAudio = (packetType === 1 || packetType === 4); // TypeAudio, TypeScreenAudio
-
-    if (isAudio && dcAudio && dcAudio.readyState === 'open') {
-        dcAudio.send(arr.buffer);
-    } else if (dc && dc.readyState === 'open') {
-        dc.send(arr.buffer);
-    }
-}
-
-function waitGathering() {
-    return new Promise(resolve => {
-        if (pc.iceGatheringState === 'complete') { resolve(); return; }
-        const check = () => {
-            if (pc.iceGatheringState === 'complete') {
-                pc.removeEventListener('icegatheringstatechange', check);
-                resolve();
-            }
-        };
-        pc.addEventListener('icegatheringstatechange', check);
-        setTimeout(resolve, 10000);
+function waitForLK(){
+    return new Promise((resolve) => {
+        const t0 = Date.now();
+        (function check(){
+            if (window.LivekitClient){ LK = window.LivekitClient; resolve(true); return; }
+            if (Date.now() - t0 > 15000){ resolve(false); return; }
+            setTimeout(check, 100);
+        })();
     });
 }
 
+async function connectRoom(url, token, voiceAuto, voiceThreshold, noiseSuppress, gainVal){
+    if (typeof noiseSuppress !== 'undefined') useNoise = !!noiseSuppress;
+    if (typeof gainVal !== 'undefined' && gainVal > 0) micGainValue = gainVal;
+    const ok = await waitForLK();
+    if (!ok){ post({type:'fatal', error:'livekit-client не загрузился (нет интернета/CDN недоступен)'}); post({type:'disconnected'}); return; }
+    try {
+        // adaptiveStream/dynacast ОБЯЗАТЕЛЬНО выключены: при включённом
+        // adaptiveStream LiveKit ставит видео на паузу, если <video> не виден
+        // на экране — а мы намеренно держим элементы display:none и сами
+        // извлекаем кадры в canvas. Из-за этого камера/демка не доходили до
+        // собеседника ('ожидание видео'). С отключённым adaptiveStream видео
+        // передаётся всегда. audioCaptureDefaults включают шумоподавление,
+        // эхоподавление и авто-усиление микрофона.
+        // webAudioMix ОБЯЗАТЕЛЬНО выключен: WebAudio-микшер LiveKit в Chromium
+        // иногда «прибивает» моно-дорожку нового участника к одному каналу —
+        // собеседника слышно только в левом/правом ухе (проявляется при 3+
+        // участниках). Без микшера звук играет напрямую через <audio> —
+        // моно корректно раскладывается в оба уха.
+        room = new LK.Room({
+            adaptiveStream: false,
+            dynacast: false,
+            webAudioMix: false,
+            audioCaptureDefaults: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
+
+        room.on(LK.RoomEvent.TrackSubscribed, onTrackSubscribed);
+        room.on(LK.RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
+        room.on(LK.RoomEvent.Disconnected, () => post({type:'disconnected'}));
+        room.on(LK.RoomEvent.Reconnected, () => post({type:'connected'}));
+        room.on(LK.RoomEvent.ParticipantConnected, (p) => post({type:'participantJoined', pid:p.identity, name:pidName(p)}));
+        room.on(LK.RoomEvent.ParticipantDisconnected, (p) => {
+            cleanupParticipant(p.identity);
+            delete publishedScreens[p.identity]; delete watchedPids[p.identity];
+            if (myWatchers[p.identity]){ delete myWatchers[p.identity]; postWatchers(); }
+            post({type:'participantLeft', pid:p.identity});
+            post({type:'remoteLeft'});
+        });
+        // Стримы (демки): объявляем кнопкой «Смотреть стрим», не подписываясь.
+        room.on(LK.RoomEvent.TrackPublished, (pub, p) => { try { if (isScreenPub(pub)) announceScreen(p); } catch(e){} });
+        room.on(LK.RoomEvent.TrackUnpublished, (pub, p) => {
+            try {
+                if (pub && pub.source === LK.Track.Source.ScreenShare){
+                    delete publishedScreens[p.identity];
+                    delete watchedPids[p.identity];
+                    post({type:'screenUnpublished', pid: p.identity});
+                }
+            } catch(e){}
+        });
+        // Счётчик зрителей нашей демки (data-сообщения watch on/off).
+        room.on(LK.RoomEvent.DataReceived, (payload, p) => {
+            try {
+                if (!p) return;
+                const j = JSON.parse(new TextDecoder().decode(payload));
+                if (j && j.t === 'watch'){
+                    if (j.on) myWatchers[p.identity] = 1; else delete myWatchers[p.identity];
+                    postWatchers();
+                }
+            } catch(e){}
+        });
+        // Детектор говорящих — СВОЙ, локальный (см. startSpeakingMonitor):
+        // считаем уровень звука каждого участника на клиенте, с задержкой на
+        // появление и исчезновение. Серверный ActiveSpeakersChanged не используем
+        // (он сбоит из-за нашей обработки микрофона: шумодав/гейт/выкл. AGC).
+        try {
+            room.on(LK.RoomEvent.ParticipantNameChanged, (name, p) => {
+                try { post({type:'participantRenamed', pid: p.identity, name: name || pidName(p)}); } catch(e){}
+            });
+        } catch(e){}
+
+        await room.connect(url, token);
+
+        // Микрофон публикуем ДО события 'connected' — чтобы к моменту, когда C#
+        // применит сохранённый мьют (VoiceState.MicMuted), трек уже существовал и
+        // мьют «прилип». Иначе публикация после мьюта включала микрофон обратно.
+        try { await publishMic(); } catch(e){ console.error('mic enable', String(e)); }
+
+        post({type:'connected'});
+
+        // Сообщаем об уже присутствующих участниках (мы зашли в идущий звонок).
+        // Если у кого-то УЖЕ идёт стрим — объявляем его: появится кнопка
+        // «Смотреть стрим», и к трансляции можно подключиться с живой точки.
+        try {
+            room.remoteParticipants.forEach((p) => {
+                post({type:'participantJoined', pid:p.identity, name:pidName(p)});
+                try { announceScreen(p); } catch(e){}
+            });
+        } catch(e){ console.error('enum participants', String(e)); }
+
+        // Периодически читаем RTT (пинг) из WebRTC-статистики и шлём в C#.
+        try { if (window.__pingTimer) clearInterval(window.__pingTimer); } catch(e){}
+        window.__pingTimer = setInterval(readPing, 2000);
+        readPing();
+
+        // Локальный детектор говорящих (свои уровни звука, с attack/release).
+        startSpeakingMonitor();
+    } catch(err) {
+        console.error('connect error', String(err));
+        post({type:'fatal', error:String(err)});
+        post({type:'disconnected'});
+    }
+}
+
+function srcFor(publication){
+    // LK.Track.Source: Camera, Microphone, ScreenShare, ScreenShareAudio
+    return publication ? publication.source : null;
+}
+
+// Чтение пинга (RTT) из WebRTC getStats() по обоим PeerConnection'ам.
+// LiveKit в разных версиях хранит pc по-разному — пробуем все варианты.
+async function readPing(){
+    try {
+        let pcs = [];
+        const eng = room && room.engine;
+        if (eng) {
+            const pm = eng.pcManager;
+            if (pm) {
+                if (pm.publisher && pm.publisher.pc) pcs.push(pm.publisher.pc);
+                if (pm.subscriber && pm.subscriber.pc) pcs.push(pm.subscriber.pc);
+            }
+            if (eng.publisher && eng.publisher.pc) pcs.push(eng.publisher.pc);
+            if (eng.subscriber && eng.subscriber.pc) pcs.push(eng.subscriber.pc);
+        }
+        let best = null;
+        for (const pc of pcs) {
+            if (!pc || !pc.getStats) continue;
+            const stats = await pc.getStats();
+            stats.forEach(r => {
+                if (r.type === 'candidate-pair' && (r.nominated || r.state === 'succeeded')
+                    && typeof r.currentRoundTripTime === 'number') {
+                    const ms = Math.round(r.currentRoundTripTime * 1000);
+                    if (best === null || ms < best) best = ms;
+                }
+            });
+        }
+        if (best !== null) post({type:'ping', ms: best});
+    } catch(e) {}
+}
+
+function pidName(p){ return p ? (p.name || p.identity || '') : ''; }
+
+// Видео-элементы и циклы извлечения по ключу 'pid|source'.
+let remoteVideoMap = {}; // key -> { el, loop }
+
+function tileKey(pid, source){ return pid + '|' + source; }
+
+function selfIdent(){
+    try { return room && room.localParticipant ? room.localParticipant.identity : ''; }
+    catch(e){ return ''; }
+}
+
+// ── «Смотреть стрим» (как в Discord): демка собеседника НЕ грузится и не
+// открывается сама — зритель подключается к идущей трансляции кнопкой.
+// Пока не смотрим — отписаны от видео и звука стрима (не тратим канал/CPU).
+let watchedPids = {};        // pid -> true (мы смотрим стрим этого участника)
+let publishedScreens = {};   // pid -> true (у участника прямо сейчас идёт стрим)
+let myWatchers = {};         // pid -> 1 (кто сейчас смотрит НАШУ демку)
+let tileBoost = {};          // key -> true (для стрима открыт pop-out: плитка чаще/крупнее)
+
+function isScreenPub(pub){
+    return pub && (pub.source === LK.Track.Source.ScreenShare ||
+                   pub.source === LK.Track.Source.ScreenShareAudio);
+}
+
+function screenPubsOf(participant){
+    const res = [];
+    try { participant.trackPublications.forEach(p => { if (isScreenPub(p)) res.push(p); }); } catch(e){}
+    return res;
+}
+
+// Объявить стрим участника: отписаться (пока не смотрим) и показать кнопку в C#.
+// Идемпотентно — можно звать и на TrackPublished, и на перечислении при входе.
+function announceScreen(p){
+    if (!p || p.identity === selfIdent()) return;
+    const pid = p.identity;
+    const pubs = screenPubsOf(p);
+    if (!pubs.length) return;
+    if (!watchedPids[pid]) pubs.forEach(pub => { try { pub.setSubscribed(false); } catch(e){} });
+    if (!publishedScreens[pid]){
+        publishedScreens[pid] = true;
+        post({type:'screenPublished', pid: pid, name: pidName(p)});
+    }
+}
+
+function postWatchers(){ post({type:'streamWatchers', count: Object.keys(myWatchers).length}); }
+
+function sendWatchState(on){
+    try {
+        room.localParticipant.publishData(
+            new TextEncoder().encode(JSON.stringify({t:'watch', on: on ? 1 : 0})), { reliable: true });
+    } catch(e){}
+}
+
+// Подключиться к ИДУЩЕМУ стриму (живая точка, не «с начала» — WebRTC шлёт
+// свежий ключевой кадр при подписке). Все сценарии отказа отчитываются в C#.
+function watchScreen(pid){
+    try {
+        let target = null;
+        room.remoteParticipants.forEach(p => { if (p.identity === pid) target = p; });
+        if (!target){ post({type:'watchFailed', pid: pid, error:'участник вышел из звонка'}); return; }
+        const pubs = screenPubsOf(target);
+        if (!pubs.length){ post({type:'watchFailed', pid: pid, error:'стрим уже завершён'}); return; }
+        watchedPids[pid] = true;
+        pubs.forEach(pub => { try { pub.setSubscribed(true); } catch(e){} });
+        sendWatchState(true);
+    } catch(e){ delete watchedPids[pid]; post({type:'watchFailed', pid: pid, error:String(e)}); }
+}
+
+function unwatchScreen(pid){
+    delete watchedPids[pid];
+    try {
+        room.remoteParticipants.forEach(p => {
+            if (p.identity === pid)
+                screenPubsOf(p).forEach(pub => { try { pub.setSubscribed(false); } catch(e){} });
+        });
+        sendWatchState(false);
+    } catch(e){}
+}
+
+// Частота/размер плитки на лету (pop-out открыт → качаем чаще и крупнее).
+function setTileRate(pid, source, fps, maxW, boost){
+    const key = tileKey(pid, source);
+    tileBoost[key] = !!boost;
+    const entry = remoteVideoMap[key];
+    if (!entry) return;
+    if (entry.loop) entry.loop.stop();
+    const capEl = entry.el;
+    entry.loop = makeExtractorTile(() => capEl, pid, source, fps || 15, maxW || 960);
+    // Не возобновляем, если плитка намеренно на паузе (открыт театр без pop-out).
+    const pausedByTheater = (theaterPid === pid && theaterSource === source && !tileBoost[key]);
+    if (!pausedByTheater) entry.loop.start();
+}
+
+function onTrackSubscribed(track, publication, participant){
+    const src = srcFor(publication);
+    const pid = participant ? participant.identity : 'unknown';
+    const name = pidName(participant);
+    // Гейт «Смотреть стрим»: авто-подписка LiveKit могла успеть раньше нашей
+    // отписки — если этот стрим мы НЕ смотрим, глушим подписку и показываем
+    // кнопку вместо картинки (данные не льются, пока зритель не подключится).
+    if ((src === LK.Track.Source.ScreenShare || src === LK.Track.Source.ScreenShareAudio)
+        && pid !== selfIdent() && !watchedPids[pid]){
+        try { publication.setSubscribed(false); } catch(e){}
+        try { if (participant) announceScreen(participant); } catch(e){}
+        return;
+    }
+    if (track.kind === 'video'){
+        const source = (src === LK.Track.Source.ScreenShare) ? 'screen' : 'camera';
+        const key = tileKey(pid, source);
+        let entry = remoteVideoMap[key];
+        if (!entry){ entry = { el: makeHiddenVideo() }; remoteVideoMap[key] = entry; }
+        entry.track = track;   // для статистики приёма (getStats на receiver)
+        track.attach(entry.el);
+
+        // НИЗКАЯ ЗАДЕРЖКА для демонстрации: по умолчанию WebRTC копит jitter-buffer
+        // «для сглаживания», из-за чего экран/действия отстают на ~секунду. Просим
+        // приёмник держать буфер минимальным. (Для камеры оставляем чуть больше —
+        // там сглаживание важнее, а задержка не критична.)
+        try {
+            const r = track.receiver || (track._receiver) || null;
+            if (r){
+                const targetMs = source === 'screen' ? 100 : 200;
+                if ('jitterBufferTarget' in r) r.jitterBufferTarget = targetMs;          // мс (новый API)
+                else if ('playoutDelayHint' in r) r.playoutDelayHint = targetMs / 1000;  // сек (старый)
+            }
+        } catch(e){ console.warn('jitterBufferTarget', String(e)); }
+
+        post({type:'remoteTileStart', pid: pid, name: name, source: source});
+        if (!entry.loop){
+            const capEl = entry.el;
+            // Плитка — это ПРЕВЬЮ: 15fps/960px достаточно. Полное качество и
+            // плавность даёт нативный «театр». 30fps/1280px JPEG-извлечение
+            // создавало у зрителя постоянную нагрузку (кодирование+interop+GC)
+            // и накапливающиеся фризы на длинных демках. Исключение — открытый
+            // pop-out этого стрима (tileBoost): там плитка и есть экран.
+            const boosted = !!tileBoost[key];
+            entry.loop = makeExtractorTile(() => capEl, pid, source,
+                boosted ? 30 : 15, source === 'screen' ? (boosted ? 1280 : 960) : 360);
+        }
+        entry.loop.start();
+        if (source === 'screen') startScreenRecvStats();
+    } else if (track.kind === 'audio'){
+        if (src === LK.Track.Source.ScreenShareAudio){
+            // ПО УЧАСТНИКАМ: раньше один общий screenMix затирался второй демкой,
+            // и громкость можно было менять только «всем демкам сразу».
+            remoteScreenAudioTrack = track;
+            if (screenMixByPid[pid]) detachAmplified(screenMixByPid[pid]);
+            screenMixByPid[pid] = attachAmplified(track, remoteVoiceMuted ? 0 : effScreenVol(pid));
+            screenMix = screenMixByPid[pid]; // legacy-ссылка (последняя демка)
+        } else {
+            remoteVoiceTracks.push(track);
+            (remoteAudioByPid[pid] = remoteAudioByPid[pid] || []).push(track);
+            const node = attachAmplified(track, effectiveVolume(pid));
+            (mixByPid[pid] = mixByPid[pid] || []).push(node);
+        }
+    }
+}
+
+// ── Локальный детектор говорящих ────────────────────────────────────
+// Считаем уровень звука каждого участника (локальный микрофон + удалённые)
+// прямо на клиенте через AnalyserNode. Подсветка появляется с задержкой
+// (attack) и исчезает с задержкой (release) — не моргает на микропаузах.
+let _spkCtx = null;            // AudioContext для анализа уровней
+let _spkStore = {};            // key -> {track, an, buf}
+let _spkState = {};            // pid -> {above0, lastAbove, on}
+let _spkTimer = null;
+const SPK_THRESHOLD = 0.012;   // порог RMS «есть голос»
+const SPK_ATTACK_MS = 150;     // сколько держать звук, прежде чем зажечь
+const SPK_RELEASE_MS = 600;    // сколько гореть после пропадания звука
+
+function _spkRms(an, buf){
+    an.getByteTimeDomainData(buf);
+    let s = 0; for (let i = 0; i < buf.length; i++){ const x = (buf[i]-128)/128; s += x*x; }
+    return Math.sqrt(s/buf.length);
+}
+
+function _spkAnalyser(track, key){
+    const mst = (track && track.mediaStreamTrack) ? track.mediaStreamTrack : track;
+    const e = _spkStore[key];
+    if (e && e.mst === mst) return e;
+    try {
+        if (!_spkCtx) _spkCtx = new (window.AudioContext || window.webkitAudioContext)();
+        try { if (_spkCtx.state === 'suspended') _spkCtx.resume(); } catch(x){}
+        const src = _spkCtx.createMediaStreamSource(new MediaStream([mst]));
+        const an = _spkCtx.createAnalyser(); an.fftSize = 512;
+        src.connect(an);
+        _spkStore[key] = { mst, an, src, buf: new Uint8Array(an.fftSize) };
+        return _spkStore[key];
+    } catch(x){ return null; }
+}
+
+function startSpeakingMonitor(){
+    if (_spkTimer) return;
+    _spkTimer = setInterval(() => {
+        try {
+            const now = performance.now();
+            const levels = {};
+            // Локальный микрофон.
+            try {
+                const pub = localMicPub();
+                const selfId = (room && room.localParticipant) ? room.localParticipant.identity : null;
+                if (selfId && pub && pub.track && !pub.isMuted){
+                    const e = _spkAnalyser(pub.track, 'self');
+                    if (e) levels[selfId] = _spkRms(e.an, e.buf);
+                }
+            } catch(x){}
+            // Удалённые участники.
+            for (const pid in remoteAudioByPid){
+                const arr = remoteAudioByPid[pid] || [];
+                let m = 0;
+                for (let i = 0; i < arr.length; i++){
+                    const e = _spkAnalyser(arr[i], pid + '#' + i);
+                    if (e) m = Math.max(m, _spkRms(e.an, e.buf));
+                }
+                levels[pid] = m;
+            }
+            // Привязка attack/release к каждому pid.
+            const speaking = [];
+            for (const pid in levels){
+                const lvl = levels[pid];
+                let s = _spkState[pid] || { above0: 0, lastAbove: 0, on: false };
+                if (lvl > SPK_THRESHOLD){ if (!s.above0) s.above0 = now; s.lastAbove = now; }
+                else { s.above0 = 0; }
+                if (!s.on && s.above0 && (now - s.above0) >= SPK_ATTACK_MS) s.on = true;      // задержка появления
+                if (s.on && (now - s.lastAbove) >= SPK_RELEASE_MS) s.on = false;              // задержка исчезновения
+                _spkState[pid] = s;
+                if (s.on) speaking.push(pid);
+            }
+            post({type:'activeSpeakers', pids: JSON.stringify(speaking)});
+        } catch(x){}
+    }, 60);
+}
+
+// Итоговая громкость участника с учётом его персональных настроек и
+// глобального «заглушить весь звук».
+function effectiveVolume(pid){
+    if (remoteVoiceMuted) return 0;
+    if (perUserMuted[pid]) return 0;
+    let v = (pid in perUserVolume) ? perUserVolume[pid] : remoteVoiceVolume;
+    // Свой GainNode принимает буст >1 (лимитер защищает от клиппинга).
+    return Math.max(0, Math.min(v, 5));
+}
+
+function applyPidVolume(pid){
+    const v = effectiveVolume(pid);
+    (mixByPid[pid] || []).forEach(n => { try { n.gain.gain.value = v; } catch(e){} });
+}
+
+function setParticipantVolume(pid, v){
+    perUserVolume[pid] = v;
+    applyPidVolume(pid);
+}
+
+// Массово применить сохранённые громкости/мьюты (приходит ДО connect). Так
+// значение действует для любого участника при подписке на его аудио, включая
+// голос-без-камеры и тех, кто уже был в звонке до нашего входа.
+function setVoicePrefs(prefs){
+    try {
+        (prefs || []).forEach(p => {
+            if (!p || p.pid == null) return;
+            const pid = String(p.pid);
+            if (typeof p.v === 'number') perUserVolume[pid] = p.v;
+            if (typeof p.m !== 'undefined') perUserMuted[pid] = !!p.m;
+            applyPidVolume(pid); // если трек уже есть — сразу, иначе применится при подписке
+        });
+    } catch(e){ console.warn('setVoicePrefs', String(e)); }
+}
+
+function setParticipantMuted(pid, muted){
+    perUserMuted[pid] = muted;
+    applyPidVolume(pid);
+}
+
+function onTrackUnsubscribed(track, publication, participant){
+    const src = srcFor(publication);
+    const pid = participant ? participant.identity : 'unknown';
+    try { track.detach(); } catch(e){}
+    if (track.kind === 'video'){
+        const source = (src === LK.Track.Source.ScreenShare) ? 'screen' : 'camera';
+        const key = tileKey(pid, source);
+        const entry = remoteVideoMap[key];
+        if (entry){ if (entry.loop) entry.loop.stop(); if (entry.el) entry.el.srcObject = null; delete remoteVideoMap[key]; }
+        if (source === 'screen') stopScreenRecvStats();
+        post({type:'remoteTileStop', pid: pid, source: source});
+    } else if (track.kind === 'audio'){
+        if (src === LK.Track.Source.ScreenShareAudio){
+            remoteScreenAudioTrack = null;
+            if (screenMixByPid[pid]){ detachAmplified(screenMixByPid[pid]); delete screenMixByPid[pid]; }
+            screenMix = null;
+        } else {
+            remoteVoiceTracks = remoteVoiceTracks.filter(t => t !== track);
+            if (remoteAudioByPid[pid]) remoteAudioByPid[pid] = remoteAudioByPid[pid].filter(t => t !== track);
+            if (mixByPid[pid]){
+                mixByPid[pid].filter(n => n.track === track).forEach(detachAmplified);
+                mixByPid[pid] = mixByPid[pid].filter(n => n.track !== track);
+                if (!mixByPid[pid].length) delete mixByPid[pid];
+            }
+        }
+    }
+}
+
+// Останавливает все видео-циклы ушедшего участника и чистит аудио.
+function cleanupParticipant(pid){
+    Object.keys(remoteVideoMap).forEach((key) => {
+        if (key.indexOf(pid + '|') === 0){
+            const entry = remoteVideoMap[key];
+            if (entry){ if (entry.loop) entry.loop.stop(); if (entry.el) entry.el.srcObject = null; }
+            delete remoteVideoMap[key];
+        }
+    });
+    delete remoteAudioByPid[pid];
+    (mixByPid[pid] || []).forEach(detachAmplified);
+    delete mixByPid[pid];
+    if (screenMixByPid[pid]){ detachAmplified(screenMixByPid[pid]); delete screenMixByPid[pid]; }
+    delete screenVolByPid[pid];
+}
+
+// Извлечение кадров плитки: постит remoteTileFrame с pid+source.
+function makeExtractorTile(getVideoEl, pid, source, fps, maxW){
+    // Таймер вместо requestAnimationFrame — rAF замирает в скрытом WebView
+    // (см. makeExtractor), из-за чего плитки участников «застывали» со временем.
+    let timer = null, running = false;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const interval = Math.max(15, 1000 / fps);
+    function tick(){
+        if (!running) return;
+        try {
+            const v = getVideoEl();
+            if (v && v.readyState >= 2){
+                let vw = v.videoWidth, vh = v.videoHeight;
+                if (vw > 0 && vh > 0){
+                    let tw = vw, th = vh;
+                    if (maxW && vw > maxW){ tw = maxW; th = Math.round(vh * (maxW/vw)); }
+                    if (canvas.width !== tw || canvas.height !== th){ canvas.width = tw; canvas.height = th; }
+                    ctx.drawImage(v, 0, 0, tw, th);
+                    canvas.toBlob((blob) => {
+                        if (!blob) return;
+                        const reader = new FileReader();
+                        reader.onload = () => post({type:'remoteTileFrame', pid: pid, source: source, data: reader.result.split(',')[1]});
+                        reader.readAsDataURL(blob);
+                    }, 'image/jpeg', 0.8);
+                }
+            }
+        } catch(e){}
+        timer = setTimeout(tick, interval);
+    }
+    return {
+        start(){ if (!running){ running = true; tick(); } },
+        stop(){ running = false; if (timer){ clearTimeout(timer); timer = null; } }
+    };
+}
+
+function makeHiddenVideo(){
+    const v = document.createElement('video');
+    v.autoplay = true; v.muted = true; v.playsInline = true;
+    // ВАЖНО: не display:none (троттлится) и НЕ за экраном (Chromium исключает
+    // из композиции → кадры не рисуются → серый PIP). Держим В ПРЕДЕЛАХ вьюпорта
+    // 1×1px с opacity:0 — элемент композитится и декодирует, но невидим.
+    v.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1;';
+    document.body.appendChild(v);
+    return v;
+}
+
+// --- Универсальное извлечение кадров из <video> в JPEG для C# UI ---
+// fps и maxW могут быть функциями — тогда темп/размер меняются «на лету»
+// (превью своей демки следует за РЕАЛЬНЫМ исходящим потоком).
+function makeExtractor(getVideoEl, postType, fps, maxW){
+    // ТАЙМЕР, а не requestAnimationFrame: rAF в скрытом/перекрытом WebView
+    // останавливается вместе с композитором (окно транспорта — невидимое 1×1),
+    // из-за чего кадры переставали идти спустя время («демка тухнет»).
+    // setTimeout продолжает тикать (троттлинг таймеров отключён флагами).
+    let timer = null, running = false;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const fpsOf  = () => Math.max(1, (typeof fps  === 'function' ? fps()  : fps) || 1);
+    const maxWOf = () => (typeof maxW === 'function' ? maxW() : maxW);
+    function tick(){
+        if (!running) return;
+        try {
+            const v = getVideoEl();
+            if (v && v.readyState >= 2){
+                let vw = v.videoWidth, vh = v.videoHeight;
+                if (vw > 0 && vh > 0){
+                    let tw = vw, th = vh;
+                    const mW = maxWOf();
+                    if (mW && vw > mW){ tw = mW; th = Math.round(vh * (mW/vw)); }
+                    if (canvas.width !== tw || canvas.height !== th){ canvas.width = tw; canvas.height = th; }
+                    ctx.drawImage(v, 0, 0, tw, th);
+                    canvas.toBlob((blob) => {
+                        if (!blob) return;
+                        const reader = new FileReader();
+                        reader.onload = () => post({type: postType, data: reader.result.split(',')[1]});
+                        reader.readAsDataURL(blob);
+                    }, 'image/jpeg', 0.8);
+                }
+            }
+        } catch(e){}
+        timer = setTimeout(tick, Math.max(15, 1000 / fpsOf()));
+    }
+    return {
+        start(){ if (!running){ running = true; tick(); } },
+        stop(){ running = false; if (timer){ clearTimeout(timer); timer = null; } }
+    };
+}
+
+function startRemoteScreenExtraction(){ if(!remoteScreenLoop) remoteScreenLoop = makeExtractor(()=>remoteScreenVideoEl, 'remoteScreenFrame', 20, 0); remoteScreenLoop.start(); }
+function stopRemoteScreenExtraction(){ if(remoteScreenLoop) remoteScreenLoop.stop(); if(remoteScreenVideoEl){ remoteScreenVideoEl.srcObject=null; } }
+function startRemoteCameraExtraction(){ if(!remoteCameraLoop) remoteCameraLoop = makeExtractor(()=>remoteCameraVideoEl, 'remoteCameraFrame', 20, 0); remoteCameraLoop.start(); }
+function stopRemoteCameraExtraction(){ if(remoteCameraLoop) remoteCameraLoop.stop(); if(remoteCameraVideoEl){ remoteCameraVideoEl.srcObject=null; } }
+function startLocalCameraExtraction(){ if(!localCameraLoop) localCameraLoop = makeExtractor(()=>localCameraVideoEl, 'localCameraFrame', 15, 320); localCameraLoop.start(); }
+function stopLocalCameraExtraction(){ if(localCameraLoop) localCameraLoop.stop(); if(localCameraVideoEl){ localCameraVideoEl.srcObject=null; } }
+// Локальное превью «что видит собеседник»: частота и размер НЕ фиксированы,
+// а следуют за реальным исходящим потоком (outbound-rtp): если энкодер отдаёт
+// зрителям 24fps на 720p — превью живёт в том же темпе/масштабе, честно
+// показывая плавность и качество у собеседника. Пока стрим никто не смотрит
+// (кодирование не идёт) — скромные 10fps/480px, чтобы не жечь CPU впустую.
+let screenPreviewPaused = false;
+let previewFps = 10, previewMaxW = 480;
+function startScreenPreviewExtraction(){ if(!screenPreviewLoop) screenPreviewLoop = makeExtractor(()=>screenPreviewVideoEl, 'screenPreviewFrame', ()=>previewFps, ()=>previewMaxW); if(!screenPreviewPaused) screenPreviewLoop.start(); }
+function stopScreenPreviewExtraction(){ if(screenPreviewLoop) screenPreviewLoop.stop(); if(screenPreviewVideoEl){ screenPreviewVideoEl.srcObject=null; } }
+// Пауза/возобновление извлечения превью «что видит собеседник». Когда PIP-окно
+// свёрнуто/в трее — кадры не нужны, а JPEG-извлечение зря грузит CPU кодирующей
+// машины (конкурирует с энкодером демки). on=false — стоп, on=true — возобновить.
+function setScreenPreviewActive(on){
+    screenPreviewPaused = !on;
+    if (!screenPreviewLoop) return;
+    if (on && screenPublished) screenPreviewLoop.start();
+    else screenPreviewLoop.stop();
+}
+
+// ── Камера ───────────────────────────────────────────────────────────
+async function previewCamera(deviceLabel){
+    try {
+        // Разблокируем label-ы устройств (Chromium прячет их до первого доступа).
+        try { const t = await navigator.mediaDevices.getUserMedia({video:true,audio:false}); t.getTracks().forEach(x=>x.stop()); } catch(e){}
+        let deviceId = await deviceIdByLabel('videoinput', deviceLabel);
+        await openCamera(deviceId);
+        post({type:'cameraPreviewReady'});
+    } catch(err){ post({type:'localCameraError', error:String(err)}); }
+}
+
+async function deviceIdByLabel(kind, label){
+    if (!label) return undefined;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const m = devices.find(d => d.kind === kind && d.label === label);
+    return m ? m.deviceId : undefined;
+}
+
+async function openCamera(deviceId){
+    // Камера в 16:10 (1280x800) — чтобы кадр не обрезался (раньше форс 4:3
+    // обрезал широкий источник), и при этом разумная нагрузка.
+    const camOpts = { resolution: { width: 1280, height: 800, frameRate: 24 } };
+    if (deviceId) camOpts.deviceId = { exact: deviceId };
+    if (cameraTrack){
+        await cameraTrack.restartTrack(camOpts);
+    } else {
+        cameraTrack = await LK.createLocalVideoTrack(camOpts);
+    }
+    if (!localCameraVideoEl){ localCameraVideoEl = makeHiddenVideo(); }
+    cameraTrack.attach(localCameraVideoEl);
+    startLocalCameraExtraction();
+}
+
+async function switchCameraDevice(deviceLabel){
+    try {
+        let deviceId = await deviceIdByLabel('videoinput', deviceLabel);
+        await openCamera(deviceId);
+        post({type:'cameraDeviceSwitched'});
+    } catch(err){ post({type:'localCameraError', error:String(err)}); }
+}
+
+async function confirmCameraShare(){
+    try {
+        if (!cameraTrack){ post({type:'localCameraError', error:'no preview stream'}); return; }
+        if (!cameraPublished){
+            await room.localParticipant.publishTrack(cameraTrack, { source: LK.Track.Source.Camera });
+            cameraPublished = true;
+        }
+        post({type:'localCameraStarted'});
+    } catch(err){ post({type:'localCameraError', error:String(err)}); }
+}
+
+function cancelCameraPreview(){
+    stopLocalCameraExtraction();
+    if (cameraTrack && !cameraPublished){ try{ cameraTrack.stop(); }catch(e){} cameraTrack = null; }
+    post({type:'localCameraStopped'});
+}
+
+async function stopCameraTrack(){
+    try {
+        if (cameraTrack){
+            if (cameraPublished){ try{ await room.localParticipant.unpublishTrack(cameraTrack, true); }catch(e){} }
+            try{ cameraTrack.stop(); }catch(e){}
+            cameraTrack = null; cameraPublished = false;
+        }
+        stopLocalCameraExtraction();
+    } catch(err){ console.error('stopCameraTrack', String(err)); }
+    post({type:'localCameraStopped'});
+}
+
+// ── Демонстрация ВЫБРАННОГО монитора (свой захват на C#) ─────────────
+// Так работает выбор «1 из N экранов» (включая виртуальные VR-дисплеи,
+// которые системный диалог getDisplayMedia не перечисляет). Кадры монитора
+// приходят из C# (cmd 'canvasFrame'), рисуются в canvas, а его captureStream
+// публикуется тем же путём, что и обычная демка (confirmScreenShare).
+async function startCanvasScreen(w, h, fps){
+    try {
+        stopCanvasScreen();
+        canvasScreenEl = document.createElement('canvas');
+        canvasScreenEl.width = w; canvasScreenEl.height = h;
+        canvasScreenCtx = canvasScreenEl.getContext('2d');
+        canvasScreenCtx.fillStyle = '#000';
+        canvasScreenCtx.fillRect(0, 0, w, h);
+        canvasScreenStream = canvasScreenEl.captureStream(fps);
+        const vt = canvasScreenStream.getVideoTracks()[0];
+        if (!vt){ post({type:'localScreenError', error:'canvas capture failed'}); return; }
+        try { vt.contentHint = 'motion'; } catch(e){}
+        screenVideoTrack = new LK.LocalVideoTrack(vt);
+        screenAudioTrack = null;        // системный звук в этом режиме не захватываем
+        screenQualityH = h; screenQualityF = fps;
+        if (!screenPreviewVideoEl){ screenPreviewVideoEl = makeHiddenVideo(); }
+        screenVideoTrack.attach(screenPreviewVideoEl);
+        startScreenPreviewExtraction();
+        post({type:'screenPreviewReady'});
+    } catch(err){ post({type:'localScreenError', error:String(err)}); }
+}
+
+let _canvasBusy = false;
+function drawCanvasFrame(d){
+    if (!canvasScreenCtx || _canvasBusy) return;   // busy → кадр пропускаем (без backlog)
+    _canvasBusy = true;
+    try {
+        const bin = atob(d), len = bin.length, bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+        createImageBitmap(new Blob([bytes], { type: 'image/jpeg' })).then(bmp => {
+            try { if (canvasScreenCtx) canvasScreenCtx.drawImage(bmp, 0, 0, canvasScreenEl.width, canvasScreenEl.height); } catch(e){}
+            try { bmp.close(); } catch(e){}
+            _canvasBusy = false;
+        }).catch(() => { _canvasBusy = false; });
+    } catch(e){ _canvasBusy = false; }
+}
+
+function stopCanvasScreen(){
+    try { if (canvasScreenStream) canvasScreenStream.getTracks().forEach(t => { try{ t.stop(); }catch(e){} }); } catch(e){}
+    canvasScreenStream = null; canvasScreenCtx = null; canvasScreenEl = null;
+}
+
+// ── Демонстрация экрана ──────────────────────────────────────────────
+async function previewScreen(resHeight, fps){
+    try {
+        // Реально применяем выбранные разрешение и частоту кадров.
+        // resHeight: 1080/720/480/360; fps: 60/30/15...
+        let h = parseInt(resHeight); if (isNaN(h)) h = 1080;   // h<=0 => исходное (без ужатия)
+        let f = parseInt(fps) || 30;
+        screenQualityH = h; screenQualityF = f;
+
+        // Захват через getDisplayMedia НАПРЯМУЮ: только так можно ЗАПРОСИТЬ нужный fps
+        // (ideal). Раньше createLocalScreenTracks создавал трек со своим дефолтным fps,
+        // а applyConstraints({max:f}) лишь ограничивал сверху — поднять не мог, поэтому
+        // при выборе 60 по факту выходило ~15. Ограничиваем только height (не width) —
+        // без обрезки; при «Исходном» (h<=0) высоту не трогаем.
+        const videoCons = { frameRate: { ideal: f, max: f } };
+        if (h > 0) videoCons.height = { ideal: h };
+        // Звук демки — БЕЗ обработки голосового тракта:
+        //  • noiseSuppression:false — шумодав браузера принимал звуки игры
+        //    (двигатель и т.п.) за шум и глушил их, пропуская только речь;
+        //  • autoGainControl:false — не «дышащая» громкость;
+        //  • echoCancellation:false — AEC к системному звуку не применяем
+        //    (свой голос он не убирал, а обработку добавлял);
+        //  • restrictOwnAudio:true — КЛЮЧЕВОЕ: исключает из захвата звук
+        //    САМОГО приложения (голоса участников, которые PISMO играет в
+        //    колонки) на уровне WASAPI — как это делает Discord. Игра и
+        //    остальной системный звук остаются.
+        const audioCons = {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            restrictOwnAudio: true
+        };
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoCons, audio: audioCons });
+
+        const vt = stream.getVideoTracks()[0];
+        const at = stream.getAudioTracks()[0] || null;
+        if (!vt){ post({type:'localScreenError', error:'no screen video track'}); return; }
+        // КРИТИЧНО: жёстко ограничиваем ЧАСТОТУ ЗАХВАТА. getDisplayMedia часто
+        // игнорирует frameRate и захватывает с частотой монитора (144/200 Гц),
+        // а это впустую грузит GPU/CPU, из-за чего энкодер не тянет и fps
+        // отправки проседает. applyConstraints уже на живом треке — надёжнее.
+        try { await vt.applyConstraints({ frameRate: { ideal: f, max: f } }); } catch(e){}
+        // 'motion' → WebRTC держит framerate (плавность), резкость — за счёт битрейта.
+        try { vt.contentHint = 'motion'; } catch(e){}
+        // Диагностика: реальные параметры захвата (видно в статусе звонка).
+        try { const st = vt.getSettings(); post({type:'screenCaptureInfo', fps: Math.round(st.frameRate||0), w: st.width||0, h: st.height||0}); } catch(e){}
+
+        screenVideoTrack = new LK.LocalVideoTrack(vt);
+        screenAudioTrack = at ? new LK.LocalAudioTrack(at) : null;
+
+        // Остановка через системный диалог Chrome ('Stop sharing').
+        const mst = vt;
+        if (mst){
+            mst.onended = () => { if (screenPublished) stopScreenShareTrack(); else cancelScreenPreview(); };
+            // Диагностика «тихого» замирания: захват может уйти в mute (сон монитора,
+            // переключение fullscreen-режима игры, пересоздание GPU-устройства).
+            mst.onmute   = () => post({type:'jsLog', text:'ДЕМКА: трек захвата muted (источник перестал отдавать кадры)'});
+            mst.onunmute = () => post({type:'jsLog', text:'ДЕМКА: трек захвата снова отдаёт кадры'});
+        }
+
+        if (!screenPreviewVideoEl){ screenPreviewVideoEl = makeHiddenVideo(); }
+        screenVideoTrack.attach(screenPreviewVideoEl);
+        startScreenPreviewExtraction();
+        post({type:'screenPreviewReady'});
+    } catch(err){ post({type:'localScreenError', error:String(err)}); }
+}
+
+let screenCodecPref = 'h265';   // 'h265' | 'h264' | 'vp9' — из настроек (C#)
+let screenParams = null;        // { effH, maxBitrate } — для переиздания при откате
+let screenCurCodec = 'h264';
+let screenFellBack = false;
+
+// Публикация видео-трека демки заданным кодеком + применение параметров энкодера.
+// Приоритет деградации: 'balanced' — держим И fps, И разрешение. Деградация
+// вообще включается только когда энкодер/сеть не тянут, и тогда WebRTC
+// снижает то и другое МАЛЕНЬКИМИ шагами попеременно (и возвращает обратно,
+// как только нагрузка спадает) — вместо того чтобы сильно ронять что-то одно.
+function screenDegradationPref(){ return 'balanced'; }
+
+async function publishScreenWithCodec(codec){
+    const p = screenParams || { effH: 1080, maxBitrate: 15000000 };
+    await room.localParticipant.publishTrack(screenVideoTrack, {
+        source: LK.Track.Source.ScreenShare,
+        simulcast: false,
+        videoCodec: codec,
+        degradationPreference: screenDegradationPref(),
+        videoEncoding: { maxBitrate: p.maxBitrate, maxFramerate: screenQualityF }
+    });
+    screenCurCodec = codec;
+    post({type:'jsLog', text:'Демка опубликована кодеком: ' + codec});
+    try {
+        const sender = screenVideoTrack.sender;
+        if (sender && sender.getParameters){
+            const sp = sender.getParameters();
+            sp.degradationPreference = screenDegradationPref();
+            if (!sp.encodings || !sp.encodings.length) sp.encodings = [{}];
+            sp.encodings[0].maxFramerate = screenQualityF;
+            sp.encodings[0].maxBitrate = p.maxBitrate;
+            sp.encodings[0].scaleResolutionDownBy = 1;
+            try { sp.encodings[0].networkPriority = 'high'; } catch(e){}
+            try { sp.encodings[0].priority = 'high'; } catch(e){}
+            await sender.setParameters(sp);
+        }
+    } catch(e){ console.warn('setParameters', String(e)); }
+}
+
+// Проверка, что демка реально кодируется. Если кадры не идут (HEVC не
+// поднялся) — жёсткий откат на H264. Диагностика софт/аппаратного энкодера.
+async function verifyScreenEncode(retry){
+    try {
+        if (!screenPublished || !screenVideoTrack || !screenVideoTrack.sender) return;
+        const stats = await screenVideoTrack.sender.getStats();
+        let o = null;
+        stats.forEach(r => { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) o = r; });
+        const frames = (o && o.framesEncoded) || 0;
+
+        // ФАКТИЧЕСКИЙ кодек (не тот, что просили — LiveKit при отсутствии H265
+        // молча падает на VP8, который в софте). Берём из codec-статистики.
+        let mime = '';
+        try { if (o && o.codecId){ const c = stats.get(o.codecId); if (c && c.mimeType) mime = c.mimeType.toLowerCase(); } } catch(e){}
+        const isVpx  = mime.includes('vp8') || mime.includes('vp9');
+        const isH264 = mime.includes('h264') || mime.includes('avc');
+
+        // Оказались на VP8/VP9 (софт), хотя хотели H26x → форсим H264 ОДИН раз.
+        // H264 умеет и Quick Sync (Intel), и NVENC (NVIDIA) — аппаратно.
+        if (!screenFellBack && isVpx && (screenCodecPref === 'h265' || screenCodecPref === 'h264')){
+            screenFellBack = true;
+            post({type:'jsLog', text:'Фактический кодек ' + mime + ' (софт) — принудительно H264'});
+            try { await room.localParticipant.unpublishTrack(screenVideoTrack, false); } catch(e){}
+            try { await publishScreenWithCodec('h264'); } catch(e){ post({type:'localScreenError', error:'republish h264: '+String(e)}); }
+            setTimeout(() => verifyScreenEncode(0), 4000);
+            return;
+        }
+
+        // HEVC/кодек не кодирует ни кадра → тихий провал, откат на H264.
+        if (frames === 0 && !isH264 && !screenFellBack){
+            screenFellBack = true;
+            post({type:'jsLog', text:'Кодек ' + (mime||screenCurCodec) + ' не кодирует — откат на H264'});
+            try { await room.localParticipant.unpublishTrack(screenVideoTrack, false); } catch(e){}
+            try { await publishScreenWithCodec('h264'); } catch(e){ post({type:'localScreenError', error:'republish h264: '+String(e)}); }
+            setTimeout(() => verifyScreenEncode(0), 4000);
+            return;
+        }
+        // КЛЮЧЕВОЕ: пока НЕТ реального кодирования (frames==0 — обычно потому что
+        // ты ОДИН в канале, кодировать некому), Chromium ещё НЕ выбрал реальный
+        // энкодер и encoderImplementation врёт «OpenH264». Не делаем вывод и НЕ
+        // пугаем «кодируется процессором». Тихо перепроверяем позже — когда
+        // зайдёт собеседник и пойдут кадры.
+        if (frames === 0){ setTimeout(() => verifyScreenEncode(retry + 1), 4000); return; }
+
+        // Есть реальное кодирование → encoderImplementation достоверен.
+        const enc = (o && o.encoderImplementation) || '';
+        const shortMime = mime.replace('video/', '');
+        if (/openh264|libvpx|libaom/i.test(enc)){
+            post({type:'jsLog', text:'ВНИМАНИЕ: программный энкодер (' + enc + ', ' + shortMime + ') — нужен аппаратный (Quick Sync/NVENC).'});
+            post({type:'softwareEncoder'});
+        } else if (enc){
+            post({type:'jsLog', text:'Энкодер демки: ' + enc + ' (' + shortMime + ', аппаратный)'});
+            post({type:'hardwareEncoder', text: enc + ' · ' + shortMime});
+        }
+    } catch(e){}
+}
+
+async function confirmScreenShare(){
+    try {
+        if (!screenVideoTrack){ post({type:'localScreenError', error:'no preview stream'}); return; }
+        if (!screenPublished){
+            // Битрейт под РЕАЛЬНУЮ высоту (для «Исходного»/native берём фактическую
+            // высоту трека). Высокий битрейт = чёткая картинка без «мыла».
+            let effH = screenQualityH;
+            if (!effH || effH <= 0){
+                try { effH = screenVideoTrack.mediaStreamTrack.getSettings().height || 1080; } catch(e){ effH = 1080; }
+            }
+            // Для 60 fps даём больше — плавное движение требует больше бит. На
+            // низких разрешениях битрейт ПОДНЯТ: при высоком fps регулятор
+            // битрейта иначе резал частоту, чтобы уложиться (отсюда «45 на 360p»).
+            let hi = screenQualityF >= 45;
+            // ПОДНЯТЫЙ битрейт: запас, чтобы 1080@60 (и выше) держал и чёткость,
+            // и частоту без включения деградации.
+            let maxBitrate = effH >= 1440 ? (hi ? 50_000_000 : 35_000_000)
+                           : effH >= 1080 ? (hi ? 35_000_000 : 22_000_000)
+                           : effH >= 720  ? (hi ? 20_000_000 : 12_000_000)
+                           : effH >= 480  ? (hi ? 12_000_000 : 8_000_000)
+                           : (hi ? 8_000_000 : 5_000_000);
+            // Кодек: сначала пробуем выбранный (по умолчанию H265/HEVC — при
+            // аппаратном энкодере даёт заметно чётче при том же битрейте), с
+            // АВТО-ОТКАТОМ на H264, если HEVC не поднялся или реально не кодирует
+            // кадры (нет аппаратного HEVC / собеседник не умеет декодировать).
+            // H264 через Quick Sync/NVENC — надёжный базовый путь.
+            screenParams = { effH, maxBitrate };
+            screenFellBack = false;
+            let firstCodec = (screenCodecPref === 'h265' || screenCodecPref === 'vp9') ? screenCodecPref : 'h264';
+            try {
+                await publishScreenWithCodec(firstCodec);
+            } catch(ePub){
+                // HEVC отклонён на публикации → сразу H264 (железобетонный путь).
+                post({type:'jsLog', text:'Публикация ' + firstCodec + ' не удалась (' + String(ePub) + ') — H264'});
+                if (firstCodec !== 'h264'){ screenFellBack = true; await publishScreenWithCodec('h264'); }
+                else throw ePub;
+            }
+
+            // Hi-fi публикация звука демки: dtx:false — DTX режет ТИХИЕ непрерывные
+            // звуки (двигатель, эмбиент) как «тишину»; стерео + высокий битрейт —
+            // звук игры, а не «телефонная» речь.
+            if (screenAudioTrack){ try{ await room.localParticipant.publishTrack(screenAudioTrack, {
+                source: LK.Track.Source.ScreenShareAudio,
+                dtx: false,
+                red: false,
+                forceStereo: true,
+                audioPreset: { maxBitrate: 128000 }
+            }); }catch(e){} }
+            screenPublished = true;
+            startScreenSendStats();   // мини-превью показывает, что реально уходит собеседникам
+
+            // Через 4 c проверяем, реально ли трек кодируется. framesEncoded==0 при
+            // HEVC = тихий провал (нет аппаратного HEVC-энкодера или собеседник не
+            // декодирует) → жёсткий откат на H264. Иначе — только диагностика
+            // софт/аппарат.
+            setTimeout(() => verifyScreenEncode(0), 4000);
+        }
+        post({type:'localScreenStarted'});
+    } catch(err){ post({type:'localScreenError', error:String(err)}); }
+}
+
+function cancelScreenPreview(){
+    stopScreenPreviewExtraction();
+    if (screenVideoTrack && !screenPublished){ try{ screenVideoTrack.stop(); }catch(e){} screenVideoTrack = null; }
+    if (screenAudioTrack && !screenPublished){ try{ screenAudioTrack.stop(); }catch(e){} screenAudioTrack = null; }
+    stopCanvasScreen();
+    post({type:'localScreenStopped'});
+}
+
+async function stopScreenShareTrack(){
+    try {
+        if (screenVideoTrack){
+            if (screenPublished){ try{ await room.localParticipant.unpublishTrack(screenVideoTrack, true); }catch(e){} }
+            try{ screenVideoTrack.stop(); }catch(e){}
+        }
+        if (screenAudioTrack){
+            if (screenPublished){ try{ await room.localParticipant.unpublishTrack(screenAudioTrack, true); }catch(e){} }
+            try{ screenAudioTrack.stop(); }catch(e){}
+        }
+        screenVideoTrack = null; screenAudioTrack = null; screenPublished = false;
+        stopCanvasScreen();
+        stopScreenSendStats();
+        stopScreenPreviewExtraction();
+        previewFps = 10; previewMaxW = 480;
+        if (Object.keys(myWatchers).length){ myWatchers = {}; postWatchers(); }
+    } catch(err){ console.error('stopScreenShareTrack', String(err)); }
+    post({type:'localScreenStopped'});
+}
+
+// ── Смена ИСТОЧНИКА демонстрации на лету (игра ↔ весь экран) ─────────
+// Новый выбор в системном диалоге + replaceTrack на ЖИВОЙ публикации:
+// зрители не переподключаются, стрим не прерывается. Отмена диалога /
+// некорректно закрытое окно выбора — старый источник продолжает идти.
+let switchInProgress = false;
+async function switchScreenSource(){
+    if (switchInProgress){ post({type:'screenSwitchDone', ok:false, error:'уже выбираем источник'}); return; }
+    if (!screenPublished || !screenVideoTrack){ post({type:'screenSwitchDone', ok:false, error:'демонстрация не идёт'}); return; }
+    switchInProgress = true;
+    try {
+        const videoCons = { frameRate: { ideal: screenQualityF, max: screenQualityF } };
+        if (screenQualityH > 0) videoCons.height = { ideal: screenQualityH };
+        const audioCons = { echoCancellation:false, noiseSuppression:false, autoGainControl:false, restrictOwnAudio:true };
+        // Сторож: если окно выбора закрыли мимо диалога и промис завис —
+        // через 2 минуты сдаёмся (демка всё это время продолжает идти).
+        const pick = navigator.mediaDevices.getDisplayMedia({ video: videoCons, audio: audioCons });
+        const stream = await Promise.race([pick,
+            new Promise((_,rej)=>setTimeout(()=>rej(new Error('выбор источника отменён (таймаут)')), 120000))]);
+        const vt = stream.getVideoTracks()[0];
+        const at = stream.getAudioTracks()[0] || null;
+        if (!vt) throw new Error('нет видео-дорожки у нового источника');
+        try { await vt.applyConstraints({ frameRate: { ideal: screenQualityF, max: screenQualityF } }); } catch(e){}
+        try { vt.contentHint = 'motion'; } catch(e){}
+        const oldV = screenVideoTrack.mediaStreamTrack;
+        await screenVideoTrack.replaceTrack(vt, true);
+        try { if (oldV && oldV !== vt) oldV.stop(); } catch(e){}
+        // Системный «Stop sharing» нового источника должен останавливать демку.
+        vt.onended = () => { if (screenPublished) stopScreenShareTrack(); else cancelScreenPreview(); };
+        // Превью надёжно переприцепляем к новому потоку.
+        try { if (screenPreviewVideoEl) screenVideoTrack.attach(screenPreviewVideoEl); } catch(e){}
+        // Звук: у нового источника есть дорожка — заменяем; нет — оставляем прежнюю.
+        if (at){
+            if (screenAudioTrack){
+                const oldA = screenAudioTrack.mediaStreamTrack;
+                try { await screenAudioTrack.replaceTrack(at, true); if (oldA && oldA !== at) oldA.stop(); } catch(e){}
+            } else {
+                try {
+                    screenAudioTrack = new LK.LocalAudioTrack(at);
+                    await room.localParticipant.publishTrack(screenAudioTrack, {
+                        source: LK.Track.Source.ScreenShareAudio,
+                        dtx: false, red: false, forceStereo: true,
+                        audioPreset: { maxBitrate: 128000 }
+                    });
+                } catch(e){}
+            }
+        }
+        // Возвращаем энкодеру потолки битрейта/fps (после подмены трека).
+        try {
+            const sender = screenVideoTrack.sender;
+            if (sender && sender.getParameters){
+                const sp = sender.getParameters();
+                if (!sp.encodings || !sp.encodings.length) sp.encodings = [{}];
+                sp.encodings[0].maxFramerate = screenQualityF;
+                if (screenParams) sp.encodings[0].maxBitrate = screenParams.maxBitrate;
+                sp.encodings[0].scaleResolutionDownBy = 1;
+                await sender.setParameters(sp);
+            }
+        } catch(e){}
+        try { const st = vt.getSettings(); post({type:'screenCaptureInfo', fps: Math.round(st.frameRate||0), w: st.width||0, h: st.height||0}); } catch(e){}
+        post({type:'screenSwitchDone', ok:true});
+    } catch(err){
+        post({type:'screenSwitchDone', ok:false, error:String(err)});
+    } finally { switchInProgress = false; }
+}
+
+// ── Прочее ───────────────────────────────────────────────────────────
+async function enumerateDevices(){
+    try {
+        try { const t = await navigator.mediaDevices.getUserMedia({video:true,audio:true}); t.getTracks().forEach(x=>x.stop()); } catch(e){}
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d=>d.kind==='videoinput').map(d=>d.label).filter(Boolean);
+        const mics = devices.filter(d=>d.kind==='audioinput').map(d=>d.label).filter(Boolean);
+        const spk = devices.filter(d=>d.kind==='audiooutput').map(d=>d.label).filter(Boolean);
+        post({type:'devicesEnumerated', cameras: JSON.stringify(cams), mics: JSON.stringify(mics), speakers: JSON.stringify(spk)});
+    } catch(err){ console.error('enumerateDevices', String(err)); }
+}
+
+async function setMicEnabled(enabled){
+    // Запоминаем желаемое состояние ВСЕГДА (даже если room ещё нет) — publishMic
+    // при подключении применит именно его. Иначе «зашёл с выкл. микрофоном» →
+    // кнопка выкл, а звук идёт.
+    micDesiredEnabled = !!enabled;
+    try {
+        if (!room) return;
+        // Стандартный mute/unmute LiveKit — надёжно отключает передачу звука.
+        await room.localParticipant.setMicrophoneEnabled(!!enabled, micCaptureOpts());
+        // После повторного включения трек новый — навешиваем шумодав заново.
+        if (enabled) setTimeout(() => applyNoiseFilter(), 300);
+    } catch(e){ console.error('setMic', String(e)); }
+}
+
+// ── Громкость демонстраций: общая + индивидуальная по участнику ─────
+let screenMixByPid = {};   // pid -> узел усилителя звука его демки
+let screenVolByPid = {};   // pid -> личная громкость (перекрывает общую)
+
+function effScreenVol(pid){
+    return screenVolByPid[pid] !== undefined ? screenVolByPid[pid] : remoteScreenAudioVolume;
+}
+function applyScreenVol(pid){
+    const m = screenMixByPid[pid];
+    if (m){ try{ m.gain.gain.value = remoteVoiceMuted ? 0 : Math.max(0, Math.min(effScreenVol(pid), 5)); }catch(e){} }
+}
+
+function setScreenAudioVolume(v){
+    remoteScreenAudioVolume = Math.max(0, Math.min(v, 5));   // усилитель до 500%
+    Object.keys(screenMixByPid).forEach(applyScreenVol);      // общая — для демок без личной
+}
+
+// Личная громкость КОНКРЕТНОЙ демки (правый клик по её плитке).
+function setScreenVolumePid(pid, v){
+    screenVolByPid[pid] = Math.max(0, Math.min(v, 5));
+    applyScreenVol(pid);
+}
+
+function setVoiceVolume(v){
+    remoteVoiceVolume = v;
+    Object.keys(remoteAudioByPid).forEach(applyPidVolume);
+}
+
+function setRemoteMuted(muted){
+    remoteVoiceMuted = muted;
+    Object.keys(mixByPid).forEach(applyPidVolume);
+    Object.keys(screenMixByPid).forEach(applyScreenVol);
+}
+
+async function setAudioDevice(kind, deviceLabel){
+    try {
+        if (!room) return;
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const m = devices.find(d => d.kind === kind && d.label === deviceLabel);
+        if (m) await room.switchActiveDevice(kind, m.deviceId);
+    } catch(e){ console.error('switchActiveDevice ' + kind, String(e)); }
+}
+
+// Порог активации голоса (самописный gate) УДАЛЁН: он переключал
+// mediaStreamTrack.enabled и мешал штатному mute, ломая выключение микрофона.
+// Шум давит Krisp, постоянный фон — браузерный noiseSuppression.
+function setVoiceGate(auto, threshold){ /* no-op, оставлено для совместимости команд */ }
+
+// ── «Театр»: нативный полноэкранный рендер видео (плавные 60fps) ──────
+// Показываем реальный <video> прямо в WebView, а не извлекаем JPEG. Тот же
+// MediaStream, что и у скрытого элемента, — поэтому без потери кадров.
+let theaterEl = null;
+let theaterWatch = null;          // сторож: чёрный экран не должен жить дольше пары секунд
+let theaterPid = null, theaterSource = null;
+let theaterFrames = -1, theaterStallTicks = 0;
+
+// Актуальный поток для театра (при переподписке LiveKit у плитки появляется
+// НОВЫЙ MediaStream — театр обязан переприцепиться, иначе останется чёрным).
+function theaterResolveSrc(){
+    let src = null;
+    const entry = remoteVideoMap[tileKey(theaterPid, theaterSource)];
+    if (entry && entry.el && entry.el.srcObject) src = entry.el.srcObject;
+    // Локальные фолбэки — ТОЛЬКО для своего pid. Иначе при пропаже чужого
+    // стрима театр молча подхватывал бы НАШУ демку/камеру вместо выхода.
+    if (!src && theaterPid === selfIdent()){
+        if (theaterSource === 'screen' && screenPreviewVideoEl && screenPreviewVideoEl.srcObject) src = screenPreviewVideoEl.srcObject;
+        if (theaterSource === 'camera' && localCameraVideoEl && localCameraVideoEl.srcObject) src = localCameraVideoEl.srcObject;
+    }
+    return src;
+}
+
+function theaterTick(){
+    try {
+        if (!theaterEl || theaterEl.style.display === 'none') return;
+        const vid = theaterEl.querySelector('#__theaterVideo');
+        if (!vid) return;
+        const cur = theaterResolveSrc();
+        if (!cur){ post({type:'theaterExitRequested'}); return; }   // трек пропал — выходим из театра
+        if (vid.srcObject !== cur){
+            vid.srcObject = cur;                                     // поток сменился — переприцепились
+            theaterFrames = -1; theaterStallTicks = 0;
+            try { vid.play(); } catch(e){}
+            return;
+        }
+        const t = cur.getVideoTracks && cur.getVideoTracks()[0];
+        if (t && t.readyState === 'ended'){ post({type:'theaterExitRequested'}); return; }
+        if (vid.paused){ try { vid.play(); } catch(e){} }
+        // Детектор «картинка замерла»: у ЖИВОГО MediaStream currentTime всегда
+        // растёт. (Раньше мерили totalVideoFrames — для WebRTC-потока счётчик
+        // может не расти, и сторож зря передёргивал srcObject каждые 6 секунд,
+        // отчего демка подлагивала.)
+        const ct = vid.currentTime || 0;
+        if (ct === theaterFrames){
+            if (++theaterStallTicks >= 3){
+                theaterStallTicks = 0;
+                try { vid.srcObject = null; vid.srcObject = cur; vid.play(); } catch(e){}
+            }
+        } else theaterStallTicks = 0;
+        theaterFrames = ct;
+    } catch(e){}
+}
+
+function theaterShow(pid, source){
+    theaterPid = pid; theaterSource = source;
+    theaterFrames = -1; theaterStallTicks = 0;
+    const src = theaterResolveSrc();
+    if (!src){ theaterPid = null; theaterSource = null; return; }
+    if (!theaterEl){
+        theaterEl = document.createElement('div');
+        theaterEl.style.cssText = 'position:fixed;inset:0;background:#000;z-index:2147483000;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+        const v = document.createElement('video');
+        v.autoplay = true; v.muted = true; v.playsInline = true;
+        v.id = '__theaterVideo';
+        v.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;';
+        theaterEl.appendChild(v);
+        // Выход из театра: двойной клик по видео или крестик.
+        theaterEl.ondblclick = () => post({type:'theaterExitRequested'});
+        const btnCss = 'position:absolute;top:12px;color:#fff;font:700 20px Segoe UI,sans-serif;background:rgba(0,0,0,.45);border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+        // Развернуть на весь экран / свернуть обратно (нативное качество сохраняется).
+        const fs = document.createElement('div');
+        fs.textContent = '⛶';
+        fs.title = 'Во весь экран';
+        fs.style.cssText = btnCss + 'right:64px;';
+        fs.onclick = (ev) => { ev.stopPropagation(); post({type:'theaterFullscreenToggle'}); };
+        theaterEl.appendChild(fs);
+        const x = document.createElement('div');
+        x.textContent = '✕';
+        x.title = 'Выйти (двойной клик)';
+        x.style.cssText = btnCss + 'right:16px;';
+        x.onclick = (ev) => { ev.stopPropagation(); post({type:'theaterExitRequested'}); };
+        theaterEl.appendChild(x);
+        document.body.appendChild(theaterEl);
+        // Esc — тоже выход из театра (раньше выйти можно было только мышью,
+        // а при полноэкранном театре кнопки легко «потерять»).
+        document.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Escape' && theaterEl && theaterEl.style.display !== 'none')
+                post({type:'theaterExitRequested'});
+        });
+    }
+    const vid = theaterEl.querySelector('#__theaterVideo');
+    if (vid.srcObject !== src) vid.srcObject = src;
+    try { vid.play(); } catch(e){}
+    theaterEl.style.display = 'flex';
+    if (theaterWatch) clearInterval(theaterWatch);
+    theaterWatch = setInterval(theaterTick, 2000);
+    // Пока открыт театр (нативное видео), JPEG-извлечение плитки этой демки —
+    // лишняя двойная работа (главный источник фризов у зрителя). Ставим на
+    // паузу — если только стрим не открыт ещё и в pop-out окне (ему нужны кадры).
+    try { const e2 = remoteVideoMap[tileKey(pid, source)]; if (e2 && e2.loop && !tileBoost[tileKey(pid, source)]) e2.loop.stop(); } catch(e){}
+}
+function theaterHide(){
+    if (theaterWatch){ clearInterval(theaterWatch); theaterWatch = null; }
+    // Возобновляем извлечение плитки (вернулись из театра к плиткам).
+    try {
+        if (theaterPid){ const e2 = remoteVideoMap[tileKey(theaterPid, theaterSource)]; if (e2 && e2.loop) e2.loop.start(); }
+    } catch(e){}
+    theaterPid = null; theaterSource = null;
+    if (theaterEl){
+        theaterEl.style.display = 'none';
+        const vid = theaterEl.querySelector('#__theaterVideo');
+        if (vid) vid.srcObject = null;
+    }
+}
+
+// ── Чип статистики в театре (что реально приходит по сети) ──────────
+let theaterStatsEl = null;
+function updateTheaterStats(text){
+    if (!theaterEl) return;
+    if (!theaterStatsEl){
+        theaterStatsEl = document.createElement('div');
+        theaterStatsEl.style.cssText = 'position:absolute;left:12px;bottom:12px;color:#ddd;font:12px Consolas,monospace;background:rgba(0,0,0,.55);padding:4px 10px;border-radius:6px;pointer-events:none;';
+        theaterEl.appendChild(theaterStatsEl);
+    }
+    theaterStatsEl.textContent = text || '';
+    theaterStatsEl.style.display = text ? 'block' : 'none';
+}
+
+// ── Статистика демонстрации: ЧТО РЕАЛЬНО уходит собеседникам и что
+//    реально приходит зрителю (для диагностики «у кого лагает») ──────
+let sendStatsTimer = null, _ssBytes = -1, _ssTs = 0;
+// Реальный fps ЗАХВАТА (кадры, дошедшие до превью-элемента): позволяет отличить
+// «захватчик отдаёт 30» от «энкодер режет до 30».
+let _capFrames = 0, _capMeterOn = false, _capLastTs = 0;
+function startCaptureFpsMeter(){
+    if (_capMeterOn || !screenPreviewVideoEl || !screenPreviewVideoEl.requestVideoFrameCallback) return;
+    _capMeterOn = true; _capFrames = 0; _capLastTs = performance.now();
+    const cb = () => {
+        _capFrames++;
+        if (_capMeterOn && screenPreviewVideoEl) screenPreviewVideoEl.requestVideoFrameCallback(cb);
+    };
+    screenPreviewVideoEl.requestVideoFrameCallback(cb);
+}
+function stopCaptureFpsMeter(){ _capMeterOn = false; }
+
+function startScreenSendStats(){
+    stopScreenSendStats(false);
+    _ssBytes = -1;
+    startCaptureFpsMeter();
+    sendStatsTimer = setInterval(async () => {
+        try {
+            if (!screenPublished || !screenVideoTrack || !screenVideoTrack.sender) return;
+            const stats = await screenVideoTrack.sender.getStats();
+            let o = null;
+            stats.forEach(r => { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) o = r; });
+            if (!o) return;
+            let mbps = 0;
+            if (_ssBytes >= 0 && o.bytesSent > _ssBytes && o.timestamp > _ssTs)
+                mbps = (o.bytesSent - _ssBytes) * 8 / ((o.timestamp - _ssTs) * 1000);
+            _ssBytes = o.bytesSent; _ssTs = o.timestamp;
+            // Фактический fps захвата за интервал.
+            const nowP = performance.now();
+            const capFps = _capMeterOn && nowP > _capLastTs ? Math.round(_capFrames * 1000 / (nowP - _capLastTs)) : -1;
+            _capFrames = 0; _capLastTs = nowP;
+            // qualityLimitationReason — ГЛАВНЫЙ диагност: что душит качество.
+            const lim = o.qualityLimitationReason === 'cpu' ? '  ⚠ упор: CPU/энкодер'
+                      : o.qualityLimitationReason === 'bandwidth' ? '  ⚠ упор: СЕТЬ (аплоад)' : '';
+            // Имя энкодера ДОСТОВЕРНО только когда идёт реальное кодирование
+            // (есть кадры/собеседник). Пока один в канале — не показываем вердикт,
+            // а пишем «ожидание собеседника», иначе врёт «SOFT:OpenH264».
+            const framesEnc = o.framesEncoded || 0;
+            let encPart = '';
+            if (framesEnc > 0){
+                let enc = o.encoderImplementation || '';
+                if (/openh264|libvpx|libaom/i.test(enc)) enc = '⚠ SOFT:' + enc;
+                encPart = enc ? ' · ' + enc : '';
+            }
+            const idle = framesEnc === 0 ? '  (никто не смотрит стрим — кодирование ещё не идёт)' : '';
+            // Превью «как у собеседника»: темп/размер извлечения = реальному
+            // исходящему потоку (кадры выше 24fps не дублируем — JPEG-мост в
+            // WinForms больше не вытянет без фризов, а 24fps честно передаёт
+            // плавность). Никто не смотрит → скромный холостой режим.
+            const outF = Math.round(o.framesPerSecond || 0);
+            const outW = o.frameWidth || 0;
+            if (framesEnc > 0 && outF > 0){
+                previewFps = Math.max(5, Math.min(24, outF));
+                previewMaxW = outW > 0 ? Math.min(854, outW) : 480;
+            } else { previewFps = 10; previewMaxW = 480; }
+            post({type:'screenSendStats', text:
+                '→ собеседникам: ' + (o.frameWidth||0) + '×' + (o.frameHeight||0) + ' ' +
+                Math.round(o.framesPerSecond||0) + 'fps' +
+                (capFps >= 0 ? ' (захват ' + capFps + 'fps)' : '') +
+                ' · ' + mbps.toFixed(1) + ' Мбит/с' +
+                encPart + lim + idle});
+        } catch(e){}
+    }, 2000);
+}
+function stopScreenSendStats(clear = true){
+    if (sendStatsTimer){ clearInterval(sendStatsTimer); sendStatsTimer = null; }
+    stopCaptureFpsMeter();
+    if (clear) post({type:'screenSendStats', text:''});
+}
+
+let recvStatsTimer = null, _rsRecv = -1, _rsLost = -1, _rsFreezeDur = -1;
+function startScreenRecvStats(){
+    stopScreenRecvStats(false);
+    _rsRecv = -1; _rsLost = -1; _rsFreezeDur = -1;
+    recvStatsTimer = setInterval(async () => {
+        try {
+            let entry = null;
+            for (const k in remoteVideoMap){ if (k.endsWith('|screen')){ entry = remoteVideoMap[k]; break; } }
+            const tr = entry && entry.track;
+            const rec = tr ? (tr.receiver || tr._receiver) : null;
+            if (!rec){ post({type:'screenRecvStats', text:''}); updateTheaterStats(''); return; }
+            const stats = await rec.getStats();
+            let i = null;
+            stats.forEach(r => { if (r.type === 'inbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) i = r; });
+            if (!i) return;
+            // Потери пакетов за интервал.
+            let lossPart = '';
+            const recvNow = i.packetsReceived || 0, lostNow = i.packetsLost || 0;
+            if (_rsRecv >= 0){
+                const dR = recvNow - _rsRecv, dL = lostNow - _rsLost;
+                if (dR + dL > 0 && dL > 0) lossPart = ' · потери ' + (100 * dL / (dR + dL)).toFixed(1) + '%';
+            }
+            _rsRecv = recvNow; _rsLost = lostNow;
+            // Фризы за интервал (freeze = декодер сидел без кадров).
+            let freezePart = '';
+            const fd = (typeof i.totalFreezesDuration === 'number') ? i.totalFreezesDuration : -1;
+            if (fd >= 0 && _rsFreezeDur >= 0 && fd > _rsFreezeDur)
+                freezePart = ' · ⚠ фриз +' + (fd - _rsFreezeDur).toFixed(1) + 'с';
+            if (fd >= 0) _rsFreezeDur = fd;
+            const text = '← приём: ' + (i.frameWidth||0) + '×' + (i.frameHeight||0) + ' ' +
+                Math.round(i.framesPerSecond||0) + 'fps' + lossPart + freezePart;
+            post({type:'screenRecvStats', text: text});
+            updateTheaterStats(text);
+        } catch(e){}
+    }, 2000);
+}
+function stopScreenRecvStats(clear = true){
+    if (recvStatsTimer){ clearInterval(recvStatsTimer); recvStatsTimer = null; }
+    if (clear){ post({type:'screenRecvStats', text:''}); updateTheaterStats(''); }
+}
+
+// ── Смена качества демонстрации «НА ГОРЯЧУЮ» ────────────────────────
+// Применяется к ЖИВОМУ треку: applyConstraints (разрешение/fps захвата) +
+// setParameters на sender (потолок битрейта и fps энкодера). Раньше выбор
+// качества во время демки лишь сохранялся в настройки и ни на что не влиял.
+async function setScreenQuality(resHeight, fps){
+    try {
+        let h = parseInt(resHeight); if (isNaN(h)) h = 0;
+        let f = parseInt(fps) || 30;
+        screenQualityH = h; screenQualityF = f;
+        if (!screenVideoTrack || !screenVideoTrack.mediaStreamTrack) return;
+        const mt = screenVideoTrack.mediaStreamTrack;
+
+        const cons = { frameRate: { ideal: f, max: f } };
+        if (h > 0) cons.height = { ideal: h };
+        await mt.applyConstraints(cons);
+
+        // Потолок битрейта под новое качество (та же шкала, что при публикации).
+        let effH = h;
+        if (!effH || effH <= 0){ try { effH = mt.getSettings().height || 1080; } catch(e){ effH = 1080; } }
+        const hi = f >= 45;
+        const maxBitrate = effH >= 1440 ? (hi ? 50000000 : 35000000)
+                         : effH >= 1080 ? (hi ? 35000000 : 22000000)
+                         : effH >= 720  ? (hi ? 20000000 : 12000000)
+                         : effH >= 480  ? (hi ? 12000000 : 8000000)
+                         : (hi ? 8000000 : 5000000);
+        const sender = screenVideoTrack.sender;
+        if (sender){
+            const p = sender.getParameters();
+            if (p.encodings && p.encodings.length){
+                p.encodings[0].maxBitrate = maxBitrate;
+                p.encodings[0].maxFramerate = f;
+                p.degradationPreference = screenDegradationPref();
+                await sender.setParameters(p);
+            }
+        }
+        try { const st = mt.getSettings(); post({type:'screenCaptureInfo', fps: Math.round(st.frameRate||0), w: st.width||0, h: st.height||0}); } catch(e){}
+        post({type:'jsLog', text:'Качество демки на горячую: ' + (h>0 ? h+'p' : 'native') + '@' + f});
+    } catch(e){ post({type:'jsLog', text:'setScreenQuality: ' + String(e)}); }
+}
+
+async function disconnectRoom(){
+    try { if (room) await room.disconnect(); } catch(e){}
+}
+
 window.chrome.webview.addEventListener('message', (e) => {
-    const msg = JSON.parse(e.data);
-    console.log('[DIAG] получена команда:', msg.cmd);
-    if (msg.cmd === 'createOffer') createOffer();
-    else if (msg.cmd === 'createAnswer') createAnswer(msg.sdp);
-    else if (msg.cmd === 'applyAnswer') applyAnswer(msg.sdp);
-    else if (msg.cmd === 'addCandidate') addCandidate(msg.candidate);
-    else if (msg.cmd === 'send') sendData(msg.data);
-    else if (msg.cmd === 'previewScreen') previewScreen();
-    else if (msg.cmd === 'confirmScreenShare') confirmScreenShare();
-    else if (msg.cmd === 'cancelScreenPreview') cancelScreenPreview();
-    else if (msg.cmd === 'stopScreenTrack') stopScreenShareTrack();
-    else if (msg.cmd === 'previewCamera') previewCamera(msg.deviceLabel);
-    else if (msg.cmd === 'confirmCameraShare') confirmCameraShare();
-    else if (msg.cmd === 'cancelCameraPreview') cancelCameraPreview();
-    else if (msg.cmd === 'stopCameraTrack') stopCameraTrack();
-    else if (msg.cmd === 'switchCameraDevice') switchCameraDevice(msg.deviceLabel);
-    else if (msg.cmd === 'enumerateDevices') enumerateAndPostDevices();
-    else if (msg.cmd === 'applyRenegotiationOffer') applyRenegotiationOffer(msg.sdp, msg.trackKinds);
-    else if (msg.cmd === 'applyRenegotiationAnswer') applyRenegotiationAnswer(msg.sdp, msg.trackKinds);
+    let msg;
+    try { msg = JSON.parse(e.data); } catch(err){ return; }
+    switch (msg.cmd){
+        case 'connect': connectRoom(msg.url, msg.token, msg.voiceAuto, msg.voiceThreshold, msg.noiseSuppress, msg.micGain); break;
+        case 'previewCamera': previewCamera(msg.deviceLabel); break;
+        case 'confirmCameraShare': confirmCameraShare(); break;
+        case 'cancelCameraPreview': cancelCameraPreview(); break;
+        case 'stopCameraTrack': stopCameraTrack(); break;
+        case 'switchCameraDevice': switchCameraDevice(msg.deviceLabel); break;
+        case 'previewScreen': previewScreen(msg.resHeight, msg.fps); break;
+        case 'startCanvasScreen': startCanvasScreen(msg.w, msg.h, msg.fps); break;
+        case 'canvasFrame': drawCanvasFrame(msg.d); break;
+        case 'switchScreenSource': switchScreenSource(); break;
+        case 'watchScreen': watchScreen(msg.pid); break;
+        case 'unwatchScreen': unwatchScreen(msg.pid); break;
+        case 'setTileRate': setTileRate(msg.pid, msg.source, msg.fps, msg.maxW, msg.boost); break;
+        case 'setScreenQuality': setScreenQuality(msg.resHeight, msg.fps); break;
+        case 'confirmScreenShare': confirmScreenShare(); break;
+        case 'cancelScreenPreview': cancelScreenPreview(); break;
+        case 'stopScreenTrack': stopScreenShareTrack(); break;
+        case 'enumerateDevices': enumerateDevices(); break;
+        case 'setMicEnabled': setMicEnabled(msg.enabled); break;
+        case 'setScreenAudioVolume': setScreenAudioVolume(msg.volume); break;
+        case 'setScreenVolumePid': setScreenVolumePid(msg.pid, msg.volume); break;
+        case 'setScreenPreviewActive': setScreenPreviewActive(msg.on); break;
+        case 'setScreenCodec': screenCodecPref = msg.codec || 'h265'; break;
+        case 'setVoiceVolume': setVoiceVolume(msg.volume); break;
+        case 'setRemoteMuted': setRemoteMuted(msg.muted); break;
+        case 'voicePrefs': setVoicePrefs(msg.prefs); break;
+        case 'setParticipantVolume': setParticipantVolume(msg.pid, msg.volume); break;
+        case 'setParticipantMuted': setParticipantMuted(msg.pid, msg.muted); break;
+        case 'setInputDevice': setAudioDevice('audioinput', msg.deviceLabel); break;
+        case 'setOutputDevice': setAudioDevice('audiooutput', msg.deviceLabel); break;
+        case 'setVoiceGate': setVoiceGate(msg.auto, msg.threshold); break;
+        case 'setNoiseSuppression': setNoiseSuppression(msg.on); break;
+        case 'setMicGain': setMicGain(msg.gain); break;
+        case 'setDisplayName': try { if (room) room.localParticipant.setName(msg.name); } catch(e){} break;
+        case 'theaterShow': theaterShow(msg.pid, msg.source); break;
+        case 'theaterHide': theaterHide(); break;
+        case 'disconnect': disconnectRoom(); break;
+    }
 });
 </script>
 </body>
 </html>";
-            return html.Replace("__TURN_URL__", turnUrlJson).Replace("__TURN_USERNAME__", turnUsernameJson).Replace("__TURN_PASSWORD__", turnPasswordJson);
+            return html;
         }
 
         private void OnWebMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -1031,42 +2006,91 @@ window.chrome.webview.addEventListener('message', (e) => {
 
                 switch (type)
                 {
-                    case "offerReady":
-                        _pendingOfferTcs?.TrySetResult(msg.GetProperty("sdp").GetString());
-                        break;
-                    case "answerReady":
-                        _pendingAnswerTcs?.TrySetResult(msg.GetProperty("sdp").GetString());
-                        break;
-                    case "candidate":
-                        IceCandidateReady?.Invoke(msg.GetProperty("candidate").GetString());
-                        break;
-                    case "gatheringComplete":
-                        GatheringComplete?.Invoke();
-                        break;
-                    case "dcOpen":
+                    case "connected":
                         Connected?.Invoke();
                         break;
-                    case "dcClose":
+                    case "disconnected":
                         Disconnected?.Invoke();
                         break;
-                    case "connectionState":
-                        var state = msg.GetProperty("state").GetString();
-                        System.Diagnostics.Debug.WriteLine($"[WebRTC] Connection state: {state}");
-                        if (state == "failed" || state == "closed" || state == "disconnected")
-                            Disconnected?.Invoke();
+                    case "remoteLeft":
+                        RemoteParticipantLeft?.Invoke();
+                        break;
+                    case "screenCaptureInfo":
+                        ScreenCaptureInfo?.Invoke(SafeInt(msg, "fps"), SafeInt(msg, "w"), SafeInt(msg, "h"));
+                        break;
+                    case "screenSendStats":
+                        ScreenSendStats?.Invoke(SafeStr(msg, "text"));
+                        break;
+                    case "softwareEncoder":
+                        SoftwareEncoderDetected?.Invoke();
+                        break;
+                    case "hardwareEncoder":
+                        HardwareEncoderDetected?.Invoke(SafeStr(msg, "text"));
+                        break;
+                    case "screenRecvStats":
+                        ScreenRecvStats?.Invoke(SafeStr(msg, "text"));
+                        break;
+                    case "theaterExitRequested":
+                        TheaterExitRequested?.Invoke();
+                        break;
+                    case "theaterFullscreenToggle":
+                        TheaterFullscreenToggle?.Invoke();
+                        break;
+                    case "participantJoined":
+                        ParticipantJoined?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "name"));
+                        break;
+                    case "participantLeft":
+                        ParticipantLeftById?.Invoke(SafeStr(msg, "pid"));
+                        break;
+                    case "remoteTileStart":
+                        RemoteTileStarted?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "name"), SafeStr(msg, "source"));
+                        break;
+                    case "remoteTileStop":
+                        RemoteTileStopped?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "source"));
+                        break;
+                    case "screenPublished":
+                        RemoteStreamPublished?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "name"));
+                        break;
+                    case "screenUnpublished":
+                        RemoteStreamUnpublished?.Invoke(SafeStr(msg, "pid"));
+                        break;
+                    case "watchFailed":
+                        WatchFailed?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "error"));
+                        break;
+                    case "streamWatchers":
+                        StreamWatchersChanged?.Invoke(SafeInt(msg, "count"));
+                        break;
+                    case "screenSwitchDone":
+                        {
+                            bool ok = msg.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True;
+                            _switchingSource = false;
+                            ScreenSourceSwitched?.Invoke(ok, SafeStr(msg, "error"));
+                        }
+                        break;
+                    case "remoteTileFrame":
+                        RemoteTileFrame?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "source"),
+                            Convert.FromBase64String(msg.GetProperty("data").GetString()));
+                        break;
+                    case "activeSpeakers":
+                        ActiveSpeakers?.Invoke(SafeStr(msg, "pids"));
+                        break;
+                    case "ping":
+                        try { PingUpdated?.Invoke(msg.GetProperty("ms").GetInt32()); } catch { }
+                        break;
+                    case "participantRenamed":
+                        ParticipantRenamed?.Invoke(SafeStr(msg, "pid"), SafeStr(msg, "name"));
+                        break;
+                    case "fatal":
+                        System.Diagnostics.Debug.WriteLine($"[LiveKit FATAL] {SafeStr(msg, "error")}");
                         break;
                     case "jsLog":
-                        System.Diagnostics.Debug.WriteLine($"[JS console.log] {msg.GetProperty("text").GetString()}");
+                        System.Diagnostics.Debug.WriteLine($"[JS log] {SafeStr(msg, "text")}");
                         break;
                     case "jsError":
-                        System.Diagnostics.Debug.WriteLine($"[JS console.error] {msg.GetProperty("text").GetString()}");
+                        System.Diagnostics.Debug.WriteLine($"[JS error] {SafeStr(msg, "text")}");
                         break;
                     case "remoteScreenFrame":
-                        {
-                            var b64Frame = msg.GetProperty("data").GetString();
-                            var frameBytes = Convert.FromBase64String(b64Frame);
-                            RemoteScreenFrameReceived?.Invoke(frameBytes);
-                        }
+                        RemoteScreenFrameReceived?.Invoke(Convert.FromBase64String(msg.GetProperty("data").GetString()));
                         break;
                     case "remoteScreenStart":
                         RemoteScreenStarted?.Invoke();
@@ -1081,31 +2105,13 @@ window.chrome.webview.addEventListener('message', (e) => {
                         LocalScreenStopped?.Invoke();
                         break;
                     case "localScreenError":
-                        LocalScreenError?.Invoke(msg.GetProperty("error").GetString());
-                        break;
-                    case "renegotiationOffer":
-                        {
-                            string tkOffer = msg.TryGetProperty("trackKinds", out var tkOfferEl) ? tkOfferEl.GetString() : null;
-                            RenegotiationOfferReady?.Invoke(msg.GetProperty("sdp").GetString(), tkOffer);
-                        }
-                        break;
-                    case "renegotiationAnswer":
-                        {
-                            string tkAnswer = msg.TryGetProperty("trackKinds", out var tkAnswerEl) ? tkAnswerEl.GetString() : null;
-                            RenegotiationAnswerReady?.Invoke(msg.GetProperty("sdp").GetString(), tkAnswer);
-                        }
+                        LocalScreenError?.Invoke(SafeStr(msg, "error"));
                         break;
                     case "localCameraFrame":
-                        {
-                            var b64LocalCam = msg.GetProperty("data").GetString();
-                            LocalCameraFrameReceived?.Invoke(Convert.FromBase64String(b64LocalCam));
-                        }
+                        LocalCameraFrameReceived?.Invoke(Convert.FromBase64String(msg.GetProperty("data").GetString()));
                         break;
                     case "remoteCameraFrame":
-                        {
-                            var b64RemoteCam = msg.GetProperty("data").GetString();
-                            RemoteCameraFrameReceived?.Invoke(Convert.FromBase64String(b64RemoteCam));
-                        }
+                        RemoteCameraFrameReceived?.Invoke(Convert.FromBase64String(msg.GetProperty("data").GetString()));
                         break;
                     case "remoteCameraStart":
                         RemoteCameraStarted?.Invoke();
@@ -1120,13 +2126,10 @@ window.chrome.webview.addEventListener('message', (e) => {
                         LocalCameraStopped?.Invoke();
                         break;
                     case "localCameraError":
-                        LocalCameraError?.Invoke(msg.GetProperty("error").GetString());
+                        LocalCameraError?.Invoke(SafeStr(msg, "error"));
                         break;
                     case "screenPreviewFrame":
-                        {
-                            var b64ScreenPrev = msg.GetProperty("data").GetString();
-                            ScreenPreviewFrameReceived?.Invoke(Convert.FromBase64String(b64ScreenPrev));
-                        }
+                        ScreenPreviewFrameReceived?.Invoke(Convert.FromBase64String(msg.GetProperty("data").GetString()));
                         break;
                     case "screenPreviewReady":
                         ScreenPreviewReady?.Invoke();
@@ -1141,123 +2144,288 @@ window.chrome.webview.addEventListener('message', (e) => {
                         {
                             string camsJson = msg.TryGetProperty("cameras", out var camsEl) ? camsEl.GetString() : "[]";
                             string micsJson = msg.TryGetProperty("mics", out var micsEl) ? micsEl.GetString() : "[]";
-                            DevicesEnumerated?.Invoke(camsJson, micsJson);
-                        }
-                        break;
-                    case "data":
-                        var b64 = msg.GetProperty("data").GetString();
-                        var bytes = Convert.FromBase64String(b64);
-                        if (bytes.Length >= 1)
-                        {
-                            byte pktType = bytes[0];
-                            var payload = new byte[bytes.Length - 1];
-                            if (payload.Length > 0)
-                                Buffer.BlockCopy(bytes, 1, payload, 0, payload.Length);
-                            FrameReceived?.Invoke(pktType, payload);
+                            string spkJson = msg.TryGetProperty("speakers", out var spkEl) ? spkEl.GetString() : "[]";
+                            DevicesEnumerated?.Invoke(camsJson, micsJson, spkJson);
                         }
                         break;
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[WebRTC MSG ERROR] {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[LiveKit MSG ERROR] {ex.Message}");
             }
         }
 
-        private TaskCompletionSource<string> _pendingOfferTcs;
-        private TaskCompletionSource<string> _pendingAnswerTcs;
+        private static string SafeStr(JsonElement msg, string prop)
+            => msg.TryGetProperty(prop, out var el) ? el.GetString() : "";
 
-        public async Task<string> CreateOfferAsync()
-        {
-            _pendingOfferTcs = new TaskCompletionSource<string>();
-            SendToJs(JsonSerializer.Serialize(new { cmd = "createOffer" }));
-            return await _pendingOfferTcs.Task;
-        }
-
-        public async Task<string> CreateAnswerAsync(string offerSdp)
-        {
-            _pendingAnswerTcs = new TaskCompletionSource<string>();
-            SendToJs(JsonSerializer.Serialize(new { cmd = "createAnswer", sdp = offerSdp }));
-            return await _pendingAnswerTcs.Task;
-        }
-
-        public void ApplyAnswer(string answerSdp)
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "applyAnswer", sdp = answerSdp }));
-        }
-
-        public void AddRemoteIceCandidate(string candidateJson)
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "addCandidate", candidate = candidateJson }));
-        }
+        private static int SafeInt(JsonElement msg, string prop)
+            => msg.TryGetProperty(prop, out var el) && el.TryGetInt32(out var v) ? v : 0;
 
         // --- Демонстрация экрана: двухфазный флоу (превью -> подтверждение) ---
 
-        /// <summary>Запускает захват экрана (системный диалог выбора экрана/окна),
-        /// но НЕ добавляет трек в PeerConnection — собеседник пока ничего не видит.
-        /// Кадры идут в ScreenPreviewFrameReceived для показа в окне превью с
-        /// кнопками "Включить"/"Отмена".</summary>
         private Form _pickerWindow;
         private Form _originalParentForm;
+        private bool _switchingSource;   // идёт смена источника ЖИВОЙ демки (не первый запуск)
 
-        public void PreviewScreen()
+        /// <summary>Показывает окно с системным диалогом выбора экрана/окна.
+        /// Системный диалог уровня Windows привязан к HWND родителя WebView2 —
+        /// поэтому на время выбора переносим контрол в отдельное видимое окно.</summary>
+        private void ShowPickerWindow(string title)
         {
-            // Системный диалог выбора экрана/окна — это диалог уровня Windows,
-            // привязанный к HWND родительского окна WebView2-контрола. При
-            // оставлении _webView в форме звонка с минимальным размером
-            // диалог физически не может отрисоваться видимым образом.
-            //
-            // Переносим _webView в отдельное временное топ-левел окно ТОЛЬКО
-            // на время показа диалога — без какой-либо "своей" формы
-            // подтверждения поверх него (только нативный Windows picker).
-            // Сразу после получения потока (или ошибки/отмены) контрол
-            // возвращается в исходную форму через HideTransportWindow().
-            try
+            _originalParentForm = _webView.FindForm();
+
+            _pickerWindow = new Form
             {
-                _originalParentForm = _webView.FindForm();
+                Text = title,
+                StartPosition = FormStartPosition.CenterScreen,
+                Size = new System.Drawing.Size(960, 720),
+                FormBorderStyle = FormBorderStyle.Sizable,
+                ShowInTaskbar = true,
+                BackColor = System.Drawing.Color.FromArgb(20, 21, 23)
+            };
 
-                _pickerWindow = new Form
+            _originalParentForm?.Controls.Remove(_webView);
+            _webView.Dock = DockStyle.Fill;
+            _webView.Visible = true;
+            _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(20, 21, 23);
+            _pickerWindow.Controls.Add(_webView);
+
+            _pickerWindow.FormClosed += (s, e) =>
+            {
+                // Окно закрыли «мимо» диалога (крестиком/крашем). WebView всегда
+                // возвращаем на место; но полная отмена демки — только при ПЕРВОМ
+                // запуске. При смене источника живой демки стрим продолжает идти
+                // старым источником, а зависший getDisplayMedia добьёт JS-таймаут.
+                if (_pickerWindow != null)
                 {
-                    Text = "Демонстрация экрана",
-                    StartPosition = FormStartPosition.CenterScreen,
-                    Size = new System.Drawing.Size(960, 720),
-                    FormBorderStyle = FormBorderStyle.Sizable,
-                    ShowInTaskbar = true,
-                    BackColor = System.Drawing.Color.FromArgb(20, 21, 23)
-                };
-
-                _originalParentForm?.Controls.Remove(_webView);
-                _webView.Dock = DockStyle.Fill;
-                _webView.Visible = true;
-                _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(20, 21, 23);
-                _pickerWindow.Controls.Add(_webView);
-
-                _pickerWindow.FormClosed += (s, e) =>
-                {
-                    if (_pickerWindow != null) // окно реально закрыто пользователем (крестик), не нашим кодом
-                    {
-                        ReturnTransportWindowToOriginalParent();
-                        // КРИТИЧНО: без этого события CallForm никогда не узнаёт
-                        // об отмене через крестик — флаг ожидания (_screenPreviewPending)
-                        // остаётся true навсегда, и повторное нажатие кнопки демки
-                        // больше не срабатывает (именно это наблюдалось как баг).
+                    bool wasSwitching = _switchingSource;
+                    ReturnTransportWindowToOriginalParent();
+                    if (!wasSwitching)
                         LocalScreenError?.Invoke("user_cancelled_picker_window");
-                    }
-                };
+                }
+            };
 
-                _pickerWindow.Show();
-            }
-            catch { }
-
-            SendToJs(JsonSerializer.Serialize(new { cmd = "previewScreen" }));
+            _pickerWindow.Show();
         }
 
-        /// <summary>Возвращает _webView обратно в форму звонка после того, как
-        /// системный диалог выбора экрана закрылся (поток получен, либо
-        /// произошла ошибка/отмена). Само окно-обёртку закрывает и освобождает.</summary>
+        /// <summary>Запускает захват экрана (системный диалог выбора экрана/окна).</summary>
+        public void PreviewScreen(int resHeight = 1080, int fps = 30)
+        {
+            _switchingSource = false;
+            try { ShowPickerWindow("Демонстрация экрана"); } catch { }
+            SendToJs(JsonSerializer.Serialize(new { cmd = "previewScreen", resHeight, fps }));
+        }
+
+        /// <summary>Демонстрация ВЫБРАННОГО монитора (в т.ч. виртуального VR-дисплея,
+        /// который системный диалог не показывает): свой захват на C# → canvas в
+        /// WebView → публикация как обычной демки. height&lt;=0 — исходная высота.
+        /// Системный диалог не открывается — монитор уже выбран в нашем списке.</summary>
+        public void StartMonitorShare(System.Drawing.Rectangle bounds, int height, int fps)
+        {
+            StopMonitorCapture();
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+            { LocalScreenError?.Invoke("некорректный монитор"); return; }
+
+            _switchingSource = false;
+            int f = fps > 0 ? fps : 30;
+            int th = height > 0 ? height : bounds.Height;
+            if (th > 2160) th = 2160;                       // разумный потолок
+            int tw = (int)Math.Round(bounds.Width * (double)th / bounds.Height);
+            tw -= tw % 2; th -= th % 2;                     // чётные размеры для энкодера
+            if (tw < 2) tw = 2;
+            if (th < 2) th = 2;
+
+            SendToJs(JsonSerializer.Serialize(new { cmd = "startCanvasScreen", w = tw, h = th, fps = f }));
+
+            _monRun = true;
+            _monPending = 0;
+            var b = bounds; int ftw = tw, fth = th, ffps = f;
+            _monThread = new System.Threading.Thread(() => MonitorCaptureLoop(b, ftw, fth, ffps))
+            { IsBackground = true, Name = "PISMO-monitor-capture" };
+            _monThread.Start();
+        }
+
+        private void MonitorCaptureLoop(System.Drawing.Rectangle src, int tw, int th, int fps)
+        {
+            System.Drawing.Imaging.ImageCodecInfo jpeg = null;
+            foreach (var c in System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders())
+                if (c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid) { jpeg = c; break; }
+            using var pars = new System.Drawing.Imaging.EncoderParameters(1);
+            pars.Param[0] = new System.Drawing.Imaging.EncoderParameter(
+                System.Drawing.Imaging.Encoder.Quality, 72L);
+
+            using var cap = new System.Drawing.Bitmap(src.Width, src.Height,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using var capG = System.Drawing.Graphics.FromImage(cap);
+            using var small = new System.Drawing.Bitmap(tw, th,
+                System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using var smallG = System.Drawing.Graphics.FromImage(small);
+            smallG.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+            smallG.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+
+            double interval = 1000.0 / fps;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (_monRun)
+            {
+                long t0 = sw.ElapsedMilliseconds;
+                try
+                {
+                    // GDI BitBlt — самый совместимый путь: снимает почти любой
+                    // HMONITOR, включая виртуальные VR-дисплеи, где WGC/DXGI пасуют.
+                    capG.CopyFromScreen(src.Location, System.Drawing.Point.Empty, src.Size,
+                        System.Drawing.CopyPixelOperation.SourceCopy);
+                    if (tw == src.Width && th == src.Height)
+                        smallG.DrawImageUnscaled(cap, 0, 0);
+                    else
+                        smallG.DrawImage(cap, 0, 0, tw, th);
+
+                    // Не заваливаем UI-поток: если предыдущие кадры ещё не ушли — пропуск.
+                    if (System.Threading.Interlocked.CompareExchange(ref _monPending, 0, 0) < 3)
+                    {
+                        byte[] bytes;
+                        using (var ms = new MemoryStream())
+                        {
+                            small.Save(ms, jpeg, pars);
+                            bytes = ms.ToArray();
+                        }
+                        System.Threading.Interlocked.Increment(ref _monPending);
+                        SendCanvasFrame(Convert.ToBase64String(bytes));
+                    }
+                }
+                catch { }
+
+                int sleep = (int)(interval - (sw.ElapsedMilliseconds - t0));
+                System.Threading.Thread.Sleep(sleep > 0 ? sleep : 1);
+            }
+        }
+
+        private void SendCanvasFrame(string b64)
+        {
+            if (_webView == null || _disposed)
+            { System.Threading.Interlocked.Decrement(ref _monPending); return; }
+            try
+            {
+                string json = JsonSerializer.Serialize(new { cmd = "canvasFrame", d = b64 });
+                // BeginInvoke — не блокирует фоновый поток; счётчик _monPending
+                // гасим после реальной отправки в WebView.
+                _webView.BeginInvoke(() =>
+                {
+                    try { _webView.CoreWebView2?.PostWebMessageAsString(json); } catch { }
+                    System.Threading.Interlocked.Decrement(ref _monPending);
+                });
+            }
+            catch { System.Threading.Interlocked.Decrement(ref _monPending); }
+        }
+
+        private void StopMonitorCapture()
+        {
+            if (!_monRun && _monThread == null) return;
+            _monRun = false;
+            var t = _monThread; _monThread = null;
+            try { if (t != null && t.IsAlive) t.Join(600); } catch { }
+            _monPending = 0;
+        }
+
+        /// <summary>Сменить ИСТОЧНИК идущей демонстрации (игра ↔ весь экран) без
+        /// остановки стрима: системный диалог + replaceTrack на живой публикации.
+        /// Итог придёт событием ScreenSourceSwitched (при отмене стрим продолжается).</summary>
+        public void SwitchScreenSource()
+        {
+            if (_switchingSource) return;
+            _switchingSource = true;
+            // Если шёл захват конкретного монитора (canvas-путь) — гасим наш поток
+            // захвата: switchScreenSource переключит публикацию на getDisplayMedia.
+            StopMonitorCapture();
+            try { ShowPickerWindow("Смена источника демонстрации"); }
+            catch { }
+            SendToJs(JsonSerializer.Serialize(new { cmd = "switchScreenSource" }));
+        }
+
+        /// <summary>Подключиться к идущему стриму участника (видео+звук).</summary>
+        public void WatchScreen(string pid)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "watchScreen", pid }));
+
+        /// <summary>Перестать смотреть стрим участника (отписка, канал свободен).</summary>
+        public void UnwatchScreen(string pid)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "unwatchScreen", pid }));
+
+        /// <summary>Частота/размер JPEG-кадров плитки на лету (boost — для pop-out окна).</summary>
+        public void SetTileRate(string pid, string source, int fps, int maxW, bool boost)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setTileRate", pid, source, fps, maxW, boost }));
+
+        /// <summary>Возвращает _webView обратно в форму звонка после закрытия
+        /// системного диалога выбора экрана.</summary>
         public void HideTransportWindow()
         {
             ReturnTransportWindowToOriginalParent();
+        }
+
+        // ── «Театр»: нативный рендер видео во весь видео-участок (плавные 60fps) ──
+        // WebView остаётся в той же форме звонка — просто разворачиваем его на
+        // переданную область (обычно bounds плиточного хоста) и показываем реальный
+        // <video>. Кнопки звонка ниже него и остаются кликабельными (нет airspace).
+
+        /// <summary>Развернуть WebView на область bounds и показать нативное видео.</summary>
+        public void EnterTheater(string pid, string source, System.Drawing.Rectangle bounds)
+        {
+            try
+            {
+                if (_webView == null) return;
+                _webView.Dock = DockStyle.None;
+                _webView.Bounds = bounds;
+                _webView.Visible = true;
+                _webView.BringToFront();
+            }
+            catch { }
+            SendToJs(JsonSerializer.Serialize(new { cmd = "theaterShow", pid, source }));
+        }
+
+        /// <summary>Обновить область театра (при ресайзе окна).</summary>
+        public void UpdateTheaterBounds(System.Drawing.Rectangle bounds)
+        {
+            try { if (_webView != null && _webView.Visible && _webView.Width > 2) _webView.Bounds = bounds; }
+            catch { }
+        }
+
+        /// <summary>Громкость звука КОНКРЕТНОЙ демонстрации (перекрывает общий
+        /// слайдер «Громкость демонстрации» для этого участника).</summary>
+        public void SetScreenShareVolume(string pid, float volume)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenVolumePid", pid, volume }));
+
+        /// <summary>Пауза/возобновление извлечения превью «что видит собеседник».
+        /// Когда PIP-окно скрыто — извлекать кадры не нужно (экономим CPU).</summary>
+        public void SetScreenPreviewActive(bool on)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenPreviewActive", on }));
+
+        /// <summary>Предпочитаемый кодек демонстрации ('h265'/'h264'/'vp9'); при
+        /// невозможности HEVC — авто-откат на H264.</summary>
+        public void SetScreenCodec(string codec)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenCodec", codec }));
+
+        /// <summary>Поднимается, если демка кодируется ПРОГРАММНО (NVENC не задействован).</summary>
+        public event Action SoftwareEncoderDetected;
+
+        /// <summary>Поднимается, когда демка кодируется АППАРАТНО (текст — имя энкодера).</summary>
+        public event Action<string> HardwareEncoderDetected;
+
+        /// <summary>Смена качества демонстрации «на горячую»: применяется к
+        /// живому треку (захват + энкодер), а не только сохраняется.</summary>
+        public void SetScreenQualityLive(int resHeight, int fps)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenQuality", resHeight, fps }));
+
+        /// <summary>Выйти из театра — вернуть WebView за пределы экрана (1x1).</summary>
+        public void ExitTheater()
+        {
+            SendToJs(JsonSerializer.Serialize(new { cmd = "theaterHide" }));
+            try
+            {
+                if (_webView == null) return;
+                _webView.SendToBack();
+                _webView.Size = new System.Drawing.Size(1, 1);
+                _webView.Location = new System.Drawing.Point(-3000, -3000);
+            }
+            catch { }
         }
 
         private void ReturnTransportWindowToOriginalParent()
@@ -1267,7 +2435,7 @@ window.chrome.webview.addEventListener('message', (e) => {
                 if (_pickerWindow == null) return;
 
                 var pickerToClose = _pickerWindow;
-                _pickerWindow = null; // обнуляем первым, чтобы FormClosed выше не сработал повторно
+                _pickerWindow = null;
 
                 pickerToClose.Controls.Remove(_webView);
                 _webView.Dock = DockStyle.None;
@@ -1284,95 +2452,90 @@ window.chrome.webview.addEventListener('message', (e) => {
             catch { }
         }
 
-        /// <summary>Подтверждает демонстрацию — уже захваченный превью-поток
-        /// добавляется в PeerConnection, аппаратное кодирование/декодирование
-        /// выполняет Chromium через GPU.</summary>
         public void ConfirmScreenShare()
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "confirmScreenShare" }));
-        }
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "confirmScreenShare" }));
 
-        /// <summary>Отменяет превью без добавления трека — останавливает захват.</summary>
         public void CancelScreenPreview()
         {
+            StopMonitorCapture();
             SendToJs(JsonSerializer.Serialize(new { cmd = "cancelScreenPreview" }));
         }
 
         public void StopScreenShareTrack()
         {
+            StopMonitorCapture();
             SendToJs(JsonSerializer.Serialize(new { cmd = "stopScreenTrack" }));
         }
 
-        // --- Камера: тот же двухфазный флоу + смена устройства на лету ---
+        // --- Камера ---
 
-        /// <summary>Запускает захват камеры для превью (НЕ добавляет в PeerConnection).
-        /// deviceLabel — точное имя устройства (совпадает с DeviceSettings.CameraName).
-        /// Если null/не найдено — используется системная камера по умолчанию.</summary>
         public void PreviewCamera(string deviceLabel)
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "previewCamera", deviceLabel }));
-        }
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "previewCamera", deviceLabel }));
 
         public void ConfirmCameraShare()
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "confirmCameraShare" }));
-        }
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "confirmCameraShare" }));
 
         public void CancelCameraPreview()
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "cancelCameraPreview" }));
-        }
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "cancelCameraPreview" }));
 
         public void StopCameraTrack()
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "stopCameraTrack" }));
-        }
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "stopCameraTrack" }));
 
-        /// <summary>Переключает камеру на другое устройство — работает и во время
-        /// превью, и во время уже идущей передачи (через replaceTrack, без полной
-        /// renegotiation, если трек уже передаётся собеседнику).</summary>
         public void SwitchCameraDevice(string deviceLabel)
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "switchCameraDevice", deviceLabel }));
-        }
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "switchCameraDevice", deviceLabel }));
 
-        /// <summary>Запрашивает список доступных камер/микрофонов из браузера —
-        /// результат приходит через событие DevicesEnumerated. Названия устройств
-        /// доступны только если разрешение на медиа уже было выдано (см.
-        /// PermissionRequested в InitAsync, который выдаёт его автоматически).</summary>
         public void EnumerateDevices()
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "enumerateDevices" }));
-        }
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "enumerateDevices" }));
 
-        /// <summary>Применяет offer renegotiation, полученный от собеседника через
-        /// сигнальный канал (БД), и возвращает answer через RenegotiationAnswerReady.
-        /// trackKindsJson — карта track.id->"screen"/"camera" от собеседника, нужна
-        /// для надёжного различения треков камеры/демки в pc.ontrack.</summary>
-        public void ApplyRenegotiationOffer(string offerSdp, string trackKindsJson = null)
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "applyRenegotiationOffer", sdp = offerSdp, trackKinds = trackKindsJson }));
-        }
+        // --- Аудио ---
 
-        public void ApplyRenegotiationAnswer(string answerSdp, string trackKindsJson = null)
-        {
-            SendToJs(JsonSerializer.Serialize(new { cmd = "applyRenegotiationAnswer", sdp = answerSdp, trackKinds = trackKindsJson }));
-        }
+        /// <summary>Включает/выключает публикацию микрофона (mute).</summary>
+        public void SetMicrophoneEnabled(bool enabled)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setMicEnabled", enabled }));
 
-        public void Send(byte type, byte[] payload)
-        {
-            var packet = new byte[1 + payload.Length];
-            packet[0] = type;
-            if (payload.Length > 0)
-                Buffer.BlockCopy(payload, 0, packet, 1, payload.Length);
-            string b64 = Convert.ToBase64String(packet);
-            SendToJs(JsonSerializer.Serialize(new { cmd = "send", data = b64 }));
-        }
+        /// <summary>Громкость звука демонстрации экрана собеседника (0.0–1.0).</summary>
+        public void SetRemoteScreenAudioVolume(float volume)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setScreenAudioVolume", volume }));
 
-        public void SendHangup()
-        {
-            Send(TypeHangup, Array.Empty<byte>());
-        }
+        /// <summary>Громкость голоса собеседников (0.0–1.0+, можно усилить выше 1).</summary>
+        public void SetRemoteVoiceVolume(float volume)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setVoiceVolume", volume }));
+
+        /// <summary>Полностью заглушить весь входящий звук (голос + демка).</summary>
+        public void SetRemoteMuted(bool muted)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setRemoteMuted", muted }));
+
+        /// <summary>Громкость конкретного участника (0.0–2.0).</summary>
+        public void SetParticipantVolume(string pid, float volume)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setParticipantVolume", pid, volume }));
+
+        /// <summary>Заглушить конкретного участника.</summary>
+        public void SetParticipantMuted(string pid, bool muted)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setParticipantMuted", pid, muted }));
+
+        /// <summary>Сменить устройство микрофона по имени (label).</summary>
+        public void SetInputDevice(string deviceLabel)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setInputDevice", deviceLabel }));
+
+        /// <summary>Сменить устройство вывода (динамики) по имени (label).</summary>
+        public void SetOutputDevice(string deviceLabel)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setOutputDevice", deviceLabel }));
+
+        /// <summary>Порог активации голоса: auto=true — без порога; иначе threshold (0..100).</summary>
+        public void SetVoiceGate(bool auto, int threshold)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setVoiceGate", auto, threshold }));
+
+        /// <summary>Включить/выключить шумоподавление RNNoise.</summary>
+        public void SetNoiseSuppression(bool on)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setNoiseSuppression", on }));
+
+        /// <summary>Усиление микрофона (множитель, 0..3).</summary>
+        public void SetMicGain(float gain)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setMicGain", gain }));
+
+        /// <summary>Сменить отображаемое имя в звонке (рассылается участникам).</summary>
+        public void SetDisplayName(string name)
+            => SendToJs(JsonSerializer.Serialize(new { cmd = "setDisplayName", name }));
 
         private void SendToJs(string json)
         {
@@ -1380,24 +2543,17 @@ window.chrome.webview.addEventListener('message', (e) => {
             try
             {
                 if (_webView.InvokeRequired)
-                    // BeginInvoke вместо Invoke: не блокирует вызывающий поток (например,
-                    // фоновый поток захвата экрана) в ожидании свободного UI-потока.
-                    // Синхронный Invoke здесь вызывал затор всего приложения при перегрузке
-                    // UI-потока во время демонстрации экрана.
                     _webView.BeginInvoke(() =>
                     {
                         try { _webView.CoreWebView2?.PostWebMessageAsString(json); }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[WebRTC SEND ERROR] {ex.Message}");
-                        }
+                        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[LiveKit SEND ERROR] {ex.Message}"); }
                     });
                 else
-                    _webView.CoreWebView2.PostWebMessageAsString(json);
+                    _webView.CoreWebView2?.PostWebMessageAsString(json);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[WebRTC SEND ERROR] {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[LiveKit SEND ERROR] {ex.Message}");
             }
         }
 
@@ -1405,13 +2561,15 @@ window.chrome.webview.addEventListener('message', (e) => {
         {
             if (_disposed) return;
             _disposed = true;
+            try { StopMonitorCapture(); } catch { }
+            try { SendToJs(JsonSerializer.Serialize(new { cmd = "disconnect" })); } catch { }
             try { _webView?.Dispose(); } catch { }
             try
             {
                 if (!string.IsNullOrEmpty(_tempHtmlDir) && Directory.Exists(_tempHtmlDir))
                     Directory.Delete(_tempHtmlDir, recursive: true);
             }
-            catch { /* не критично, ОС подчистит temp позже */ }
+            catch { }
         }
     }
 }

@@ -2,31 +2,95 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- Версия Windows в TFM даёт проекции WinRT для Windows.Graphics.Capture
+         (WGC) - единственный путь к 60fps захвату монитора БЕЗ чёрного экрана на
+         Optimus (берёт композицию DWM). Версии платформы фиксируем явно, иначе на
+         машинах с новым Windows SDK MSBuild подставляет его и падает
+         SupportedOSPlatformVersion. Если пакет microsoft.windows.sdk.net.ref не
+         тянется - очистить кэш NuGet (dotnet nuget locals all clear) и restore. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- WPF нужен ТОЛЬКО для растеризации ЦВЕТНЫХ эмодзи (GDI+ не умеет
+         COLR-шрифты; DirectWrite через WPF FormattedText — умеет). -->
+    <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>PISMO</AssemblyName>
     <RootNamespace>PISMO</RootNamespace>
-    <ApplicationIcon />
+    <ApplicationIcon>pismo.ico</ApplicationIcon>
     <StartupObject>PISMO.Program</StartupObject>
+    <Version>2.8.4.8</Version>
+    <AssemblyVersion>2.8.4.8</AssemblyVersion>
+    <FileVersion>2.8.4.8</FileVersion>
+    <Company>PISMO</Company>
+    <Product>PISMO Messenger</Product>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Иконка копируется рядом с exe, чтобы подхватывать её в рантайме
+         (трей, формы) и использовать в инсталляторе. -->
+    <None Update="pismo.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="AForge" Version="2.2.5" />
     <PackageReference Include="AForge.Video" Version="2.2.5" />
     <PackageReference Include="AForge.Video.DirectShow" Version="2.2.5" />
+    <!-- WebView2 подключается ТОЛЬКО пакетом. НИКОГДА не добавлять прямую
+         <Reference> / <COMReference> на Microsoft.Web.WebView2.Core.winmd —
+         .NET это запрещает (ошибка NETSDK1130), и ломается вся сборка. -->
+    <!-- WebView2 держим на 1.0.4022.49: версия, на которой проект собирался
+         месяцами. Подъём до 1.0.4078.44 на новых .NET SDK тянул прямую ссылку на
+         Microsoft.Web.WebView2.Core.winmd -> NETSDK1130. WebView2 подключаем
+         ТОЛЬКО пакетом, без прямых <Reference>/<COMReference> на .winmd. -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
     <PackageReference Include="MySql.Data" Version="9.7.0" />
 
     <PackageReference Include="NAudio" Version="2.3.0" />
-    <PackageReference Include="SIPSorcery" Version="10.0.9" />
+
+    <!-- WASM-рантайм для нативного RNNoise: гоняем noise/rnnoise.wasm (тот же
+         шумодав, что в тесте микрофона) прямо в процессе, без WebView2. -->
+    <PackageReference Include="Wasmtime" Version="22.0.0" />
+
+    <!-- Нативный клиент звонков (замена WebView2): protobuf-протокол LiveKit FFI.
+         Grpc.Tools генерирует C#-классы из .proto на сборке (только messages). -->
+    <PackageReference Include="Google.Protobuf" Version="3.32.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.71.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="Native\protocol\*.proto" GrpcServices="None"
+              ProtoRoot="Native\protocol" CompileOutputs="true" />
   </ItemGroup>
 
   <!-- ip.txt копируется в output directory -->
   <ItemGroup>
     <None Update="ip.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Нативная библиотека LiveKit (Rust/libwebrtc, win-x64) кладётся рядом с
+       PISMO.exe: без неё нативный звонок падает с DllNotFoundException.
+       Достаётся из колеса livekit (livekit/rtc/resources/livekit_ffi.dll). -->
+  <ItemGroup>
+    <None Update="livekit_ffi.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Локальный RNNoise (офлайн): папка noise рядом с exe, отдаётся через
+       virtual host pismo-noise.local. Решает блокировку CDN и несовместимость
+       версий esm/wasm/worklet. -->
+  <ItemGroup>
+    <None Include="noise\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>noise\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </None>
   </ItemGroup>
 
@@ -38,14 +102,11 @@
   <ItemGroup>
     <EmbeddedResource Include="CallForm.resx" />
     <EmbeddedResource Include="LoginForm.resx" />
-    <EmbeddedResource Include="MainForm_MessageActions.resx" />
+    <!-- MainForm_MessageActions.resx удалён: он был пустой заготовкой VS, а из-за
+         partial class MainForm в MainForm_MessageActions.cs MSBuild давал ему имя
+         PISMO.MainForm.resources — оно конфликтовало с ресурсом самой формы
+         (MSB3577: два выходных файла в один путь). -->
     <EmbeddedResource Include="SettingsForm.resx" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Update="CallForm - Копировать.cs">
-      <SubType>Form</SubType>
-    </Compile>
   </ItemGroup>
 
 </Project>

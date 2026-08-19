@@ -17,7 +17,86 @@ namespace PISMO
         public LoginForm()
         {
             InitializeComponent(GetBtnLogin());
+            this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
             LoadSavedCredentials();
+            // Авто-вход по JWT здесь НЕ делаем: он выполняется в заставке
+            // (SplashForm) ДО показа окна — иначе форма зависала недорисованной.
+        }
+
+        /// <summary>Восстановление сессии по сохранённому JWT (вызывается из
+        /// заставки в фоне, БЕЗ UI). true — UserSession заполнена, можно
+        /// открывать главное окно, минуя окно входа.</summary>
+        public static bool TryRestoreSession()
+        {
+            try
+            {
+                if (!File.Exists(CredsFile)) return false;
+                var lines = File.ReadAllLines(CredsFile, Encoding.UTF8);
+                if (lines.Length < 4 || lines[2] != "1") return false; // нет токена / «запомнить» снято
+                string token = lines[3];
+                var claims = JwtAuth.Validate(token);
+                if (claims == null || claims.Uid <= 0) return false;   // истёк/повреждён
+
+                // Подтягиваем актуальные данные пользователя по uid из токена.
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT id, Name, Surname, role, login FROM users WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", claims.Uid);
+                var dt = new DataTable();
+                new MySqlDataAdapter(cmd).Fill(dt);
+                if (dt.Rows.Count == 0) return false;
+                var row = dt.Rows[0];
+                UserSession.UserId = Convert.ToInt32(row["id"]);
+                UserSession.UserName = $"{row["Name"]} {row["Surname"]}".Trim();
+                UserSession.Role = row["role"].ToString().ToLower();
+                if (string.IsNullOrWhiteSpace(UserSession.UserName))
+                    UserSession.UserName = row["login"].ToString();
+                UserSession.AuthToken = token;
+                return true;
+            }
+            catch { return false; /* при любой ошибке — обычный вход */ }
+        }
+
+        /// <summary>Открыть главное окно после восстановления сессии из заставки
+        /// (окно входа при этом остаётся скрытым и появится только при выходе).</summary>
+        public void OpenMainAfterRestore() => OpenMainForm();
+
+        /// <summary>Стирает сохранённый JWT (при «Выйти из аккаунта»), чтобы при
+        /// следующем запуске не происходил автовход. Логин/пароль остаются.</summary>
+        public static void InvalidateSavedToken()
+        {
+            try
+            {
+                if (!File.Exists(CredsFile)) return;
+                var lines = File.ReadAllLines(CredsFile, Encoding.UTF8);
+                if (lines.Length < 4) return;
+                lines[3] = "";
+                File.WriteAllLines(CredsFile, lines, Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        /// <summary>Открывает главное окно и прячет окно входа.</summary>
+        private void OpenMainForm()
+        {
+            var main = new MainForm();
+            main.Show();
+            this.Hide();
+
+            main.FormClosed += (s, _) =>
+            {
+                if (UserSession.UserId == 0)
+                {
+                    txtLogin.Clear();
+                    txtPass.Clear();
+                    lblError.Visible = false;
+                    LoadSavedCredentials();
+                    this.Show();
+                }
+                else
+                {
+                    this.Close();
+                }
+            };
         }
 
         // ────────────────────────────────────────────
@@ -46,41 +125,11 @@ namespace PISMO
             }
         }
 
-        // ────────────────────────────────────────────
-        //  Сохранение данных вручную (кнопка 💾)
-        // ────────────────────────────────────────────
-        private void btnSaveCreds_Click(object sender, EventArgs e)
+        /// <summary>Удаляет файл сохранённого входа (когда галочка снята).</summary>
+        private void ClearSavedCredentials()
         {
-            if (string.IsNullOrWhiteSpace(txtLogin.Text))
-            {
-                ShowError("Введите логин, чтобы сохранить.");
-                return;
-            }
-
-            SaveCredentials(txtLogin.Text.Trim(), txtPass.Text, chkRemember.Checked);
-            ShowInfo("Данные входа сохранены.");
-        }
-
-        // ────────────────────────────────────────────
-        //  Очистка сохранённых данных (кнопка 🗑)
-        // ────────────────────────────────────────────
-        private void btnClearCreds_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                if (File.Exists(CredsFile))
-                    File.Delete(CredsFile);
-
-                txtLogin.Clear();
-                txtPass.Clear();
-                chkRemember.Checked = false;
-                lblError.Visible    = false;
-                ShowInfo("Сохранённые данные удалены.");
-            }
-            catch (Exception ex)
-            {
-                ShowError("Не удалось удалить файл: " + ex.Message);
-            }
+            try { if (File.Exists(CredsFile)) File.Delete(CredsFile); }
+            catch { }
         }
 
         // ────────────────────────────────────────────
@@ -97,32 +146,65 @@ namespace PISMO
                 return;
             }
 
+            // Защита от перебора пароля: после серии неудач — временная блокировка.
+            var lockLeft = RateLimiter.LoginLockRemaining(login);
+            if (lockLeft > TimeSpan.Zero)
+            {
+                ShowError($"Слишком много попыток. Повторите через {Math.Ceiling(lockLeft.TotalSeconds):0} с.");
+                return;
+            }
+
             try
             {
                 using (var conn = DBHelper.OpenConnection())
                 {
+                    // Пароль больше НЕ сверяем в SQL (там мог быть открытый текст).
+                    // Берём хеш по логину и проверяем в коде (bcrypt / legacy-plaintext).
                     const string sql =
-                        "SELECT id, Name, Surname, role FROM users WHERE login=@l AND password=@p";
+                        "SELECT id, Name, Surname, role, password FROM users WHERE login=@l";
+                    DataRow row;
                     using (var cmd = new MySqlCommand(sql, conn))
                     {
                         cmd.Parameters.AddWithValue("@l", login);
-                        cmd.Parameters.AddWithValue("@p", pass);
                         var dt = new DataTable();
                         new MySqlDataAdapter(cmd).Fill(dt);
 
                         if (dt.Rows.Count == 0)
                         {
+                            RateLimiter.RegisterLoginFailure(login);
                             ShowError("Неверный логин или пароль.");
                             return;
                         }
+                        row = dt.Rows[0];
+                    }
 
-                        DataRow row = dt.Rows[0];
-                        UserSession.UserId   = Convert.ToInt32(row["id"]);
-                        UserSession.UserName = $"{row["Name"]} {row["Surname"]}".Trim();
-                        UserSession.Role     = row["role"].ToString().ToLower();
+                    string stored = row["password"]?.ToString() ?? "";
+                    if (!PasswordHasher.Verify(pass, stored))
+                    {
+                        RateLimiter.RegisterLoginFailure(login);
+                        ShowError("Неверный логин или пароль.");
+                        return;
+                    }
 
-                        if (string.IsNullOrWhiteSpace(UserSession.UserName))
-                            UserSession.UserName = login;
+                    RateLimiter.RegisterLoginSuccess(login);
+                    UserSession.UserId   = Convert.ToInt32(row["id"]);
+                    UserSession.UserName = $"{row["Name"]} {row["Surname"]}".Trim();
+                    UserSession.Role     = row["role"].ToString().ToLower();
+                    if (string.IsNullOrWhiteSpace(UserSession.UserName))
+                        UserSession.UserName = login;
+
+                    // Миграция: старый открытый пароль перехешируем в bcrypt.
+                    if (PasswordHasher.NeedsUpgrade(stored))
+                    {
+                        try
+                        {
+                            using var upd = new MySqlCommand(
+                                "UPDATE users SET password=@p WHERE id=@id", conn);
+                            upd.Parameters.AddWithValue("@p", PasswordHasher.Hash(pass));
+                            upd.Parameters.AddWithValue("@id", UserSession.UserId);
+                            upd.ExecuteNonQuery();
+                        }
+                        catch { /* миграция не критична для входа */ }
                     }
                 }
             }
@@ -132,30 +214,18 @@ namespace PISMO
                 return;
             }
 
-            // Автосохранение если галочка стоит
+            // Выдаём JWT сессии (uid/login/срок) — используется WS-сервером и
+            // для авто-входа «Запомнить меня».
+            UserSession.AuthToken = JwtAuth.Create(UserSession.UserId, login);
+
+            // «Запомнить меня» полностью управляет сохранением данных входа:
+            // отмечена — сохраняем (логин + токен), снята — удаляем сохранённое.
             if (chkRemember.Checked)
                 SaveCredentials(login, pass, true);
+            else
+                ClearSavedCredentials();
 
-            var main = new MainForm();
-            main.Show();
-            this.Hide();
-
-            main.FormClosed += (s, _) =>
-            {
-                if (UserSession.UserId == 0)
-                {
-                    txtLogin.Clear();
-                    txtPass.Clear();
-                    lblError.Visible = false;
-                    // Подгрузить снова, если были сохранены
-                    LoadSavedCredentials();
-                    this.Show();
-                }
-                else
-                {
-                    this.Close();
-                }
-            };
+            OpenMainForm();
         }
 
         // ────────────────────────────────────────────
@@ -173,7 +243,8 @@ namespace PISMO
                 {
                     login,
                     EncodePassword(pass),
-                    remember ? "1" : "0"
+                    remember ? "1" : "0",
+                    UserSession.AuthToken ?? ""   // 4-я строка: JWT для авто-входа
                 }, Encoding.UTF8);
             }
             catch (Exception ex)
@@ -200,13 +271,6 @@ namespace PISMO
             lblError.Visible   = true;
         }
 
-        private void ShowInfo(string msg)
-        {
-            lblError.ForeColor = Color.FromArgb(67, 181, 129);
-            lblError.Text      = msg;
-            lblError.Visible   = true;
-        }
-
         private void lnkRegister_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
             new RegisterForm().ShowDialog(this);
@@ -219,15 +283,26 @@ namespace PISMO
 
         private void LoginForm_Load(object sender, EventArgs e)
         {
-            try
+            // Проверка БД — в фоне, чтобы окно отрисовалось сразу (иначе при
+            // недоступной БД форма висела «белыми прямоугольниками» до таймаута).
+            System.Threading.Tasks.Task.Run(() =>
             {
-                using var conn = DBHelper.OpenConnection();
-                System.Diagnostics.Debug.WriteLine("[TEST] ✓ БД подключена успешно!");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Ошибка БД:\n{ex.Message}", "ОШИБКА", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    System.Diagnostics.Debug.WriteLine("[TEST] ✓ БД подключена успешно!");
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        if (!IsDisposed && IsHandleCreated)
+                            BeginInvoke(new Action(() =>
+                                ShowError("Нет соединения с базой данных: " + ex.Message)));
+                    }
+                    catch { }
+                }
+            });
         }
     }
 }

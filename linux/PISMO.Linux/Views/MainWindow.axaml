@@ -1,0 +1,34 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PISMO.Linux.Views.MainWindow"
+        Title="PISMO — Мессенджер"
+        Width="1000" Height="640"
+        WindowStartupLocation="CenterScreen"
+        Background="#36393F">
+
+  <Grid ColumnDefinitions="260,*">
+
+    <!-- Сайдбар (заглушка — сюда придёт список чатов) -->
+    <Border Grid.Column="0" Background="#2F3136">
+      <StackPanel Margin="16,20" Spacing="10">
+        <TextBlock Text="Личные сообщения" Foreground="#B9BBBE"
+                   FontWeight="Bold" FontSize="13"/>
+        <TextBlock x:Name="LblWho" Text="" Foreground="#72767D" FontSize="12"/>
+        <Border Height="1" Background="#26282C" Margin="0,6"/>
+        <TextBlock Text="Список чатов появится здесь"
+                   Foreground="#72767D" FontSize="12" TextWrapping="Wrap"/>
+      </StackPanel>
+    </Border>
+
+    <!-- Центр (заглушка — сюда придёт переписка) -->
+    <StackPanel Grid.Column="1" VerticalAlignment="Center"
+                HorizontalAlignment="Center" Spacing="8">
+      <TextBlock Text="✓ Вход выполнен" FontSize="20" FontWeight="Bold"
+                 Foreground="#3BA55D" HorizontalAlignment="Center"/>
+      <TextBlock x:Name="LblHello" Text="" FontSize="14"
+                 Foreground="#DCDDDE" HorizontalAlignment="Center"/>
+      <TextBlock Text="Тулчейн, БД и авторизация работают на Linux."
+                 FontSize="12" Foreground="#72767D" HorizontalAlignment="Center"/>
+    </StackPanel>
+  </Grid>
+</Window>

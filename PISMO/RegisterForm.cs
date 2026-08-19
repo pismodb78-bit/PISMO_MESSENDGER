@@ -9,6 +9,7 @@ namespace PISMO
         public RegisterForm()
         {
             InitializeComponent();
+            this.Load += (s, e) => { try { Theme.Apply(this); } catch { } };
         }
 
         private void btnRegister_Click(object sender, EventArgs e)
@@ -63,7 +64,7 @@ namespace PISMO
                     using (var cmd = new MySqlCommand(sql, conn))
                     {
                         cmd.Parameters.AddWithValue("@l", login);
-                        cmd.Parameters.AddWithValue("@p", pass);
+                        cmd.Parameters.AddWithValue("@p", PasswordHasher.Hash(pass)); // bcrypt, не открытым текстом
                         cmd.Parameters.AddWithValue("@n", name);
                         cmd.Parameters.AddWithValue("@s", surname);
                         cmd.ExecuteNonQuery();

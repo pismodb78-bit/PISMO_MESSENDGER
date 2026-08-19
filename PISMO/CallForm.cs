@@ -13,7 +13,7 @@ using NAudio.CoreAudioApi;
 
 namespace PISMO
 {
-    public class CallForm : Form
+    public partial class CallForm : Form
     {
         // ── Поля ────────────────────────────────────────────────────
         private readonly int _sessionId;
@@ -21,31 +21,38 @@ namespace PISMO
         private readonly string _peerName;
         private readonly int _peerId;
         private bool _hasVideo;
-        private WebRtcTransport _transport = null;
+        // Режим голосового канала сервера (постоянная LiveKit-комната, без
+        // call_sessions/ringing). _channelRoom задаёт имя комнаты.
+        private readonly bool _isChannel;
+        private readonly string _channelRoom;
+        private int _vchId = -1;     // id голосового канала (для voice_presence)
+        private int _vchTick = 0;    // троттлинг heartbeat в секундном таймере
+        private int _partsTick = 0;  // троттлинг опроса участников (раз в 3 c)
+        private bool _partsBusy;     // опрос участников уже идёт (не наслаиваем)
+        // НАТИВНЫЙ транспорт LiveKit (livekit_ffi.dll) вместо WebView2 —
+        // тот же контракт, что был у WebRtcTransport, но без Chromium (обход
+        // 0x8007139F от VR). Мост переводит BGRA-кадры LiveKit в картинки-байты.
+        private NativeCallBridge _transport = null;
         private System.Windows.Forms.Timer _signalTimer = null;  // ← явная инициализация
         private System.Windows.Forms.Timer _durationTimer = null;  // ← явная инициализация
+        private volatile bool _presenceLeft;   // после выхода heartbeat не воскрешает присутствие
         private DateTime _startTime;
         private bool _connected = false;
         private bool _ended = false;
         private bool _callLogged = false;
 
-        // TURN кредо теперь управляются внутри CallTransport через TurnSettings.GetCredentials()
 
-        private WaveInEvent _waveIn;
-        private WaveOutEvent _waveOut;
-        private BufferedWaveProvider _waveProvider;
+        // Аудио (микрофон + воспроизведение голоса/звука демки) полностью на
+        // стороне LiveKit — NAudio для звонка больше не используется.
         // Громкость звука демонстрации экрана собеседника (0.0 - 1.0), отдельно от голоса
         private float _remoteScreenAudioVolume = 1.0f;
         private TrackBar _tbScreenAudioVolume;
         private Label _lblScreenAudioVolume;
         private bool _muted = false;
 
-        private WasapiLoopbackCapture _loopback;
-        private bool _screenAudio = false;
-
         // Камера теперь как настоящий WebRTC video track (getUserMedia внутри
         // WebRtcTransport), а не AForge VideoCaptureDevice + JPEG-over-DataChannel.
-        private bool _cameraOff = false;
+        private bool _cameraOff = true;  // камера по умолчанию ВЫКЛЮЧЕНА при входе в звонок
         private bool _cameraStarted = false;
         private bool _pendingVideoStart = false; // ждём установления соединения перед запуском камеры
 
@@ -65,11 +72,19 @@ namespace PISMO
         private PictureBox _pbRemoteCamera; // отдельная область для камеры собеседника, не конфликтует с экраном
         private Label _lblStatus;
         private Label _lblDuration;
+        private Label _lblPing;
         private Label _lblName;
         private Button _btnMute;
+        private Button _btnDeafen;   // 🎧 полный мут: динамики + микрофон
         private Button _btnCamera;
         private Button _btnScreen;
+        private Button _btnAudio;
         private Button _btnHangup;
+
+        // Громкость голоса собеседников и состояние «заглушить всех».
+        private float _remoteVoiceVolume = 1.0f;
+        private bool _remoteAllMuted = false;
+        private Form _audioPanel;
         private Label _lblScreenBadge;
         private Label _lblZoom;
         private Panel _pnlButtons;
@@ -122,290 +137,28 @@ namespace PISMO
             StartCallSetup();
         }
 
-        // ════════════════════════════════════════════════════════════
-        //  UI — изменяемый размер + zoom
-        // ════════════════════════════════════════════════════════════
-        private void BuildUi()
+        // ── Конструктор для голосового канала сервера ───────────────
+        public CallForm(string channelRoom, string channelTitle)
         {
-            Text = "PISMO — Звонок";
-            ClientSize = new Size(660, 540);
-            MinimumSize = new Size(480, 400);
-            FormBorderStyle = FormBorderStyle.Sizable;
-            MaximizeBox = true;
-            MinimizeBox = true;
-            StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Color.FromArgb(32, 34, 37);
-            Font = new Font("Segoe UI", 9.5f);
+            _isChannel = true;
+            _channelRoom = channelRoom;
+            _vchId = VoicePresence.ChannelIdFromRoom(channelRoom);
+            // Сразу отмечаемся «в эфире», чтобы другие увидели нас без задержки.
+            if (_vchId > 0)
+                System.Threading.Tasks.Task.Run(() =>
+                    VoicePresence.Heartbeat(_vchId, UserSession.EffectiveId));
+            _sessionId = -1;
+            _isCaller = false;
+            _peerName = channelTitle;
+            _peerId = -1;
+            _hasVideo = false;
+            _groupId = 0; // как групповой: не завершаем при уходе одного участника
 
-            // enable keyboard handling for shortcuts
-            KeyPreview = true;
-            this.KeyDown += CallForm_KeyDown;
-
-            // Верхняя панель
-            _lblName = new Label
-            {
-                Text = _peerName,
-                Font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold),
-                ForeColor = Color.White,
-                AutoSize = true,
-                Location = new Point(12, 10)
-            };
-            _lblStatus = new Label
-            {
-                Text = _isCaller ? "Вызов…" : "Соединение…",
-                Font = new Font("Segoe UI", 9f),
-                ForeColor = Color.FromArgb(185, 187, 190),
-                AutoSize = true,
-                Location = new Point(12, 34)
-            };
-            _lblDuration = new Label
-            {
-                Text = "",
-                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
-                ForeColor = Color.FromArgb(87, 171, 90),
-                AutoSize = true,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Location = new Point(600, 10)
-            };
-            _lblScreenBadge = new Label
-            {
-                Text = "🖥 Демонстрация",
-                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                ForeColor = Color.White,
-                BackColor = Color.FromArgb(88, 101, 242),
-                AutoSize = true,
-                Location = new Point(12, 56),
-                Padding = new Padding(5, 2, 5, 2),
-                Visible = false
-            };
-
-            // Zoom label
-            _lblZoom = new Label
-            {
-                Text = "🔍 100%",
-                Font = new Font("Segoe UI", 8f),
-                ForeColor = Color.FromArgb(185, 187, 190),
-                BackColor = Color.FromArgb(20, 21, 24, 180),
-                AutoSize = true,
-                Location = new Point(12, 0),   // позиция обновляется в Resize
-                Visible = false,
-                Padding = new Padding(4, 2, 4, 2)
-            };
-
-            // Видео удалённого
-            _pbRemote = new PictureBox
-            {
-                BackColor = Color.FromArgb(20, 21, 24),
-                SizeMode = PictureBoxSizeMode.Zoom,
-                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-                Location = new Point(0, 56),
-                Size = new Size(660, 400)
-            };
-            _pbRemote.Paint += PbRemote_Paint;
-
-            // Zoom: колесо мыши
-            _pbRemote.MouseWheel += (s, e) =>
-            {
-                _zoom += e.Delta > 0 ? 0.1f : -0.1f;
-                _zoom = Math.Clamp(_zoom, 1.0f, 5.0f);
-                UpdateZoomLabel();
-                _pbRemote.Invalidate();
-            };
-            // Zoom: двойной клик — сброс
-            _pbRemote.DoubleClick += (s, e) =>
-            {
-                _zoom = 1.0f;
-                _panOffset = PointF.Empty;
-                UpdateZoomLabel();
-                _pbRemote.Invalidate();
-            };
-            // Pan: перетаскивание
-            _pbRemote.MouseDown += (s, e) =>
-            {
-                if (e.Button == MouseButtons.Left && _zoom > 1.0f)
-                {
-                    _panning = true;
-                    _panStart = e.Location;
-                    _pbRemote.Cursor = Cursors.SizeAll;
-                }
-            };
-            _pbRemote.MouseMove += (s, e) =>
-            {
-                if (!_panning) return;
-                _panOffset.X += e.X - _panStart.X;
-                _panOffset.Y += e.Y - _panStart.Y;
-                _panStart = e.Location;
-                _pbRemote.Invalidate();
-            };
-            _pbRemote.MouseUp += (s, e) =>
-            {
-                _panning = false;
-                _pbRemote.Cursor = Cursors.Default;
-            };
-
-            // Локальное видео (PiP)
-            _pbLocal = new PictureBox
-            {
-                BackColor = Color.FromArgb(47, 49, 54),
-                SizeMode = PictureBoxSizeMode.Zoom,
-                BorderStyle = BorderStyle.FixedSingle,
-                Size = new Size(120, 90),
-                Visible = false,
-                Anchor = AnchorStyles.Bottom | AnchorStyles.Right
-            };
-
-            // Камера собеседника — отдельная область от основной (_pbRemote),
-            // которая теперь зарезервирована за демонстрацией экрана. Раньше
-            // оба источника (камера и экран) писали в один _pbRemote.Image,
-            // и при одновременной демонстрации экрана и включённой камере
-            // кадры перезатирали друг друга в произвольном порядке, создавая
-            // мерцание между картинкой экрана и лицом собеседника.
-            _pbRemoteCamera = new PictureBox
-            {
-                BackColor = Color.FromArgb(47, 49, 54),
-                SizeMode = PictureBoxSizeMode.Zoom,
-                BorderStyle = BorderStyle.FixedSingle,
-                Size = new Size(120, 90),
-                Visible = false,
-                Anchor = AnchorStyles.Bottom | AnchorStyles.Left
-            };
-
-            // Кнопки — нижняя панель
-            _pnlButtons = new Panel
-            {
-                BackColor = Color.FromArgb(24, 25, 28),
-                Height = 76,
-                Dock = DockStyle.Bottom
-            };
-
-            _btnMute = MakeBtn("🎤", 0);
-            _btnCamera = MakeBtn("📷", 1);
-            _btnCamera.Visible = _hasVideo;
-            _btnScreen = MakeBtn("🖥", 2);
-            _btnHangup = MakeBtn("📵", 3);
-            _btnHangup.BackColor = Color.FromArgb(240, 71, 71);
-
-            _btnMute.Click += (s, e) => ToggleMute();
-            _btnCamera.Click += (s, e) => ToggleCamera();
-            _btnScreen.Click += (s, e) => ToggleScreen();
-            _btnHangup.Click += (s, e) => EndCall();
-
-            // Ползунок громкости звука демонстрации экрана собеседника.
-            // Видим только когда собеседник реально демонстрирует экран.
-            _tbScreenAudioVolume = new TrackBar
-            {
-                Minimum = 0,
-                Maximum = 100,
-                Value = 100,
-                TickStyle = TickStyle.None,
-                Size = new Size(140, 30),
-                Visible = false,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
-            };
-            _tbScreenAudioVolume.ValueChanged += (s, e) =>
-            {
-                _remoteScreenAudioVolume = _tbScreenAudioVolume.Value / 100f;
-            };
-            _lblScreenAudioVolume = new Label
-            {
-                Text = "🔊 Звук демки",
-                ForeColor = Color.FromArgb(185, 187, 190),
-                AutoSize = true,
-                Visible = false,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
-            };
-
-            _pnlButtons.Controls.AddRange(new Control[] { _btnMute, _btnCamera, _btnScreen, _btnHangup });
-
-            _pnlParticipants = new Panel
-            {
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Size = new Size(180, 110),
-                Location = new Point(ClientSize.Width - 190, 10),
-                BackColor = Color.FromArgb(47, 49, 54), // Фирменный темно-серый цвет Discord
-                BorderStyle = BorderStyle.None,
-                AutoScroll = true
-            };
-            _lblParticipants = new Label
-            {
-                Dock = DockStyle.Fill,
-                ForeColor = Color.FromArgb(220, 221, 222),
-                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
-                Padding = new Padding(8),
-                Text = "Участники:\n• Загрузка..."
-            };
-            _pnlParticipants.Controls.Add(_lblParticipants);
-
-            Controls.AddRange(new Control[]
-            {
-                _pbRemote, _pbLocal, _pbRemoteCamera,
-                _lblName, _lblStatus, _lblDuration,
-                _lblScreenBadge, _lblZoom,
-                _tbScreenAudioVolume, _lblScreenAudioVolume,
-                _pnlButtons, _pnlParticipants
-            });
-            _pnlParticipants.BringToFront();
-
-            Resize += (s, e) => LayoutControls();
-            LayoutControls();
-
-            _durationTimer.Tick += (s, e) =>
-            {
-                if (_connected)
-                    _lblDuration.Text = (DateTime.Now - _startTime).ToString(@"mm\:ss");
-
-                // Проверка участников и таймера 3 минут
-                try
-                {
-                    using var conn = DBHelper.OpenConnection();
-                    // Запрашиваем имена участников через JOIN с таблицей users, так как в call_participants хранятся только user_id
-                    using var cmd = new MySqlCommand(
-                        "SELECT TRIM(CONCAT(u.Name, ' ', u.Surname)) AS user_name, u.login FROM call_participants cp JOIN users u ON u.id = cp.user_id WHERE cp.call_id=@cid ORDER BY cp.joined_at ASC", conn);
-                    cmd.Parameters.AddWithValue("@cid", _sessionId);
-                    using var r = cmd.ExecuteReader();
-                    var parts = new System.Collections.Generic.List<string>();
-                    while (r.Read())
-                    {
-                        string uname = r["user_name"].ToString().Trim();
-                        if (string.IsNullOrWhiteSpace(uname)) uname = r["login"].ToString();
-                        parts.Add("• " + uname);
-                    }
-                    r.Close();
-
-                    if (_lblParticipants != null && !_lblParticipants.IsDisposed)
-                    {
-                        _lblParticipants.Text = "Участники (" + parts.Count + "):\n" + string.Join("\n", parts);
-                    }
-
-                    // Логика таймера 3 минут для личных звонков (не групп) — в стиле Discord
-                    if (_groupId < 0)
-                    {
-                        if (parts.Count == 1)
-                        {
-                            if (_threeMinStartTime == DateTime.MinValue) _threeMinStartTime = DateTime.Now;
-                            var elapsed = DateTime.Now - _threeMinStartTime;
-                            var remaining = TimeSpan.FromSeconds(180) - elapsed;
-                            if (remaining.TotalSeconds <= 0)
-                            {
-                                _threeMinTimerExpired = true;
-                                EndCall();
-                            }
-                            else
-                            {
-                                _lblStatus.Text = $"Ожидание собеседника... (завершится через {remaining:mm\\:ss})";
-                            }
-                        }
-                        else
-                        {
-                            _threeMinStartTime = DateTime.MinValue; // сброс таймера, если зашел второй участник
-                            if (_connected) _lblStatus.Text = "Соединение установлено";
-                        }
-                    }
-                }
-                catch { }
-            };
-            _durationTimer.Start();
+            _durationTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            BuildUi();
+            StartCallSetup();
         }
+
 
         private void LayoutControls()
         {
@@ -420,17 +173,18 @@ namespace PISMO
             if (_pnlParticipants != null) _pnlParticipants.Location = new Point(w - 190, 10);
             _pbRemoteCamera.Location = new Point(10, _pbRemote.Bottom - 100);
             _lblDuration.Location = new Point(w - 260, 10);
+            if (_lblPing != null) _lblPing.Location = new Point(w - 260, 32);
             _lblZoom.Location = new Point(8, _pbRemote.Bottom - 24);
 
             _lblScreenAudioVolume.Location = new Point(w - 150, 70);
             _tbScreenAudioVolume.Location = new Point(w - 150, 90);
 
-            int btnCount = 4;
+            int btnCount = 6;
             int btnW = 56, btnH = 56, gap = 12;
             int totalW = btnCount * btnW + (btnCount - 1) * gap;
             int startX = (_pnlButtons.Width - totalW) / 2;
             int btnY = (_pnlButtons.Height - btnH) / 2;
-            var btns = new Button[] { _btnMute, _btnCamera, _btnScreen, _btnHangup };
+            var btns = new Button[] { _btnMute, _btnDeafen, _btnCamera, _btnScreen, _btnAudio, _btnHangup };
             for (int i = 0; i < btns.Length; i++)
                 btns[i].Location = new Point(startX + i * (btnW + gap), btnY);
         }
@@ -514,67 +268,189 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════
         //  СИГНАЛИНГ
         // ════════════════════════════════════════════════════════════
+        /// <summary>Имя комнаты LiveKit — общее для всех участников одного звонка
+        /// (или голосового канала сервера).</summary>
+        private string RoomName => _isChannel ? _channelRoom : "call_" + _sessionId;
+
         private async void StartCallSetup()
         {
-            _transport = new WebRtcTransport();
-            _transport.FrameReceived += OnFrameReceived;
-            _transport.Disconnected += OnPeerDisconnected;
-            _transport.IceCandidateReady += candidate => DbAppendIceCandidate(_isCaller, candidate);
-            _transport.Connected += OnConnected;
+            // Плиточная сетка участников (Discord-style).
+            BuildTilesHost();
 
-            // --- Видео-трек демонстрации экрана (настоящий WebRTC, не DataChannel) ---
-            _transport.RemoteScreenFrameReceived += frame => UiInvoke(() => ShowRemoteScreenFrame(frame));
-            _transport.RemoteScreenStarted += () => UiInvoke(OnRemoteScreenStarted);
-            _transport.RemoteScreenStopped += () => UiInvoke(OnRemoteScreenStopped);
+            _transport = new NativeCallBridge();
+            _transport.Disconnected += OnPeerDisconnected;
+            _transport.Connected += OnConnected;
+            // В личном звонке уход единственного собеседника = конец звонка.
+            // В групповом — остальные продолжают, поэтому событие игнорируем.
+            _transport.RemoteParticipantLeft += () =>
+            {
+                if (_groupId < 0) UiInvoke(OnPeerDisconnected);
+            };
+
+            // --- Плитки участников (камера/экран каждого собеседника) ---
+            _transport.ParticipantJoined += (pid, name) => UiInvoke(() => AddParticipant(pid, name));
+            _transport.ParticipantLeftById += pid => UiInvoke(() => RemoveParticipant(pid));
+            _transport.RemoteTileStarted += (pid, name, source) => UiInvoke(() => OnTileStarted(pid, name, source));
+            _transport.RemoteTileStopped += (pid, source) => UiInvoke(() => OnTileStopped(pid, source));
+            _transport.RemoteCameraLost += pid => UiInvoke(() => OnRemoteCameraLost(pid));
+            _transport.RemoteTileFrame += (pid, source, frame) => OnTileFrameOffThread(pid, source, frame);
+            // «Последний кадр побеждает»: на 60fps BeginInvoke-очередь копит кадры
+            // быстрее, чем UI их рисует → растущий лаг и рваное превью. Храним
+            // только НОВЕЙШИЙ кадр и держим в очереди максимум один вызов.
+            _transport.RemoteTileRawFrame += (pid, source, bgra, w, h) =>
+                QueueLatestFrame(pid + "|" + source, bgra, w, h,
+                    (b, fw, fh, key) => OnTileRawFrame(key.Substring(0, key.IndexOf('|')),
+                                                       key.Substring(key.IndexOf('|') + 1), b, fw, fh));
+
+            // --- «Смотреть стрим»: подключение к идущей демке по кнопке ---
+            _transport.RemoteStreamPublished += (pid, name) => UiInvoke(() => OnStreamPublished(pid, name));
+            _transport.RemoteStreamUnpublished += pid => UiInvoke(() => OnStreamUnpublished(pid));
+            _transport.WatchFailed += (pid, err) => UiInvoke(() => OnWatchFailed(pid, err));
+            // Краш рендера WebView: раньше — чёрный экран без звука и «не выйти».
+            // Теперь выходим из театра, сообщаем и закрываем мёртвый звонок.
+            _transport.RendererCrashed += kind => UiInvoke(() =>
+            {
+                try { ExitTheaterMode(); } catch { }
+                try
+                {
+                    MessageBox.Show(this,
+                        "Видеодвижок звонка аварийно завершился (" + kind + ").\n" +
+                        "Звонок будет закрыт — перезайдите в него.",
+                        "PISMO — звонок", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                catch { }
+                try { Close(); } catch { }
+            });
+            // GPU-процесс упал и восстановился (частый случай при захвате VR/
+            // виртуальных рабочих столов): звонок ЖИВ, обрывается только демка —
+            // откатываем её кнопку/бейдж, звонок не трогаем.
+            _transport.ScreenEngineRecovered += () => UiInvoke(() =>
+            {
+                if (_screenSharing || _screenPreviewPending)
+                    OnLocalScreenError("демонстрация прервалась (перезапуск видеодвижка). Звонок продолжается — включите демонстрацию заново");
+            });
+            _transport.StreamWatchersChanged += n => UiInvoke(() => OnStreamWatchers(n));
+            _transport.ScreenSourceSwitched += (ok, err) => UiInvoke(() => OnScreenSourceSwitched(ok, err));
+            _transport.ActiveSpeakers += json => UiInvoke(() => OnActiveSpeakers(json));
+            _transport.ParticipantMicMuted += (pid, muted) => UiInvoke(() => OnParticipantMicMuted(pid, muted));
+            _transport.ParticipantDeafened += (pid, deaf) => UiInvoke(() => OnParticipantDeafened(pid, deaf));
+            _transport.PingUpdated += ms => UiInvoke(() => UpdatePing(ms));
+            _transport.ParticipantRenamed += (pid, name) => UiInvoke(() => OnParticipantRenamed(pid, name));
+
+            // --- Демонстрация экрана (своя) ---
             _transport.LocalScreenStarted += () => UiInvoke(OnLocalScreenStarted);
             _transport.LocalScreenStopped += () => UiInvoke(OnLocalScreenStopped);
             _transport.LocalScreenError += err => UiInvoke(() => OnLocalScreenError(err));
-            _transport.ScreenPreviewFrameReceived += frame => UiInvoke(() => ShowScreenSharePip(frame));
+            _transport.ScreenPreviewFrameReceived += frame => UiInvoke(() => OnSelfScreenFrame(frame));
+            _transport.LocalScreenRawFrame += (bgra, w, h) =>
+                QueueLatestFrame("self|screen", bgra, w, h,
+                    (b, fw, fh, _) => OnSelfScreenRawFrame(b, fw, fh));
             _transport.ScreenPreviewReady += () => UiInvoke(() =>
             {
                 _transport.HideTransportWindow();
                 _screenPreviewPending = false;
                 _screenSharing = true;
+                PushVoiceState();
                 _btnScreen.BackColor = Color.FromArgb(88, 101, 242);
                 _btnScreen.Text = "⏹";
                 _transport.ConfirmScreenShare();
-                ShowScreenSharePipContainer();
+                // Своя демка — обычной плиткой в звонке (как в Discord). Мини-окно
+                // (PIP) открывается кликом по этой плитке, а не само.
+                EnsureSelfScreenTile();
             });
 
-            // --- Видео-трек камеры (настоящий WebRTC, не DataChannel) ---
-            _transport.LocalCameraFrameReceived += frame => ShowLocalCameraFrame(frame);
+            // --- Своя камера: кадры идут в собственную плитку ---
+            _transport.LocalCameraFrameReceived += frame => UiInvoke(() => OnSelfCameraFrame(frame));
             _transport.CameraPreviewReady += () => UiInvoke(() => _cameraPreviewForm?.SetConfirmEnabled(true));
-            _transport.RemoteCameraFrameReceived += frame => UiInvoke(() => ShowRemoteCameraFrame(frame));
-            _transport.RemoteCameraStarted += () => UiInvoke(OnRemoteCameraStarted);
-            _transport.RemoteCameraStopped += () => UiInvoke(OnRemoteCameraStopped);
             _transport.LocalCameraStarted += () => UiInvoke(OnLocalCameraStarted);
-            _transport.LocalCameraStopped += () => UiInvoke(OnLocalCameraStopped);
+            _transport.LocalCameraStopped += () => UiInvoke(() => { OnLocalCameraStopped(); OnSelfCameraStopped(); });
             _transport.LocalCameraError += err => UiInvoke(() => OnLocalCameraError(err));
+            _transport.TheaterExitRequested += () => UiInvoke(ExitTheaterMode);
+            _transport.TheaterFullscreenToggle += () => UiInvoke(ToggleTheaterFullscreen);
+            // Диагностика демки в окне звонка убрана (просьба 2.1): цифры отправки
+            // живут ТОЛЬКО в плашке PIP-превью стримера, приёма — в чипе театра.
+            _transport.ScreenSendStats += t => UiInvoke(() => UpdatePipStats(t));
 
-            // --- Renegotiation (нужна и для экрана, и для камеры — оба добавляют
-            // video track после первоначального offer/answer) ---
-            _transport.RenegotiationOfferReady += (sdp, trackKinds) => DbSendRenegotiationOffer(sdp, trackKinds);
-            _transport.RenegotiationAnswerReady += (sdp, trackKinds) => DbSendRenegotiationAnswer(sdp, trackKinds);
+            // ПКМ по кнопке демонстрации — смена источника на лету (игра ↔ экран).
+            try
+            {
+                var screenMenu = new ContextMenuStrip();
+                screenMenu.Items.Add("🔁 Сменить источник (игра / весь экран)", null,
+                    (s, e) => SwitchScreenSourceLive());
+                screenMenu.Opening += (s, e) => { e.Cancel = !_screenSharing; };
+                _btnScreen.ContextMenuStrip = screenMenu;
+            }
+            catch { }
+            // Предупреждение «кодируется процессором» и строка «Демонстрация:
+            // WxH @ fps» в статусе убраны — только Debug-лог (просьба 2.1).
+            _transport.SoftwareEncoderDetected += () =>
+                System.Diagnostics.Debug.WriteLine("[SCREEN] программный энкодер (NVENC/QuickSync не задействован)");
+            _transport.ScreenCaptureInfo += (fps, w, h) =>
+                System.Diagnostics.Debug.WriteLine($"[SCREEN] захват {w}×{h} @ {fps} fps");
 
-            // Ждём готовности WebView2 ПЕРЕД любым WebRTC
-            await _transport.InitAsync(this);
+            // --- LiveKit: подключение к комнате ---
+            // Сигналинг, ICE/TURN, renegotiation и многосторонность берёт на себя
+            // LiveKit-сервер. От нас нужно только сгенерировать access-токен и
+            // подключиться к общей комнате (имя = id call-сессии).
+            try
+            {
+                string identity = UserSession.EffectiveId.ToString();
+                string displayName = string.IsNullOrWhiteSpace(UserSession.EffectiveName)
+                    ? identity : UserSession.EffectiveName;
+                string token = LiveKitSettings.CreateToken(RoomName, identity, displayName);
 
-            if (_isCaller)
-                _ = CallerSetupAsync();
-            else
-                _ = CalleeSetupAsync();
+                UiInvoke(() => _lblStatus.Text = "Подключение к серверу…");
+
+                // Статус сессии (ringing → active → ended/rejected) ведёт общий
+                // флоу: INSERT создаёт 'ringing', приём звонка ставит 'active'.
+                // CallForm его не трогает — иначе звонящий, мгновенно подключаясь
+                // к комнате LiveKit, преждевременно переводил бы сессию в 'active'
+                // и у вызываемого не появлялся бы экран входящего звонка.
+                await _transport.InitAsync(this, LiveKitSettings.Url, token);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[LIVEKIT SETUP ERROR] {ex.Message}");
+                // Тихий лог в %LOCALAPPDATA%\PISMO\call-error.log — чтобы при
+                // повторе 0x8007139F видеть ТИП/HRESULT/стек. Ничего не показывает,
+                // окна не плодит; только строка статуса + запись в файл.
+                string logPath = "";
+                try
+                {
+                    logPath = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "PISMO", "call-error.log");
+                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(logPath));
+                    int hr = System.Runtime.InteropServices.Marshal.GetHRForException(ex);
+                    System.IO.File.AppendAllText(logPath,
+                        $"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====\r\n" +
+                        $"Type   : {ex.GetType().FullName}\r\n" +
+                        $"HRESULT: 0x{hr:X8}\r\n" +
+                        $"Message: {ex.Message}\r\n" +
+                        $"Inner  : {ex.InnerException?.GetType().FullName} / {ex.InnerException?.Message}\r\n" +
+                        $"Stack  :\r\n{ex}\r\n\r\n");
+                }
+                catch { }
+                UiInvoke(() => _lblStatus.Text = $"Ошибка звонка: {ex.Message}");
+            }
 
             WebSocketSignalingClient.Instance.OnMessageReceived += OnWebSocketMessage;
 
-            StartAudio();
-            // КРИТИЧНО: НЕ запускаем StartVideo() до установления соединения!
-            // Раньше StartVideo() вызывался здесь, что приводило к тому что
-            // камера добавлялась через renegotiate() ДО завершения ICE gathering.
-            // Это вызывало race condition: SDP отправлялся с неполными кандидатами,
-            // что приводило к failed connection state → звонок сбрасывался.
-            // Теперь камера стартует только после OnConnected() (через StartVideoAfterConnect).
+            // Камеру стартуем только после установления соединения (OnConnected),
+            // чтобы превью открывалось, когда комната уже готова принять трек.
             if (_hasVideo)
                 _pendingVideoStart = true;
+
+            // Для голосового канала сервера статусов звонка нет — пропускаем опрос.
+            if (!_isChannel)
+            {
+                // Опрос статуса — фолбэк для корректного закрытия формы при
+                // отклонении/завершении звонка собеседником (мгновенно это
+                // приходит по WS call_status; опрос подстраховывает при обрыве).
+                _signalTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+                _signalTimer.Tick += (s, e) => PollCallStatus();
+                _signalTimer.Start();
+            }
         }
 
         private void OnWebSocketMessage(string type, int senderId, int sessionId, string payload)
@@ -583,17 +459,7 @@ namespace PISMO
             UiInvoke(() =>
             {
                 if (type == "call_status" || type == "incoming_call")
-                {
                     PollCallStatus();
-                }
-                else if (type == "ice_candidate")
-                {
-                    _ = PollAndApplyRemoteCandidatesAsync(callerSide: _isCaller);
-                }
-                else if (type == "renego_offer" || type == "renego_answer")
-                {
-                    _ = PollRenegotiationAsync();
-                }
             });
         }
 
@@ -609,162 +475,43 @@ namespace PISMO
             catch (InvalidOperationException) { }
         }
 
-        private async Task CallerSetupAsync()
-        {
-            try
-            {
-                UiInvoke(() => _lblStatus.Text = $"Вызов {_peerName}… подготовка");
-
-                string offerSdp = await _transport.CreateOfferAsync();
-
-                using (var conn = DBHelper.OpenConnection())
-                using (var cmd = new MySqlCommand(
-                    "UPDATE call_sessions SET caller_sdp=@sdp, status='ringing' WHERE id=@id", conn))
-                {
-                    cmd.Parameters.AddWithValue("@sdp", offerSdp);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    cmd.ExecuteNonQuery();
-                }
-
-                System.Diagnostics.Debug.WriteLine("[CALLER] Offer записан в БД, ждём answer…");
-                UiInvoke(() => _lblStatus.Text = $"Вызов {_peerName}… ожидание ответа");
-
-                _signalTimer = new System.Windows.Forms.Timer { Interval = 500 };
-                _signalTimer.Tick += (s, e) => PollCallStatus();
-                _signalTimer.Start();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[CALLER SETUP ERROR] {ex.Message}");
-                UiInvoke(() => _lblStatus.Text = $"Ошибка: {ex.Message}");
-            }
-        }
-
-        private async Task CalleeSetupAsync()
-        {
-            try
-            {
-                UiInvoke(() => _lblStatus.Text = "Подключение…");
-
-                string offerSdp = null;
-                bool hv = false;
-                for (int i = 0; i < 60 && !_ended; i++)
-                {
-                    using (var conn = DBHelper.OpenConnection())
-                    using (var cmd = new MySqlCommand(
-                        "SELECT caller_sdp, has_video FROM call_sessions WHERE id=@id", conn))
-                    {
-                        cmd.Parameters.AddWithValue("@id", _sessionId);
-                        using var r = cmd.ExecuteReader();
-                        if (r.Read())
-                        {
-                            offerSdp = r["caller_sdp"] == DBNull.Value ? null : r["caller_sdp"].ToString();
-                            hv = Convert.ToBoolean(r["has_video"]);
-                        }
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(offerSdp)) break;
-
-                    System.Diagnostics.Debug.WriteLine("[CALLEE] Ждём offer от звонящего…");
-                    await Task.Delay(500);
-                }
-
-                if (string.IsNullOrWhiteSpace(offerSdp))
-                {
-                    UiInvoke(() => _lblStatus.Text = "Нет ответа от звонящего");
-                    return;
-                }
-
-                _hasVideo = hv;
-                UiInvoke(() => _btnCamera.Visible = _hasVideo);
-
-                string answerSdp = await _transport.CreateAnswerAsync(offerSdp);
-
-                using (var conn = DBHelper.OpenConnection())
-                using (var cmd = new MySqlCommand(
-                    "UPDATE call_sessions SET callee_sdp=@sdp, status='active' WHERE id=@id", conn))
-                {
-                    cmd.Parameters.AddWithValue("@sdp", answerSdp);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    cmd.ExecuteNonQuery();
-                }
-
-                System.Diagnostics.Debug.WriteLine("[CALLEE] Answer записан в БД");
-
-
-
-                _signalTimer = new System.Windows.Forms.Timer { Interval = 400 };
-                _signalTimer.Tick += async (s, e) =>
-                {
-                    await PollAndApplyRemoteCandidatesAsync(callerSide: true);
-                    if (_connected) _signalTimer?.Stop();
-                };
-                _signalTimer.Start();
-
-                // StartVideo() уже вызывается единообразно для caller и callee
-                // сразу после _transport.InitAsync() в StartCallSetup — повторный
-                // вызов здесь создавал гонку: если пользователь уже подтвердил
-                // первое превью к моменту завершения этого асинхронного метода
-                // (а CalleeSetupAsync может занять несколько секунд на сетевые
-                // операции с БД), _cameraPreviewForm уже снова null (сброшен
-                // после подтверждения), защитная проверка не срабатывала, и
-                // StartVideo() вызывался второй раз — отсюда повторное окно
-                // выбора камеры через ~10 секунд после звонка.
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[CALLEE SETUP ERROR] {ex.Message}\n{ex.StackTrace}");
-                UiInvoke(() => _lblStatus.Text = "Ошибка подключения");
-            }
-        }
+        /// <summary>Опрос статуса call-сессии. С LiveKit это нужно только для
+        /// корректного закрытия формы, когда собеседник отклонил или завершил
+        /// звонок — само медиа-соединение поднимает LiveKit-сервер.</summary>
+        private bool _statusPollBusy;   // запрос уже идёт — не наслаиваем
 
         private void PollCallStatus()
         {
-            if (_connected || _ended) return;
+            if (_ended || _statusPollBusy) return;
+            _statusPollBusy = true;
 
-            try
+            // ВАЖНО: запрос статуса — в фоне. Раньше он шёл каждые 800 мс прямо
+            // на UI-потоке — из-за этого во время личного звонка всё интерфейс
+            // подлагивал (а после выхода из звонка «отпускало»).
+            int sid = _sessionId;
+            System.Threading.Tasks.Task.Run(() =>
             {
                 string status = null;
-                string answerSdp = null;
-
-                using (var conn = DBHelper.OpenConnection())
-                using (var cmd = new MySqlCommand(
-                    "SELECT status, callee_sdp FROM call_sessions WHERE id=@id", conn))
+                try
                 {
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "SELECT status FROM call_sessions WHERE id=@id", conn);
+                    cmd.Parameters.AddWithValue("@id", sid);
                     using var reader = cmd.ExecuteReader();
                     if (reader.Read())
-                    {
                         status = reader["status"]?.ToString();
-                        answerSdp = reader["callee_sdp"] == DBNull.Value ? null : reader["callee_sdp"].ToString();
-                    }
                 }
-
-                System.Diagnostics.Debug.WriteLine(
-                    $"[CALLER POLL] status={status}, answerSdp={(!string.IsNullOrEmpty(answerSdp) ? "получен" : "нет")}");
-
-                if (status == "active" && !string.IsNullOrWhiteSpace(answerSdp))
+                catch (Exception ex)
                 {
-                    _signalTimer?.Stop();
-                    _transport.ApplyAnswer(answerSdp);
-                    System.Diagnostics.Debug.WriteLine("[CALLER] Answer применён");
-
-                    Task.Run(async () =>
-                    {
-                        await Task.Delay(200);
-                        await PollAndApplyRemoteCandidatesAsync(callerSide: false);
-
-                        var pollTimer = new System.Windows.Forms.Timer { Interval = 400 };
-                        pollTimer.Tick += async (s, e) =>
-                        {
-                            await PollAndApplyRemoteCandidatesAsync(callerSide: false);
-                            if (_connected) pollTimer.Stop();
-                        };
-                        pollTimer.Start();
-                    });
+                    System.Diagnostics.Debug.WriteLine($"[CALL POLL ERROR] {ex.Message}");
                 }
-                else if (status == "rejected" || status == "ended")
+                finally { _statusPollBusy = false; }
+
+                if (status != "rejected" && status != "ended") return;
+                UiInvoke(() =>
                 {
+                    if (_ended) return;
                     _lblStatus.Text = status == "rejected" ? "Звонок отклонён" : "Завершён";
                     if (!_ended) MarkCallEnded();
                     _ended = true;
@@ -773,135 +520,56 @@ namespace PISMO
                     var t = new System.Windows.Forms.Timer { Interval = 1200 };
                     t.Tick += (_, __) => { t.Stop(); if (!IsDisposed) Close(); };
                     t.Start();
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[CALLER POLL ERROR] {ex.Message}");
-            }
-        }
-
-        private readonly System.Collections.Generic.HashSet<string> _appliedCandidates = new();
-
-        private async Task PollAndApplyRemoteCandidatesAsync(bool callerSide)
-        {
-            try
-            {
-                string column = callerSide ? "caller_ice" : "callee_ice";
-                string rawJson = null;
-
-                // Та же причина, что и в PollRenegotiationAsync — синхронный
-                // SQL-вызов переносим на фоновый поток, чтобы не блокировать
-                // UI-поток таймера на время сетевого round-trip к БД.
-                await Task.Run(() =>
-                {
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        $"SELECT {column} FROM call_sessions WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    using var r = cmd.ExecuteReader();
-                    if (r.Read() && r[column] != DBNull.Value)
-                        rawJson = r[column].ToString();
                 });
-
-                if (string.IsNullOrWhiteSpace(rawJson)) return;
-
-                var candidates = System.Text.Json.JsonSerializer.Deserialize<
-                    System.Collections.Generic.List<string>>(rawJson);
-                if (candidates == null) return;
-
-                foreach (var c in candidates)
-                {
-                    if (!_appliedCandidates.Add(c)) continue;
-                    _transport.AddRemoteIceCandidate(c);
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[ICE POLL] Ошибка: {ex.Message}");
-            }
-        }
-
-        private void DbAppendIceCandidate(bool isCaller, string candidateJson)
-        {
-            // Вызывается напрямую из C#-события _transport.IceCandidateReady,
-            // которое срабатывает на UI-потоке (через WebView2 message loop).
-            // Переносим блокирующий SQL на фоновый поток, не блокируя вызывающий.
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    string column = isCaller ? "caller_ice" : "callee_ice";
-                    string existing = null;
-
-                    using var conn = DBHelper.OpenConnection();
-
-                    using (var sel = new MySqlCommand(
-                        $"SELECT {column} FROM call_sessions WHERE id=@id", conn))
-                    {
-                        sel.Parameters.AddWithValue("@id", _sessionId);
-                        using var r = sel.ExecuteReader();
-                        if (r.Read() && r[column] != DBNull.Value)
-                            existing = r[column].ToString();
-                    }
-
-                    var list = string.IsNullOrWhiteSpace(existing)
-                        ? new System.Collections.Generic.List<string>()
-                        : System.Text.Json.JsonSerializer.Deserialize<
-                              System.Collections.Generic.List<string>>(existing)
-                          ?? new System.Collections.Generic.List<string>();
-
-                    list.Add(candidateJson);
-                    string newJson = System.Text.Json.JsonSerializer.Serialize(list);
-
-                    using var upd = new MySqlCommand(
-                        $"UPDATE call_sessions SET {column}=@v WHERE id=@id", conn);
-                    upd.Parameters.AddWithValue("@v", newJson);
-                    upd.Parameters.AddWithValue("@id", _sessionId);
-                    upd.ExecuteNonQuery();
-                    WebSocketSignalingClient.Instance.SendMessage("ice_candidate", _peerId, _sessionId, candidateJson);
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[ICE DB WRITE] Ошибка: {ex.Message}");
-                }
             });
         }
-
-        private System.Windows.Forms.Timer _renegoTimer;
 
         private void OnConnected()
         {
             if (_connected) return;
             _connected = true;
             _startTime = DateTime.Now;
-            _signalTimer?.Stop();
+            _tilesReadyAt = DateTime.UtcNow; // с этого момента вход/выход озвучиваем
             _lblStatus.Text = "Соединение установлено";
             _durationTimer.Start();
+            try { Sounds.CallConnected(); } catch { }
 
-            // КРИТИЧНО: запускаем камеру только ПОСЛЕ установления соединения.
-            // Раньше StartVideo() вызывался в StartCallSetup() до ICE completion,
-            // что приводило к race condition: renegotiation поверх незавершённого
-            // ICE gathering → SDP с неполными кандидатами → connection state failed.
+            // Применяем состояние кнопок голосового дока (футер MainForm):
+            // мьют микрофона/«наушники» действуют и на новый звонок, плюс
+            // сохранённое устройство вывода.
+            try
+            {
+                if (VoiceState.MicMuted) SetMicMutedPublic(true);
+                if (VoiceState.Deafened) SetAllMutedPublic(true);
+                if (!string.IsNullOrWhiteSpace(DeviceSettings.SpeakerName))
+                    _transport?.SetOutputDevice(DeviceSettings.SpeakerName);
+                _transport?.SetScreenCodec(DeviceSettings.ScreenShareCodec);   // AV1/H264 (до старта демки)
+            }
+            catch { }
+
+            // Камеру запускаем только после подключения к комнате — превью
+            // открывается, когда транспорт уже готов опубликовать трек.
             if (_pendingVideoStart)
             {
                 _pendingVideoStart = false;
                 StartVideo();
             }
-
-            // Renegotiation (добавление/удаление video track демонстрации экрана)
-            // происходит уже во время активного звонка, поэтому этот таймер
-            // работает постоянно, в отличие от _signalTimer для первоначального ICE.
-            _renegoTimer = new System.Windows.Forms.Timer { Interval = 400 };
-            _renegoTimer.Tick += async (s, e) => await PollRenegotiationAsync();
-            _renegoTimer.Start();
         }
 
         private void OnPeerDisconnected()
         {
             if (_ended) return;
+
+            // Серверный голосовой канал НЕ закрываем на разрыве (как в Discord):
+            // остаёмся в канале, показываем «переподключение», плашка «Голосовая
+            // связь подключена» в доке не исчезает. Закрытие — только вручную.
+            if (_isChannel)
+            {
+                _lblStatus.Text = "Переподключение…";
+                return;
+            }
+
             _lblStatus.Text = "Соединение разорвано";
-            _renegoTimer?.Stop();
 
             MarkCallEnded();
 
@@ -930,6 +598,8 @@ namespace PISMO
             _lblScreenAudioVolume.Visible = true;
             _lblScreenBadge.Text = "🖥 Собеседник показывает экран";
             _lblScreenBadge.Visible = true;
+            // Экран занимает основную область — камера (если есть) уходит в PiP.
+            if (_remoteCameraActive) _pbRemoteCamera.Visible = true;
         }
 
         private void OnRemoteScreenStopped()
@@ -939,20 +609,40 @@ namespace PISMO
             _lblScreenAudioVolume.Visible = false;
             if (_lblScreenBadge.Visible && _lblScreenBadge.Text.Contains("Собеседник"))
                 _lblScreenBadge.Visible = false;
+
+            // Экран больше не идёт — чистим основную область от последнего кадра
+            // экрана. Если камера активна, она снова начнёт рисоваться в основной
+            // области (и PiP прячем), иначе вернётся «Ожидание видео».
+            var old = _pbRemote.Image;
+            _pbRemote.Image = null;
+            old?.Dispose();
+            _pbRemote.Invalidate();
+            if (_remoteCameraActive)
+            {
+                _pbRemoteCamera.Visible = false;
+                var oldC = _pbRemoteCamera.Image;
+                _pbRemoteCamera.Image = null;
+                oldC?.Dispose();
+            }
         }
 
         private void OnLocalScreenStarted()
         {
             _lblScreenBadge.Text = "🖥 Демонстрация экрана";
             _lblScreenBadge.Visible = true;
+            try { Sounds.ScreenOn(); } catch { }
         }
 
         private void OnLocalScreenStopped()
         {
             _screenSharing = false;
+            PushVoiceState();
             _btnScreen.BackColor = Color.FromArgb(64, 68, 75);
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
+            try { RemoveSelfScreenTile(); } catch { }
+            try { HideScreenSharePip(); } catch { }
+            try { Sounds.ScreenOff(); } catch { }
         }
 
         private void OnLocalScreenError(string error)
@@ -970,37 +660,79 @@ namespace PISMO
             _btnScreen.BackColor = Color.FromArgb(64, 68, 75);
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
+            try { RemoveSelfScreenTile(); } catch { }
             HideScreenSharePip();
+        }
 
-            if (_screenAudio)
+        /// <summary>Итог смены источника демонстрации «на лету». При любом исходе
+        /// стрим продолжает идти: успех — уже новым источником, отмена/ошибка —
+        /// прежним (состояние демки не трогаем, только возвращаем WebView).</summary>
+        private void OnScreenSourceSwitched(bool ok, string error)
+        {
+            try { _transport?.HideTransportWindow(); } catch { }
+            if (ok)
             {
-                try { _loopback?.StopRecording(); _loopback?.Dispose(); } catch { }
-                _loopback = null;
-                _screenAudio = false;
+                _lblStatus.Text = "Источник демонстрации изменён";
+                return;
             }
+            bool userCancel = error != null &&
+                (error.Contains("NotAllowedError") || error.Contains("отмен") || error.Contains("таймаут"));
+            if (!userCancel && !string.IsNullOrEmpty(error))
+                _lblStatus.Text = "Смена источника: " + error;
+        }
+
+        /// <summary>Сколько человек сейчас смотрят нашу демку — в заголовок PIP.</summary>
+        private void OnStreamWatchers(int n)
+        {
+            if (_screenPipTitleLbl == null || _screenPipTitleLbl.IsDisposed) return;
+            try
+            {
+                _screenPipTitleLbl.Text = n > 0
+                    ? $"🖥 Ваша демонстрация · 👁 {n}"
+                    : "🖥 Ваша демонстрация";
+            }
+            catch { }
         }
 
         // ════════════════════════════════════════════════════════════
         //  КАМЕРА — обработчики событий video track
         // ════════════════════════════════════════════════════════════
+        private bool _remoteCameraActive = false;
+
         private void OnRemoteCameraStarted()
         {
-            _pbRemoteCamera.Visible = true;
+            _remoteCameraActive = true;
+            // Если собеседник одновременно демонстрирует экран — камера идёт в
+            // маленький PiP-уголок (главную область занимает экран). Иначе
+            // камера показывается в основной области (_pbRemote), чтобы не
+            // оставалось «Ожидание видео».
+            _pbRemoteCamera.Visible = _peerScreenSharing;
         }
 
         private void OnRemoteCameraStopped()
         {
+            _remoteCameraActive = false;
             _pbRemoteCamera.Visible = false;
-            var old = _pbRemoteCamera.Image;
+            var oldC = _pbRemoteCamera.Image;
             _pbRemoteCamera.Image = null;
-            old?.Dispose();
+            oldC?.Dispose();
+
+            // Если камера показывалась в основной области и экран не
+            // демонстрируется — очищаем основную область (вернётся «Ожидание видео»).
+            if (!_peerScreenSharing)
+            {
+                var oldR = _pbRemote.Image;
+                _pbRemote.Image = null;
+                oldR?.Dispose();
+                _pbRemote.Invalidate();
+            }
         }
 
         private void OnLocalCameraStarted()
         {
-            // _pbLocal.Visible уже установлен в StartVideo(); ничего
-            // дополнительного делать не требуется — кадры начнут приходить
-            // через LocalCameraFrameReceived.
+            // Звук «камера включена» — на РЕАЛЬНОМ старте трека (а не по клику,
+            // который мог быть отменён в превью).
+            try { Sounds.CameraOn(); } catch { }
         }
 
         private void OnLocalCameraStopped()
@@ -1009,6 +741,7 @@ namespace PISMO
             var old = _pbLocal.Image;
             _pbLocal.Image = null;
             old?.Dispose();
+            try { Sounds.CameraOff(); } catch { }
         }
 
         private void OnLocalCameraError(string error)
@@ -1018,7 +751,7 @@ namespace PISMO
             System.Diagnostics.Debug.WriteLine($"[CAMERA TRACK ERROR] {error}");
             _cameraStarted = false;
             _cameraOff = true;
-            _btnCamera.Text = "🚫";
+            _btnCamera.Text = "📷";
             _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
             _lblStatus.Text = "Камера недоступна";
 
@@ -1030,215 +763,552 @@ namespace PISMO
             }
         }
 
-        // --- Renegotiation: новый offer/answer цикл при добавлении/удалении
-        // video track после первоначального соединения. Использует те же
-        // принципы, что и первоначальный сигналинг (через call_sessions),
-        // но отдельные nullable-поля, чтобы не конфликтовать с caller_sdp/callee_sdp.
-        // trackKinds — JSON-карта track.id -> "screen"/"camera", нужна собеседнику
-        // для надёжного различения входящих видео-треков в pc.ontrack, так как
-        // теперь camera и screen могут идти одновременно.
-
-        private long _lastSeenRenegoVersion = 0;
-
-        private void DbSendRenegotiationOffer(string sdp, string trackKindsJson)
-        {
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    string sdpCol = _isCaller ? "caller_renego_offer" : "callee_renego_offer";
-                    string tkCol = _isCaller ? "caller_renego_offer_kinds" : "callee_renego_offer_kinds";
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        $"UPDATE call_sessions SET {sdpCol}=@sdp, {tkCol}=@tk, renego_version = renego_version + 1 WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@sdp", sdp);
-                    cmd.Parameters.AddWithValue("@tk", (object)trackKindsJson ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    cmd.ExecuteNonQuery();
-                    System.Diagnostics.Debug.WriteLine("[RENEGO] Offer записан в БД");
-                    WebSocketSignalingClient.Instance.SendMessage("renego_offer", _peerId, _sessionId, System.Text.Json.JsonSerializer.Serialize(new { sdp, trackKinds = trackKindsJson }));
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[RENEGO OFFER WRITE ERROR] {ex.Message}");
-                }
-            });
-        }
-
-        private void DbSendRenegotiationAnswer(string sdp, string trackKindsJson)
-        {
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    string sdpCol = _isCaller ? "caller_renego_answer" : "callee_renego_answer";
-                    string tkCol = _isCaller ? "caller_renego_answer_kinds" : "callee_renego_answer_kinds";
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        $"UPDATE call_sessions SET {sdpCol}=@sdp, {tkCol}=@tk WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@sdp", sdp);
-                    cmd.Parameters.AddWithValue("@tk", (object)trackKindsJson ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    cmd.ExecuteNonQuery();
-                    System.Diagnostics.Debug.WriteLine("[RENEGO] Answer записан в БД");
-                    WebSocketSignalingClient.Instance.SendMessage("renego_answer", _peerId, _sessionId, System.Text.Json.JsonSerializer.Serialize(new { sdp, trackKinds = trackKindsJson }));
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[RENEGO ANSWER WRITE ERROR] {ex.Message}");
-                }
-            });
-        }
-
-        /// <summary>Опрашивает БД на новый renegotiation offer/answer от собеседника.
-        /// Вызывается из постоянного _renegoTimer, запущенного в OnConnected.</summary>
-        private async Task PollRenegotiationAsync()
-        {
-            if (_ended || _transport == null) return;
-            try
-            {
-                string peerOfferSdpCol = _isCaller ? "callee_renego_offer" : "caller_renego_offer";
-                string peerOfferKindsCol = _isCaller ? "callee_renego_offer_kinds" : "caller_renego_offer_kinds";
-                string peerAnswerSdpCol = _isCaller ? "callee_renego_answer" : "caller_renego_answer";
-                string peerAnswerKindsCol = _isCaller ? "callee_renego_answer_kinds" : "caller_renego_answer_kinds";
-                string myOfferCol = _isCaller ? "caller_renego_offer" : "callee_renego_offer";
-
-                string peerOfferSdp = null, peerOfferKinds = null;
-                string peerAnswerSdp = null, peerAnswerKinds = null;
-                string myLastOffer = null;
-                long version = 0;
-
-                // ВАЖНО: вызов MySQL (OpenConnection/ExecuteReader) синхронный
-                // и блокирующий. Метод вызывается каждые 400мс из Timer.Tick,
-                // который выполняется на UI-потоке — без Task.Run каждый такой
-                // вызов блокировал UI-поток на время сетевого round-trip к БД,
-                // что вызывало прерывистый звук (аудио-обработка частично
-                // зависит от своевременности UI-потока в WinForms/NAudio).
-                await Task.Run(() =>
-                {
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        $@"SELECT {peerOfferSdpCol}, {peerOfferKindsCol}, {peerAnswerSdpCol}, {peerAnswerKindsCol},
-                                  {myOfferCol}, renego_version FROM call_sessions WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@id", _sessionId);
-                    using var r = cmd.ExecuteReader();
-                    if (r.Read())
-                    {
-                        peerOfferSdp = r[peerOfferSdpCol] == DBNull.Value ? null : r[peerOfferSdpCol].ToString();
-                        peerOfferKinds = r[peerOfferKindsCol] == DBNull.Value ? null : r[peerOfferKindsCol].ToString();
-                        peerAnswerSdp = r[peerAnswerSdpCol] == DBNull.Value ? null : r[peerAnswerSdpCol].ToString();
-                        peerAnswerKinds = r[peerAnswerKindsCol] == DBNull.Value ? null : r[peerAnswerKindsCol].ToString();
-                        myLastOffer = r[myOfferCol] == DBNull.Value ? null : r[myOfferCol].ToString();
-                        version = Convert.ToInt64(r["renego_version"]);
-                    }
-                });
-
-                if (version == _lastSeenRenegoVersion) return;
-                _lastSeenRenegoVersion = version;
-
-                // Если у собеседника появился новый offer — отвечаем.
-                if (!string.IsNullOrWhiteSpace(peerOfferSdp) && peerOfferSdp != _lastAppliedPeerRenegoOffer)
-                {
-                    _lastAppliedPeerRenegoOffer = peerOfferSdp;
-                    _transport.ApplyRenegotiationOffer(peerOfferSdp, peerOfferKinds);
-                }
-                // Если это ответ на наш собственный offer — применяем answer.
-                else if (!string.IsNullOrWhiteSpace(peerAnswerSdp) && peerAnswerSdp != _lastAppliedPeerRenegoAnswer
-                         && !string.IsNullOrWhiteSpace(myLastOffer))
-                {
-                    _lastAppliedPeerRenegoAnswer = peerAnswerSdp;
-                    _transport.ApplyRenegotiationAnswer(peerAnswerSdp, peerAnswerKinds);
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[RENEGO POLL ERROR] {ex.Message}");
-            }
-        }
-
-        private string _lastAppliedPeerRenegoOffer;
-        private string _lastAppliedPeerRenegoAnswer;
-
         // ════════════════════════════════════════════════════════════
-        //  АУДИО
+        //  АУДИО — полностью на стороне LiveKit (публикация микрофона и
+        //  воспроизведение голоса/звука демки делает сам SDK). Здесь остаётся
+        //  только переключение mute.
         // ════════════════════════════════════════════════════════════
-        private void StartAudio()
+        // Единственная точка смены состояния микрофона: кнопка/хоткей/футер/
+        // полный мут — все идут сюда. Кнопка красится ТОЛЬКО тут, транспорт
+        // дёргается ТОЛЬКО тут — состояние UI не может разойтись со звуком.
+        private void SetMicState(bool muted)
         {
-            try
-            {
-                _waveProvider = new BufferedWaveProvider(new WaveFormat(16000, 1))
-                {
-                    // 500мс оптимально для сглаживания джиттера сети при демонстрации экрана,
-                    // предотвращает потерю пакетов и прерывания звука при скачках пинга.
-                    BufferDuration = TimeSpan.FromMilliseconds(500),
-                    DiscardOnBufferOverflow = true
-                };
-                // DesiredLatency по умолчанию ~300мс — снижаем для меньшей сквозной
-                // задержки голоса. NumberOfBuffers=2 — минимум для избежания тресков.
-                _waveOut = new WaveOutEvent { DesiredLatency = 100, NumberOfBuffers = 2 };
-                _waveOut.Init(_waveProvider);
-                _waveOut.Play();
-
-                _waveIn = new WaveInEvent { WaveFormat = new WaveFormat(16000, 1) };
-                if (DeviceSettings.MicrophoneIndex >= 0
-                    && DeviceSettings.MicrophoneIndex < WaveInEvent.DeviceCount)
-                    _waveIn.DeviceNumber = DeviceSettings.MicrophoneIndex;
-
-                _waveIn.DataAvailable += (s, ev) =>
-                {
-                    try
-                    {
-                        // Микрофон отправляется всегда (если не muted и есть соединение).
-                        // Раньше здесь было дополнительное условие "|| _screenAudio",
-                        // которое полностью отключало отправку голоса на всё время
-                        // демонстрации экрана — у того, кто демонстрирует, пропадал
-                        // голос у собеседника. Микрофон (TypeAudio) и системный звук
-                        // демки (TypeScreenAudio) идут раздельными каналами и не
-                        // конфликтуют друг с другом, поэтому блокировка не нужна.
-                        if (_muted || !_connected) return;
-                        int bytes = ev.BytesRecorded;
-                        float gain = DeviceSettings.MicrophoneGain;
-                        byte[] buf = gain != 1f
-                            ? ApplyGain(ev.Buffer, bytes, gain)
-                            : ev.Buffer[..bytes];
-
-                        // Логируем отправку аудио (маленький объём)
-                        System.Diagnostics.Debug.WriteLine($"[AUDIO SEND] bytes={buf.Length}, connected={_connected}");
-
-                        _transport.Send(CallTransport.TypeAudio, buf);
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[AUDIO SEND ERROR] {ex.Message}");
-                    }
-                };
-                _waveIn.StartRecording();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[START AUDIO ERROR] {ex.Message}");
-            }
+            if (_muted == muted) { PaintMicButton(); return; }
+            _muted = muted;
+            PaintMicButton();
+            try { _transport?.SetMicrophoneEnabled(!_muted); } catch { }
+            try { if (_muted) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
+            PushVoiceState();   // сразу обновляем значок мьюта в списке канала
+            try { InvalidatePidTiles(SelfPid); } catch { }   // и на своей плитке
+            VoiceState.MicMuted = _muted;
+            try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
         }
 
-        private static byte[] ApplyGain(byte[] buf, int len, float gain)
+        private void PaintMicButton()
         {
-            var result = new byte[len];
-            for (int i = 0; i + 1 < len; i += 2)
-            {
-                short sample = (short)((buf[i + 1] << 8) | buf[i]);
-                int amplified = Math.Clamp((int)(sample * gain), short.MinValue, short.MaxValue);
-                result[i] = (byte)(amplified & 0xFF);
-                result[i + 1] = (byte)((amplified >> 8) & 0xFF);
-            }
-            return result;
+            if (_btnMute == null) return;
+            _btnMute.Text = _muted ? "🔇" : "🎤";
+            _btnMute.BackColor = _muted
+                ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
         }
 
         private void ToggleMute()
         {
-            _muted = !_muted;
-            _btnMute.Text = _muted ? "🔇" : "🎤";
-            _btnMute.BackColor = _muted
+            bool willUnmute = _muted;
+            SetMicState(!_muted);
+            // Включение микрофона ИЗ ПОЛНОГО МУТА снимает и «наушники» —
+            // работает микрофон и динамики (как просили / как в Discord).
+            if (willUnmute && _remoteAllMuted) SetDeafenState(false);
+        }
+
+        // Единственная точка смены «наушников» (заглушить весь входящий звук).
+        private void SetDeafenState(bool on)
+        {
+            if (_remoteAllMuted == on) { PaintDeafenButton(); return; }
+            _remoteAllMuted = on;
+            PaintDeafenButton();
+            try { _transport?.SetRemoteMuted(on); } catch { }
+            try { if (on) Sounds.MicOff(); else Sounds.MicOn(); } catch { }
+            PushVoiceState();   // сразу обновляем значок наушников в списке канала
+            try { InvalidatePidTiles(SelfPid); } catch { }   // и на своей плитке
+            VoiceState.Deafened = on;
+            try { MainForm.Current?.SyncFooterVoiceButtons(); } catch { }
+        }
+
+        private void PaintDeafenButton()
+        {
+            if (_btnDeafen == null) return;
+            // Всегда наушники (как в Discord); красный фон = «оглушён» (deafen).
+            _btnDeafen.Text = "🎧";
+            _btnDeafen.BackColor = _remoteAllMuted
                 ? Color.FromArgb(240, 71, 71) : Color.FromArgb(64, 68, 75);
+        }
+
+        /// <summary>Кнопка 🎧 «полный мут»: первое нажатие глушит динамики И
+        /// микрофон; повторное — возвращает динамики (собеседников слышно),
+        /// микрофон ОСТАЁТСЯ выключенным. Включить всё разом — кнопка 🎤.</summary>
+        private void ToggleDeafenButton()
+        {
+            if (!_remoteAllMuted)
+            {
+                SetDeafenState(true);
+                SetMicState(true);
+            }
+            else SetDeafenState(false);
+        }
+
+        /// <summary>Полный мут по хоткею — та же семантика, что у кнопки 🎧.</summary>
+        private void ToggleDeafen() => ToggleDeafenButton();
+
+        // ── Публичное API для голосового дока в MainForm (кнопки в футере) ──
+
+        /// <summary>Текущий пинг (мс) — для показа по клику на «радар» в доке.</summary>
+        public int CurrentPingMs { get; private set; }
+
+        // (Стат-плашка демонстрации в углу окна звонка удалена по просьбе 2.1 —
+        //  цифры отправки видны в плашке PIP-превью, приёма — в чипе театра.)
+
+        /// <summary>Мьют микрофона включён?</summary>
+        public bool MicMuted => _muted;
+
+        /// <summary>Выключить/включить микрофон (из дока). Включение микрофона
+        /// из полного мута снимает и «наушники».</summary>
+        public void SetMicMutedPublic(bool muted)
+        {
+            SetMicState(muted);
+            if (!muted && _remoteAllMuted) SetDeafenState(false);
+        }
+
+        /// <summary>Полный мут из дока: включение глушит и микрофон; выключение
+        /// возвращает только динамики (микрофон остаётся выключенным).</summary>
+        public void SetAllMutedPublic(bool muted)
+        {
+            if (muted)
+            {
+                SetDeafenState(true);
+                SetMicState(true);
+            }
+            else SetDeafenState(false);
+        }
+
+        /// <summary>Сменить устройство ввода на лету (из дока).</summary>
+        public void SetInputDeviceLive(string label) { try { _transport?.SetInputDevice(label); } catch { } }
+
+        /// <summary>Сменить устройство вывода на лету (из дока).</summary>
+        public void SetOutputDeviceLive(string label) { try { _transport?.SetOutputDevice(label); } catch { } }
+
+        /// <summary>Вкл/выкл шумодав на лету (из дока, «эквалайзер»).</summary>
+        public void SetNoiseSuppressionLive(bool on) { try { _transport?.SetNoiseMode(on ? DeviceSettings.NoiseSuppressMode : "off"); } catch { } }
+        /// <summary>Живая смена СИЛЫ шумодава (ползунок в настройках) — применяется
+        /// к идущему звонку сразу, без перезахода.</summary>
+        public void SetNoiseStrengthLive(int pct) { try { _transport?.SetNoiseStrength(pct); } catch { } }
+        // Порог чувствительности на горячую в звонке (без ожидания таймера настроек).
+        public void SetVoiceThresholdLive(int db) { try { _transport?.SetVoiceGate(true, db); } catch { } }
+        // Усиление голоса на выходе цепи обработки — на горячую.
+        public void SetOutputGainLive(int pct) { try { _transport?.SetOutputGain(pct); } catch { } }
+
+        /// <summary>Попап с живым графиком задержки (клик по плашке 📶, как в Discord).</summary>
+        private void TogglePingGraph()
+        {
+            if (_pingPopup != null && !_pingPopup.IsDisposed) { _pingPopup.Close(); _pingPopup = null; return; }
+
+            var pop = new Form
+            {
+                FormBorderStyle = FormBorderStyle.None,
+                StartPosition = FormStartPosition.Manual,
+                ShowInTaskbar = false,
+                BackColor = Color.FromArgb(30, 31, 34),
+                ClientSize = new Size(300, 190),
+                TopMost = true
+            };
+            try { pop.Location = PointToScreen(new Point(_lblPing.Left - 40, _lblPing.Bottom + 6)); } catch { }
+
+            var canvas = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 31, 34) };
+            canvas.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                var hist = _pingHistory;
+                var rect = new Rectangle(12, 12, canvas.Width - 54, 92);
+
+                // Сетка и шкала (0 / 50 / 100+).
+                int max = 100;
+                foreach (var v in hist) if (v > max) max = v;
+                using (var grid = new Pen(Color.FromArgb(55, 57, 62)))
+                using (var f8 = new Font("Segoe UI", 7.5f))
+                using (var dim = new SolidBrush(Color.FromArgb(150, 152, 158)))
+                {
+                    for (int i = 0; i <= 2; i++)
+                    {
+                        int y = rect.Top + rect.Height * i / 2;
+                        g.DrawLine(grid, rect.Left, y, rect.Right, y);
+                        g.DrawString((max - max * i / 2).ToString(), f8, dim, rect.Right + 4, y - 6);
+                    }
+                }
+
+                // Линия пинга.
+                if (hist.Count >= 2)
+                {
+                    var pts = new PointF[hist.Count];
+                    for (int i = 0; i < hist.Count; i++)
+                    {
+                        float x = rect.Left + rect.Width * i / (float)(hist.Count - 1);
+                        float y = rect.Bottom - rect.Height * Math.Min(hist[i], max) / (float)max;
+                        pts[i] = new PointF(x, y);
+                    }
+                    using var pen = new Pen(Color.FromArgb(88, 101, 242), 2f);
+                    g.DrawLines(pen, pts);
+                }
+
+                // Средняя/последняя задержка.
+                int avg = 0; foreach (var v in hist) avg += v;
+                if (hist.Count > 0) avg /= hist.Count;
+                int last = hist.Count > 0 ? hist[^1] : 0;
+                using var fB = new Font("Segoe UI Semibold", 9f, FontStyle.Bold);
+                using var fN = new Font("Segoe UI", 9f);
+                using var white = new SolidBrush(Color.FromArgb(230, 231, 232));
+                // Значения рисуем ПОСЛЕ самой длинной подписи (замер, не константа) —
+                // иначе «Последняя задержка:» наползала на число.
+                float labelW = Math.Max(
+                    g.MeasureString("Средняя задержка:", fN).Width,
+                    g.MeasureString("Последняя задержка:", fN).Width);
+                float valX = 12 + labelW + 8;
+                g.DrawString("Средняя задержка:", fN, white, 12, 116);
+                g.DrawString($"{avg} мс", fB, white, valX, 116);
+                g.DrawString("Последняя задержка:", fN, white, 12, 138);
+                g.DrawString($"{last} мс", fB, white, valX, 138);
+                using var hint = new SolidBrush(Color.FromArgb(150, 152, 158));
+                using var f8b = new Font("Segoe UI", 7.5f);
+                g.DrawString("При задержке 250 мс и больше звук может отставать.", f8b, hint, 12, 164);
+            };
+            pop.Controls.Add(canvas);
+
+            // Живое обновление, закрытие при потере фокуса/повторном клике.
+            var t = new System.Windows.Forms.Timer { Interval = 1000 };
+            t.Tick += (s, e) => { try { canvas.Invalidate(); } catch { } };
+            t.Start();
+            pop.Deactivate += (s, e) => { try { pop.Close(); } catch { } };
+            pop.FormClosed += (s, e) => { t.Stop(); t.Dispose(); if (_pingPopup == pop) _pingPopup = null; };
+
+            _pingPopup = pop;
+            pop.Show(this);
+        }
+
+        // ── Панель управления входящим звуком: громкость голоса собеседников,
+        //    громкость демонстрации экрана и тумблер «заглушить всех». ──
+        private void ToggleAudioPanel()
+        {
+            if (_audioPanel != null && !_audioPanel.IsDisposed)
+            {
+                try { _audioPanel.Close(); } catch { }
+                _audioPanel = null;
+                return;
+            }
+
+            // Тёмное безрамочное окно со своим заголовком и вертикальной прокруткой.
+            // Горизонтальной полосы у него нет в принципе (ChatScroll.Attach), а всё
+            // содержимое тянется по ширине — раньше длинные подсказки вылезали за
+            // край и окно ездило вбок.
+            var win = new DarkToolWindow("Звук и устройства", new Size(390, 620));
+            _audioPanel = win;
+            var host = win.Content;
+
+            var anchor = PointToScreen(new Point(_pnlButtons.Left, _pnlButtons.Top));
+            var wa = Screen.FromControl(this).WorkingArea;
+            win.Location = new Point(
+                Math.Clamp(anchor.X + (_pnlButtons.Width - win.Width) / 2, wa.Left, Math.Max(wa.Left, wa.Right - win.Width)),
+                Math.Clamp(anchor.Y - win.Height - 10, wa.Top, Math.Max(wa.Top, wa.Bottom - win.Height)));
+
+            const int RowGap = 6;
+            int y = 0;
+            int W() => Math.Max(140, host.ClientSize.Width);
+
+            void AddSection(string text)
+            {
+                host.Controls.Add(win.Stretch(new Label
+                {
+                    Text = text.ToUpperInvariant(),
+                    Location = new Point(0, y + 8),
+                    Size = new Size(W(), 18),
+                    ForeColor = Color.FromArgb(150, 152, 158),
+                    Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold)
+                }));
+                y += 30;
+            }
+
+            Label AddLabel(string t)
+            {
+                var l = win.Stretch(new Label
+                {
+                    Text = t,
+                    Location = new Point(0, y),
+                    Size = new Size(W(), 18),
+                    ForeColor = Color.FromArgb(220, 221, 222),
+                    Font = new Font("Segoe UI", 9f)
+                });
+                host.Controls.Add(l); y += 21; return l;
+            }
+
+            // Подсказки — НЕ AutoSize: текст переносится внутри ширины панели, а не
+            // уезжает вправо. Высоту МЕРЯЕМ по тексту: при заданном «на глаз» числе
+            // строк длинная подсказка обрезалась на полуслове.
+            void AddHint(string t)
+            {
+                var f = new Font("Segoe UI", 7.5f);
+                int h = TextRenderer.MeasureText(t, f, new Size(W(), int.MaxValue),
+                                                 TextFormatFlags.WordBreak).Height + 2;
+                host.Controls.Add(win.Stretch(new Label
+                {
+                    Text = t,
+                    Location = new Point(0, y),
+                    Size = new Size(W(), h),
+                    ForeColor = Color.FromArgb(138, 140, 146),
+                    Font = f
+                }));
+                y += h + RowGap;
+            }
+
+            ComboBox AddCombo(int width = 0, int xOff = 0, bool advance = true)
+            {
+                var cb = new ComboBox
+                {
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    Location = new Point(xOff, y),
+                    Size = new Size(width > 0 ? width : W(), 24),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(40, 42, 46),
+                    ForeColor = Color.FromArgb(226, 228, 232),
+                    Font = new Font("Segoe UI", 9f)
+                };
+                host.Controls.Add(width > 0 ? cb : win.Stretch(cb));
+                if (advance) y += 24 + RowGap * 2;
+                return cb;
+            }
+
+            CheckBox AddCheck(string text, bool value)
+            {
+                var c = new CheckBox
+                {
+                    Text = text,
+                    Location = new Point(0, y),
+                    Size = new Size(W(), 22),
+                    ForeColor = Color.FromArgb(220, 221, 222),
+                    BackColor = Color.Transparent,
+                    Checked = value,
+                    Cursor = Cursors.Hand,
+                    Font = new Font("Segoe UI", 9f)
+                };
+                host.Controls.Add(win.Stretch(c)); y += 26; return c;
+            }
+
+            // Ползунок с подписью и живым значением справа.
+            FlatSlider AddSlider(string caption, int val, int max)
+            {
+                host.Controls.Add(new Label
+                {
+                    Text = caption,
+                    Location = new Point(0, y),
+                    Size = new Size(W() - 60, 18),
+                    ForeColor = Color.FromArgb(220, 221, 222),
+                    Font = new Font("Segoe UI", 9f)
+                });
+                var num = new Label
+                {
+                    Text = val + "%",
+                    Location = new Point(W() - 60, y),
+                    Size = new Size(60, 18),
+                    TextAlign = ContentAlignment.MiddleRight,
+                    ForeColor = Color.FromArgb(150, 152, 158),
+                    Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold)
+                };
+                host.Controls.Add(win.PinRight(num));
+                y += 20;
+                var sl = new FlatSlider
+                {
+                    Minimum = 0,
+                    Maximum = max,
+                    Value = Math.Min(max, val),
+                    Location = new Point(0, y),
+                    Size = new Size(W(), 20),
+                    BackColor = Color.FromArgb(32, 34, 37)
+                };
+                sl.ValueChanged += (s, e) => num.Text = sl.Value + "%";
+                host.Controls.Add(win.Stretch(sl));
+                y += 20 + RowGap * 2;
+                return sl;
+            }
+
+            Button AddButton(string text)
+            {
+                var b = new Button
+                {
+                    Text = text,
+                    Location = new Point(0, y),
+                    Size = new Size(W(), 30),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(64, 68, 75),
+                    ForeColor = Color.White,
+                    Font = new Font("Segoe UI", 9f),
+                    Cursor = Cursors.Hand,
+                    TabStop = false
+                };
+                b.FlatAppearance.BorderSize = 0;
+                b.FlatAppearance.MouseOverBackColor = Color.FromArgb(79, 84, 92);
+                host.Controls.Add(win.Stretch(b)); y += 30 + RowGap; return b;
+            }
+
+            // ── Устройства ──────────────────────────────────────────────
+            AddSection("Устройства");
+            AddLabel("🎤 Микрофон");
+            var cmbMic = AddCombo();
+            AddLabel("🔊 Устройство вывода");
+            var cmbSpk = AddCombo();
+            AddLabel("📷 Камера");
+            var cmbCam = AddCombo();
+
+            // ── Демонстрация экрана ─────────────────────────────────────
+            AddSection("Демонстрация экрана");
+            AddLabel("Качество");
+            int rowQ = y;
+            int halfW = (W() - 8) / 2;
+            var cmbRes = AddCombo(halfW, 0, advance: false);
+            var cmbFps = AddCombo(halfW, halfW + 8, advance: false);
+            y = rowQ + 24 + RowGap;
+            cmbRes.Items.AddRange(new object[] { "Исходное", "1080p", "720p", "480p", "360p" });
+            cmbFps.Items.AddRange(new object[] { "60 fps", "30 fps", "15 fps" });
+            cmbRes.SelectedItem = DeviceSettings.ScreenShareResolutionHeight > 0
+                ? DeviceSettings.ScreenShareResolutionHeight + "p" : "Исходное";
+            if (cmbRes.SelectedIndex < 0) cmbRes.SelectedIndex = 0;
+            cmbFps.SelectedItem = DeviceSettings.ScreenShareFps + " fps";
+            if (cmbFps.SelectedIndex < 0) cmbFps.SelectedIndex = 1;
+            cmbRes.SelectedIndexChanged += (s, e) =>
+            {
+                string sel = (string)cmbRes.SelectedItem;
+                int h = sel == "Исходное" ? 0 : int.Parse(sel.Replace("p", ""));
+                DeviceSettings.ScreenShareResolutionHeight = h; try { DeviceSettings.Save(); } catch { }
+                // Применяем к ИДУЩЕЙ демонстрации сразу (не только «при следующем запуске»).
+                try { _transport?.SetScreenQualityLive(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps); } catch { }
+            };
+            cmbFps.SelectedIndexChanged += (s, e) =>
+            {
+                int f = int.Parse(((string)cmbFps.SelectedItem).Replace(" fps", ""));
+                DeviceSettings.ScreenShareFps = f; try { DeviceSettings.Save(); } catch { }
+                try { _transport?.SetScreenQualityLive(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps); } catch { }
+            };
+            AddHint("Применяется сразу, в том числе к идущей демонстрации.");
+
+            AddLabel("Кодек");
+            var cmbCodec = AddCombo();
+            cmbCodec.Items.AddRange(new object[] { "AV1 (чётче при том же битрейте)", "H.264 (совместимость)" });
+            cmbCodec.SelectedIndex = DeviceSettings.ScreenShareCodec == "h264" ? 1 : 0;
+            cmbCodec.SelectedIndexChanged += (s, e) =>
+            {
+                string chosen = cmbCodec.SelectedIndex == 1 ? "h264" : "av1";
+                DeviceSettings.ScreenShareCodec = chosen;
+                try { DeviceSettings.Save(); } catch { }
+                // Горячая смена невозможна (сессия LiveKit залипает на кодеке первого
+                // трека). Запоминаем выбор; сообщение зависит от того, что реально идёт.
+                try { _transport?.SetScreenCodec(chosen); } catch { }
+                try
+                {
+                    string cn = chosen == "h264" ? "H.264" : "AV1";
+                    string session = _transport?.SessionScreenCodec ?? chosen;
+                    string msg = string.Equals(session, chosen, StringComparison.OrdinalIgnoreCase)
+                        ? $"Кодек демонстрации ({cn}) — тот же, что в текущем звонке.\nПерезаход не требуется."
+                        : $"Кодек ({cn}) применится после перезахода в звонок.\n" +
+                          $"Текущий звонок (и рестарт демонстрации) продолжается на прежнем ({session.ToUpperInvariant()}).";
+                    MessageBox.Show(win, msg, "Смена кодека", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch { }
+            };
+            AddHint("Смена перезапустит демонстрацию: зритель повторно нажмёт «Смотреть стрим».");
+
+            // ── Звук ────────────────────────────────────────────────────
+            AddSection("Звук");
+            var chkNs = AddCheck("🎚  Шумоподавление включено", DeviceSettings.NoiseSuppression);
+            chkNs.CheckedChanged += (s, e) =>
+            {
+                DeviceSettings.NoiseSuppressMode = chkNs.Checked ? "standard" : "off";
+                try { DeviceSettings.Save(); } catch { }
+                // Применяется к идущему звонку СРАЗУ (пересоздание APM на лету).
+                try { _transport?.SetNoiseMode(DeviceSettings.NoiseSuppressMode); } catch { }
+                try { MainForm.Current?.RefreshVoiceEqState(); } catch { }
+            };
+            y += RowGap;
+
+            var tbVoice = AddSlider("Громкость собеседников", (int)(_remoteVoiceVolume * 100), 300);
+            tbVoice.ValueChanged += (s, e) =>
+            {
+                _remoteVoiceVolume = tbVoice.Value / 100f;
+                try { _transport?.SetRemoteVoiceVolume(_remoteVoiceVolume); } catch { }
+            };
+
+            var tbScreen = AddSlider("Громкость демонстрации", (int)(_remoteScreenAudioVolume * 100), 300);
+            tbScreen.ValueChanged += (s, e) =>
+            {
+                _remoteScreenAudioVolume = tbScreen.Value / 100f;
+                try { _transport?.SetRemoteScreenAudioVolume(_remoteScreenAudioVolume); } catch { }
+            };
+
+            var chkMute = AddCheck("🔇  Заглушить весь звук", _remoteAllMuted);
+            chkMute.CheckedChanged += (s, e) =>
+            {
+                _remoteAllMuted = chkMute.Checked;
+                try { _transport?.SetRemoteMuted(_remoteAllMuted); } catch { }
+            };
+
+            // ── Оверлей ─────────────────────────────────────────────────
+            // Тонкая настройка (положение, прозрачность, цвета) — в отдельном
+            // окне; здесь только выключатель и вход в него.
+            AddSection("Оверлей в игре");
+            var chkOverlay = AddCheck("🎮  Показывать участников поверх игры", DeviceSettings.OverlayEnabled);
+            chkOverlay.CheckedChanged += (s, e) =>
+            {
+                DeviceSettings.OverlayEnabled = chkOverlay.Checked;
+                try { DeviceSettings.Save(); } catch { }
+                PushOverlay();   // включили — появился, выключили — пропал сразу
+            };
+            AddHint("Панель у края экрана поверх полноэкранной игры.");
+            AddButton("Настроить оверлей…").Click += (s, e) => OverlayEditorForm.Open(win);
+
+            // ── Список устройств из транспорта ──────────────────────────
+            // КРИТИЧНО: при программном заполнении списков НЕ дёргаем смену
+            // устройства — иначе открытие панели само включало камеру и
+            // сбрасывало микрофон.
+            bool populating = false;
+            void OnDevices(string camsJson, string micsJson, string spkJson)
+            {
+                try
+                {
+                    var cams = JsonSerializer.Deserialize<string[]>(camsJson) ?? Array.Empty<string>();
+                    var mics = JsonSerializer.Deserialize<string[]>(micsJson) ?? Array.Empty<string>();
+                    var spk = JsonSerializer.Deserialize<string[]>(spkJson) ?? Array.Empty<string>();
+                    UiInvoke(() =>
+                    {
+                        if (_audioPanel == null || _audioPanel.IsDisposed) return;
+                        populating = true;
+                        cmbMic.Items.Clear(); cmbMic.Items.AddRange(mics);
+                        cmbSpk.Items.Clear(); cmbSpk.Items.AddRange(spk);
+                        cmbCam.Items.Clear(); cmbCam.Items.AddRange(cams);
+                        if (!string.IsNullOrEmpty(DeviceSettings.MicrophoneName)) cmbMic.SelectedItem = DeviceSettings.MicrophoneName;
+                        if (cmbMic.SelectedIndex < 0 && cmbMic.Items.Count > 0) cmbMic.SelectedIndex = 0;
+                        if (cmbSpk.Items.Count > 0) cmbSpk.SelectedIndex = 0;
+                        if (!string.IsNullOrEmpty(DeviceSettings.CameraName)) cmbCam.SelectedItem = DeviceSettings.CameraName;
+                        if (cmbCam.SelectedIndex < 0 && cmbCam.Items.Count > 0) cmbCam.SelectedIndex = 0;
+                        populating = false;
+                    });
+                }
+                catch { }
+            }
+            _transport.DevicesEnumerated += OnDevices;
+            cmbMic.SelectedIndexChanged += (s, e) => { if (populating) return; if (cmbMic.SelectedItem is string m) { DeviceSettings.MicrophoneName = m; try { DeviceSettings.Save(); } catch { } _transport?.SetInputDevice(m); } };
+            cmbSpk.SelectedIndexChanged += (s, e) => { if (populating) return; if (cmbSpk.SelectedItem is string sp) _transport?.SetOutputDevice(sp); };
+            cmbCam.SelectedIndexChanged += (s, e) =>
+            {
+                if (populating) return;
+                if (cmbCam.SelectedItem is string cm)
+                {
+                    DeviceSettings.CameraName = cm; try { DeviceSettings.Save(); } catch { }
+                    // Переключаем «живую» камеру только если она сейчас включена,
+                    // иначе просто запоминаем выбор (не включаем захват).
+                    if (_cameraStarted) _transport?.SwitchCameraDevice(cm);
+                }
+            };
+
+            // Колесо над выпадающими списками прокручивает панель, а не меняет
+            // выбор. Ползунки теперь свои (FlatSlider) — они колесо не трогают.
+            foreach (Control c in host.Controls)
+                if (c is ComboBox)
+                    c.MouseWheel += (s, e) =>
+                    {
+                        if (e is HandledMouseEventArgs he) he.Handled = true;
+                        host.AutoScrollPosition = new Point(0, -host.AutoScrollPosition.Y - e.Delta);
+                    };
+
+            win.Reflow();   // подогнать ширину под фактическую полосу прокрутки
+            win.FormClosed += (s, e) => { try { _transport.DevicesEnumerated -= OnDevices; } catch { } _audioPanel = null; };
+            win.Show(this);
+            _transport.EnumerateDevices();
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1258,7 +1328,7 @@ namespace PISMO
             // Запрашиваем список устройств у браузера, чтобы показать актуальный
             // выбор прямо в превью-окне (можно сменить камеру без выхода из звонка).
             _transport.EnumerateDevices();
-            void OnDevicesForPreview(string camsJson, string micsJson)
+            void OnDevicesForPreview(string camsJson, string micsJson, string speakersJson)
             {
                 try
                 {
@@ -1280,6 +1350,7 @@ namespace PISMO
                 _cameraStarted = true;
                 _cameraOff = false;
                 _pbLocal.Visible = true;
+                PushVoiceState();
                 _transport.ConfirmCameraShare();
             };
             _cameraPreviewForm.Cancelled += () =>
@@ -1287,10 +1358,16 @@ namespace PISMO
                 _transport.DevicesEnumerated -= OnDevicesForPreview;
                 _cameraPreviewForm = null;
                 _transport.CancelCameraPreview();
-                // Кнопка остаётся в состоянии "выключено", раз пользователь отменил.
+                // Возвращаем кнопку в состояние "выключено" (🚫 + красный). Раньше
+                // тут ошибочно ставился «включённый» вид (📷 + серый) — кнопка
+                // показывала камеру включённой, хотя её отменили.
                 _cameraOff = true;
+                _cameraStarted = false;
                 _btnCamera.Text = "📷";
-                _btnCamera.BackColor = Color.FromArgb(64, 68, 75);
+                _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
+                var oldc = _pbLocal.Image; _pbLocal.Image = null; oldc?.Dispose();
+                _pbLocal.Visible = false;
+                try { OnSelfCameraStopped(); } catch { } // убрать плитку, если кадр проскочил
             };
 
             // DeviceSettings.CameraName хранит имя устройства, выбранное ДО звонка —
@@ -1338,9 +1415,11 @@ namespace PISMO
             else img.Dispose();
         }
 
-        /// <summary>Кадр камеры собеседника — отдельная область отображения
-        /// (_pbRemoteCamera) от демонстрации экрана (_pbRemote), так как оба
-        /// видео-трека могут идти одновременно.</summary>
+        /// <summary>Кадр камеры собеседника. Если собеседник одновременно
+        /// демонстрирует экран — камера идёт в маленький PiP-уголок
+        /// (_pbRemoteCamera), а экран занимает основную область. Если экрана
+        /// нет — камера показывается прямо в основной области (_pbRemote),
+        /// чтобы не висело «Ожидание видео».</summary>
         private void ShowRemoteCameraFrame(byte[] jpegBytes)
         {
             Bitmap img = null;
@@ -1358,14 +1437,43 @@ namespace PISMO
                     BeginInvoke(() =>
                     {
                         if (IsDisposed) { img.Dispose(); return; }
-                        var old = _pbRemoteCamera.Image;
-                        _pbRemoteCamera.Image = img;
-                        old?.Dispose();
+                        if (_peerScreenSharing)
+                        {
+                            _pbRemoteCamera.Visible = true;
+                            var old = _pbRemoteCamera.Image;
+                            _pbRemoteCamera.Image = img;
+                            old?.Dispose();
+                        }
+                        else
+                        {
+                            var old = _pbRemote.Image;
+                            _pbRemote.Image = img;
+                            old?.Dispose();
+                            _pbRemote.Invalidate();
+                        }
                     });
                 }
                 catch (ObjectDisposedException) { img.Dispose(); }
             }
             else img.Dispose();
+        }
+
+        /// <summary>Обновляет плашку пинга (RTT) и красит её по качеству связи.</summary>
+        // История пинга для графика (клик по плашке 📶 — попап как в Discord).
+        private readonly System.Collections.Generic.List<int> _pingHistory = new();
+        private Form _pingPopup;
+
+        private void UpdatePing(int ms)
+        {
+            CurrentPingMs = ms;
+            _pingHistory.Add(ms);
+            if (_pingHistory.Count > 150) _pingHistory.RemoveAt(0);
+            if (_lblPing == null || _lblPing.IsDisposed) return;
+            _lblPing.Text = $"📶 {ms} ms";
+            _lblPing.ForeColor = ms < 80 ? Color.FromArgb(120, 220, 130)   // хорошо — зелёный
+                               : ms < 180 ? Color.FromArgb(240, 200, 90)   // средне — жёлтый
+                               : Color.FromArgb(240, 110, 100);            // плохо — красный
+            if (!_lblPing.Visible) _lblPing.Visible = true;
         }
 
         private void ToggleCamera()
@@ -1380,17 +1488,18 @@ namespace PISMO
             {
                 // Выключение — без превью, сразу останавливаем.
                 _cameraOff = true;
-                _btnCamera.Text = "🚫";
+                _btnCamera.Text = "📷";
                 _btnCamera.BackColor = Color.FromArgb(240, 71, 71);
                 _transport.StopCameraTrack();
                 _cameraStarted = false;
+                PushVoiceState();
                 var old = _pbLocal.Image; _pbLocal.Image = null; old?.Dispose();
             }
             else
             {
                 _btnCamera.Text = "📷";
                 _btnCamera.BackColor = Color.FromArgb(64, 68, 75);
-                StartVideo(); // откроет превью с подтверждением
+                StartVideo(); // откроет превью с подтверждением (звук — на реальном старте)
             }
         }
 
@@ -1413,56 +1522,129 @@ namespace PISMO
             }
             else if (!_screenPreviewPending)
             {
-                // Системный диалог Windows ("Выберите, чем поделиться") уже
-                // сам показывает превью миниатюр окон/экрана — отдельное
-                // окно-подтверждение поверх него было избыточным и выглядело
-                // как два конфликтующих диалога. Просто запускаем захват;
-                // после того, как пользователь выбрал источник в системном
-                // диалоге, демка включается автоматически.
-                _screenPreviewPending = true;
-                _transport.PreviewScreen();
+                // Сразу свой список ВСЕХ мониторов (Screen.AllScreens ловит все 3,
+                // в т.ч. виртуальный VR-дисплей, который системный диалог Chromium
+                // не перечисляет). Без промежуточного меню. Окна/другой источник —
+                // кнопка внутри списка (там открывается системный диалог).
+                PickMonitorAndShare();
             }
         }
 
-        /// <summary>Запускает захват системного звука для демонстрации. Сам видео-захват
-        /// экрана теперь идёт через getDisplayMedia/addTrack внутри WebRtcTransport —
-        /// см. _transport.PreviewScreen()/ConfirmScreenShare(), вызванные из ToggleScreen().</summary>
-        private void StartScreenAudioCapture()
+        // ── Доставка видеокадров в UI без лага: «последний кадр побеждает» ──
+        private sealed class RawFrameBox { public byte[] B; public int W, H; }
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, RawFrameBox> _latestRaw = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _rawQueued = new();
+
+        /// <summary>Сохраняет новейший кадр по ключу и гарантирует максимум ОДИН
+        /// ожидающий BeginInvoke: UI рисует всегда самый свежий кадр, очередь не
+        /// растёт, лага нет. Старые кадры просто выбрасываются.</summary>
+        private void QueueLatestFrame(string key, byte[] bgra, int w, int h,
+                                      Action<byte[], int, int, string> handler)
+        {
+            _latestRaw[key] = new RawFrameBox { B = bgra, W = w, H = h };
+            // 0→1 = ставим дренер; уже 1 — дренер и так заберёт новейший кадр.
+            if (!_rawQueued.TryAdd(key, 1) && !_rawQueued.TryUpdate(key, 1, 0)) return;
+            UiInvoke(() =>
+            {
+                _rawQueued[key] = 0;   // до чтения кадра: поздние кадры поставят новый дренер
+                if (_latestRaw.TryGetValue(key, out var f) && f != null)
+                    try { handler(f.B, f.W, f.H, key); } catch { }
+            });
+        }
+
+        /// <summary>Список участников в углу: текст + авто-высота панели, чтобы
+        /// длинные имена не вылезали за тёмный фон (панель была фикс. 110px).</summary>
+        private void SetParticipantsText(string text)
+        {
+            if (_lblParticipants == null || _lblParticipants.IsDisposed) return;
+            _lblParticipants.Text = text;
+            try
+            {
+                if (_pnlParticipants != null && !_pnlParticipants.IsDisposed)
+                {
+                    int want = _lblParticipants.GetPreferredSize(
+                        new Size(_pnlParticipants.Width, 0)).Height + 6;
+                    _pnlParticipants.Height = Math.Clamp(want, 60, 320);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Кнопка 🔁 в мини-превью: сменить источник идущей демки на лету
+        /// (без перепубликации — зрители видят мгновенное переключение).</summary>
+        private void SwitchScreenSourceLive()
+        {
+            if (!_screenSharing) return;
+            try
+            {
+                using var picker = new ScreenPickerForm();
+                if (picker.ShowDialog(this) != DialogResult.OK) return;
+                if (!picker.SelectedIsScreen && picker.SelectedWindow != IntPtr.Zero)
+                    _transport.SwitchShareToWindow(picker.SelectedWindow);
+                else if (picker.SelectedBounds is Rectangle b)
+                    _transport.SwitchShareToMonitor(b);
+            }
+            catch (Exception ex)
+            {
+                _lblStatus.Text = "Смена источника: " + ex.Message;
+            }
+        }
+
+        /// <summary>Свой выборщик (вкладки «Окно»/«Весь экран», все мониторы и окна) →
+        /// захват выбранного источника. Без системного диалога Chromium — работает и
+        /// при активном VR (путь к нативному захвату).</summary>
+        private void PickMonitorAndShare()
         {
             try
             {
-                _loopback = new WasapiLoopbackCapture();
-                _loopback.DataAvailable += (s, ev) =>
+                using var picker = new ScreenPickerForm();
+                if (picker.ShowDialog(this) != DialogResult.OK) return;
+                // Окно — точный захват через PrintWindow (берёт даже перекрытое);
+                // монитор/область — BitBlt по экранным координатам.
+                bool withAudio = picker.ShareAudio;
+                if (!picker.SelectedIsScreen && picker.SelectedWindow != IntPtr.Zero)
                 {
-                    if (!_connected || ev.BytesRecorded == 0) return;
-                    var pcm = ConvertLoopbackToPcm16(ev.Buffer, ev.BytesRecorded, _loopback.WaveFormat);
-                    if (pcm.Length > 0) _transport.Send(CallTransport.TypeScreenAudio, pcm);
-                };
-                _loopback.StartRecording();
-                _screenAudio = true;
+                    _screenPreviewPending = true;
+                    _transport.StartWindowShare(picker.SelectedWindow, DeviceSettings.ScreenShareFps, withAudio);
+                }
+                else if (picker.SelectedBounds is Rectangle b)
+                {
+                    _screenPreviewPending = true;
+                    _transport.StartMonitorShare(b, DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps, withAudio);
+                }
             }
-            catch { _screenAudio = false; }
+            catch (Exception ex)
+            {
+                _lblStatus.Text = "Не удалось открыть выбор экрана: " + ex.Message;
+            }
+        }
+
+        /// <summary>Немедленно отправляет состояние «в эфире» (камера/демка) для
+        /// голосового канала, чтобы бейдж у других обновился без задержки.</summary>
+        private void PushVoiceState()
+        {
+            if (!_isChannel || _vchId <= 0 || _presenceLeft) return;
+            bool streaming = _cameraStarted || _screenSharing;
+            bool mm = _muted, df = _remoteAllMuted;
+            int vch = _vchId, me = UserSession.EffectiveId;
+            System.Threading.Tasks.Task.Run(() => VoicePresence.Heartbeat(vch, me, streaming, mm, df));
         }
 
         private void StopScreenShare()
         {
             _screenSharing = false;
             _screenPreviewPending = false;
+            PushVoiceState();
 
-            if (_screenAudio)
-            {
-                try { _loopback?.StopRecording(); _loopback?.Dispose(); } catch { }
-                _loopback = null;
-                _screenAudio = false;
-            }
-
-            // Останавливаем настоящий video track — это вызовет renegotiation,
-            // и LocalScreenStopped придёт после её завершения.
+            // Звук демонстрации публикуется/останавливается вместе с видео-треком
+            // средствами LiveKit (createLocalScreenTracks({audio:true})) — отдельный
+            // WASAPI-loopback больше не нужен.
             _transport.StopScreenShareTrack();
 
             _btnScreen.BackColor = Color.FromArgb(64, 68, 75);
             _btnScreen.Text = "🖥";
             _lblScreenBadge.Visible = false;
+            try { RemoveSelfScreenTile(); } catch { }
             HideScreenSharePip();
         }
 
@@ -1472,10 +1654,38 @@ namespace PISMO
         //  обратно, не закрывая саму демонстрацию.
         // ════════════════════════════════════════════════════════════
         private PictureBox _screenPipPicture;
+        private GpuVideoSurface _screenPipGpu;   // GPU-рендер превью своей демки
         private Panel _screenPipTitleBar;
+        private Label _screenPipTitleLbl;    // «Ваша демонстрация · 👁 N»
+        private Label _screenPipStats;       // что реально уходит зрителям (fps/битрейт)
         private bool _screenPipCollapsed = false;
         private Size _screenPipExpandedSize = new Size(260, 170);
         private NotifyIcon _screenPipTrayIcon;
+
+        /// <summary>Строка отправки в PIP: превью подстраивает свой темп под
+        /// РЕАЛЬНЫЙ исходящий поток, а эта плашка показывает его цифрами.</summary>
+        private void UpdatePipStats(string text)
+        {
+            // Показываем fps/режим захвата ВСЕГДА — прямо на бейдже демонстрации
+            // (не только в мини-окне PIP, которое ещё надо открыть кликом).
+            try
+            {
+                if (_screenSharing && _lblScreenBadge != null && !_lblScreenBadge.IsDisposed
+                    && !string.IsNullOrEmpty(text))
+                {
+                    _lblScreenBadge.Text = "🖥 Демонстрация · " + text;
+                    _lblScreenBadge.Visible = true;
+                }
+            }
+            catch { }
+            if (_screenPipStats == null || _screenPipStats.IsDisposed) return;
+            try
+            {
+                _screenPipStats.Text = text ?? "";
+                _screenPipStats.Visible = !string.IsNullOrEmpty(text) && !_screenPipCollapsed;
+            }
+            catch { }
+        }
 
         private void ShowScreenSharePipContainer()
         {
@@ -1510,6 +1720,7 @@ namespace PISMO
                 Padding = new Padding(6, 0, 0, 0),
                 Font = new Font("Segoe UI", 8)
             };
+            _screenPipTitleLbl = lbl;
             var btnTray = new Button
             {
                 Text = "▾",
@@ -1533,9 +1744,46 @@ namespace PISMO
             };
             btnToggle.FlatAppearance.BorderSize = 0;
             btnToggle.Click += (s, e) => ToggleScreenSharePipCollapsed();
+
+            // Смена источника трансляции на лету (игра ↔ весь экран).
+            var btnSwitch = new Button
+            {
+                Text = "🔁",
+                Dock = DockStyle.Right,
+                Width = 24,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(40, 42, 46),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Emoji", 8f)
+            };
+            btnSwitch.FlatAppearance.BorderSize = 0;
+            new ToolTip().SetToolTip(btnSwitch, "Сменить источник (игра / весь экран)");
+            btnSwitch.Click += (s, e) => SwitchScreenSourceLive();
+
+            // Крестик: закрыть мини-окно совсем (демонстрация ПРОДОЛЖАЕТСЯ, превью
+            // живёт в плитке звонка). Чтобы не убирать окно в трей и не доставать
+            // его оттуда каждый раз.
+            var btnClose = new Button
+            {
+                Text = "✕",
+                Dock = DockStyle.Right,
+                Width = 26,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(40, 42, 46),
+                ForeColor = Color.White
+            };
+            btnClose.FlatAppearance.BorderSize = 0;
+            btnClose.FlatAppearance.MouseOverBackColor = Color.FromArgb(232, 17, 35);
+            new ToolTip().SetToolTip(btnClose, "Закрыть мини-окно (демонстрация продолжится)");
+            btnClose.Click += (s, e) => HideScreenSharePip();
+
+            // Порядок Add для Dock=Right: добавленный РАНЬШЕ встаёт правее. Крестик
+            // первым среди правых → в самом правом углу.
             _screenPipTitleBar.Controls.Add(lbl);
-            _screenPipTitleBar.Controls.Add(btnToggle);
+            _screenPipTitleBar.Controls.Add(btnClose);
             _screenPipTitleBar.Controls.Add(btnTray);
+            _screenPipTitleBar.Controls.Add(btnToggle);
+            _screenPipTitleBar.Controls.Add(btnSwitch);
 
             _screenPipPicture = new PictureBox
             {
@@ -1544,7 +1792,28 @@ namespace PISMO
                 SizeMode = PictureBoxSizeMode.Zoom
             };
 
+            // Плашка «что реально уходит зрителям» — превью живёт в том же
+            // темпе/размере, а здесь цифры (fps, битрейт, упор CPU/сеть).
+            _screenPipStats = new Label
+            {
+                Dock = DockStyle.Bottom,
+                Height = 17,
+                Visible = false,
+                ForeColor = Color.FromArgb(170, 173, 179),
+                BackColor = Color.FromArgb(26, 27, 30),
+                Font = new Font("Consolas", 7.25f),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(4, 0, 0, 0),
+                AutoEllipsis = true
+            };
+
+            // Превью рисуем PictureBox'ом: GPU-поверхность (ElementHost/WPF) на
+            // части систем не композитится и висит серым прямоугольником.
+            _screenPipGpu = null;
+            _screenPipPicture.Visible = true;
+
             _screenPipForm.Controls.Add(_screenPipPicture);
+            _screenPipForm.Controls.Add(_screenPipStats);
             _screenPipForm.Controls.Add(_screenPipTitleBar);
 
             // Перетаскивание окна за титульную полосу, метку и само превью.
@@ -1611,6 +1880,7 @@ namespace PISMO
             resizeHandle.BringToFront();
 
             _screenPipForm.Show();
+            Anim.FadeIn(_screenPipForm);
         }
 
         private void ToggleScreenSharePipCollapsed()
@@ -1621,12 +1891,17 @@ namespace PISMO
             {
                 _screenPipExpandedSize = _screenPipForm.Size;
                 _screenPipPicture.Visible = false;
+                if (_screenPipGpu != null) _screenPipGpu.Visible = false;
+                if (_screenPipStats != null) _screenPipStats.Visible = false;
                 _screenPipForm.Size = new Size(180, 22);
+                // Превью НЕ отключаем: кадры продолжают идти в плитку своей демки.
             }
             else
             {
-                _screenPipPicture.Visible = true;
+                if (_screenPipPicture != null) _screenPipPicture.Visible = true;
+                if (_screenPipGpu != null) _screenPipGpu.Visible = true;
                 _screenPipForm.Size = _screenPipExpandedSize;
+                try { _transport?.SetScreenPreviewActive(true); } catch { }
             }
         }
 
@@ -1638,6 +1913,7 @@ namespace PISMO
         {
             if (_screenPipForm == null) return;
             _screenPipForm.Hide();
+            // Превью НЕ отключаем: при свёрнутом PIP демка живёт в плитке звонка.
 
             if (_screenPipTrayIcon == null)
             {
@@ -1664,7 +1940,11 @@ namespace PISMO
             if (_screenPipTrayIcon != null)
                 _screenPipTrayIcon.Visible = false;
             _screenPipForm?.Show();
+            if (!_screenPipCollapsed) try { _transport?.SetScreenPreviewActive(true); } catch { }
         }
+
+        // (Предупреждение «демка кодируется процессором» с балуном из трея
+        //  удалено по просьбе 2.1 — факт софт-энкода виден в плашке PIP и Debug-логе.)
 
         private void ShowScreenSharePip(byte[] jpegBytes)
         {
@@ -1690,10 +1970,14 @@ namespace PISMO
                 _screenPipTrayIcon = null;
             }
             if (_screenPipForm == null) return;
+            try { if (_screenPipPicture != null && _rawBmp.TryGetValue(_screenPipPicture, out var prb)) { _rawBmp.Remove(_screenPipPicture); prb?.Dispose(); } } catch { }
             try { _screenPipForm.Close(); } catch { }
             _screenPipForm = null;
             _screenPipPicture = null;
+            _screenPipGpu = null;
             _screenPipTitleBar = null;
+            _screenPipTitleLbl = null;
+            _screenPipStats = null;
         }
 
         /// <summary>Масштабирует изображение по высоте до targetHeight; не повышает разрешение (нет апскейла).</summary>
@@ -1710,29 +1994,6 @@ namespace PISMO
             g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
             g.DrawImage(src, 0, 0, newW, targetHeight);
             return dst;
-        }
-
-        private static byte[] ConvertLoopbackToPcm16(byte[] buf, int len, WaveFormat fmt)
-        {
-            try
-            {
-                int floatCount = len / 4;
-                double ratio = fmt.SampleRate / 16000.0;
-                int step = fmt.Channels;
-                var result = new List<byte>(floatCount / step);
-                double pos = 0; int idx = 0;
-                while (idx < floatCount)
-                {
-                    float sample = BitConverter.ToSingle(buf, idx * 4);
-                    short s16 = (short)Math.Clamp((int)(sample * 32767f),
-                                       short.MinValue, short.MaxValue);
-                    result.Add((byte)(s16 & 0xFF));
-                    result.Add((byte)((s16 >> 8) & 0xFF));
-                    pos += ratio * step; idx = (int)pos;
-                }
-                return result.ToArray();
-            }
-            catch { return Array.Empty<byte>(); }
         }
 
         private static Bitmap ScaleDown(Bitmap src, int maxW)
@@ -1763,62 +2024,9 @@ namespace PISMO
         }
 
         // ════════════════════════════════════════════════════════════
-        //  ПРИЁМ ДАННЫХ
+        //  ПРИЁМ ДАННЫХ — аудио теперь воспроизводит LiveKit напрямую,
+        //  видео-кадры приходят отдельными событиями transport.
         // ════════════════════════════════════════════════════════════
-        private void OnFrameReceived(byte type, byte[] payload)
-        {
-            if (IsDisposed || !IsHandleCreated) return;
-            try
-            {
-                // Лог входящих данных — поможет понять, доходит ли что-либо
-                if (type == CallTransport.TypeAudio)
-                    System.Diagnostics.Debug.WriteLine($"[FRAME RECV] AUDIO size={payload?.Length ?? 0}");
-
-                switch (type)
-                {
-                    case CallTransport.TypeAudio:
-                        // Голос собеседника и звук его демонстрации экрана идут по разным
-                        // каналам (TypeAudio для микрофона, TypeScreenAudio для звука
-                        // демки) — оба должны воспроизводиться всегда, без блокировки
-                        // во время screen share.
-                        try
-                        {
-                            _waveProvider?.AddSamples(payload, 0, payload.Length);
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[AUDIO PLAY ERROR] {ex.Message}");
-                        }
-                        break;
-
-                    case CallTransport.TypeScreenAudio:
-                        // Звук демонстрации экрана собеседника — отдельный канал,
-                        // с собственной регулируемой громкостью (ползунок в UI).
-                        try
-                        {
-                            byte[] adjusted = _remoteScreenAudioVolume >= 0.999f
-                                ? payload
-                                : ApplyGain(payload, payload.Length, _remoteScreenAudioVolume);
-                            _waveProvider?.AddSamples(adjusted, 0, adjusted.Length);
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[SCREEN AUDIO PLAY ERROR] {ex.Message}");
-                        }
-                        break;
-
-                        // TypeVideo/TypeScreen/TypeScreenStop больше не используются —
-                        // камера и демонстрация экрана теперь идут через настоящие
-                        // WebRTC video track (см. RemoteScreenStarted/Stopped и
-                        // RemoteCameraStarted/Stopped события transport, подключённые
-                        // в StartCallSetup), а не через эти DataChannel-пакеты.
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[ONFRAME ERROR] {ex.Message}");
-            }
-        }
         private void ShowRemoteImage(byte[] payload, bool isScreen)
         {
             Bitmap img = null;
@@ -1884,13 +2092,15 @@ namespace PISMO
         {
             if (_ended) return;
             _ended = true;
-            _transport?.SendHangup();
+            try { Sounds.Hangup(); } catch { }
             MarkCallEnded();
             Close();
         }
 
         private void MarkCallEnded()
         {
+            if (_isChannel) return; // у голосового канала нет call_sessions/логов
+
             if (_isCaller && !_callLogged)
             {
                 LogCallToMessages();
@@ -1985,28 +2195,223 @@ namespace PISMO
             }
         }
 
-        protected override void OnFormClosing(FormClosingEventArgs e)
+        // ── Глобальные горячие клавиши (микрофон/камера/демка) ──────────
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+        private const int WM_HOTKEY = 0x0312;
+        private bool _hotkeysRegistered;
+
+        private static (uint mods, uint vk) SplitHotkey(int value)
+        {
+            var k = (Keys)value;
+            uint mods = 0;
+            if ((k & Keys.Alt) == Keys.Alt) mods |= 0x1;       // MOD_ALT
+            if ((k & Keys.Control) == Keys.Control) mods |= 0x2; // MOD_CONTROL
+            if ((k & Keys.Shift) == Keys.Shift) mods |= 0x4;   // MOD_SHIFT
+            uint vk = (uint)(k & Keys.KeyCode);
+            return (mods, vk);
+        }
+
+        private void RegisterCallHotkeys()
+        {
+            if (_hotkeysRegistered) return;
+            try
+            {
+                void Reg(int id, int val)
+                {
+                    if (val == 0) return;
+                    var (m, vk) = SplitHotkey(val);
+                    if (vk != 0) RegisterHotKey(Handle, id, m, vk);
+                }
+                Reg(1, DeviceSettings.HotkeyMic);
+                Reg(2, DeviceSettings.HotkeyCamera);
+                Reg(3, DeviceSettings.HotkeyScreen);
+                Reg(4, DeviceSettings.HotkeyDeafen);
+                // Запоминаем, ЧТО повесили: по этим значениям ApplyLiveSettings
+                // понимает, что комбинации сменили в настройках, и перевешивает их
+                // на текущий звонок без перезахода.
+                _lastHkMic = DeviceSettings.HotkeyMic;
+                _lastHkCam = DeviceSettings.HotkeyCamera;
+                _lastHkScr = DeviceSettings.HotkeyScreen;
+                _lastHkDeaf = DeviceSettings.HotkeyDeafen;
+                _hotkeysRegistered = true;
+            }
+            catch { }
+        }
+
+        private int _lastHkMic, _lastHkCam, _lastHkScr, _lastHkDeaf;
+
+        /// <summary>Держит горячие клавиши звонка в актуальном состоянии.
+        ///
+        /// Пока окно настроек открыто, регистрацию СНИМАЕМ: глобальная горячая
+        /// клавиша перехватывает нажатие раньше любого окна, и назначить ту же
+        /// комбинацию заново было бы невозможно — она уходила бы в мьют вместо поля
+        /// захвата. Закрыли настройки — вешаем уже новые комбинации.</summary>
+        private void SyncCallHotkeys()
+        {
+            bool settingsOpen = false;
+            try
+            {
+                foreach (Form f in Application.OpenForms)
+                    if (f is SettingsForm) { settingsOpen = true; break; }
+            }
+            catch { }
+
+            if (settingsOpen) { UnregisterCallHotkeys(); return; }
+
+            bool changed = _lastHkMic != DeviceSettings.HotkeyMic
+                        || _lastHkCam != DeviceSettings.HotkeyCamera
+                        || _lastHkScr != DeviceSettings.HotkeyScreen
+                        || _lastHkDeaf != DeviceSettings.HotkeyDeafen;
+            if (!_hotkeysRegistered || changed)
+            {
+                UnregisterCallHotkeys();
+                RegisterCallHotkeys();
+            }
+        }
+
+        private void UnregisterCallHotkeys()
+        {
+            if (!_hotkeysRegistered) return;
+            try { UnregisterHotKey(Handle, 1); UnregisterHotKey(Handle, 2); UnregisterHotKey(Handle, 3); UnregisterHotKey(Handle, 4); } catch { }
+            _hotkeysRegistered = false;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            RegisterCallHotkeys();
+            // Раньше таймер живых настроек заводился только в OnActivated — а окно
+            // голосового канала часто вообще не получает фокус (сразу уходишь в
+            // игру), и тогда ни смена бинда, ни настройки оверлея не применялись.
+            EnsureLiveSettingsTimer();
+        }
+
+        // Применяем настройки чувствительности «на лету»: когда окно звонка
+        // снова активно (например, после изменения в настройках) — отправляем
+        // актуальный порог в транспорт, если он изменился.
+        private bool _lastVoiceAuto;
+        private int _lastVoiceThr = int.MinValue;
+        private string _lastNoiseMode = null; // -1 не задано, 0/1
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            ApplyLiveSettings();
+            EnsureLiveSettingsTimer();
+        }
+
+        // Применение настроек «на горячую»: громкость микрофона, порог голоса и режим
+        // шумодава подхватываются БЕЗ переоткрытия звонка. OnActivated ловит возврат
+        // из окна настроек, а таймер — изменение ползунка прямо во время звонка.
+        private System.Windows.Forms.Timer _liveSettingsTimer;
+        private void EnsureLiveSettingsTimer()
+        {
+            if (_liveSettingsTimer != null) return;
+            _liveSettingsTimer = new System.Windows.Forms.Timer { Interval = 400 };
+            _liveSettingsTimer.Tick += (s, e) => ApplyLiveSettings();
+            _liveSettingsTimer.Start();
+        }
+
+        private void ApplyLiveSettings()
         {
             try
             {
+                if (_lastVoiceThr == int.MinValue ||
+                    _lastVoiceAuto != DeviceSettings.VoiceAutoSensitivity ||
+                    _lastVoiceThr != DeviceSettings.VoiceThreshold)
+                {
+                    _lastVoiceAuto = DeviceSettings.VoiceAutoSensitivity;
+                    _lastVoiceThr = DeviceSettings.VoiceThreshold;
+                    _transport?.SetVoiceGate(_lastVoiceAuto, _lastVoiceThr);
+                }
+                string nsm = DeviceSettings.NoiseSuppressMode;
+                if (_lastNoiseMode != nsm)
+                {
+                    _lastNoiseMode = nsm;
+                    _transport?.SetNoiseMode(nsm);
+                }
+                if (Math.Abs(_lastGain - DeviceSettings.MicrophoneGain) > 0.001f)
+                {
+                    _lastGain = DeviceSettings.MicrophoneGain;
+                    _transport?.SetMicGain(_lastGain);
+                }
+                SyncCallHotkeys();   // сменили бинд в настройках — применяем без перезахода
+                // Настройки оверлея тоже «на горячую»: их могли поменять и из панели
+                // звонка, и из настроек устройств — сюда приходит любой источник.
+                if (_lastOverlayOn != DeviceSettings.OverlayEnabled ||
+                    _lastOverlayMax != DeviceSettings.OverlayMaxParticipants)
+                {
+                    _lastOverlayOn = DeviceSettings.OverlayEnabled;
+                    _lastOverlayMax = DeviceSettings.OverlayMaxParticipants;
+                    PushOverlay();
+                }
+            }
+            catch { }
+        }
+        private float _lastGain = -1f;
+        private bool _lastOverlayOn = true;
+        private int _lastOverlayMax = -1;   // −1 = ещё не считывали, первый тик применит
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_HOTKEY)
+            {
+                int id = m.WParam.ToInt32();
+                switch (id)
+                {
+                    case 1: ToggleMute(); break;
+                    case 2: ToggleCamera(); break;
+                    case 3: ToggleScreen(); break;
+                    case 4: ToggleDeafen(); break;
+                }
+            }
+            base.WndProc(ref m);
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            try { UnregisterCallHotkeys(); } catch { }
+            try
+            {
                 WebSocketSignalingClient.Instance.OnMessageReceived -= OnWebSocketMessage;
+                try { AvatarStore.AvatarLoaded -= OnAvatarLoadedForTiles; } catch { }
                 if (!_ended) MarkCallEnded();
 
-                _signalTimer?.Stop(); _signalTimer?.Dispose();
-                _durationTimer?.Stop(); _durationTimer?.Dispose();
-                _renegoTimer?.Stop(); _renegoTimer?.Dispose();
+                // Останавливаем heartbeat ДО удаления присутствия, иначе гонка:
+                // фоновый Task.Run с Heartbeat может выполнить INSERT уже ПОСЛЕ
+                // Leave() и вернуть запись «в эфире» ещё на 20 сек (TTL).
+                _presenceLeft = true;
+                _durationTimer?.Stop();
+                _signalTimer?.Stop();
+                try { CallOverlay.Stop(); } catch { }   // звонок закончился — оверлей убираем
 
+                // Убираем себя из «в эфире» голосового канала. Повторный Leave с
+                // небольшой задержкой добивает возможную гонку с in-flight heartbeat.
+                if (_isChannel && _vchId > 0)
+                {
+                    int vch = _vchId, me = UserSession.EffectiveId;
+                    System.Threading.Tasks.Task.Run(async () =>
+                    {
+                        VoicePresence.Leave(vch, me);
+                        await System.Threading.Tasks.Task.Delay(400);
+                        VoicePresence.Leave(vch, me);
+                    });
+                }
+
+                _signalTimer?.Dispose();
+                _durationTimer?.Dispose();
+                _speakHoldTimer?.Stop(); _speakHoldTimer?.Dispose();
+                _liveSettingsTimer?.Stop(); _liveSettingsTimer?.Dispose();
+
+                CloseAllStreamPopouts();   // окна стримов не должны переживать звонок
                 StopScreenShare();
                 if (_cameraStarted)
                 {
                     try { _transport?.StopCameraTrack(); } catch { }
                     _cameraStarted = false;
                 }
-
-                try { _waveIn?.StopRecording(); } catch { }
-                _waveIn?.Dispose();
-                _waveOut?.Stop();
-                _waveOut?.Dispose();
 
                 _pbLocal.Image?.Dispose();
                 _pbRemote.Image?.Dispose();
@@ -2066,6 +2471,10 @@ namespace PISMO
             if (res > 0) DeviceSettings.ScreenShareResolutionHeight = res;
             if (fps > 0) DeviceSettings.ScreenShareFps = Math.Clamp(fps, 1, 60);
             try { DeviceSettings.Save(); } catch { }
+
+            // Применяем к ЖИВОЙ демке (раньше настройка лишь сохранялась и до
+            // перезапуска демонстрации ни на что не влияла).
+            try { _transport?.SetScreenQualityLive(DeviceSettings.ScreenShareResolutionHeight, DeviceSettings.ScreenShareFps); } catch { }
 
             // Краткое уведомление в статусе (2 секунды), потом восстанавливаем предыдущее сообщение.
             string prevStatus = _lblStatus.Text;

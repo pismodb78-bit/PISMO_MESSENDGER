@@ -40,13 +40,28 @@ namespace PISMO
 
         // ── Кнопки звонка в заголовке чата ────────────────────────────────
         private Button _btnCallAudio;
-        private Button _btnCallVideo;
 
         // ── Активный звонок ───────────────────────────────────────────────
         private CallForm _activeCall;
 
         // ── Polling входящих звонков ──────────────────────────────────────
         private int _lastCheckedCallId = 0;
+
+        // ── Множественное выделение сообщений (переслать/удалить пачкой) ───
+        private bool _selectMode;
+        private bool _selectIsGroup;
+        private readonly System.Collections.Generic.HashSet<int> _selectedMsgIds = new();
+        private readonly System.Collections.Generic.Dictionary<int, (string sender, string text, int scope)> _msgMeta = new();
+        // Для мгновенного переключения выделения БЕЗ перезагрузки чата (иначе скролл
+        // прыгал вниз и шла полная перерисовка на каждый клик).
+        private readonly System.Collections.Generic.Dictionary<int, Label> _selMark = new();
+        private readonly System.Collections.Generic.Dictionary<int, Control> _selBubble = new();
+        private readonly System.Collections.Generic.Dictionary<int, Color> _selBase = new();
+        private readonly System.Collections.Generic.List<(string sender, string text, int scope, int id)> _forwardBatch = new();
+        private int _forwardSrcScope;      // 0=ЛС, 1=группа, 2=сервер — откуда пересылаем
+        private int _forwardSrcId;         // id исходного сообщения (для копии медиа)
+        private Panel _pnlSelectBar;
+        private Label _lblSelectInfo;
 
         // ════════════════════════════════════════════════════════════════
         //  ИНИЦИАЛИЗАЦИЯ (вызывать из MainForm_Load или конструктора)
@@ -55,6 +70,7 @@ namespace PISMO
         {
             BuildReplyBar();
             BuildForwardBar();
+            BuildSelectBar();
             AddCallButtonsToHeader();
             HookCallPolling();
         }
@@ -162,26 +178,12 @@ namespace PISMO
                 Cursor = Cursors.Hand
             };
             _btnCallAudio.FlatAppearance.BorderSize = 0;
+            // Одна кнопка звонка: входим в звонок (голос), а камеру/демонстрацию
+            // можно включить уже внутри звонка. Отдельной видео-кнопки больше нет.
             _btnCallAudio.Click += (s, e) => StartCall(withVideo: false);
-            new ToolTip().SetToolTip(_btnCallAudio, "Голосовой звонок");
-
-            _btnCallVideo = new Button
-            {
-                Text = "📹",
-                Font = new Font("Segoe UI", 13f),
-                Size = new Size(38, 38),
-                Dock = DockStyle.Right,
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.Transparent,
-                ForeColor = Color.FromArgb(88, 101, 242),
-                Cursor = Cursors.Hand
-            };
-            _btnCallVideo.FlatAppearance.BorderSize = 0;
-            _btnCallVideo.Click += (s, e) => StartCall(withVideo: true);
-            new ToolTip().SetToolTip(_btnCallVideo, "Видеозвонок");
+            new ToolTip().SetToolTip(_btnCallAudio, "Позвонить (камеру можно включить в звонке)");
 
             pnlChatHeader.Controls.Add(_btnCallAudio);
-            pnlChatHeader.Controls.Add(_btnCallVideo);
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -195,13 +197,370 @@ namespace PISMO
         /// isMine — наше сообщение?
         /// text — текст сообщения (для edit/forward).
         /// </summary>
-        public void AttachBubbleContextMenu(Panel bubble, int msgId, bool isGroup,
-    bool isMine, string text, string senderName)
+        // (Окно «нажмите Win + .» и белое подменю быстрых реакций удалены —
+        //  «Реакция» открывает тёмный пикер EmojiPickerForm, где первая вкладка
+        //  🕒 «часто используемые» и есть быстрые реакции.)
+
+        /// <summary>Кнопка «＋» под сообщением — добавить ещё одну реакцию, когда
+        /// одна уже стоит. Открывает тот же тёмный пикер эмодзи.</summary>
+        private void ShowQuickReactionPicker(Control anchor, int msgId, ReactionsRepository.Scope scope)
         {
+            try
+            {
+                var pt = anchor != null ? anchor.PointToScreen(new Point(0, anchor.Height)) : Cursor.Position;
+                string emo = EmojiPickerForm.Pick(this, pt);
+                if (!string.IsNullOrWhiteSpace(emo)) ToggleReactionAndReload(msgId, scope, emo);
+            }
+            catch { }
+        }
+
+        /// <summary>Ставит/снимает реакцию и перерисовывает открытый чат.</summary>
+        private void ToggleReactionAndReload(int msgId, ReactionsRepository.Scope scope, string emoji)
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    ReactionsRepository.Toggle(msgId, scope, UserSession.EffectiveId, emoji);
+                    // Сообщаем собеседникам, чтобы они увидели реакцию сразу.
+                    try
+                    {
+                        if (scope == ReactionsRepository.Scope.Group && _currentGroupId > 0)
+                            WebSocketSignalingClient.Instance.SendMessage("reaction", 0, _currentGroupId, "group");
+                        else if (_currentChatPartnerId > 0)
+                            WebSocketSignalingClient.Instance.SendMessage("reaction", _currentChatPartnerId, UserSession.EffectiveId, "direct");
+                    }
+                    catch { }
+                }
+                catch { }
+                if (IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        ForceMessageRerender();   // реакции изменились — данные те же, форсим перерисовку
+                        if (_currentGroupId > 0) LoadGroupMessages();
+                        else if (_currentChatPartnerId > 0) LoadMessages();
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        //  МНОЖЕСТВЕННОЕ ВЫДЕЛЕНИЕ (переслать / удалить несколько сразу)
+        // ════════════════════════════════════════════════════════════════
+        private void BuildSelectBar()
+        {
+            _pnlSelectBar = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 46,
+                BackColor = Color.FromArgb(47, 49, 54),
+                Visible = false
+            };
+
+            _lblSelectInfo = new Label
+            {
+                Dock = DockStyle.Left,
+                Width = 170,
+                TextAlign = System.Drawing.ContentAlignment.MiddleLeft,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+                Padding = new Padding(14, 0, 0, 0),
+                Text = "Выбрано: 0"
+            };
+
+            Button Bar(string t, Color fg)
+            {
+                var b = new Button
+                {
+                    Text = t,
+                    Dock = DockStyle.Right,
+                    Width = 130,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(54, 57, 63),
+                    ForeColor = fg,
+                    Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                    Cursor = Cursors.Hand
+                };
+                b.FlatAppearance.BorderSize = 0;
+                return b;
+            }
+
+            var btnCancel = Bar("Отмена", Color.FromArgb(200, 202, 208));
+            var btnDelete = Bar("🗑  Удалить", Color.FromArgb(240, 71, 71));
+            var btnForward = Bar("↪  Переслать", Color.FromArgb(88, 170, 255));
+            btnCancel.Click += (s, e) => ExitSelectMode();
+            btnDelete.Click += (s, e) => DeleteSelected();
+            btnForward.Click += (s, e) => ForwardSelected();
+
+            _pnlSelectBar.Controls.Add(_lblSelectInfo);
+            _pnlSelectBar.Controls.Add(btnCancel);
+            _pnlSelectBar.Controls.Add(btnDelete);
+            _pnlSelectBar.Controls.Add(btnForward);
+
+            pnlMain.Controls.Add(_pnlSelectBar);
+            _pnlSelectBar.BringToFront();
+        }
+
+        private void EnterSelectMode(bool isGroup)
+        {
+            _selectMode = true;
+            _selectIsGroup = isGroup;
+            _selectedMsgIds.Clear();
+            _selMark.Clear(); _selBubble.Clear(); _selBase.Clear();
+            if (_pnlSelectBar != null) { _pnlSelectBar.Visible = true; _pnlSelectBar.BringToFront(); }
+            UpdateSelectBar();
+            RerenderCurrentChat();   // один раз: показать кружки ○ у всех сообщений
+        }
+
+        private void ExitSelectMode()
+        {
+            _selectMode = false;
+            _selectedMsgIds.Clear();
+            if (_pnlSelectBar != null) _pnlSelectBar.Visible = false;
+            RerenderCurrentChat();
+        }
+
+        private void ToggleSelect(int msgId)
+        {
+            if (msgId <= 0) return;
+            if (!_selectedMsgIds.Add(msgId)) _selectedMsgIds.Remove(msgId);
+            UpdateSelectBar();
+
+            // ТОЧЕЧНОЕ обновление вида выбранного пузыря — БЕЗ перезагрузки чата
+            // (раньше LoadMessages на каждый клик прокручивал чат вниз и тормозил).
+            bool sel = _selectedMsgIds.Contains(msgId);
+            if (_selMark.TryGetValue(msgId, out var mk) && mk != null && !mk.IsDisposed)
+            {
+                mk.Text = sel ? "✔" : "○";
+                mk.ForeColor = sel ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158);
+            }
+            if (_selBubble.TryGetValue(msgId, out var bb) && bb != null && !bb.IsDisposed
+                && _selBase.TryGetValue(msgId, out var baseColor))
+            {
+                bb.BackColor = sel ? ControlPaint.Light(baseColor, 0.15f) : baseColor;
+            }
+        }
+
+        private void UpdateSelectBar()
+        {
+            if (_lblSelectInfo != null) _lblSelectInfo.Text = $"Выбрано: {_selectedMsgIds.Count}";
+        }
+
+        private void RerenderCurrentChat()
+        {
+            int savedScroll = 0;
+            try { savedScroll = -pnlMessages.AutoScrollPosition.Y; } catch { }
+            try
+            {
+                ForceMessageRerender();
+                if (_currentGroupId > 0) LoadGroupMessages();
+                else if (_currentChatPartnerId >= 0) LoadMessages();
+            }
+            catch { }
+            // LoadMessages форсит скролл вниз — возвращаем позицию, чтобы вход в режим
+            // выделения / правка не прыгали к последнему сообщению.
+            try { pnlMessages.AutoScrollPosition = new Point(0, savedScroll); } catch { }
+        }
+
+        private void DeleteSelected()
+        {
+            if (_selectedMsgIds.Count == 0) { ExitSelectMode(); return; }
+            if (MessageBox.Show(
+                $"Удалить выбранные сообщения ({_selectedMsgIds.Count})? Это нельзя отменить.",
+                "PISMO", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+
+            string table = _selectIsGroup ? "group_messages" : "messages";
+            var ids = new System.Collections.Generic.List<int>(_selectedMsgIds);
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                foreach (int id in ids)
+                {
+                    using var cmd = new MySqlCommand(
+                        $"UPDATE {table} SET is_deleted=1, text='[сообщение удалено]', " +
+                        "image_data=NULL, audio_data=NULL, video_data=NULL WHERE id=@id", conn);
+                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Ошибка удаления: " + ex.Message); }
+
+            _selectMode = false;
+            _selectedMsgIds.Clear();
+            if (_pnlSelectBar != null) _pnlSelectBar.Visible = false;
+            NotifyChatEdited(_selectIsGroup);
+            RerenderCurrentChat();
+        }
+
+        private void ForwardSelected()
+        {
+            if (_selectedMsgIds.Count == 0) { ExitSelectMode(); return; }
+
+            // Собираем выбранные по возрастанию id (порядок как в чате).
+            var ids = new System.Collections.Generic.List<int>(_selectedMsgIds);
+            ids.Sort();
+            _forwardBatch.Clear();
+            foreach (int id in ids)
+                if (_msgMeta.TryGetValue(id, out var meta))
+                    _forwardBatch.Add((meta.sender, meta.text, meta.scope, id));
+
+            int cnt = _forwardBatch.Count;
+            _selectMode = false;
+            _selectedMsgIds.Clear();
+            if (_pnlSelectBar != null) _pnlSelectBar.Visible = false;
+
+            _lblForwardInfo.Text = $"↪ Пересылка {cnt} сообщений(я) — выберите диалог и нажмите «Отправить»";
+            _pnlForwardBar.Visible = true;
+            RerenderCurrentChat();
+
+            MessageBox.Show(
+                "Выберите диалог, группу или канал сервера и нажмите «Отправить».\n" +
+                $"Будут пересланы выбранные сообщения ({cnt}).",
+                "PISMO — Пересылка", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            txtMessage.Focus();
+        }
+
+        /// <summary>Добавляет в меню «Скачать» для того вложения, которое реально есть
+        /// в сообщении. Общий код для ЛС, групп и каналов серверов.</summary>
+        internal static void AddDownloadItem(ContextMenuStrip menu, int msgId,
+            byte[] img, byte[] audio, byte[] video, byte[] file, string fileName,
+            Func<byte[]> fileLoader = null)
+        {
+            string caption = null; byte[] data = null; string name = null;
+            Func<byte[]> loader = null;
+
+            // Порядок важен: у видео-кружка и видео байты лежат в одном поле, а
+            // подпись к файлу может идти вместе с картинкой.
+            if (file != null && file.Length > 0)
+            { caption = "⬇  Скачать файл"; data = file; name = string.IsNullOrWhiteSpace(fileName) ? "pismo_file" : fileName; }
+            else if (video != null && video.Length > 0)
+            {
+                // Кружок лежит в своём контейнере PSMOVID1 — переупаковываем его в
+                // AVI (MJPG + PCM), иначе скачанный файл не открывает ни один плеер.
+                if (VideoCircleExport.IsCircle(video))
+                {
+                    caption = "⬇  Скачать кружок";
+                    data = video;                       // конвертация — в момент сохранения
+                    name = MediaSaver.VideoName(msgId, circle: true);
+                }
+                else
+                {
+                    caption = "⬇  Скачать видео"; data = video;
+                    name = $"pismo_video_{(msgId > 0 ? msgId.ToString() : "file")}.{MediaSaver.VideoExt(video)}";
+                }
+            }
+            else if (img != null && img.Length > 0)
+            { caption = "⬇  Скачать изображение"; data = img; name = MediaSaver.ImageName(img, msgId); }
+            else if (audio != null && audio.Length > 0)
+            { caption = "⬇  Скачать голосовое"; data = audio; name = MediaSaver.AudioName(msgId); }
+            else if (fileLoader != null && !string.IsNullOrWhiteSpace(fileName))
+            {
+                // Крупные вложения в ленту не подгружаются — байтов тут ещё нет.
+                // Пункт всё равно показываем, файл читается уже по нажатию.
+                caption = "⬇  Скачать файл"; name = fileName; loader = fileLoader;
+            }
+
+            if (caption == null) return;
+
+            var item = new ToolStripMenuItem(caption);
+            byte[] capData = data; string capName = name; var capLoader = loader;
+            item.Click += (s, e) =>
+            {
+                var owner = menu.SourceControl?.FindForm();
+                byte[] bytes = capData;
+                if (bytes == null && capLoader != null)
+                {
+                    var prev = Cursor.Current;
+                    try { Cursor.Current = Cursors.WaitCursor; bytes = capLoader(); }
+                    catch { }
+                    finally { Cursor.Current = prev; }
+                }
+                if (bytes == null || bytes.Length == 0)
+                {
+                    MessageBox.Show(owner, "Не удалось получить файл.", "PISMO",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                MediaSaver.Save(owner, bytes, capName);
+            };
+            menu.Items.Add(item);
+            menu.Items.Add(new ToolStripSeparator());
+        }
+
+        public void AttachBubbleContextMenu(Panel bubble, int msgId, bool isGroup,
+    bool isMine, string text, string senderName,
+    byte[] imgBytes = null, byte[] audioBytes = null, byte[] videoBytes = null,
+    byte[] fileData = null, string fileName = null)
+        {
+            // Запоминаем текст/отправителя — понадобится для пакетной пересылки.
+            if (msgId > 0) _msgMeta[msgId] = (senderName ?? "", text ?? "", isGroup ? 1 : 0);
+
             var menu = new ContextMenuStrip();
             menu.BackColor = Color.FromArgb(24, 25, 28);
             menu.ForeColor = Color.FromArgb(220, 221, 222);
             menu.Font = new Font("Segoe UI", 9.5f);
+
+            // ── Выбрать (множественное выделение) ────────────────────────
+            if (msgId > 0)
+            {
+                var itemSelect = new ToolStripMenuItem("☑  Выбрать");
+                itemSelect.Click += (s, e) =>
+                {
+                    if (!_selectMode) EnterSelectMode(isGroup);
+                    ToggleSelect(msgId);
+                };
+                menu.Items.Add(itemSelect);
+                menu.Items.Add(new ToolStripSeparator());
+            }
+
+            // ── Скачать вложение ─────────────────────────────────────────
+            // Байты уже у клиента (пришли вместе с сообщением) — обращаться к БД
+            // не нужно, только диалог сохранения.
+            // fileData бывает пустым намеренно: большие файлы читаются по клику.
+            Func<byte[]> lazyFile = (msgId > 0 && !string.IsNullOrWhiteSpace(fileName)
+                                     && !(fileData is { Length: > 0 }))
+                ? () => LoadFileBytes(msgId, fileName, isGroup)
+                : null;
+            AddDownloadItem(menu, msgId, imgBytes, audioBytes, videoBytes, fileData, fileName, lazyFile);
+
+            // ── Реакция (эмодзи) ─────────────────────────────────────────
+            if (msgId > 0)
+            {
+                // Белое системное подменю с быстрыми реакциями убрано (2.1.2) —
+                // «Реакция» сразу открывает наш тёмный пикер: первая вкладка 🕒
+                // «часто используемые» и есть быстрые реакции, целой сеткой.
+                var scope = isGroup ? ReactionsRepository.Scope.Group : ReactionsRepository.Scope.Direct;
+                var itemReact = new ToolStripMenuItem("😀  Реакция");
+                itemReact.Click += (s, e) =>
+                {
+                    string emo = EmojiPickerForm.Pick(this, Cursor.Position);
+                    if (!string.IsNullOrWhiteSpace(emo)) ToggleReactionAndReload(msgId, scope, emo);
+                };
+                menu.Items.Add(itemReact);
+                menu.Items.Add(new ToolStripSeparator());
+            }
+
+            // ── Закрепить / открепить ────────────────────────────────────
+            if (msgId > 0)
+            {
+                int pinScope = isGroup ? 1 : 0;
+                bool pinned = false;
+                try { pinned = PinsRepository.IsPinned(msgId, pinScope); } catch { }
+                var itemPin = new ToolStripMenuItem(pinned ? "📌  Открепить" : "📌  Закрепить");
+                itemPin.Click += (s, e) =>
+                {
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { PinsRepository.Toggle(msgId, pinScope, UserSession.EffectiveId); } catch { }
+                        if (IsDisposed || !IsHandleCreated) return;
+                        try { BeginInvoke(new Action(() => { ForceMessageRerender(); if (_currentGroupId > 0) LoadGroupMessages(); else if (_currentChatPartnerId > 0) LoadMessages(); })); } catch { }
+                    });
+                };
+                menu.Items.Add(itemPin);
+            }
 
             // ── Ответить ─────────────────────────────────────────────────
             var itemReply = new ToolStripMenuItem("↩  Ответить");
@@ -213,11 +572,24 @@ namespace PISMO
             itemForward.Click += (s, e) => BeginForward(msgId, text, isGroup, senderName);
             menu.Items.Add(itemForward);
 
-            // ── Копировать текст ─────────────────────────────────────────
+            // ── Копировать текст (выделенное либо всё) ───────────────────
             if (!string.IsNullOrEmpty(text))
             {
-                var itemCopy = new ToolStripMenuItem("📋  Копировать текст");
-                itemCopy.Click += (s, e) => Clipboard.SetText(text);
+                // Находим выделяемый TextBox с текстом сообщения внутри пузыря.
+                TextBox FindTextBox()
+                {
+                    foreach (Control c in bubble.Controls)
+                        if (c is TextBox tb) return tb;
+                    return null;
+                }
+
+                var itemCopy = new ToolStripMenuItem("📋  Копировать");
+                itemCopy.Click += (s, e) =>
+                {
+                    var tb = FindTextBox();
+                    string sel = tb != null && tb.SelectionLength > 0 ? tb.SelectedText : text;
+                    try { Clipboard.SetText(sel); } catch { }
+                };
                 menu.Items.Add(itemCopy);
             }
 
@@ -230,6 +602,14 @@ namespace PISMO
                 menu.Items.Add(itemEdit);
             }
 
+            // ── История изменений (2.0) ──────────────────────────────────
+            if (msgId > 0)
+            {
+                var itemHist = new ToolStripMenuItem("📝  История изменений");
+                itemHist.Click += (s, e) => ShowEditHistory(msgId, isGroup ? 1 : 0);
+                menu.Items.Add(itemHist);
+            }
+
             // ── Удалить сообщение (своё или admin) ───────────────────────
             bool canDelete = isMine || UserSession.Role == "admin";
             if (canDelete)
@@ -240,16 +620,61 @@ namespace PISMO
                 menu.Items.Add(itemDel);
             }
 
-            // Правый клик по пузырю и всем его дочерним контролам
+            // Правый клик — меню; левый клик в режиме выделения — отметить/снять.
             void ShowMenu(object? s, MouseEventArgs e)
             {
                 if (e.Button == MouseButtons.Right)
                     menu.Show(Cursor.Position);
+                else if (e.Button == MouseButtons.Left && _selectMode && msgId > 0)
+                    ToggleSelect(msgId);
             }
 
             bubble.MouseClick += ShowMenu;
             foreach (Control c in bubble.Controls)
-                c.MouseClick += ShowMenu;
+            {
+                // У выделяемого TextBox правый клик иначе показал бы родное меню —
+                // подменяем нашим (в нём есть «Копировать» с учётом выделения).
+                if (c is TextBox tb) tb.ContextMenuStrip = menu;
+                else c.MouseClick += ShowMenu;
+            }
+
+            // Подсветка выбранного сообщения в режиме выделения. Запоминаем пузырь и
+            // его БАЗОВЫЙ цвет, чтобы ToggleSelect мог точечно тонировать/снимать
+            // подсветку без перезагрузки чата.
+            if (_selectMode && msgId > 0)
+            {
+                _selBubble[msgId] = bubble;
+                _selBase[msgId] = bubble.BackColor;
+                if (_selectedMsgIds.Contains(msgId))
+                    bubble.BackColor = ControlPaint.Light(bubble.BackColor, 0.15f);
+            }
+        }
+
+        /// <summary>Кружок выделения СПРАВА от сообщения (как в Telegram) — сосед
+        /// пузыря в pnlMessages, у правого края чата. ✔ если выбрано.</summary>
+        private void AddSelectMark(Control bubble, int msgId)
+        {
+            if (!_selectMode || msgId <= 0) return;
+            bool sel = _selectedMsgIds.Contains(msgId);
+            var mark = new Label
+            {
+                Text = sel ? "✔" : "○",
+                AutoSize = false,
+                Size = new Size(30, 30),
+                TextAlign = System.Drawing.ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold),
+                ForeColor = sel ? Color.FromArgb(59, 165, 93) : Color.FromArgb(150, 152, 158),
+                BackColor = Color.Transparent,
+                Cursor = Cursors.Hand,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Location = new Point(Math.Max(0, pnlMessages.ClientSize.Width - 46),
+                    bubble.Top + Math.Max(0, (bubble.Height - 30) / 2))
+            };
+            int mid = msgId;
+            mark.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ToggleSelect(mid); };
+            pnlMessages.Controls.Add(mark);
+            mark.BringToFront();
+            _selMark[msgId] = mark;   // для точечного обновления без перезагрузки чата
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -315,13 +740,15 @@ namespace PISMO
             _forwardText = text ?? "";
             _forwardSenderName = senderName ?? "";
             _forwardIsGroup = isGroup;
+            _forwardSrcScope = isGroup ? 1 : 0;
+            _forwardSrcId = msgId;         // для копии медиа SQL-ом
 
             string preview = text?.Length > 50 ? text[..50] + "…" : (text ?? "[медиа]");
             _lblForwardInfo.Text = $"↪ Пересылка от {senderName}: {preview}";
             _pnlForwardBar.Visible = true;
 
             MessageBox.Show(
-                "Выберите диалог или группу в сайдбаре и нажмите «Отправить».\n" +
+                "Выберите диалог, группу или канал сервера и нажмите «Отправить».\n" +
                 "Сообщение будет переслано туда.",
                 "PISMO — Пересылка",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -334,26 +761,83 @@ namespace PISMO
             _forwardMsgId = -1;
             _forwardText = "";
             _forwardSenderName = "";
+            _forwardSrcScope = 0;
+            _forwardSrcId = 0;
             _pnlForwardBar.Visible = false;
+        }
+
+        /// <summary>Есть ли что пересылать (одиночное или пачка выделенных).</summary>
+        public bool HasPendingForward => _forwardMsgId >= 0 || _forwardBatch.Count > 0;
+
+        /// <summary>Забирает ожидающие пересылки (отправитель, текст, откуда, id) и
+        /// сбрасывает режим. Общая точка для ЛС, групп И серверов — получатель
+        /// шлёт каждый элемент через ForwardHelper.Forward (медиа копируется SQL-ом).</summary>
+        public System.Collections.Generic.List<(string sender, string text, int scope, int id)> ConsumePendingForwards()
+        {
+            var list = new System.Collections.Generic.List<(string sender, string text, int scope, int id)>();
+            if (_forwardBatch.Count > 0)
+            {
+                list.AddRange(_forwardBatch);
+                _forwardBatch.Clear();
+                CancelForward();
+            }
+            else if (_forwardMsgId >= 0)
+            {
+                list.Add((_forwardSenderName, _forwardText, _forwardSrcScope, _forwardSrcId));
+                CancelForward();
+            }
+            return list;
+        }
+
+        /// <summary>Пересылка, начатая ИЗ СЕРВЕРА: кладём в буфер (с id исходника —
+        /// медиа тоже уедет). Дальше юзер выбирает диалог/группу/канал и жмёт «Отправить».</summary>
+        public void BeginForwardExternal(string senderName, string text, int srcServerMsgId = 0)
+        {
+            BeginForward(0, text, false, senderName);
+            _forwardSrcScope = 2;
+            _forwardSrcId = srcServerMsgId;
+        }
+
+        /// <summary>Пачка сообщений из сервера (множественное выделение) — в общий
+        /// буфер пересылки. Отправка: диалог/группа («Отправить» в ЛС) или канал.</summary>
+        public void BeginForwardExternalBatch(System.Collections.Generic.List<(string sender, string text, int id)> batch)
+        {
+            if (batch == null || batch.Count == 0) return;
+            CancelReply();
+            CancelEdit();
+            _forwardMsgId = -1;
+            _forwardBatch.Clear();
+            foreach (var (sndr, txt, id) in batch)
+                _forwardBatch.Add((sndr, txt, 2, id));
+            _lblForwardInfo.Text = $"↪ Пересылка {batch.Count} сообщений(я) — выберите диалог/группу/канал и нажмите «Отправить»";
+            _pnlForwardBar.Visible = true;
         }
 
         public bool TrySendForward()
         {
-            if (_forwardMsgId < 0) return false;
+            var pending = ConsumePendingForwards();
+            if (pending.Count == 0) return false;
 
-            // Формируем текст с указанием отправителя
-            string sender = _forwardSenderName;
-            string textToSend = string.IsNullOrWhiteSpace(sender)
-                ? $"↪ Переслано:\n{_forwardText}"
-                : $"↪ Переслано от {sender}:\n{_forwardText}";
+            bool toGroup = _currentGroupId >= 0;
+            int target = toGroup ? _currentGroupId : _currentChatPartnerId;
+            if (target < 0) return false;
+            int me = UserSession.EffectiveId;
 
-            CancelForward();
+            foreach (var (sndr, txt, srcScope, srcId) in pending)
+            {
+                try { ForwardHelper.Forward(srcScope, srcId, sndr, txt, toGroup ? 1 : 0, me, target); }
+                catch (Exception ex) { MessageBox.Show("Ошибка пересылки: " + ex.Message); return true; }
+            }
 
-            if (_currentGroupId >= 0)
-                SendGroupMessage(textToSend, null);
-            else if (_currentChatPartnerId >= 0)
-                SendMessage(textToSend, null);
-
+            // Уведомляем получателя по WS и перерисовываем чат.
+            try
+            {
+                if (toGroup) WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _currentGroupId, "group");
+                else WebSocketSignalingClient.Instance.SendMessage("new_message", _currentChatPartnerId, me, "direct");
+            }
+            catch { }
+            ForceMessageRerender();
+            if (toGroup) LoadGroupMessages(); else LoadMessages();
             return true;
         }
 
@@ -388,6 +872,71 @@ namespace PISMO
         /// Вызывать из btnSend_Click ПЕРЕД основной отправкой.
         /// Если активен режим редактирования — сохраняет и возвращает true.
         /// </summary>
+        /// <summary>Показывает историю изменений сообщения (2.0): прежние версии
+        /// текста с датами. Пусто — сообщение не редактировалось.</summary>
+        private void ShowEditHistory(int msgId, int scope)
+        {
+            var rows = new List<(string When, string Text)>();
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT old_text, edited_at FROM message_edits WHERE message_id=@m AND scope=@s ORDER BY edited_at DESC", conn);
+                cmd.Parameters.AddWithValue("@m", msgId);
+                cmd.Parameters.AddWithValue("@s", scope);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    string when = r["edited_at"] == DBNull.Value ? "" : Convert.ToDateTime(r["edited_at"]).ToString("dd.MM.yyyy HH:mm");
+                    string txt;
+                    try { txt = Crypto.Dec(r["old_text"]?.ToString() ?? ""); } catch { txt = ""; }
+                    rows.Add((when, txt));
+                }
+            }
+            catch { }
+
+            var pop = new Form
+            {
+                Text = "📝 История изменений",
+                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.CenterParent,
+                ClientSize = new Size(420, 400),
+                BackColor = Color.FromArgb(49, 51, 56)
+            };
+            var list = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+                AutoScroll = true, BackColor = Color.FromArgb(49, 51, 56), Padding = new Padding(10)
+            };
+            if (rows.Count == 0)
+                list.Controls.Add(new Label { Text = "Это сообщение не редактировалось.", ForeColor = Color.FromArgb(150, 152, 158), AutoSize = true, Font = new Font("Segoe UI", 9.5f) });
+            foreach (var (when, txt) in rows)
+            {
+                var card = new Panel { Width = 388, Height = 58, BackColor = Color.FromArgb(43, 45, 49), Margin = new Padding(0, 0, 0, 6) };
+                card.Controls.Add(new Label { Text = "было · " + when, ForeColor = Color.FromArgb(150, 152, 158), AutoSize = false, Size = new Size(360, 15), Location = new Point(10, 6), Font = new Font("Segoe UI", 8f) });
+                card.Controls.Add(new Label { Text = string.IsNullOrWhiteSpace(txt) ? "[пусто/вложение]" : (txt.Length > 120 ? txt[..120] + "…" : txt), ForeColor = Color.White, AutoSize = false, Size = new Size(368, 32), Location = new Point(10, 22), Font = new Font("Segoe UI", 9f), AutoEllipsis = true });
+                list.Controls.Add(card);
+            }
+            pop.Controls.Add(list);
+            pop.ShowDialog(this);
+        }
+
+        /// <summary>Шлёт собеседнику(ам) WS-сигнал «edit» — правка/удаление
+        /// сообщения должны появляться у него сразу, а не после нового сообщения
+        /// или переоткрытия чата. Для группы sessionId=groupId; для лички
+        /// target=собеседник, sessionId=я.</summary>
+        private void NotifyChatEdited(bool isGroup)
+        {
+            try
+            {
+                if (isGroup)
+                    WebSocketSignalingClient.Instance.SendMessage("edit", 0, _currentGroupId, "group");
+                else
+                    WebSocketSignalingClient.Instance.SendMessage("edit", _currentChatPartnerId, UserSession.EffectiveId, "direct");
+            }
+            catch { }
+        }
+
         public bool TrySaveEdit()
         {
             if (_editMsgId < 0) return false;
@@ -399,9 +948,32 @@ namespace PISMO
             {
                 using var conn = DBHelper.OpenConnection();
                 string table = _isGroupEdit ? "group_messages" : "messages";
+                int scope = _isGroupEdit ? 1 : 0;
+
+                // 2.0: сохраняем ПРЕЖНИЙ текст в историю изменений перед перезаписью.
+                try
+                {
+                    string oldCipher = null;
+                    using (var sel = new MySqlCommand($"SELECT text FROM {table} WHERE id=@id", conn))
+                    {
+                        sel.Parameters.AddWithValue("@id", _editMsgId);
+                        oldCipher = sel.ExecuteScalar() as string;
+                    }
+                    if (oldCipher != null)
+                    {
+                        using var hist = new MySqlCommand(
+                            "INSERT INTO message_edits (message_id, scope, old_text) VALUES (@m, @s, @o)", conn);
+                        hist.Parameters.AddWithValue("@m", _editMsgId);
+                        hist.Parameters.AddWithValue("@s", scope);
+                        hist.Parameters.AddWithValue("@o", oldCipher);
+                        hist.ExecuteNonQuery();
+                    }
+                }
+                catch { /* история не критична для самого редактирования */ }
+
                 using var cmd = new MySqlCommand(
                     $"UPDATE {table} SET text=@t, edited_at=NOW() WHERE id=@id", conn);
-                cmd.Parameters.AddWithValue("@t", newText);
+                cmd.Parameters.AddWithValue("@t", Crypto.Enc(newText));
                 cmd.Parameters.AddWithValue("@id", _editMsgId);
                 cmd.ExecuteNonQuery();
             }
@@ -410,6 +982,10 @@ namespace PISMO
                 MessageBox.Show("Ошибка редактирования: " + ex.Message);
                 return false;
             }
+
+            // Сообщаем собеседнику(ам) о правке — чтобы чат обновился в реальном
+            // времени, а не только после нового сообщения/переоткрытия.
+            NotifyChatEdited(_isGroupEdit);
 
             txtMessage.Clear();
             _editMsgId = -1;
@@ -449,6 +1025,7 @@ namespace PISMO
                 return;
             }
 
+            NotifyChatEdited(isGroup);
             if (isGroup) LoadGroupMessages();
             else LoadMessages();
         }
@@ -469,13 +1046,20 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand(
-                    "DELETE FROM messages " +
-                    "WHERE (sender_id=@me AND receiver_id=@them) " +
-                    "   OR (sender_id=@them AND receiver_id=@me)", conn);
-                cmd.Parameters.AddWithValue("@me", myId);
-                cmd.Parameters.AddWithValue("@them", partnerId);
-                cmd.ExecuteNonQuery();
+                // Двумя запросами вместо OR: удаление по индексу, а не сканом всей
+                // таблицы (в ней лежат вложения — скан дорогой).
+                foreach (var sql in new[]
+                {
+                    "DELETE FROM messages WHERE sender_id=@me AND receiver_id=@them",
+                    "DELETE FROM messages WHERE sender_id=@them AND receiver_id=@me"
+                })
+                {
+                    using var cmd = new MySqlCommand(sql, conn);
+                    cmd.Parameters.AddWithValue("@me", myId);
+                    cmd.Parameters.AddWithValue("@them", partnerId);
+                    cmd.CommandTimeout = 600;
+                    cmd.ExecuteNonQuery();
+                }
             }
             catch (Exception ex)
             {
@@ -572,7 +1156,7 @@ namespace PISMO
 
                 if (dt.Rows.Count > 0)
                 {
-                    qText = dt.Rows[0]["text"].ToString();
+                    qText = Crypto.Dec(dt.Rows[0]["text"].ToString());
                     qSender = dt.Rows[0]["sname"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(qSender))
                         qSender = dt.Rows[0]["login"].ToString();
@@ -622,6 +1206,9 @@ namespace PISMO
                 _activeCall.Activate();
                 return;
             }
+            // В серверном голосовом канале (или другом окне звонка)? Выходим —
+            // нельзя быть в двух ГС разом.
+            try { if (HasActiveVoice()) EndCurrentVoice(); } catch { }
 
             int myId = UserSession.EffectiveId;
             int peerId = _currentChatPartnerId;
@@ -657,8 +1244,9 @@ namespace PISMO
             {
                 // Заходим в существующий звонок (обратный заход / присоединение к групповому звонку)
                 _activeCall = new CallForm(existingSessionId, isCaller: false, peerName: targetName, peerId: peerId, hasVideo: withVideo, groupId: _currentGroupId);
-                _activeCall.FormClosed += (s, e) => _activeCall = null;
+                _activeCall.FormClosed += (s, e) => { _activeCall = null; HideVoiceDock(); };
                 _activeCall.Show(this);
+                ShowVoiceDock(targetName);
                 return;
             }
 
@@ -693,8 +1281,9 @@ namespace PISMO
             if (sessionId <= 0) return;
 
             _activeCall = new CallForm(sessionId, isCaller: true, peerName: targetName, peerId: peerId, hasVideo: withVideo, groupId: _currentGroupId);
-            _activeCall.FormClosed += (s, e) => _activeCall = null;
+            _activeCall.FormClosed += (s, e) => { _activeCall = null; HideVoiceDock(); };
             _activeCall.Show(this);
+            ShowVoiceDock(targetName);
 
             if (_currentGroupId >= 0)
                 WebSocketSignalingClient.Instance.SendMessage("incoming_call", 0, sessionId, "group");
@@ -715,46 +1304,92 @@ namespace PISMO
             {
                 if (type == "incoming_call")
                 {
-                    try { BeginInvoke(() => CheckIncomingCalls()); } catch { }
+                    try { BeginInvoke(() => { _pushedCheck = true; CheckIncomingCalls(); }); } catch { }
                 }
             };
         }
 
+        // Звонки, по которым уже показали окно входящего — чтобы не дёргать
+        // повторно на каждом опросе. Заменяет ненадёжный фильтр "id > last",
+        // из-за которого часть звонков пропускалась ("не всегда приходит").
+        private readonly System.Collections.Generic.HashSet<int> _shownCallIds = new();
+
+        private bool _callPollBusy;   // запрос уже идёт — не наслаиваем
+        private int _callPollSkip;    // прореживание опроса при живом WS
+
         private void CheckIncomingCalls()
         {
             if (_activeCall != null && !_activeCall.IsDisposed) return;
+            if (_callPollBusy) return;
 
+            // При здоровом WS входящий звонок приходит push'ем (incoming_call →
+            // мгновенный CheckIncomingCalls), опрос БД — лишь страховка, поэтому
+            // прореживаем его до ~6 c. Без WS — полный темп (1.5 c).
+            bool pushed = _pushedCheck; _pushedCheck = false;
+            if (!pushed && WebSocketSignalingClient.Instance.IsHealthy && (++_callPollSkip % 4) != 0) return;
+
+            _callPollBusy = true;
             int myId = UserSession.EffectiveId;
+
+            // ВАЖНО: запрос к БД — в фоне. Раньше он шёл каждые 1.5 с прямо на
+            // UI-потоке (JOIN по call_sessions) — это и было «подлагивание раз
+            // в ~3 секунды», особенно с удалённой БД.
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var dt = new DataTable();
+                    using (var conn = DBHelper.OpenConnection())
+                    {
+                        // Берём ВСЕ звонки в статусе ringing, адресованные мне (личные
+                        // по callee_id или групповые по членству), кроме своих же.
+                        // Фильтрация «уже показанных» — на клиенте через _shownCallIds.
+                        const string sql = @"
+                            SELECT cs.id, cs.caller_id, cs.has_video, cs.group_id,
+                                   TRIM(CONCAT(u.Name,' ',u.Surname)) AS caller_name, u.login
+                            FROM call_sessions cs
+                            JOIN users u ON u.id = cs.caller_id
+                            LEFT JOIN group_members gm ON gm.group_id = cs.group_id AND gm.user_id = @me
+                            WHERE (cs.callee_id = @me OR gm.user_id = @me)
+                              AND cs.status = 'ringing'
+                              AND cs.caller_id != @me
+                            ORDER BY cs.id ASC";
+                        using var cmd = new MySqlCommand(sql, conn);
+                        cmd.Parameters.AddWithValue("@me", myId);
+                        new MySqlDataAdapter(cmd).Fill(dt);
+                    }
+
+                    if (dt.Rows.Count == 0 || IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() => ShowIncomingFromRows(dt)));
+                }
+                catch { }
+                finally { _callPollBusy = false; }
+            });
+        }
+
+        private bool _pushedCheck;   // проверка вызвана WS-событием — без прореживания
+
+        /// <summary>UI-часть: показать окно входящего звонка по строкам опроса.</summary>
+        private void ShowIncomingFromRows(DataTable dt)
+        {
+            if (_activeCall != null && !_activeCall.IsDisposed) return;
             try
             {
-                using var conn = DBHelper.OpenConnection();
-                const string sql = @"
-                    SELECT cs.id, cs.caller_id, cs.has_video, cs.group_id,
-                           TRIM(CONCAT(u.Name,' ',u.Surname)) AS caller_name, u.login
-                    FROM call_sessions cs
-                    JOIN users u ON u.id = cs.caller_id
-                    LEFT JOIN group_members gm ON gm.group_id = cs.group_id AND gm.user_id = @me
-                    WHERE (cs.callee_id = @me OR gm.user_id = @me)
-                      AND cs.status = 'ringing'
-                      AND cs.caller_id != @me
-                      AND cs.id > @last";
-                using var cmd = new MySqlCommand(sql, conn);
-                cmd.Parameters.AddWithValue("@me", myId);
-                cmd.Parameters.AddWithValue("@last", _lastCheckedCallId);
-
-                var dt = new DataTable();
-                new MySqlDataAdapter(cmd).Fill(dt);
-
                 foreach (DataRow row in dt.Rows)
                 {
                     int sid = Convert.ToInt32(row["id"]);
+                    if (!_shownCallIds.Add(sid)) continue; // уже показывали это окно
+
                     int callerId = Convert.ToInt32(row["caller_id"]);
                     bool hasVid = Convert.ToBoolean(row["has_video"]);
                     int groupId = row["group_id"] == DBNull.Value ? -1 : Convert.ToInt32(row["group_id"]);
                     string cname = row["caller_name"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(cname)) cname = row["login"].ToString();
 
-                    _lastCheckedCallId = Math.Max(_lastCheckedCallId, sid);
+                    // Игнорируемый собеседник: звонок не показываем и не звеним.
+                    // Сессию не отклоняем — у звонящего просто идут гудки, как
+                    // если бы нас не было на месте.
+                    if (ChatMutes.IsMuted(callerId)) return;
 
                     // Показываем входящий звонок
                     var incoming = new IncomingCallForm(sid, cname, callerId);
@@ -777,8 +1412,9 @@ namespace PISMO
 
                             _activeCall = new CallForm(sid, isCaller: false,
                                 peerName: cname, peerId: callerId, hasVideo: hasVid, groupId: groupId);
-                            _activeCall.FormClosed += (s2, e2) => _activeCall = null;
+                            _activeCall.FormClosed += (s2, e2) => { _activeCall = null; HideVoiceDock(); };
                             _activeCall.Show(this);
+                            ShowVoiceDock(cname);
                         }
                         else
                         {
@@ -802,12 +1438,54 @@ namespace PISMO
         /// </summary>
         public void AttachConversationContextMenu(Panel card, int partnerId, string partnerName)
         {
-            card.MouseClick += async (s, e) =>
+            // ПКМ-меню вешаем не только на саму карточку, но и на все её дочерние
+            // контролы (аватар, имя, превью) — иначе клик правой по тексту/аватару
+            // «проваливался» мимо меню и вместо него просто открывался чат.
+            void Handler(object s, MouseEventArgs e)
             {
                 if (e.Button != MouseButtons.Right) return;
                 var menu = new ContextMenuStrip();
                 menu.BackColor = Color.FromArgb(24, 25, 28);
                 menu.ForeColor = Color.FromArgb(220, 221, 222);
+
+                var itemProfile = new ToolStripMenuItem("👤 Профиль");
+                itemProfile.Click += (s2, e2) =>
+                {
+                    using var pf = new ProfileForm(partnerId, readOnly: true);
+                    pf.ShowDialog(this);
+                };
+                menu.Items.Add(itemProfile);
+
+                // Друзья (только для обычных пользователей — это меню и так вешается
+                // на карточки пользователей, не групп).
+                try
+                {
+                    var rel = FriendsRepository.GetRelation(UserSession.EffectiveId, partnerId);
+                    string caption = rel switch
+                    {
+                        FriendsRepository.Relation.Friend => "➖ Удалить из друзей",
+                        FriendsRepository.Relation.OutgoingPending => "⏳ Отменить заявку",
+                        FriendsRepository.Relation.IncomingPending => "✔ Принять заявку в друзья",
+                        _ => "📨 Отправить заявку в друзья"
+                    };
+                    var itemFriend = new ToolStripMenuItem(caption);
+                    itemFriend.Click += (s2, e2) =>
+                    {
+                        switch (rel)
+                        {
+                            case FriendsRepository.Relation.Friend:
+                            case FriendsRepository.Relation.OutgoingPending:
+                                FriendsRepository.Remove(UserSession.EffectiveId, partnerId); break;
+                            case FriendsRepository.Relation.IncomingPending:
+                                FriendsRepository.AcceptRequest(UserSession.EffectiveId, partnerId); break;
+                            default:
+                                FriendsRepository.SendRequest(UserSession.EffectiveId, partnerId); break;
+                        }
+                        try { if (UserSession.Role == "admin" && !UserSession.IsImpersonating) LoadAllUsersForAdmin(); else LoadConversations(); } catch { }
+                    };
+                    menu.Items.Add(itemFriend);
+                }
+                catch { }
 
                 var itemCall = new ToolStripMenuItem("📞 Позвонить");
                 itemCall.Click += (s2, e2) =>
@@ -817,13 +1495,85 @@ namespace PISMO
                 };
                 menu.Items.Add(itemCall);
 
-                var itemVideoCall = new ToolStripMenuItem("📹 Видеозвонок");
-                itemVideoCall.Click += (s2, e2) =>
+                // Закрепление чата (2.1): диалог прижимается к верху списка ЛС
+                // (ниже групп) независимо от свежести переписки. Хранится локально.
+                try
                 {
-                    OpenChat(partnerId, partnerName);
-                    StartCall(withVideo: true);
+                    bool chatPinned = ChatPins.IsPinned(partnerId);
+                    var itemPinChat = new ToolStripMenuItem(chatPinned ? "📌 Открепить чат" : "📌 Закрепить чат");
+                    itemPinChat.Click += (s2, e2) =>
+                    {
+                        ChatPins.Toggle(partnerId);
+                        try
+                        {
+                            if (UserSession.Role == "admin" && !UserSession.IsImpersonating) LoadAllUsersForAdmin();
+                            else LoadConversations();
+                        }
+                        catch { }
+                    };
+                    menu.Items.Add(itemPinChat);
+                }
+                catch { }
+
+                // Игнорирование собеседника (локально): от него не приходят ни
+                // уведомления о сообщениях, ни входящие звонки.
+                try
+                {
+                    bool muted = ChatMutes.IsMuted(partnerId);
+                    var itemMute = new ToolStripMenuItem(
+                        muted ? "🔔 Больше не игнорировать" : "🔕 Игнорировать");
+                    itemMute.Click += (s2, e2) =>
+                    {
+                        ChatMutes.Toggle(partnerId);
+                        try
+                        {
+                            if (UserSession.Role == "admin" && !UserSession.IsImpersonating) LoadAllUsersForAdmin();
+                            else LoadConversations();
+                        }
+                        catch { }
+                    };
+                    menu.Items.Add(itemMute);
+                }
+                catch { }
+
+                // Пометить прочитанным ИМЕННО этот диалог — без захода в чат.
+                var itemRead = new ToolStripMenuItem("✓ Пометить прочитанным");
+                itemRead.Click += (s2, e2) =>
+                {
+                    int me = UserSession.EffectiveId;
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try
+                        {
+                            using var conn = DBHelper.OpenConnection();
+                            using var cmd = new MySqlCommand(
+                                "UPDATE messages SET is_read=1 WHERE sender_id=@p AND receiver_id=@me AND is_read=0", conn);
+                            cmd.Parameters.AddWithValue("@p", partnerId);
+                            cmd.Parameters.AddWithValue("@me", me);
+                            int n = cmd.ExecuteNonQuery();
+                            // Отправителю — событие «read», чтобы его галочки посинели сразу.
+                            if (n > 0)
+                                try { WebSocketSignalingClient.Instance.SendMessage("read", partnerId, me, "direct"); } catch { }
+                        }
+                        catch { }
+                        if (IsDisposed || !IsHandleCreated) return;
+                        try
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                try
+                                {
+                                    if (UserSession.Role == "admin" && !UserSession.IsImpersonating) LoadAllUsersForAdmin();
+                                    else LoadConversations();
+                                    PollTick(null, null);
+                                }
+                                catch { }
+                            }));
+                        }
+                        catch { }
+                    });
                 };
-                menu.Items.Add(itemVideoCall);
+                menu.Items.Add(itemRead);
 
                 // Блок/разблок пользователя
                 try
@@ -876,7 +1626,18 @@ namespace PISMO
                 }
 
                 menu.Show(Cursor.Position);
-            };
+            }
+
+            card.MouseClick += Handler;
+            void Wire(Control parent)
+            {
+                foreach (Control c in parent.Controls)
+                {
+                    c.MouseClick += Handler;
+                    if (c.HasChildren) Wire(c);
+                }
+            }
+            Wire(card);
         }
 
         /// <summary>
