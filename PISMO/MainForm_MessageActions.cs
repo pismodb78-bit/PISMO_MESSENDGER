@@ -1046,13 +1046,20 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand(
-                    "DELETE FROM messages " +
-                    "WHERE (sender_id=@me AND receiver_id=@them) " +
-                    "   OR (sender_id=@them AND receiver_id=@me)", conn);
-                cmd.Parameters.AddWithValue("@me", myId);
-                cmd.Parameters.AddWithValue("@them", partnerId);
-                cmd.ExecuteNonQuery();
+                // Двумя запросами вместо OR: удаление по индексу, а не сканом всей
+                // таблицы (в ней лежат вложения — скан дорогой).
+                foreach (var sql in new[]
+                {
+                    "DELETE FROM messages WHERE sender_id=@me AND receiver_id=@them",
+                    "DELETE FROM messages WHERE sender_id=@them AND receiver_id=@me"
+                })
+                {
+                    using var cmd = new MySqlCommand(sql, conn);
+                    cmd.Parameters.AddWithValue("@me", myId);
+                    cmd.Parameters.AddWithValue("@them", partnerId);
+                    cmd.CommandTimeout = 600;
+                    cmd.ExecuteNonQuery();
+                }
             }
             catch (Exception ex)
             {

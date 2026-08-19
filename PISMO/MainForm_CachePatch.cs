@@ -120,26 +120,45 @@ namespace PISMO
         {
             using var conn = DBHelper.OpenConnection();
             // Постранично: берём ПОСЛЕДНИЕ `limit` сообщений (по id DESC), затем
-            // возвращаем в хронологическом порядке (ASC). limit<=0 — без лимита (всё).
-            string inner = @"
-                SELECT m.id, m.sender_id, m.text,
-                       NULL AS image_data, NULL AS audio_data,
-                       NULL AS video_data, NULL AS file_data,
+            // возвращаем в хронологическом порядке (ASC). limit<=0 — без лимита.
+            //
+            // ВАЖНО про диск. Раньше условие было «(sender=@me AND receiver=@them)
+            // OR (sender=@them AND receiver=@me)». OR по двум колонкам не даёт
+            // использовать idx_msg_pair, и MySQL шёл полным сканированием таблицы —
+            // при каждом открытии чата. На большой переписке это и есть те самые
+            // 10 секунд под 80% диска.
+            //
+            // Теперь каждое направление — отдельная ветка UNION ALL: обе ложатся
+            // на индекс (sender_id, receiver_id) и берут только свой хвост. Имя
+            // отправителя подставляем ПОСЛЕ отбора, а не джойним всю переписку.
+            string cols = @"
+                       m.id, m.sender_id, m.text,
                        m.file_name,
                        m.reply_to_id, m.is_deleted, m.edited_at, m.created_at,
                        m.is_read,
-                       TIMESTAMPDIFF(SECOND, m.created_at, NOW()) AS age_sec,
-                       TRIM(CONCAT(u.Name,' ',u.Surname)) AS sender_name, u.login,
                        (m.image_data IS NOT NULL) AS has_img,
                        (m.audio_data IS NOT NULL) AS has_audio,
                        (m.video_data IS NOT NULL) AS has_video,
-                       (m.file_data  IS NOT NULL) AS has_file
-                FROM messages m
-                JOIN users u ON u.id = m.sender_id
-                WHERE (m.sender_id=@me AND m.receiver_id=@them)
-                   OR (m.sender_id=@them AND m.receiver_id=@me)
-                ORDER BY m.id " + (limit > 0 ? "DESC LIMIT " + limit : "ASC");
-            string sql = limit > 0 ? "SELECT * FROM (" + inner + ") sub ORDER BY id ASC" : inner;
+                       (m.file_data  IS NOT NULL) AS has_file";
+
+            string tail = limit > 0 ? " ORDER BY m.id DESC LIMIT " + limit : "";
+            string inner =
+                "( SELECT " + cols + " FROM messages m " +
+                "  WHERE m.sender_id=@me AND m.receiver_id=@them" + tail + " )" +
+                " UNION ALL " +
+                "( SELECT " + cols + " FROM messages m " +
+                "  WHERE m.sender_id=@them AND m.receiver_id=@me" + tail + " )";
+
+            string sql = @"
+                SELECT sub.*,
+                       NULL AS image_data, NULL AS audio_data,
+                       NULL AS video_data, NULL AS file_data,
+                       TIMESTAMPDIFF(SECOND, sub.created_at, NOW()) AS age_sec,
+                       TRIM(CONCAT(u.Name,' ',u.Surname)) AS sender_name, u.login
+                FROM ( SELECT * FROM (" + inner + ") pair" +
+                (limit > 0 ? " ORDER BY id DESC LIMIT " + limit : "") + @" ) sub
+                JOIN users u ON u.id = sub.sender_id
+                ORDER BY sub.id ASC";
 
             using var cmd = new MySqlCommand(sql, conn);
             cmd.Parameters.AddWithValue("@me",   myId);

@@ -1376,8 +1376,11 @@ namespace PISMO
         {
             int myId = UserSession.EffectiveId;
             using var conn = DBHelper.OpenConnection();
+            // Два отдельных COUNT вместо OR: каждый ложится на idx_msg_pair.
+            // С OR запрос сканировал messages целиком — при каждом открытии чата.
             using var cmd = new MySqlCommand(
-                "SELECT COUNT(*) FROM messages WHERE (sender_id=@me AND receiver_id=@th) OR (sender_id=@th AND receiver_id=@me)",
+                "SELECT (SELECT COUNT(*) FROM messages WHERE sender_id=@me AND receiver_id=@th) " +
+                "     + (SELECT COUNT(*) FROM messages WHERE sender_id=@th AND receiver_id=@me)",
                 conn);
             cmd.Parameters.AddWithValue("@me", myId);
             cmd.Parameters.AddWithValue("@th", _currentChatPartnerId);
@@ -3379,8 +3382,12 @@ namespace PISMO
                 using var cmd = grp
                     ? new MySqlCommand("SELECT COUNT(*) FROM group_messages " +
                                        "WHERE group_id=@g AND created_at >= @d", conn)
-                    : new MySqlCommand("SELECT COUNT(*) FROM messages WHERE ((sender_id=@me AND receiver_id=@them) " +
-                                       "OR (sender_id=@them AND receiver_id=@me)) AND created_at >= @d", conn);
+                    // Тот же приём, что и в GetMsgCount: без OR запрос попадает в индекс.
+                    : new MySqlCommand(
+                        "SELECT (SELECT COUNT(*) FROM messages " +
+                        "        WHERE sender_id=@me AND receiver_id=@them AND created_at >= @d) " +
+                        "     + (SELECT COUNT(*) FROM messages " +
+                        "        WHERE sender_id=@them AND receiver_id=@me AND created_at >= @d)", conn);
                 if (grp) cmd.Parameters.AddWithValue("@g", _currentGroupId);
                 else
                 {
