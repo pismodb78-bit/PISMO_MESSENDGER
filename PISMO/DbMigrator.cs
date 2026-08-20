@@ -248,6 +248,70 @@ namespace PISMO
                     "KEY idx_mention_lookup (user_id, channel_id, message_id)" +
                     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
             }),
+
+            // ВНИМАНИЕ ПРО НОМЕРА. Журнал schema_migrations общий с Android-клиентом:
+            // это одна и та же база. Значит, номер 16 обязан означать ОДНО И ТО ЖЕ на
+            // обеих сторонах — иначе тот, кто запустится вторым, увидит номер в журнале
+            // и молча пропустит СВОЮ миграцию. 16, 17 и 18 ниже повторяют одноимённые
+            // миграции Android слово в слово.
+
+            (16, "server_roles.can_channels: отдельное право на каналы", conn =>
+            {
+                if (TableExists(conn, "server_roles") && !ColumnExists(conn, "server_roles", "can_channels"))
+                {
+                    Exec(conn, "ALTER TABLE server_roles ADD COLUMN can_channels TINYINT(1) NOT NULL DEFAULT 0");
+                    // У кого было общее управление — тот не должен потерять каналы.
+                    Exec(conn, "UPDATE server_roles SET can_channels=1 WHERE can_manage=1");
+                }
+            }),
+
+            (17, "messages: индексы под горячие запросы личных сообщений", conn =>
+            {
+                // ЭТО ЛЕЧИТ «ДИСК НА 100 МБ ПРИ КАЖДОМ СООБЩЕНИИ».
+                //
+                // В messages есть только idx_msg_pair (sender_id, receiver_id) и
+                // idx_msg_created (created_at). Запросы, которые идут ОТ ПОЛУЧАТЕЛЯ,
+                // опереться на них не могут вовсе:
+                //
+                //   ReadUnreadCounts  — WHERE receiver_id=@me AND is_read=0
+                //   LoadConversations — ветка «мне писали»
+                //   MarkAsRead        — WHERE ... AND is_read=0
+                //
+                // Без индекса каждый из них сканирует messages ЦЕЛИКОМ. Первый из
+                // них уходит на каждый тик опроса и дополнительно на каждое событие
+                // «новое сообщение» — отсюда и полка чтения на десятки секунд после
+                // каждой отправки, хоть текст и весит сотню байт.
+                //
+                // Те же индексы лежат в sql/2026-08-19_message_indexes.sql для ручного
+                // применения — на случай, если у учётной записи нет права ALTER.
+                AddIndex(conn, "messages", "idx_msg_recv_read", "(receiver_id, is_read, sender_id)");
+                AddIndex(conn, "messages", "idx_msg_recv_time", "(receiver_id, created_at, id)");
+                AddIndex(conn, "messages", "idx_msg_send_time", "(sender_id, created_at, id)");
+                AddIndex(conn, "messages", "idx_msg_pair_time", "(sender_id, receiver_id, id)");
+            }),
+
+            (18, "индексы лент: messages, group_messages, server_messages", conn =>
+            {
+                // Индексы messages перечислены здесь ЕЩЁ РАЗ намеренно. Их же
+                // добавляет миграция 17 — но в Android-клиенте 17 проверяла наличие
+                // индекса через information_schema и при отказе в доступе (#1044)
+                // считала, что индекс уже есть: могла ничего не создать и при этом
+                // отметиться в общем журнале. Тогда 17 здесь просто пропустится.
+                // Эта миграция ничего не спрашивает и просто пробует создать.
+                AddIndex(conn, "messages", "idx_msg_recv_read", "(receiver_id, is_read, sender_id)");
+                AddIndex(conn, "messages", "idx_msg_recv_time", "(receiver_id, created_at, id)");
+                AddIndex(conn, "messages", "idx_msg_send_time", "(sender_id, created_at, id)");
+                AddIndex(conn, "messages", "idx_msg_pair_time", "(sender_id, receiver_id, id)");
+
+                // То же самое для групп и каналов: опрос спрашивает «есть ли новое»
+                // максимальным id, лента берёт последнюю страницу. И то и другое
+                // должно быть движением к концу индекса, а не проходом по всей
+                // истории — строки там широкие, с вложениями.
+                if (TableExists(conn, "group_messages"))
+                    AddIndex(conn, "group_messages", "idx_gm_group_id", "(group_id, id)");
+                if (TableExists(conn, "server_messages"))
+                    AddIndex(conn, "server_messages", "idx_sm_channel_id", "(channel_id, id)");
+            }),
         };
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>
@@ -331,6 +395,30 @@ namespace PISMO
         {
             using var cmd = new MySqlCommand(sql, conn);
             cmd.ExecuteNonQuery();
+        }
+
+        /// <summary>
+        /// Создаёт индекс, если его ещё нет.
+        ///
+        /// Существование НЕ проверяем заранее: на части хостингов закрыт доступ и к
+        /// information_schema, и это уронило бы миграцию до самого ALTER. Вместо
+        /// проверки просто пробуем создать и глотаем ошибку 1061 «Duplicate key
+        /// name» — она означает ровно то, что нам и нужно: индекс уже на месте.
+        /// Любая другая ошибка (например, нет права ALTER) уходит наверх, и
+        /// миграция не отмечается применённой — повторится при следующем запуске,
+        /// а до тех пор индексы можно положить руками скриптом из папки sql.
+        /// </summary>
+        private static void AddIndex(MySqlConnection conn, string table, string name, string columns)
+        {
+            if (!IsPlainIdentifier(table) || !IsPlainIdentifier(name)) return;
+            try
+            {
+                Exec(conn, $"ALTER TABLE `{table}` ADD INDEX `{name}` {columns}");
+            }
+            catch (MySqlException e) when (e.Number == 1061)
+            {
+                // уже есть — это успех
+            }
         }
 
         // На части хостингов доступ к information_schema закрыт даже

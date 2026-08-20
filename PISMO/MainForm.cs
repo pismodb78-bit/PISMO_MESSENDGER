@@ -58,6 +58,9 @@ namespace PISMO
         private int _lastMsgCount = 0;
         private bool _pollBusy = false;
         private int _lastOpenSig = -1;   // число сообщений открытого чата на прошлом опросе (детект новых)
+        private int _lastOpenMax = -1;   // максимальный id открытого чата (дешёвый детект нового)
+        private int _lastOpenRead = -1;  // сколько МОИХ сообщений собеседник ещё не прочитал
+        private int _openTick;           // счётчик тиков: счёт строк спрашиваем не каждый раз
         private readonly Dictionary<int, int> _prevUnread = new();
         private Label _friendsBadge;      // красный бейдж на кнопке «Друзья»
         private int _prevFriendReq = -1;  // прошлое число входящих заявок (-1 = ещё не знаем)
@@ -1321,8 +1324,36 @@ namespace PISMO
                     bool openChanged = false;
                     try
                     {
-                        if (grp >= 0) { int c = GetGroupMsgCount(); openChanged = c != _lastOpenSig; _lastOpenSig = c; }
-                        else if (dm >= 0) { int c = GetMsgCount(); openChanged = c != _lastOpenSig; _lastOpenSig = c; }
+                        // Дёшево — это МАКСИМАЛЬНЫЙ id: одно движение к концу индекса,
+                        // сколько бы сообщений в переписке ни было. Счёт всех строк
+                        // нужен только затем, чтобы заметить УДАЛЁННОЕ (при удалении
+                        // максимум не меняется), и он идёт по всей переписке —
+                        // поэтому раз в восемь тиков, а не каждый раз.
+                        //
+                        // Плюс отдельно смотрим, не прочитал ли собеседник мои
+                        // сообщения: число сообщений от этого не меняется, и синяя
+                        // галочка раньше появлялась только со следующим сообщением.
+                        _openTick++;
+                        bool countNow = _openTick % 8 == 0;
+
+                        if (grp >= 0)
+                        {
+                            int mx = GetGroupMsgMaxId();
+                            int c = countNow ? GetGroupMsgCount() : _lastOpenSig;
+                            openChanged = (_lastOpenMax >= 0 && mx != _lastOpenMax)
+                                       || (_lastOpenSig >= 0 && c != _lastOpenSig);
+                            _lastOpenMax = mx; _lastOpenSig = c; _lastOpenRead = -1;
+                        }
+                        else if (dm >= 0)
+                        {
+                            int mx = GetMsgMaxId();
+                            int c = countNow ? GetMsgCount() : _lastOpenSig;
+                            int rd = GetUnreadToPartner();
+                            openChanged = (_lastOpenMax >= 0 && mx != _lastOpenMax)
+                                       || (_lastOpenSig >= 0 && c != _lastOpenSig)
+                                       || (_lastOpenRead >= 0 && rd != _lastOpenRead);
+                            _lastOpenMax = mx; _lastOpenSig = c; _lastOpenRead = rd;
+                        }
                     }
                     catch { }
 
@@ -1361,6 +1392,51 @@ namespace PISMO
             _presence.Clear();
             foreach (var kv in fresh) _presence[kv.Key] = kv.Value;
             InvalidateCardAvatars();
+        }
+
+        /// <summary>Максимальный id в открытой группе — дешёвая замена счёту строк.</summary>
+        private int GetGroupMsgMaxId()
+        {
+            using var conn = DBHelper.OpenConnection();
+            using var cmd = new MySqlCommand(
+                "SELECT COALESCE(MAX(id),0) FROM group_messages WHERE group_id=@g", conn);
+            cmd.Parameters.AddWithValue("@g", _currentGroupId);
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+
+        /// <summary>
+        /// Максимальный id в открытой переписке. Две ветки, а не OR: с OR ни одна
+        /// из них не ляжет на idx_msg_pair, и «дешёвая проверка» превратилась бы в
+        /// проход по всей таблице.
+        /// </summary>
+        private int GetMsgMaxId()
+        {
+            int myId = UserSession.EffectiveId;
+            using var conn = DBHelper.OpenConnection();
+            using var cmd = new MySqlCommand(
+                "SELECT GREATEST(" +
+                " (SELECT COALESCE(MAX(id),0) FROM messages WHERE sender_id=@me AND receiver_id=@th)," +
+                " (SELECT COALESCE(MAX(id),0) FROM messages WHERE sender_id=@th AND receiver_id=@me))", conn);
+            cmd.Parameters.AddWithValue("@me", myId);
+            cmd.Parameters.AddWithValue("@th", _currentChatPartnerId);
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+
+        /// <summary>
+        /// Сколько МОИХ сообщений собеседник ещё не прочитал. Нужно ровно для синей
+        /// галочки: прочтение не меняет ни числа сообщений, ни максимального id,
+        /// поэтому без этой проверки отметка появлялась только со следующим
+        /// сообщением — а с мобильного клиента, который раньше не слал событие
+        /// «прочитано», не появлялась вовсе. Запрос ложится на idx_msg_recv_read.
+        /// </summary>
+        private int GetUnreadToPartner()
+        {
+            using var conn = DBHelper.OpenConnection();
+            using var cmd = new MySqlCommand(
+                "SELECT COUNT(*) FROM messages WHERE receiver_id=@th AND is_read=0 AND sender_id=@me", conn);
+            cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
+            cmd.Parameters.AddWithValue("@th", _currentChatPartnerId);
+            return Convert.ToInt32(cmd.ExecuteScalar());
         }
 
         private int GetGroupMsgCount()
@@ -1797,28 +1873,39 @@ namespace PISMO
                 // Теперь: агрегат считается ОДИН раз по своим сообщениям (две
                 // ветки UNION ALL, каждая ложится на индекс), а текст последнего
                 // сообщения берётся одной выборкой по первичному ключу.
+                //
+                // ВТОРОЙ ЗАХОД (диск всё равно грелся). Прошлый вариант выбирал из
+                // messages created_at и is_read по КАЖДОМУ своему сообщению: этих
+                // колонок нет в индексах, поэтому на каждую строку шёл поход в
+                // основную таблицу — десятки тысяч случайных чтений на один показ
+                // списка. Теперь из индекса берётся только максимальный id по
+                // собеседнику (id есть в любом индексе InnoDB — он первичный ключ),
+                // а время и текст последнего сообщения читаются ОДНОЙ строкой по
+                // этому id. Непрочитанные считаются отдельно и только по
+                // непрочитанным строкам — это ложится на idx_msg_recv_read целиком.
                 string sql = @"
                     SELECT u.id, u.Name, u.Surname, u.login,
-                           c.last_time AS last_time,
-                           mm.text     AS last_msg,
-                           IFNULL(c.unread, 0) AS unread
+                           lm.created_at AS last_time,
+                           lm.text       AS last_msg,
+                           IFNULL(ur.unread, 0) AS unread
                     FROM users u
                     LEFT JOIN (
-                        SELECT partner_id,
-                               MAX(created_at) AS last_time,
-                               MAX(id)         AS last_id,
-                               SUM(unread)     AS unread
+                        SELECT partner_id, MAX(id) AS last_id
                         FROM (
-                            SELECT receiver_id AS partner_id, created_at, id, 0 AS unread
-                            FROM messages WHERE sender_id = @me
+                            SELECT receiver_id AS partner_id, MAX(id) AS id
+                            FROM messages WHERE sender_id = @me GROUP BY receiver_id
                             UNION ALL
-                            SELECT sender_id AS partner_id, created_at, id,
-                                   CASE WHEN is_read = 0 THEN 1 ELSE 0 END AS unread
-                            FROM messages WHERE receiver_id = @me
+                            SELECT sender_id AS partner_id, MAX(id) AS id
+                            FROM messages WHERE receiver_id = @me GROUP BY sender_id
                         ) t
                         GROUP BY partner_id
                     ) c ON c.partner_id = u.id
-                    LEFT JOIN messages mm ON mm.id = c.last_id
+                    LEFT JOIN messages lm ON lm.id = c.last_id
+                    LEFT JOIN (
+                        SELECT sender_id AS partner_id, COUNT(*) AS unread
+                        FROM messages WHERE receiver_id = @me AND is_read = 0
+                        GROUP BY sender_id
+                    ) ur ON ur.partner_id = u.id
                     WHERE u.id <> @me
                       AND ( c.partner_id IS NOT NULL
                          OR EXISTS (SELECT 1 FROM friends f
