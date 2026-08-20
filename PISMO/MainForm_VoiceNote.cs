@@ -47,6 +47,22 @@ namespace PISMO
         private WaveOutEvent _voiceOut;
         private WaveFileReader _voiceReader;
 
+        /// <summary>Ползунок перемотки записанного.</summary>
+        private FlatSlider _voiceSeek;
+
+        /// <summary>Тик проигрывания: двигает ползунок и подпись.</summary>
+        private System.Windows.Forms.Timer _voicePlayTimer;
+
+        /// <summary>
+        /// Ползунок двигаем и мы сами, и человек мышью. Без этого флага наше
+        /// же обновление позиции читалось бы как перемотка, и звук топтался
+        /// бы на месте.
+        /// </summary>
+        private bool _voiceSeekSuppress;
+
+        /// <summary>Куда перемотали до нажатия «играть», в секундах.</summary>
+        private int _voiceSeekSeconds;
+
         /// <summary>
         /// Три минуты — тот же потолок, что на телефоне. Голосовое целиком
         /// лежит в памяти и уходит в базу одним BLOB'ом, поэтому забытая
@@ -59,7 +75,7 @@ namespace PISMO
             _pnlVoiceBar = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 42,
+                Height = 62,
                 BackColor = Color.FromArgb(47, 49, 54),
                 Visible = false
             };
@@ -87,11 +103,39 @@ namespace PISMO
             _btnVoicePlay = MakeVoiceButton("▶", "Прослушать");
             _btnVoicePlay.Click += (s, e) => TogglePendingVoicePlayback();
 
+            _voiceSeek = new FlatSlider
+            {
+                Dock = DockStyle.Bottom,
+                Height = 20,
+                Minimum = 0,
+                Maximum = 1,
+                Value = 0,
+                Visible = false
+            };
+            _voiceSeek.ValueChanged += (s, e) =>
+            {
+                if (_voiceSeekSuppress) return;
+                _voiceSeekSeconds = _voiceSeek.Value;
+                // Играет — перематываем прямо сейчас; не играет — запомнили,
+                // и «играть» начнёт отсюда.
+                try
+                {
+                    if (_voiceReader != null)
+                        _voiceReader.CurrentTime = TimeSpan.FromSeconds(_voiceSeekSeconds);
+                }
+                catch { }
+                UpdateVoiceLabel();
+            };
+
             _pnlVoiceBar.Controls.Add(_lblVoiceInfo);
             // Порядок добавления задаёт порядок справа налево у Dock=Right.
             _pnlVoiceBar.Controls.Add(_btnVoiceDrop);
             _pnlVoiceBar.Controls.Add(_btnVoiceRedo);
             _pnlVoiceBar.Controls.Add(_btnVoicePlay);
+            // Ползунок добавляем ПОСЛЕДНИМ: WinForms раскладывает пристыкованное
+            // от большего индекса к меньшему, поэтому именно последний займёт
+            // нижнюю кромку, а строка с подписью и кнопками — всё, что выше.
+            _pnlVoiceBar.Controls.Add(_voiceSeek);
 
             pnlMain.Controls.Add(_pnlVoiceBar);
             pnlMain.Controls.SetChildIndex(_pnlVoiceBar, pnlMain.Controls.IndexOf(pnlInputBar));
@@ -242,6 +286,15 @@ namespace PISMO
 
         private static string Mmss(int seconds) => $"{seconds / 60}:{seconds % 60:00}";
 
+        /// <summary>Подпись «сколько прошло из скольких» во время прослушивания.</summary>
+        private void UpdateVoiceLabel()
+        {
+            if (_lblVoiceInfo == null || _pendingVoice == null) return;
+            _lblVoiceInfo.Text = _voiceOut != null
+                ? $"🎤 Голосовое {Mmss(_voiceSeekSeconds)} / {Mmss(_pendingVoiceSeconds)}"
+                : $"🎤 Голосовое {Mmss(_pendingVoiceSeconds)} — «Отправить», чтобы отправить";
+        }
+
         // ════════════════════════════════════════════════════════════════
         //  ПОЛОСА
         // ════════════════════════════════════════════════════════════════
@@ -256,6 +309,17 @@ namespace PISMO
             // Во время записи слушать и перезаписывать нечего.
             _btnVoicePlay.Visible = !recording;
             _btnVoiceRedo.Visible = !recording;
+            // Во время записи перематывать нечего.
+            _voiceSeek.Visible = !recording;
+            if (!recording)
+            {
+                _voiceSeekSuppress = true;
+                _voiceSeek.Maximum = Math.Max(1, _pendingVoiceSeconds);
+                _voiceSeek.Value = 0;
+                _voiceSeekSuppress = false;
+                _voiceSeekSeconds = 0;
+            }
+            _pnlVoiceBar.Height = recording ? 42 : 62;
             _pnlVoiceBar.Visible = true;
         }
 
@@ -317,8 +381,12 @@ namespace PISMO
                     // Событие приходит не из UI-потока.
                     try { BeginInvoke(new Action(StopPendingVoicePlayback)); } catch { }
                 };
+                try { _voiceReader.CurrentTime = TimeSpan.FromSeconds(_voiceSeekSeconds); } catch { }
                 _voiceOut.Play();
                 _btnVoicePlay.Text = "⏸";
+
+                _voicePlayTimer ??= MakeVoicePlayTimer();
+                _voicePlayTimer.Start();
             }
             catch
             {
@@ -326,14 +394,49 @@ namespace PISMO
             }
         }
 
+        private System.Windows.Forms.Timer MakeVoicePlayTimer()
+        {
+            // Пять раз в секунду: чаще ползунок дрожит, реже — заметно отстаёт
+            // от звука.
+            var t = new System.Windows.Forms.Timer { Interval = 200 };
+            t.Tick += (s, e) =>
+            {
+                if (_voiceReader == null || _voiceOut == null) return;
+                try
+                {
+                    _voiceSeekSeconds = (int)_voiceReader.CurrentTime.TotalSeconds;
+                    _voiceSeekSuppress = true;
+                    _voiceSeek.Value = Math.Clamp(_voiceSeekSeconds, _voiceSeek.Minimum, _voiceSeek.Maximum);
+                    _voiceSeekSuppress = false;
+                    UpdateVoiceLabel();
+                }
+                catch { }
+            };
+            return t;
+        }
+
         private void StopPendingVoicePlayback()
         {
+            _voicePlayTimer?.Stop();
             try { _voiceOut?.Stop(); } catch { }
             try { _voiceOut?.Dispose(); } catch { }
             try { _voiceReader?.Dispose(); } catch { }
             _voiceOut = null;
             _voiceReader = null;
             if (_btnVoicePlay != null) _btnVoicePlay.Text = "▶";
+            // Доиграло до конца — ползунок к началу, чтобы следующее нажатие
+            // не упиралось в хвост.
+            if (_pendingVoiceSeconds > 0 && _voiceSeekSeconds >= _pendingVoiceSeconds)
+            {
+                _voiceSeekSeconds = 0;
+                if (_voiceSeek != null)
+                {
+                    _voiceSeekSuppress = true;
+                    _voiceSeek.Value = 0;
+                    _voiceSeekSuppress = false;
+                }
+            }
+            UpdateVoiceLabel();
         }
     }
 }

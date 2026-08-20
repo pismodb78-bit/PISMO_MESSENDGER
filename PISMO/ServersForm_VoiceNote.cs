@@ -37,6 +37,12 @@ namespace PISMO
         private WaveOutEvent _chVoiceOut;
         private WaveFileReader _chVoiceReader;
 
+        /// <summary>Ползунок перемотки — см. пояснения в MainForm_VoiceNote.</summary>
+        private FlatSlider _chVoiceSeek;
+        private System.Windows.Forms.Timer _chVoicePlayTimer;
+        private bool _chVoiceSeekSuppress;
+        private int _chVoiceSeekSeconds;
+
         /// <summary>Тот же потолок, что в мессенджере и на телефоне.</summary>
         private const int ChVoiceMaxSeconds = 180;
 
@@ -45,7 +51,7 @@ namespace PISMO
             _chVoiceBar = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 42,
+                Height = 62,
                 BackColor = Color.FromArgb(47, 49, 54),
                 Visible = false
             };
@@ -69,10 +75,34 @@ namespace PISMO
             _btnChVoicePlay = MakeChVoiceButton("▶", "Прослушать");
             _btnChVoicePlay.Click += (s, e) => ToggleChannelVoicePlayback();
 
+            _chVoiceSeek = new FlatSlider
+            {
+                Dock = DockStyle.Bottom,
+                Height = 20,
+                Minimum = 0,
+                Maximum = 1,
+                Value = 0,
+                Visible = false
+            };
+            _chVoiceSeek.ValueChanged += (s, e) =>
+            {
+                if (_chVoiceSeekSuppress) return;
+                _chVoiceSeekSeconds = _chVoiceSeek.Value;
+                try
+                {
+                    if (_chVoiceReader != null)
+                        _chVoiceReader.CurrentTime = TimeSpan.FromSeconds(_chVoiceSeekSeconds);
+                }
+                catch { }
+                UpdateChVoiceLabel();
+            };
+
             _chVoiceBar.Controls.Add(_chVoiceLbl);
             _chVoiceBar.Controls.Add(_btnChVoiceDrop);
             _chVoiceBar.Controls.Add(_btnChVoiceRedo);
             _chVoiceBar.Controls.Add(_btnChVoicePlay);
+            // Последним — чтобы занять нижнюю кромку (см. MainForm_VoiceNote).
+            _chVoiceBar.Controls.Add(_chVoiceSeek);
         }
 
         private Button MakeChVoiceButton(string text, string tip)
@@ -196,6 +226,14 @@ namespace PISMO
 
         private static string ChMmss(int seconds) => $"{seconds / 60}:{seconds % 60:00}";
 
+        private void UpdateChVoiceLabel()
+        {
+            if (_chVoiceLbl == null || _chPendingVoice == null) return;
+            _chVoiceLbl.Text = _chVoiceOut != null
+                ? $"🎤 Голосовое {ChMmss(_chVoiceSeekSeconds)} / {ChMmss(_chPendingVoiceSeconds)}"
+                : $"🎤 Голосовое {ChMmss(_chPendingVoiceSeconds)} — «Отправить», чтобы отправить";
+        }
+
         // ── Полоса ──────────────────────────────────────────────────────
 
         private void ShowChannelVoiceBar(string text, bool recording)
@@ -205,7 +243,16 @@ namespace PISMO
             _chVoiceLbl.ForeColor = recording ? Color.FromArgb(240, 71, 71) : Color.FromArgb(88, 101, 242);
             _btnChVoicePlay.Visible = !recording;
             _btnChVoiceRedo.Visible = !recording;
-            _chVoiceBar.Height = 42;
+            _chVoiceSeek.Visible = !recording;
+            if (!recording)
+            {
+                _chVoiceSeekSuppress = true;
+                _chVoiceSeek.Maximum = Math.Max(1, _chPendingVoiceSeconds);
+                _chVoiceSeek.Value = 0;
+                _chVoiceSeekSuppress = false;
+                _chVoiceSeekSeconds = 0;
+            }
+            _chVoiceBar.Height = recording ? 42 : 62;
             _chVoiceBar.Visible = true;
             UpdateBottomHeight();
         }
@@ -258,20 +305,54 @@ namespace PISMO
                 {
                     try { BeginInvoke(new Action(StopChannelVoicePlayback)); } catch { }
                 };
+                try { _chVoiceReader.CurrentTime = TimeSpan.FromSeconds(_chVoiceSeekSeconds); } catch { }
                 _chVoiceOut.Play();
                 _btnChVoicePlay.Text = "⏸";
+                _chVoicePlayTimer ??= MakeChVoicePlayTimer();
+                _chVoicePlayTimer.Start();
             }
             catch { StopChannelVoicePlayback(); }
         }
 
+        private System.Windows.Forms.Timer MakeChVoicePlayTimer()
+        {
+            var t = new System.Windows.Forms.Timer { Interval = 200 };
+            t.Tick += (s, e) =>
+            {
+                if (_chVoiceReader == null || _chVoiceOut == null) return;
+                try
+                {
+                    _chVoiceSeekSeconds = (int)_chVoiceReader.CurrentTime.TotalSeconds;
+                    _chVoiceSeekSuppress = true;
+                    _chVoiceSeek.Value = Math.Clamp(_chVoiceSeekSeconds, _chVoiceSeek.Minimum, _chVoiceSeek.Maximum);
+                    _chVoiceSeekSuppress = false;
+                    UpdateChVoiceLabel();
+                }
+                catch { }
+            };
+            return t;
+        }
+
         private void StopChannelVoicePlayback()
         {
+            _chVoicePlayTimer?.Stop();
             try { _chVoiceOut?.Stop(); } catch { }
             try { _chVoiceOut?.Dispose(); } catch { }
             try { _chVoiceReader?.Dispose(); } catch { }
             _chVoiceOut = null;
             _chVoiceReader = null;
             if (_btnChVoicePlay != null) _btnChVoicePlay.Text = "▶";
+            if (_chPendingVoiceSeconds > 0 && _chVoiceSeekSeconds >= _chPendingVoiceSeconds)
+            {
+                _chVoiceSeekSeconds = 0;
+                if (_chVoiceSeek != null)
+                {
+                    _chVoiceSeekSuppress = true;
+                    _chVoiceSeek.Value = 0;
+                    _chVoiceSeekSuppress = false;
+                }
+            }
+            UpdateChVoiceLabel();
         }
     }
 }
