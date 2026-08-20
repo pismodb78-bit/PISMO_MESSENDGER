@@ -292,8 +292,7 @@ namespace PISMO
             btnVoice.TabIndex = 1;
             btnVoice.Text = "🎤";
             btnVoice.UseVisualStyleBackColor = false;
-            btnVoice.MouseDown += btnVoice_MouseDown;
-            btnVoice.MouseUp += btnVoice_MouseUp;
+            btnVoice.Click += btnVoice_Click;
             // 
             // btnVideoCircle
             // 

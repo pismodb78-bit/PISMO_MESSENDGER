@@ -69,6 +69,7 @@ namespace PISMO
         public void InitMessageActions()
         {
             BuildReplyBar();
+            BuildVoiceBar();     // полоса записанного голосового, см. MainForm_VoiceNote
             BuildForwardBar();
             BuildSelectBar();
             AddCallButtonsToHeader();

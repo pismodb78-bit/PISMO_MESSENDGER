@@ -2698,6 +2698,7 @@ namespace PISMO
             foreach (var p in _groupPanels)
                 p.BackColor = Color.Transparent;
 
+            ResetVoiceNote();   // чужое недописанное голосовое в новый чат не тащим
             MarkAsRead(partnerId);
             LoadMessages();
         }
@@ -2727,6 +2728,7 @@ namespace PISMO
             foreach (var p in _userPanels)
                 p.BackColor = Color.Transparent;
 
+            ResetVoiceNote();
             LoadGroupMessages();
         }
 
@@ -2746,6 +2748,13 @@ namespace PISMO
             // Из кеша рисуем ТОЛЬКО последнюю страницу: дисковый кеш хранит всю
             // долистанную историю и переживает перезапуск, поэтому раньше лимит
             // поднимался до размера кеша и группа прогружалась целиком сразу.
+            // Нечего показать — освобождаем экран, см. пояснение в LoadMessages.
+            if ((cachedDt == null || _dmLoadingOlder) && _renderedChatKey != "g" + group)
+            {
+                DisposeAndClear(pnlMessages);
+                _renderedChatKey = null; _renderedChatSig = null;
+            }
+
             if (cachedDt != null && !_dmLoadingOlder)
             {
                 // См. пояснение в ЛС: переход к дате применяем только к свежей выборке.
@@ -2996,6 +3005,23 @@ namespace PISMO
 
             // При догрузке вверх кеш (последняя страница) НЕ рисуем — иначе мигало бы
             // и сбивало позицию; ждём свежую большую выборку из БД.
+            // Кеша нет — значит показать нечего, и ЭКРАН НАДО ОСВОБОДИТЬ.
+            //
+            // Раньше здесь не делалось ничего, и пузыри ПРЕДЫДУЩЕГО чата
+            // оставались висеть, пока из базы не придёт новая выборка. Со
+            // стороны это выглядит как «открыл Ваню — вижу переписку с Петей,
+            // потом она подменяется»: чужие сообщения под чужим именем, да ещё
+            // и на секунду-другую.
+            //
+            // Чистим только при переходе в ДРУГОЙ чат: если ключ тот же,
+            // значит это обычная перезагрузка уже открытой переписки, и гасить
+            // её ради того же содержимого — мигание на ровном месте.
+            if ((cachedDt == null || _dmLoadingOlder) && _renderedChatKey != "d" + partner)
+            {
+                DisposeAndClear(pnlMessages);
+                _renderedChatKey = null; _renderedChatSig = null;
+            }
+
             if (cachedDt != null && !_dmLoadingOlder)
             {
                 var (cib, ctb) = _blockCache.TryGetValue(partner, out var bc) ? bc : (false, false);
@@ -4105,86 +4131,16 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         //  ГОЛОСОВЫЕ СООБЩЕНИЯ
         // ════════════════════════════════════════════════════════════════
-        private void btnVoice_MouseDown(object sender, MouseEventArgs e)
-        {
-            if (_currentChatPartnerId < 0 && _currentGroupId < 0)
-            {
-                MessageBox.Show("Сначала выберите собеседника.");
-                return;
-            }
-
-            try
-            {
-                _audioStream = new MemoryStream();
-                _waveIn = new WaveInEvent
-                {
-                    WaveFormat = new WaveFormat(16000, 1)
-                };
-
-                if (DeviceSettings.MicrophoneIndex >= 0 &&
-                    DeviceSettings.MicrophoneIndex < WaveInEvent.DeviceCount)
-                {
-                    _waveIn.DeviceNumber = DeviceSettings.MicrophoneIndex;
-                }
-
-                _waveWriter = new WaveFileWriter(_audioStream, _waveIn.WaveFormat);
-
-                float gain = DeviceSettings.MicrophoneGain;
-                _waveIn.DataAvailable += (s, ev) =>
-                {
-                    if (Math.Abs(gain - 1f) > 0.01f)
-                    {
-                        var buf = ApplyGain(ev.Buffer, ev.BytesRecorded, gain);
-                        _waveWriter?.Write(buf, 0, ev.BytesRecorded);
-                    }
-                    else
-                    {
-                        _waveWriter?.Write(ev.Buffer, 0, ev.BytesRecorded);
-                    }
-                };
-
-                _waveIn.StartRecording();
-                btnVoice.ForeColor = Color.FromArgb(240, 71, 71);
-                btnVoice.Text = "🔴";
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Нет доступа к микрофону: " + ex.Message);
-            }
-        }
-
-        private void btnVoice_MouseUp(object sender, MouseEventArgs e)
-        {
-            if (_waveIn == null) return;
-
-            try
-            {
-                _waveIn.StopRecording();
-                _waveIn.Dispose();
-                _waveIn = null;
-
-                _waveWriter.Flush();
-                byte[] audioBytes = _audioStream.ToArray();
-
-                _waveWriter.Dispose();
-                _waveWriter = null;
-                _audioStream.Dispose();
-                _audioStream = null;
-
-                btnVoice.ForeColor = Color.FromArgb(142, 146, 151);
-                btnVoice.Text = "🎤";
-
-                if (audioBytes.Length > 4000)  // ~0.1 сек минимум
-                {
-                    if (_currentGroupId >= 0) SendGroupMessage("", null, audioBytes);
-                    else SendMessage("", null, audioBytes);
-                }
-            }
-            catch { }
-        }
+        /// <summary>
+        /// Кнопка микрофона. Раньше её надо было ДЕРЖАТЬ, и отпускание сразу
+        /// отправляло записанное. Теперь это выключатель: клик — пишем, клик —
+        /// остановились, а записанное ждёт в полосе над строкой ввода, пока его
+        /// не послушают и не отправят. Всё это в MainForm_VoiceNote.
+        /// </summary>
+        private void btnVoice_Click(object sender, EventArgs e) => ToggleVoiceRecording();
 
         /// <summary>Применяет множитель усиления к 16-битному PCM моно буферу.</summary>
-        private static byte[] ApplyGain(byte[] buffer, int bytesRecorded, float gain)
+        internal static byte[] ApplyGain(byte[] buffer, int bytesRecorded, float gain)
         {
             var result = new byte[bytesRecorded];
             Array.Copy(buffer, result, bytesRecorded);
@@ -4219,6 +4175,18 @@ namespace PISMO
             if (TrySaveEdit()) return;
 
             string text = txtMessage.Text.Trim();
+
+            // Записанное голосовое уходит ОТСЮДА — обычной кнопкой отправки, а
+            // не отпусканием кнопки микрофона. Вместе с текстом, если набран.
+            var voice = TakePendingVoice();
+            if (voice != null)
+            {
+                if (isGroup) SendGroupMessage(text, null, voice);
+                else SendMessage(text, null, voice);
+                txtMessage.Clear();
+                ApplyReplyToLastMessage(isGroup);
+                return;
+            }
 
             // Режим пересылки — одиночная или пачка из множественного выделения
             if (_forwardMsgId >= 0 || _forwardBatch.Count > 0)

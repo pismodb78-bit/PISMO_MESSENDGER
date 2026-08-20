@@ -1192,6 +1192,7 @@ namespace PISMO
 
         private void SelectChannel(int cid, string type, string name, bool joinVoice = true)
         {
+            ResetChannelVoiceNote();   // недописанное голосовое в другой канал не тащим
             _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1;
             // Восстанавливаем столько сообщений, сколько было долистано в этом канале.
             _srvLimit = ChanPageSize;   // каждое открытие канала — снова одна страница
@@ -1539,6 +1540,7 @@ namespace PISMO
             int h = 68;
             if (_replyBar != null && _replyBar.Visible) h += _replyBar.Height;
             if (_chPreview != null && _chPreview.Visible) h += _chPreview.Height;
+            if (_chVoiceBar != null && _chVoiceBar.Visible) h += _chVoiceBar.Height;
             _bottomDock.Height = h;
         }
 
@@ -1587,6 +1589,16 @@ namespace PISMO
             // (дисковый кеш хранит всю долистанную историю). Глубина в пределах сессии
             // НЕ запоминается: вернулся в канал — снова одна страница.
             // При догрузке вверх кеш (последняя страница) не рисуем — ждём большую выборку.
+            // Кеша нет — освобождаем экран, иначе в новом канале висели бы
+            // сообщения предыдущего, пока не придёт выборка из базы. Чистим
+            // только при переходе в ДРУГОЙ канал: тот же ключ означает обычную
+            // перезагрузку открытого, и гасить её незачем.
+            if ((cachedDt == null || _srvLoadingOlder) && _renderedKey != "c" + channel)
+            {
+                try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
+                _renderedKey = null; _renderedSig = null;
+            }
+
             if (cachedDt != null && !_srvLoadingOlder)
             {
                 // Переход к дате НЕ применяем к отрисовке из кеша: следом придёт свежая
@@ -2697,6 +2709,15 @@ namespace PISMO
 
             string text = _txtInput.Text.Trim();
 
+            // Записанное голосовое — уходит здесь же, обычной кнопкой отправки.
+            var voice = TakeChannelPendingVoice();
+            if (voice != null)
+            {
+                _txtInput.Clear();
+                SendChannelMedia(null, voice, null, null, null, text);
+                return;
+            }
+
             // Ожидающее вложение (перетащенный/выбранный файл) — уходит именно сейчас,
             // по «Отправить»; текст, если есть, идёт подписью к нему.
             if (_chPendingImg != null || _chPendingFile != null)
@@ -3309,40 +3330,6 @@ namespace PISMO
                 StageChannelAttachment(bytes, Path.GetFileName(ofd.FileName), imageOnly || isImg);
             }
             catch (Exception ex) { MessageBox.Show("Не удалось прикрепить файл: " + ex.Message, "PISMO"); }
-        }
-
-        private void ChVoice_MouseDown(object sender, MouseEventArgs e)
-        {
-            if (_channelId <= 0) return;
-            try
-            {
-                _chAudioStream = new MemoryStream();
-                _chWaveIn = new WaveInEvent { WaveFormat = new WaveFormat(16000, 1) };
-                if (DeviceSettings.MicrophoneIndex >= 0 && DeviceSettings.MicrophoneIndex < WaveInEvent.DeviceCount)
-                    _chWaveIn.DeviceNumber = DeviceSettings.MicrophoneIndex;
-                _chWaveWriter = new WaveFileWriter(_chAudioStream, _chWaveIn.WaveFormat);
-                _chWaveIn.DataAvailable += (s, ev) => { try { _chWaveWriter?.Write(ev.Buffer, 0, ev.BytesRecorded); } catch { } };
-                _chWaveIn.StartRecording();
-                if (_btnChVoice != null) { _btnChVoice.ForeColor = Color.FromArgb(240, 71, 71); _btnChVoice.Text = "🔴"; }
-            }
-            catch (Exception ex) { MessageBox.Show("Нет доступа к микрофону: " + ex.Message, "PISMO"); }
-        }
-
-        private void ChVoice_MouseUp(object sender, MouseEventArgs e)
-        {
-            if (_chWaveIn == null) return;
-            try
-            {
-                _chWaveIn.StopRecording();
-                _chWaveIn.Dispose(); _chWaveIn = null;
-                _chWaveWriter.Flush();
-                byte[] audio = _chAudioStream.ToArray();
-                _chWaveWriter.Dispose(); _chWaveWriter = null;
-                _chAudioStream.Dispose(); _chAudioStream = null;
-                if (_btnChVoice != null) { _btnChVoice.ForeColor = Color.FromArgb(220, 221, 222); _btnChVoice.Text = "🎤"; }
-                if (audio.Length > 4000) SendChannelMedia(null, audio, null, null, null);
-            }
-            catch { }
         }
 
         private void RecordChannelCircle()

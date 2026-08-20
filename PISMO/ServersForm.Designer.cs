@@ -59,7 +59,9 @@ namespace PISMO
             var btnAttach = ToolBtn("📎"); btnAttach.FlatAppearance.BorderSize = 0; btnAttach.Click += (s, e) => AttachChannelFile(false);
             var btnImage = ToolBtn("🖼"); btnImage.FlatAppearance.BorderSize = 0; btnImage.Click += (s, e) => AttachChannelFile(true);
             _btnChVoice = ToolBtn("🎤"); _btnChVoice.FlatAppearance.BorderSize = 0;
-            _btnChVoice.MouseDown += ChVoice_MouseDown; _btnChVoice.MouseUp += ChVoice_MouseUp;
+            // Кнопка-выключатель, а не «держать»: клик — пишем, клик — стоп,
+            // записанное ждёт в полосе. Подробности в ServersForm_VoiceNote.
+            _btnChVoice.Click += (s, e) => ToggleChannelVoiceRecording();
             var btnCircle = ToolBtn("⭕"); btnCircle.FlatAppearance.BorderSize = 0; btnCircle.Click += (s, e) => RecordChannelCircle();
 
             var inputHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 20, 6, 12) };
@@ -96,10 +98,15 @@ namespace PISMO
             _chPreview.Controls.Add(btnPrevCancel);
             _chPreview.Resize += (s, e) => btnPrevCancel.Location = new Point(_chPreview.Width - 36, 18);
 
+            // Полоса записанного голосового — послушать, перезаписать, выбросить.
+            // Наполнение и поведение в ServersForm_VoiceNote.
+            BuildChannelVoiceBar();
+
             // Низ центра: контейнер с полоской ответа над полем ввода.
             var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68 };
             _pnlInput.Dock = DockStyle.Fill;
             bottom.Controls.Add(_pnlInput);
+            bottom.Controls.Add(_chVoiceBar);
             bottom.Controls.Add(_chPreview);
             bottom.Controls.Add(_replyBar);
             _bottomDock = bottom;
