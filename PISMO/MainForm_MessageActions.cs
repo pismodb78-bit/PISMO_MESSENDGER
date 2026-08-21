@@ -492,6 +492,16 @@ namespace PISMO
             menu.Items.Add(new ToolStripSeparator());
         }
 
+        /// <summary>
+        /// Правый клик по пузырю. Меню НЕ строится при отрисовке ленты: раньше
+        /// BuildBubble звал этот метод на каждое сообщение, и каждый вызов
+        /// спрашивал у базы «закреплено ли сообщение» — отдельный запрос на
+        /// сообщение. Пока сервер стоял рядом, это было незаметно; после
+        /// переезда на VPS круг до сервера ~130 мс, и сорок сообщений давали
+        /// восемь секунд замершего окна на каждую отрисовку. Теперь меню
+        /// (и его запрос) появляются только когда по сообщению реально
+        /// щёлкнули правой кнопкой.
+        /// </summary>
         public void AttachBubbleContextMenu(Panel bubble, int msgId, bool isGroup,
     bool isMine, string text, string senderName,
     byte[] imgBytes = null, byte[] audioBytes = null, byte[] videoBytes = null,
@@ -500,6 +510,53 @@ namespace PISMO
             // Запоминаем текст/отправителя — понадобится для пакетной пересылки.
             if (msgId > 0) _msgMeta[msgId] = (senderName ?? "", text ?? "", isGroup ? 1 : 0);
 
+            ContextMenuStrip menu = null;
+            ContextMenuStrip Menu() => menu ??= BuildBubbleMenu(
+                bubble, msgId, isGroup, isMine, text, senderName,
+                imgBytes, audioBytes, videoBytes, fileData, fileName);
+
+            // Правый клик — меню; левый клик в режиме выделения — отметить/снять.
+            void ShowMenu(object? s, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Right)
+                    Menu().Show(Cursor.Position);
+                else if (e.Button == MouseButtons.Left && _selectMode && msgId > 0)
+                    ToggleSelect(msgId);
+            }
+
+            bubble.MouseClick += ShowMenu;
+            foreach (Control c in bubble.Controls)
+            {
+                // У выделяемого TextBox правый клик иначе показал бы родное меню.
+                // Вешаем пустую заглушку: она отменяет своё открытие и показывает
+                // наше меню — построенное в этот момент, а не заранее.
+                if (c is TextBox tb)
+                {
+                    var holder = new ContextMenuStrip();
+                    holder.Opening += (s, ce) => { ce.Cancel = true; Menu().Show(Cursor.Position); };
+                    tb.ContextMenuStrip = holder;
+                }
+                else c.MouseClick += ShowMenu;
+            }
+
+            // Подсветка выбранного сообщения в режиме выделения. Запоминаем пузырь и
+            // его БАЗОВЫЙ цвет, чтобы ToggleSelect мог точечно тонировать/снимать
+            // подсветку без перезагрузки чата.
+            if (_selectMode && msgId > 0)
+            {
+                _selBubble[msgId] = bubble;
+                _selBase[msgId] = bubble.BackColor;
+                if (_selectedMsgIds.Contains(msgId))
+                    bubble.BackColor = ControlPaint.Light(bubble.BackColor, 0.15f);
+            }
+        }
+
+        /// <summary>Собирает меню пузыря. Зовётся по требованию — из ShowMenu.</summary>
+        private ContextMenuStrip BuildBubbleMenu(Panel bubble, int msgId, bool isGroup,
+            bool isMine, string text, string senderName,
+            byte[] imgBytes, byte[] audioBytes, byte[] videoBytes,
+            byte[] fileData, string fileName)
+        {
             var menu = new ContextMenuStrip();
             menu.BackColor = Color.FromArgb(24, 25, 28);
             menu.ForeColor = Color.FromArgb(220, 221, 222);
@@ -622,34 +679,7 @@ namespace PISMO
                 menu.Items.Add(itemDel);
             }
 
-            // Правый клик — меню; левый клик в режиме выделения — отметить/снять.
-            void ShowMenu(object? s, MouseEventArgs e)
-            {
-                if (e.Button == MouseButtons.Right)
-                    menu.Show(Cursor.Position);
-                else if (e.Button == MouseButtons.Left && _selectMode && msgId > 0)
-                    ToggleSelect(msgId);
-            }
-
-            bubble.MouseClick += ShowMenu;
-            foreach (Control c in bubble.Controls)
-            {
-                // У выделяемого TextBox правый клик иначе показал бы родное меню —
-                // подменяем нашим (в нём есть «Копировать» с учётом выделения).
-                if (c is TextBox tb) tb.ContextMenuStrip = menu;
-                else c.MouseClick += ShowMenu;
-            }
-
-            // Подсветка выбранного сообщения в режиме выделения. Запоминаем пузырь и
-            // его БАЗОВЫЙ цвет, чтобы ToggleSelect мог точечно тонировать/снимать
-            // подсветку без перезагрузки чата.
-            if (_selectMode && msgId > 0)
-            {
-                _selBubble[msgId] = bubble;
-                _selBase[msgId] = bubble.BackColor;
-                if (_selectedMsgIds.Contains(msgId))
-                    bubble.BackColor = ControlPaint.Light(bubble.BackColor, 0.15f);
-            }
+            return menu;
         }
 
         /// <summary>Кружок выделения СПРАВА от сообщения (как в Telegram) — сосед

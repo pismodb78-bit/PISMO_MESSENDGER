@@ -2308,13 +2308,11 @@ namespace PISMO
 
         /// <summary>Контекстное меню сообщения канала: ответить/переслать/копировать/
         /// редактировать/удалить.</summary>
-        private void AttachServerMsgMenu(Panel holder, Control header, int id, int senderId, string text, string senderName = "")
+        /// <summary>Собирает меню сообщения канала. Зовётся по требованию — из Show.</summary>
+        private ContextMenuStrip BuildServerMsgMenu(Panel holder, int id, int senderId, string text, string senderName)
         {
             bool isMine = senderId == _me;
             bool isGif = text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase);
-
-            // Метаданные для пакетных операций (пересылка/удаление выбранных).
-            _srvMsgMeta[id] = (senderName ?? "", text ?? "", senderId);
 
             var menu = new ContextMenuStrip { BackColor = Color.FromArgb(24, 25, 28), ForeColor = Color.FromArgb(220, 221, 222) };
 
@@ -2400,16 +2398,39 @@ namespace PISMO
                 menu.Items.Add(del);
             }
 
+            return menu;
+        }
+
+        /// <summary>
+        /// Правый клик по сообщению канала. Меню строится по требованию: раньше
+        /// оно собиралось на каждое сообщение при отрисовке, а внутри был запрос
+        /// «список текстовых каналов сервера» для подменю «Переслать в…» —
+        /// то есть отдельный поход в базу на КАЖДОЕ сообщение ленты.
+        /// </summary>
+        private void AttachServerMsgMenu(Panel holder, Control header, int id, int senderId, string text, string senderName = "")
+        {
+            // Метаданные для пакетных операций (пересылка/удаление выбранных).
+            _srvMsgMeta[id] = (senderName ?? "", text ?? "", senderId);
+
+            ContextMenuStrip menu = null;
+            ContextMenuStrip Menu() => menu ??= BuildServerMsgMenu(holder, id, senderId, text, senderName);
+
             void Show(object s, MouseEventArgs e)
             {
-                if (e.Button == MouseButtons.Right) menu.Show(Cursor.Position);
+                if (e.Button == MouseButtons.Right) Menu().Show(Cursor.Position);
                 else if (e.Button == MouseButtons.Left && _srvSelectMode) ToggleSrvSelect(id);
             }
             holder.MouseClick += Show;
             header.MouseClick += Show;
-            // У выделяемого текста — наше меню вместо родного.
+            // У выделяемого текста родное меню подменяем заглушкой: она отменяет
+            // своё открытие и показывает наше — собранное в этот момент.
             foreach (Control c in holder.Controls)
-                if (c is TextBox tb) tb.ContextMenuStrip = menu;
+                if (c is TextBox tb)
+                {
+                    var stub = new ContextMenuStrip();
+                    stub.Opening += (s, ce) => { ce.Cancel = true; Menu().Show(Cursor.Position); };
+                    tb.ContextMenuStrip = stub;
+                }
                 else c.MouseClick += Show;
 
             // Кружок выделения у правого края (как в Telegram).
