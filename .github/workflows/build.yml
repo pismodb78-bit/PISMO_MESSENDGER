@@ -42,7 +42,7 @@ jobs:
           $dir = $exe.Directory.FullName
           Write-Host "Папка сборки: $dir"
           $need = @('livekit_ffi.dll','Google.Protobuf.dll','NAudio.dll',
-                    'AForge.Video.DirectShow.dll','MySql.Data.dll')
+                    'AForge.Video.DirectShow.dll','MySqlConnector.dll')
           $missing = @()
           foreach ($f in $need) {
             $p = Join-Path $dir $f

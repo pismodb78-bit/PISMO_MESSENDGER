@@ -7,7 +7,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
-using MySql.Data.MySqlClient;
+using MySqlConnector;
 using NAudio.Wave;
 
 namespace PISMO
@@ -93,7 +93,7 @@ namespace PISMO
                 if (_serverUtcOffsetSec == null)
                 {
                     using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySql.Data.MySqlClient.MySqlCommand(
+                    using var cmd = new MySqlConnector.MySqlCommand(
                         "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())", conn);
                     _serverUtcOffsetSec = Convert.ToInt32(cmd.ExecuteScalar());
                 }

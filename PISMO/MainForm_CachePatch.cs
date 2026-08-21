@@ -42,7 +42,7 @@ using System;
 using System.Data;
 using System.IO;
 using System.Windows.Forms;
-using MySql.Data.MySqlClient;
+using MySqlConnector;
 
 namespace PISMO
 {

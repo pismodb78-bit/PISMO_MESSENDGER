@@ -18,7 +18,7 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.0.10" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.0.10" />
     <!-- Та же версия, что в Windows-клиенте — единая логика доступа к БД. -->
-    <PackageReference Include="MySql.Data" Version="9.7.0" />
+    <PackageReference Include="MySqlConnector" Version="2.4.0" />
   </ItemGroup>
 
   <!-- ПЕРЕИСПОЛЬЗУЕМ логику Windows-клиента БЕЗ дублирования: линкуем ровно те

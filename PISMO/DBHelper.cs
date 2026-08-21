@@ -1,5 +1,5 @@
 using System;
-using MySql.Data.MySqlClient;
+using MySqlConnector;
 using System.IO;
 using System.Net;
 
@@ -59,8 +59,8 @@ namespace PISMO
                         var actualPort = DetermineActualPort(server, portStr);
 
                         if (uint.TryParse(actualPort, out var p)) builder.Port = p;
-                        if (string.IsNullOrWhiteSpace(builder.CharacterSet)) builder.CharacterSet = "utf8mb4";
                         builder.Pooling = true; builder.MinimumPoolSize = 2; builder.MaximumPoolSize = 30;
+                        ApplyPoolTuning(builder);
 
                         // Сохраняем строку подключения (оставляем пользовательские credentials из ip.txt)
                         _connectionString = builder.ConnectionString;
@@ -94,11 +94,11 @@ namespace PISMO
                     Database = "bdauth",
                     UserID = "root",
                     Password = string.Empty,
-                    CharacterSet = "utf8mb4",
                     Pooling = true,
                     MinimumPoolSize = 2,
                     MaximumPoolSize = 30
                 };
+                ApplyPoolTuning(defaultBuilder);
 
                 _connectionString = defaultBuilder.ConnectionString;
 
@@ -109,8 +109,35 @@ namespace PISMO
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[DBHelper ERROR] {ex.Message}");
-                _connectionString = "Server=localhost;Port=3306;Database=bdauth;Uid=root;Pwd=;CharSet=utf8mb4;";
+                _connectionString = "Server=localhost;Port=3306;Database=bdauth;Uid=root;Pwd=;";
             }
+        }
+
+        /// <summary>
+        /// Настройки пула. Главное здесь — не платить лишними кругами до сервера
+        /// за каждое открытие соединения.
+        ///
+        /// Пока база стояла в локальной сети, это не имело значения. После
+        /// переезда на VPS круг до сервера ~64 мс, и каждое OpenConnection стоило
+        /// ~130 мс ещё до того, как уйдёт сам запрос — то есть любой запрос
+        /// приложения был вдвое дороже, чем должен.
+        ///
+        ///   ConnectionReset=false      — не слать COM_RESET_CONNECTION при
+        ///                                выдаче соединения из пула. Сессионных
+        ///                                настроек и временных таблиц мы не
+        ///                                держим, сбрасывать нечего.
+        ///   ConnectionIdlePingTime=30  — проверять соединение пингом, только
+        ///                                если оно пролежало в пуле дольше 30
+        ///                                секунд. При активной работе — ноль
+        ///                                лишних кругов, при этом протухшее
+        ///                                соединение всё равно не подсунется.
+        ///
+        /// Кодировку не указываем: MySqlConnector всегда работает в utf8mb4.
+        /// </summary>
+        private static void ApplyPoolTuning(MySqlConnectionStringBuilder b)
+        {
+            b.ConnectionReset = false;
+            b.ConnectionIdlePingTime = 30;
         }
 
         /// <summary>Удаляет из строки ip.txt ключи, которые не относятся к

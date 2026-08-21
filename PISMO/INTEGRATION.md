@@ -24,7 +24,7 @@
 Уже должны быть (из предыдущих версий):
 - `AForge.Video.DirectShow` — камера
 - `NAudio` — аудио
-- `MySql.Data` — MySQL
+- `MySqlConnector` — MySQL/MariaDB (драйвер без пинга при выдаче соединения из пула)
 
 ---
 

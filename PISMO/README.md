@@ -43,7 +43,7 @@ server=192.168.0.15;port=3306;uid=user1;password=scent01;database=bdauth
 ## Шаг 3 — Открыть проект
 
 1. Открой `PISMO.csproj` в Visual Studio 2022 Community.
-2. NuGet восстановится автоматически (`MySql.Data 8.3.0`).
+2. NuGet восстановится автоматически (`MySqlConnector 2.4.0`).
 3. F5 — запуск.
 
 ---
