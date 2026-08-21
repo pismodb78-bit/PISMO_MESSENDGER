@@ -109,6 +109,48 @@ namespace PISMO
             return Relation.None;
         }
 
+        /// <summary>
+        /// Отношения me→каждый из ids одним запросом.
+        ///
+        /// Поиск пользователей звал GetRelation на каждого найденного — до сорока
+        /// запросов подряд. С базой в локальной сети это было незаметно, после
+        /// переезда на VPS каждый такой запрос стоит круг до сервера, и список
+        /// собирался секундами.
+        /// </summary>
+        public static Dictionary<int, Relation> RelationsFor(int me, IEnumerable<int> ids)
+        {
+            var map = new Dictionary<int, Relation>();
+            var idList = new List<int>(ids ?? Array.Empty<int>());
+            if (idList.Count == 0) return map;
+            EnsureTable();
+            try
+            {
+                string inList = string.Join(",", idList);
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT user_id, friend_id, status FROM friends WHERE " +
+                    $"(user_id=@me AND friend_id IN ({inList})) OR " +
+                    $"(friend_id=@me AND user_id IN ({inList}))", conn);
+                cmd.Parameters.AddWithValue("@me", me);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    int from = Convert.ToInt32(r["user_id"]);
+                    int to = Convert.ToInt32(r["friend_id"]);
+                    int st = Convert.ToInt32(r["status"]);
+                    int other = from == me ? to : from;
+                    // Дружба перекрывает заявку: если по паре есть обе строки,
+                    // статус 1 важнее, поэтому не затираем уже найденного друга.
+                    if (map.TryGetValue(other, out var had) && had == Relation.Friend) continue;
+                    map[other] = st == 1 ? Relation.Friend
+                               : from == me ? Relation.OutgoingPending
+                                            : Relation.IncomingPending;
+                }
+            }
+            catch { }
+            return map;
+        }
+
         /// <summary>Отправить заявку в друзья. Если встречная заявка уже есть —
         /// считается взаимным согласием (сразу друзья).</summary>
         public static bool SendRequest(int me, int them)
@@ -337,13 +379,19 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@q", "%" + query + "%");
                 cmd.Parameters.AddWithValue("@exact", query);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
+
+                var hitIds = new List<int>();
+                foreach (DataRow r in dt.Rows) hitIds.Add(Convert.ToInt32(r["id"]));
+                var rels = RelationsFor(me, hitIds);
+
                 foreach (DataRow r in dt.Rows)
                 {
                     int id = Convert.ToInt32(r["id"]);
                     string login = r["login"]?.ToString() ?? "";
                     string nm = string.Join(" ", new[] { r["Name"]?.ToString(), r["Surname"]?.ToString() }).Trim();
                     if (string.IsNullOrWhiteSpace(nm)) nm = login;
-                    list.Add(new UserHit { Id = id, Name = nm, Login = login, Rel = GetRelation(me, id) });
+                    list.Add(new UserHit { Id = id, Name = nm, Login = login,
+                        Rel = rels.TryGetValue(id, out var rel) ? rel : Relation.None });
                 }
             }
             catch { }
