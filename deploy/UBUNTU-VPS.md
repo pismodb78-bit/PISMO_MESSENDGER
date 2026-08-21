@@ -145,13 +145,11 @@ sudo mysql
 ```sql
 CREATE DATABASE bdauth CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
--- ── Администратор для phpMyAdmin ───────────────────────────────────────
--- ТОЛЬКО @'localhost'. phpMyAdmin живёт на этом же сервере и ходит в базу
--- через петлю, поэтому удалённый доступ ему не нужен — а раз не нужен, то и
--- не даём: снаружи эту учётку не достать вовсе, ни перебором, ни как-то
--- ещё. Пароль при этом может быть каким угодно, он не выставлен в интернет.
-CREATE USER 'root1'@'localhost' IDENTIFIED BY 'scent01!';
-GRANT ALL PRIVILEGES ON *.* TO 'root1'@'localhost' WITH GRANT OPTION;
+-- ── Администратор ──────────────────────────────────────────────────────
+-- @'%' — доступен и с сервера, и снаружи: так решено, чтобы можно было
+-- подключиться удалённо, не поднимая туннель.
+CREATE USER 'root1'@'%' IDENTIFIED BY 'scent01!';
+GRANT ALL PRIVILEGES ON *.* TO 'root1'@'%' WITH GRANT OPTION;
 
 -- ── Учётка приложения ──────────────────────────────────────────────────
 -- Ровно те права, что были на старом сервере: читать, писать, удалять,
@@ -370,18 +368,24 @@ sudo chmod +x /etc/cron.daily/pismo-backup
 
 ## 10. phpMyAdmin — база из браузера
 
-Замена привычному MAMP. Ставим **не открытым наружу**, а на localhost, и
-ходим через ssh-туннель. Причин две: пароль базы лежит в публичном
-репозитории, а админки баз данных сканеры находят за часы. Туннель убирает
-обе проблемы разом и не требует ни домена, ни сертификата.
+Ставим доступным снаружи, без туннеля. Защита складывается из трёх слоёв,
+каждый из которых стоит одной команды:
 
-Если всё же нужен постоянный доступ без туннеля — вариант с nginx и паролем
-в конце раздела.
+1. **нестандартный порт** — в 80 и 443 сканеры ломятся постоянно, в
+   произвольный пятизначный почти никогда;
+2. **пароль nginx до phpMyAdmin** — переборщик не доходит даже до формы
+   входа, а значит и до самой панели с её уязвимостями;
+3. **разрешён вход только `root1`** — пароль `user1` лежит в публичном
+   репозитории и в APK, и без этого правила панель открывалась бы им.
+
+Плюс шифрование: без него логин и пароль идут по сети открытым текстом, и
+любой Wi-Fi в кафе их прочитает. Домена нет — значит самоподписанный
+сертификат: браузер один раз поругается, дальше всё как обычно.
 
 ### 10.1 Установка
 
 ```bash
-apt install -y nginx php-fpm php-mysql php-mbstring php-zip php-gd php-curl php-xml unzip
+apt install -y nginx php-fpm php-mysql php-mbstring php-zip php-gd php-curl php-xml unzip apache2-utils
 
 cd /tmp
 curl -fsSLO https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.zip
@@ -391,7 +395,7 @@ mkdir -p /var/lib/phpmyadmin/tmp
 chown -R www-data:www-data /var/lib/phpmyadmin
 ```
 
-### 10.2 Настройка
+### 10.2 Настройка phpMyAdmin
 
 ```bash
 cat > /usr/share/phpmyadmin/config.inc.php <<EOF
@@ -401,7 +405,6 @@ cat > /usr/share/phpmyadmin/config.inc.php <<EOF
 \$cfg['Servers'][\$i]['auth_type'] = 'cookie';
 \$cfg['Servers'][\$i]['host'] = '127.0.0.1';
 \$cfg['Servers'][\$i]['port'] = '3307';
-\$cfg['Servers'][\$i]['compress'] = false;
 \$cfg['Servers'][\$i]['AllowNoPassword'] = false;
 // Пускаем в панель ТОЛЬКО root1. Иначе войти сюда мог бы любой, кто знает
 // пароль user1 — а он лежит в открытом репозитории и в APK.
@@ -430,19 +433,45 @@ EOF
 systemctl restart php$PHPVER-fpm
 ```
 
-### 10.3 nginx только на localhost
+### 10.3 Пароль на входе и сертификат
 
 ```bash
+# Логин и пароль ДО phpMyAdmin. Пусть отличаются от пароля базы.
+htpasswd -c /etc/nginx/.htpasswd pismo
+
+# Самоподписанный сертификат на десять лет.
+openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/pma.key -out /etc/ssl/certs/pma.crt \
+  -subj "/CN=5.181.23.167"
+chmod 600 /etc/ssl/private/pma.key
+```
+
+### 10.4 nginx на нестандартном порту
+
+Порт придумайте свой пятизначный и запомните — он часть защиты. Ниже для
+примера 47821.
+
+```bash
+PMAPORT=47821
 PHPVER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
 cat > /etc/nginx/sites-available/phpmyadmin <<EOF
 server {
-    # Слушаем ТОЛЬКО петлю: снаружи порт закрыт, попасть можно лишь туннелем.
-    listen 127.0.0.1:8081;
-    server_name localhost;
+    listen $PMAPORT ssl;
+    server_name _;
+
+    ssl_certificate     /etc/ssl/certs/pma.crt;
+    ssl_certificate_key /etc/ssl/private/pma.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    auth_basic "PISMO";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
     root /usr/share/phpmyadmin;
     index index.php;
-
     client_max_body_size 1024M;
+
+    # Не подсказываем сканерам, что здесь phpMyAdmin.
+    server_tokens off;
 
     location / { try_files \$uri \$uri/ =404; }
 
@@ -456,47 +485,43 @@ EOF
 ln -sf /etc/nginx/sites-available/phpmyadmin /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl restart nginx
+ufw allow $PMAPORT/tcp
 ```
 
-Порт 8081 в ufw открывать **не нужно** — он слушает петлю.
+### 10.5 Как заходить
 
-### 10.4 Как заходить (с ноутбука, Windows)
-
-В обычном `cmd`:
-
-```bat
-ssh -N -L 8081:127.0.0.1:8081 root@5.181.23.167
-```
-
-Окно не закрывать — пока оно открыто, туннель живёт. В браузере:
+В браузере:
 
 ```
-http://localhost:8081/
+https://5.181.23.167:47821/
 ```
 
-Логин `root1`, пароль `scent01!` — тот, что завели на шаге 4. Больше никого
-панель не пустит: и `user1`, и `root` получат отказ ещё на форме входа.
+Сначала окно с логином и паролем от `htpasswd`, потом форма phpMyAdmin —
+логин `root1`, пароль `scent01!`. Браузер один раз предупредит про
+самоподписанный сертификат: «Дополнительно» → «Перейти».
 
-Про `root` отдельно: в MariaDB на Ubuntu он входит по системному
-пользователю, а не по паролю, и через phpMyAdmin не зашёл бы в любом случае.
-
-### 10.5 Если туннель неудобен
-
-Тогда наружу, но с паролем на входе и по https. Понадобится домен, который
-смотрит на 5.181.23.167.
+### 10.6 Защита от перебора
 
 ```bash
-apt install -y apache2-utils certbot python3-certbot-nginx
-htpasswd -c /etc/nginx/.htpasswd pisma          # логин и пароль для входа
+apt install -y fail2ban
+cat > /etc/fail2ban/jail.d/pismo.conf <<'EOF'
+[nginx-http-auth]
+enabled = true
+port    = 47821
+logpath = /var/log/nginx/error.log
+maxretry = 5
+bantime = 3600
 
-# в конфиге выше: listen 443 ssl; server_name ваш.домен;
-# и внутри server { } добавить:
-#   auth_basic "PISMO";
-#   auth_basic_user_file /etc/nginx/.htpasswd;
-
-certbot --nginx -d ваш.домен
-ufw allow 443/tcp
+[mysqld-auth]
+enabled = true
+port    = 3307
+logpath = /var/log/mysql/error.log
+maxretry = 5
+bantime = 3600
+EOF
+systemctl restart fail2ban
+fail2ban-client status
 ```
 
-Пароль на входе тут не паранойя: он закрывает саму форму входа phpMyAdmin от
-переборщиков, а пароль базы у нас, напомню, лежит в открытом репозитории.
+Порт базы теперь тоже виден всему интернету, и `root1` на нём отвечает —
+поэтому вторая клетка не менее важна первой.
