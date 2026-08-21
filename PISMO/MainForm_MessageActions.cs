@@ -834,7 +834,9 @@ namespace PISMO
             try
             {
                 if (toGroup) WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _currentGroupId, "group");
-                else WebSocketSignalingClient.Instance.SendMessage("new_message", _currentChatPartnerId, me, "direct");
+                // Адресат 0 — всем, как и в остальных местах: адресная доставка
+                // обходила стороной второе устройство самого отправителя.
+                else WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _currentChatPartnerId, "direct");
             }
             catch { }
             ForceMessageRerender();

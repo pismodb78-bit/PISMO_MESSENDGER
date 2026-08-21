@@ -2186,7 +2186,9 @@ namespace PISMO
                     cmd.Parameters.AddWithValue("@m_type", msgType);
                     cmd.Parameters.AddWithValue("@dur", (msgType == "call_success") ? (object)durationSeconds : DBNull.Value);
                     cmd.ExecuteNonQuery();
-                    WebSocketSignalingClient.Instance.SendMessage("new_message", _peerId, 0, "direct");
+                    // Адресат 0 — всем: иначе о сообщении не узнало бы второе
+                    // устройство самого отправителя, открытое в этом же чате.
+                    WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _peerId, "direct");
                 }
             }
             catch (Exception ex)
