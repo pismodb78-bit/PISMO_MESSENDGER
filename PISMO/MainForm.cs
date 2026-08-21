@@ -2731,7 +2731,15 @@ namespace PISMO
                 p.BackColor = Color.Transparent;
 
             ResetVoiceNote();   // чужое недописанное голосовое в новый чат не тащим
-            MarkAsRead(partnerId);
+
+            // MarkAsRead — это UPDATE на удалённом сервере. Пока он шёл здесь,
+            // окно стояло: открытие чата ждало круга по сети ДО того, как
+            // начнёт рисовать хоть что-то. Бейджи он гасит сам, через
+            // BeginInvoke, так что ждать его незачем.
+            int partnerForRead = partnerId;
+            _ = System.Threading.Tasks.Task.Run(() => { try { MarkAsRead(partnerForRead); } catch { } });
+
+            Perf.Mark($"OpenChat partner={partnerId}");
             LoadMessages();
         }
 
@@ -3063,7 +3071,8 @@ namespace PISMO
                 // именно из-за этого переход «срабатывал» только со второго клика.
                 var savedJump = _pendingJumpDate;
                 _pendingJumpDate = null;
-                RenderMessages(TakeLastRows(cachedDt, _dmLimit), myId, partner, cib, ctb);
+                Perf.Time("RenderMessages (из кеша)",
+                    () => RenderMessages(TakeLastRows(cachedDt, _dmLimit), myId, partner, cib, ctb));
                 _pendingJumpDate = savedJump;
             }
 
@@ -3075,18 +3084,27 @@ namespace PISMO
                 DataTable dt = null;
                 try
                 {
-                    iB = IsUserBlocked(myId, partner);
-                    tB = IsUserBlocked(partner, myId);
-                    dt = LoadMessagesMetaOnly(myId, partner, _dmLimit);
+                    Perf.Time("blockState (2 запроса)", () =>
+                    {
+                        iB = IsUserBlocked(myId, partner);
+                        tB = IsUserBlocked(partner, myId);
+                    });
+                    dt = Perf.Time("LoadMessagesMetaOnly", () => LoadMessagesMetaOnly(myId, partner, _dmLimit));
                 }
                 catch { }
                 if (dt == null) return;
                 // Медиа страницы забираем ОДНИМ запросом здесь, в фоне: иначе цикл
                 // отрисовки лезет в БД за каждой картинкой/голосовым по отдельности.
-                try { PrefetchPageMedia(dt, isGroup: false); } catch { }
+                Perf.Time("PrefetchPageMedia", () =>
+                {
+                    try { PrefetchPageMedia(dt, isGroup: false); } catch { }
+                });
                 _dmHasMore = dt.Rows.Count >= _dmLimit;   // набрали полную страницу → возможно есть ещё
                 // Сохраняем в постоянный кеш переписки (текст зашифрован, как в БД).
-                try { MessageCache.Save(MessageCache.DirectKey(myId, partner), dt); } catch { }
+                Perf.Time("MessageCache.Save (диск)", () =>
+                {
+                    try { MessageCache.Save(MessageCache.DirectKey(myId, partner), dt); } catch { }
+                });
 
                 // Чат ОТКРЫТ — входящие, пришедшие пока сидим в нём, помечаем
                 // прочитанными сразу (раньше read ставился только в момент
@@ -3115,7 +3133,7 @@ namespace PISMO
                         if (_currentChatPartnerId != partner) return; // уже переключились
                         _msgMetaCache[partner] = dt;
                         _blockCache[partner] = (iB, tB);
-                        RenderMessages(dt, myId, partner, iB, tB);
+                        Perf.Time("RenderMessages (свежие)", () => RenderMessages(dt, myId, partner, iB, tB));
                     }));
                 }
                 catch { }
@@ -3151,14 +3169,20 @@ namespace PISMO
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
-            try { _pinnedInView = PinsRepository.PinnedIds(0); } catch { _pinnedInView = null; }
-            try
+            Perf.Time("PinnedIds", () =>
             {
-                var ids = new List<int>();
-                foreach (DataRow rr in dt.Rows) if (rr["id"] != DBNull.Value) ids.Add(Convert.ToInt32(rr["id"]));
-                _reactionsInView = ReactionsRepository.ForMessages(ids, ReactionsRepository.Scope.Direct, UserSession.EffectiveId);
-            }
-            catch { _reactionsInView = null; }
+                try { _pinnedInView = PinsRepository.PinnedIds(0); } catch { _pinnedInView = null; }
+            });
+            Perf.Time("Reactions.ForMessages", () =>
+            {
+                try
+                {
+                    var ids = new List<int>();
+                    foreach (DataRow rr in dt.Rows) if (rr["id"] != DBNull.Value) ids.Add(Convert.ToInt32(rr["id"]));
+                    _reactionsInView = ReactionsRepository.ForMessages(ids, ReactionsRepository.Scope.Direct, UserSession.EffectiveId);
+                }
+                catch { _reactionsInView = null; }
+            });
 
             // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
             // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого

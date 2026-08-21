@@ -252,9 +252,11 @@ namespace PISMO
         public static MySqlConnection OpenConnection()
         {
             var conn = new MySqlConnection(_connectionString);
+            var sw = Perf.Enabled ? System.Diagnostics.Stopwatch.StartNew() : null;
             try
             {
                 conn.Open();
+                if (sw != null) { sw.Stop(); Perf.Log("OpenConnection", sw.ElapsedMilliseconds); }
                 ConnectionGuard.NotifyOk();   // связь есть — спрятать окно «нет связи», если было
                 return conn;
             }
