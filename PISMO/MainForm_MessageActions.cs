@@ -1823,6 +1823,36 @@ namespace PISMO
             }
         }
 
+        /// <summary>
+        /// Обе стороны блокировки за ОДИН запрос: я заблокировал собеседника и
+        /// он заблокировал меня. Раньше это были два отдельных IsUserBlocked, то
+        /// есть два подключения подряд — по замеру 368 мс при открытии чата и
+        /// столько же перед каждой отправкой сообщения.
+        /// </summary>
+        private (bool iBlocked, bool theyBlocked) BlockStateBoth(int me, int them)
+        {
+            bool iB = false, tB = false;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT blocker_id FROM user_blocks " +
+                    "WHERE (blocker_id=@me AND blocked_id=@them) " +
+                    "   OR (blocker_id=@them AND blocked_id=@me)", conn);
+                cmd.Parameters.AddWithValue("@me", me);
+                cmd.Parameters.AddWithValue("@them", them);
+                using var rd = cmd.ExecuteReader();
+                while (rd.Read())
+                {
+                    int blocker = Convert.ToInt32(rd[0]);
+                    if (blocker == me) iB = true;
+                    else if (blocker == them) tB = true;
+                }
+            }
+            catch { }
+            return (iB, tB);
+        }
+
         private bool IsUserBlocked(int blockerId, int blockedId)
         {
             try

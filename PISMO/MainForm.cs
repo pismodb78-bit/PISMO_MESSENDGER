@@ -3085,10 +3085,9 @@ namespace PISMO
                 DataTable dt = null;
                 try
                 {
-                    Perf.Time("blockState (2 запроса)", () =>
+                    Perf.Time("blockState (1 запрос)", () =>
                     {
-                        iB = IsUserBlocked(myId, partner);
-                        tB = IsUserBlocked(partner, myId);
+                        (iB, tB) = BlockStateBoth(myId, partner);
                     });
                     dt = Perf.Time("LoadMessagesMetaOnly", () => LoadMessagesMetaOnly(myId, partner, _dmLimit));
                 }
@@ -4346,14 +4345,15 @@ namespace PISMO
             // Блокировки: если я заблокировал собеседника или он заблокировал меня — не шлём
             try
             {
-                if (IsUserBlocked(myId, themId))
+                var (iBlockedThem, theyBlockedMe) = BlockStateBoth(myId, themId);
+                if (iBlockedThem)
                 {
                     MessageBox.Show("Нельзя отправлять — вы заблокировали этого пользователя.", "PISMO",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                if (IsUserBlocked(themId, myId))
+                if (theyBlockedMe)
                 {
                     MessageBox.Show("Нельзя отправлять — этот пользователь заблокировал вас.", "PISMO",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
