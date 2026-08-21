@@ -104,6 +104,38 @@ namespace PISMO
         }
 
         /// <summary>Дешёвая «подпись» переписки (без создания контролов) для сравнения.</summary>
+        /// <summary>
+        /// Сколько сообщений страницы уже имеют вложения в кеше.
+        ///
+        /// Входит в подпись отрисовки: лента рисуется дважды — сразу из кеша и
+        /// потом из свежей выборки, — а между этими двумя разами фоновая
+        /// предзагрузка наполняет кеш. Текст при этом не меняется, и без этого
+        /// числа вторая отрисовка отсекалась бы как лишняя вместе с картинками,
+        /// которые она и должна была показать.
+        /// </summary>
+        internal static int CachedMediaCount(DataTable dt)
+        {
+            if (dt == null) return 0;
+            int n = 0;
+            bool hasImg = dt.Columns.Contains("has_img");
+            bool hasAudio = dt.Columns.Contains("has_audio");
+            bool hasVideo = dt.Columns.Contains("has_video");
+            bool hasName = dt.Columns.Contains("file_name");
+            foreach (DataRow r in dt.Rows)
+            {
+                if (r["id"] == DBNull.Value) continue;
+                int id = Convert.ToInt32(r["id"]);
+                string fn = hasName && r["file_name"] != DBNull.Value ? r["file_name"].ToString() : null;
+                if (hasImg && r["has_img"] != DBNull.Value && Convert.ToBoolean(r["has_img"])
+                    && MediaCache.Has(id, "img", fn)) n++;
+                if (hasAudio && r["has_audio"] != DBNull.Value && Convert.ToBoolean(r["has_audio"])
+                    && MediaCache.Has(id, "audio")) n++;
+                if (hasVideo && r["has_video"] != DBNull.Value && Convert.ToBoolean(r["has_video"])
+                    && MediaCache.Has(id, "video")) n++;
+            }
+            return n;
+        }
+
         internal static string SigOf(DataTable dt)
         {
             if (dt == null) return "0";
@@ -2795,7 +2827,7 @@ namespace PISMO
             if (_currentGroupId != group) return;
 
             // Пропускаем повторную отрисовку, если та же группа и данные не изменились.
-            string key = "g" + group, sig = SigOf(dt);
+            string key = "g" + group, sig = SigOf(dt) + "|m" + CachedMediaCount(dt);
             if (_renderedChatKey == key && _renderedChatSig == sig)
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
@@ -2867,7 +2899,8 @@ namespace PISMO
                         ? Convert.ToInt64(row["file_size"]) : -1;
 
                     var (img, audio, video, fileData) = LoadMediaForMessage(
-                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile, isGroup: true, fileSize);
+                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile,
+                        isGroup: true, fileSize, cacheOnly: true);
 
                     var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
                         fileData, fileName, msgId, isGroup: true, replyToId, isDeleted, isEdited, fileSize);
@@ -3096,7 +3129,13 @@ namespace PISMO
             if (_currentChatPartnerId != partner) return;
 
             // Пропускаем повторную отрисовку, если тот же чат и данные не изменились.
-            string key = "d" + partner, sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0);
+            // В подпись входит и число сообщений страницы, чьи вложения уже лежат
+            // в кеше. Без этого перерисовка после фоновой предзагрузки медиа
+            // пропускалась бы как «данные не изменились», и картинки с кружками
+            // не появлялись бы до следующего сообщения: текст-то тот же.
+            string key = "d" + partner,
+                   sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0)
+                       + "|m" + CachedMediaCount(dt);
             if (_renderedChatKey == key && _renderedChatSig == sig)
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
@@ -3205,7 +3244,8 @@ namespace PISMO
                         ? Convert.ToInt64(row["file_size"]) : -1;
 
                     var (img, audio, video, fileData) = LoadMediaForMessage(
-                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile, isGroup: false, fileSize);
+                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile,
+                        isGroup: false, fileSize, cacheOnly: true);
 
                     // Статус прочтения для МОИХ сообщений: 0 — отправляется (1 серая),
                     // 1 — доставлено на сервер (2 серые), 2 — прочитано (2 синие).

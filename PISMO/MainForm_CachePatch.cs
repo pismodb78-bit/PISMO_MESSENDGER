@@ -210,8 +210,10 @@ namespace PISMO
         /// одним IN-запросом и кладём в кеш — дальше LoadMediaForMessage находит данные
         /// в кеше и в БД не ходит вовсе.
         ///
-        /// Видео и файлы намеренно НЕ трогаем: они большие, тянуть их пачкой было бы
-        /// хуже, чем по требованию.
+        /// Файлы намеренно НЕ трогаем: они бывают на сотни мегабайт, и тянуть их
+        /// пачкой было бы хуже, чем по клику. Видео здесь — это кружочки, они
+        /// короткие, и их отсутствие в этой пачке как раз и стоило по походу к
+        /// серверу на каждое сообщение с кружком.
         /// Вызывать в ФОНОВОМ потоке, до отрисовки.
         /// </summary>
         public static void PrefetchPageMedia(DataTable dt, bool isGroup)
@@ -230,14 +232,20 @@ namespace PISMO
                         && r["has_img"] != DBNull.Value && Convert.ToBoolean(r["has_img"]);
                     bool hasAudio = r.Table.Columns.Contains("has_audio")
                         && r["has_audio"] != DBNull.Value && Convert.ToBoolean(r["has_audio"]);
+                    bool hasVideo = r.Table.Columns.Contains("has_video")
+                        && r["has_video"] != DBNull.Value && Convert.ToBoolean(r["has_video"]);
                     if ((hasImg && !MediaCache.Has(id, "img", fn))
-                     || (hasAudio && !MediaCache.Has(id, "audio")))
+                     || (hasAudio && !MediaCache.Has(id, "audio"))
+                     || (hasVideo && !MediaCache.Has(id, "video")))
                         ids.Add(id);
                 }
                 if (ids.Count == 0) return;
 
                 string table = isGroup ? "group_messages" : "messages";
-                string sql = $"SELECT id, image_data, audio_data, file_name FROM {table} " +
+                // Видео тоже забираем пачкой. video_data — это кружочки, они
+                // короткие; тянуть их по одному во время отрисовки, как было,
+                // означало отдельный поход к серверу на каждый.
+                string sql = $"SELECT id, image_data, audio_data, video_data, file_name FROM {table} " +
                              $"WHERE id IN ({string.Join(",", ids)})";
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(sql, conn);
@@ -245,9 +253,10 @@ namespace PISMO
                 while (rd.Read())
                 {
                     int id = rd.GetInt32(0);
-                    string fn = rd.IsDBNull(3) ? null : rd.GetString(3);
+                    string fn = rd.IsDBNull(4) ? null : rd.GetString(4);
                     if (!rd.IsDBNull(1)) MediaCache.Put(id, "img", (byte[])rd[1], fn);
                     if (!rd.IsDBNull(2)) MediaCache.Put(id, "audio", (byte[])rd[2]);
+                    if (!rd.IsDBNull(3)) MediaCache.Put(id, "video", (byte[])rd[3]);
                 }
             }
             catch { }   // не смогли — не беда, отрисовка догрузит по-старому
@@ -282,10 +291,24 @@ namespace PISMO
             catch { return null; }
         }
 
+        /// <param name="cacheOnly">
+        /// true — брать ТОЛЬКО из кеша, в базу не ходить.
+        ///
+        /// Отрисовка вызывает этот метод на каждое сообщение страницы, и делает
+        /// это на потоке интерфейса. Пока сервер стоял в соседней комнате, поход
+        /// в базу за пропущенным вложением стоил доли миллисекунды и был незаметен.
+        /// После переезда на VPS круг до сервера — 64 мс, и сорок сообщений
+        /// превращались в пару секунд замершего окна, причём дважды: один раз при
+        /// отрисовке из кеша, второй при обновлении из базы.
+        ///
+        /// Поэтому отрисовка теперь только читает кеш, а наполняет его
+        /// PrefetchPageMedia — одним запросом на всю страницу, в фоне. Чего в
+        /// кеше нет, то появится после фоновой выборки и следующей перерисовки.
+        /// </param>
         public static (byte[] img, byte[] audio, byte[] video, byte[] fileData)
             LoadMediaForMessage(int msgId, string fileName,
                                 bool hasImg, bool hasAudio, bool hasVideo, bool hasFile,
-                                bool isGroup, long fileSize = -1)
+                                bool isGroup, long fileSize = -1, bool cacheOnly = false)
         {
             // Раньше видео до 30 МБ подгружалось вместе с лентой. Чтобы узнать
             // размер, в запрос входил OCTET_LENGTH(file_data), а длину LONGBLOB
@@ -308,6 +331,9 @@ namespace PISMO
             // Если всё уже в кеше — не идём в БД вообще
             if (!needImg && !needAudio && !needVideo && !needFile)
                 return (img, audio, video, fileData);
+
+            // Отрисовка ждать сеть не должна: отдаём что есть.
+            if (cacheOnly) return (img, audio, video, fileData);
 
             // Строим SELECT только нужных колонок
             var cols = new System.Collections.Generic.List<string>();
