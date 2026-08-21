@@ -339,3 +339,142 @@ find /root -name 'backup-bdauth-*.sql.gz' -mtime +7 -delete
 EOF
 sudo chmod +x /etc/cron.daily/pismo-backup
 ```
+
+---
+
+## 10. phpMyAdmin — база из браузера
+
+Замена привычному MAMP. Ставим **не открытым наружу**, а на localhost, и
+ходим через ssh-туннель. Причин две: пароль базы лежит в публичном
+репозитории, а админки баз данных сканеры находят за часы. Туннель убирает
+обе проблемы разом и не требует ни домена, ни сертификата.
+
+Если всё же нужен постоянный доступ без туннеля — вариант с nginx и паролем
+в конце раздела.
+
+### 10.1 Установка
+
+```bash
+apt install -y nginx php-fpm php-mysql php-mbstring php-zip php-gd php-curl php-xml unzip
+
+cd /tmp
+curl -fsSLO https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.zip
+unzip -q phpMyAdmin-5.2.1-all-languages.zip
+mv phpMyAdmin-5.2.1-all-languages /usr/share/phpmyadmin
+mkdir -p /var/lib/phpmyadmin/tmp
+chown -R www-data:www-data /var/lib/phpmyadmin
+```
+
+### 10.2 Настройка
+
+```bash
+cat > /usr/share/phpmyadmin/config.inc.php <<EOF
+<?php
+\$cfg['blowfish_secret'] = '$(openssl rand -base64 24 | cut -c1-32)';
+\$i = 1;
+\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
+\$cfg['Servers'][\$i]['host'] = '127.0.0.1';
+\$cfg['Servers'][\$i]['port'] = '3307';
+\$cfg['Servers'][\$i]['compress'] = false;
+\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
+\$cfg['TempDir'] = '/var/lib/phpmyadmin/tmp';
+// Вложения в базе крупные — иначе экспорт таблицы с медиа отвалится.
+\$cfg['ExecTimeLimit'] = 0;
+\$cfg['MemoryLimit'] = '512M';
+EOF
+chown www-data:www-data /usr/share/phpmyadmin/config.inc.php
+chmod 640 /usr/share/phpmyadmin/config.inc.php
+```
+
+PHP по умолчанию не пустит файл больше двух мегабайт — для импорта дампов
+этого мало:
+
+```bash
+PHPVER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+cat > /etc/php/$PHPVER/fpm/conf.d/99-pismo.ini <<'EOF'
+upload_max_filesize = 1024M
+post_max_size = 1024M
+memory_limit = 512M
+max_execution_time = 0
+EOF
+systemctl restart php$PHPVER-fpm
+```
+
+### 10.3 nginx только на localhost
+
+```bash
+PHPVER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+cat > /etc/nginx/sites-available/phpmyadmin <<EOF
+server {
+    # Слушаем ТОЛЬКО петлю: снаружи порт закрыт, попасть можно лишь туннелем.
+    listen 127.0.0.1:8081;
+    server_name localhost;
+    root /usr/share/phpmyadmin;
+    index index.php;
+
+    client_max_body_size 1024M;
+
+    location / { try_files \$uri \$uri/ =404; }
+
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php$PHPVER-fpm.sock;
+        fastcgi_read_timeout 3600;
+    }
+}
+EOF
+ln -sf /etc/nginx/sites-available/phpmyadmin /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl restart nginx
+```
+
+Порт 8081 в ufw открывать **не нужно** — он слушает петлю.
+
+### 10.4 Как заходить (с ноутбука, Windows)
+
+В обычном `cmd`:
+
+```bat
+ssh -N -L 8081:127.0.0.1:8081 root@5.181.23.167
+```
+
+Окно не закрывать — пока оно открыто, туннель живёт. В браузере:
+
+```
+http://localhost:8081/
+```
+
+Логин `user1`, пароль от базы. Видна будет только `bdauth` — этого хватает
+для всего, что вы делали в MAMP: посмотреть таблицы, выполнить запрос,
+выгрузить дамп.
+
+Если нужен доступ ко всем базам, заведите отдельного администратора (root в
+MariaDB на Ubuntu входит по системному пользователю, а не по паролю, и через
+phpMyAdmin не пустит):
+
+```bash
+mysql -e "CREATE USER 'pmaadmin'@'localhost' IDENTIFIED BY 'ДЛИННЫЙ_ПАРОЛЬ';
+          GRANT ALL PRIVILEGES ON *.* TO 'pmaadmin'@'localhost' WITH GRANT OPTION;
+          FLUSH PRIVILEGES;"
+```
+
+### 10.5 Если туннель неудобен
+
+Тогда наружу, но с паролем на входе и по https. Понадобится домен, который
+смотрит на 5.181.23.167.
+
+```bash
+apt install -y apache2-utils certbot python3-certbot-nginx
+htpasswd -c /etc/nginx/.htpasswd pisma          # логин и пароль для входа
+
+# в конфиге выше: listen 443 ssl; server_name ваш.домен;
+# и внутри server { } добавить:
+#   auth_basic "PISMO";
+#   auth_basic_user_file /etc/nginx/.htpasswd;
+
+certbot --nginx -d ваш.домен
+ufw allow 443/tcp
+```
+
+Пароль на входе тут не паранойя: он закрывает саму форму входа phpMyAdmin от
+переборщиков, а пароль базы у нас, напомню, лежит в открытом репозитории.
