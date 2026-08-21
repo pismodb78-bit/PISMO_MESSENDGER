@@ -1,1 +1,1 @@
-server=85.174.248.59;port=3307;uid=user1;password=scent01;database=bdauth;ws=ws://85.174.248.59:8080
+server=5.181.23.167;port=3307;uid=user1;password=scent01;database=bdauth;ws=ws://5.181.23.167:8080

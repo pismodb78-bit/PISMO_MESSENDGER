@@ -20,7 +20,7 @@
 JWT_SECRET='ваш-секрет' REQUIRE_JWT=1 node server.js
 ```
 
-## Развёртывание на VPS (тот же, где LiveKit — 5.181.23.167)
+## Развёртывание на VPS (5.181.23.167 — там же LiveKit и MySQL)
 
 ```bash
 # 1. Установить Node.js (если ещё нет)
@@ -40,67 +40,13 @@ node server.js          # должно вывести: [PISMO WS] Слушаю w
 sudo ufw allow 8080/tcp
 ```
 
-## Развёртывание на Windows (машина с MySQL, 85.174.248.59)
+## Про Windows
 
-```bat
-:: 1. Установить Node.js LTS: https://nodejs.org (кнопка LTS, обычная установка)
-::    Проверить в новом окне cmd:
-node --version
-
-:: 2. Создать папку, например C:\pismo-ws, и положить туда server.js и package.json
-
-:: 3. В cmd перейти в папку и установить зависимости:
-cd C:\pismo-ws
-npm install
-
-:: 4. Запустить (проверка):
-node server.js
-::    Должно вывести: [PISMO WS] Слушаю ws://0.0.0.0:8080
-```
-
-**Открыть порт 8080 в брандмауэре Windows** (cmd от администратора):
-
-```bat
-netsh advfirewall firewall add rule name="PISMO WS 8080" dir=in action=allow protocol=TCP localport=8080
-```
-
-**Автозапуск как служба Windows.**
-
-> ⚠️ НЕ используйте pm2 на Windows с новым Node.js (v20+/v24): pm2 падает с
-> `EPERM \\.\pipe\rpc.sock` (не может поднять свой демон). Используйте NSSM —
-> он создаёт настоящую службу Windows и не зависит от версии Node.
-
-**Вариант A — NSSM (рекомендуется):**
-1. Скачать NSSM: https://nssm.cc/download (распаковать, взять `win64\nssm.exe`).
-2. В cmd от администратора:
-   ```bat
-   nssm install PismoWS
-   ```
-   В открывшемся окне:
-   - **Path**: `C:\Program Files\nodejs\node.exe`
-   - **Startup directory**: `C:\pismo-ws`
-   - **Arguments**: `server.js`
-   Нажать **Install service**.
-3. Запустить службу:
-   ```bat
-   nssm start PismoWS
-   ```
-   Управление: `nssm restart PismoWS`, `nssm stop PismoWS`, логи — вкладка I/O
-   в `nssm edit PismoWS` (можно указать файл лога).
-
-**Вариант B — Планировщик заданий (без скачиваний):**
-```bat
-schtasks /create /tn PismoWS /tr "\"C:\Program Files\nodejs\node.exe\" C:\pismo-ws\server.js" /sc onstart /ru SYSTEM /f
-schtasks /run /tn PismoWS
-```
-Остановить: `schtasks /end /tn PismoWS`, удалить: `schtasks /delete /tn PismoWS /f`.
-
-**Вариант C — просто проверить/погонять сейчас:** оставить открытым окно с
-`node server.js` (работает, пока окно открыто).
-
-> Если машина за роутером/NAT — пробросьте внешний порт 8080 на эту машину
-> (как уже сделано для MySQL 3307). Если у машины публичный IP напрямую —
-> достаточно правила брандмауэра выше.
+Раньше ws-сервер и MySQL стояли на домашнем ноутбуке (85.174.248.59), и для
+этого провайдеру платили за белый IP. Всё переехало на VPS — инструкция в
+`deploy/UBUNTU-VPS.md`. Раздел про запуск на Windows убран, чтобы никто не
+поднял вторую копию сервера: клиенты, разошедшиеся по двум релеям, друг друга
+не видят.
 
 ## Автозапуск как systemd-сервис (Linux)
 
@@ -135,7 +81,7 @@ sudo systemctl status pismo-ws
 адресом WebSocket (точка с запятой — разделитель):
 
 ```
-server=85.174.248.59;port=3307;uid=user1;password=scent01;database=bdauth;ws=ws://85.174.248.59:8080
+server=5.181.23.167;port=3307;uid=user1;password=ВАШ_ПАРОЛЬ;database=bdauth;ws=ws://5.181.23.167:8080
 ```
 
 Параметр `ws=` имеет приоритет. Если его нет — клиент берёт `server=` и порт 8080
