@@ -4,6 +4,7 @@
 //  Это partial class — расширяет MainForm без правки оригинала
 // ============================================================
 using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Drawing;
 using System.Windows.Forms;
@@ -1135,6 +1136,61 @@ namespace PISMO
         /// Строит мини-цитату ответа внутри пузыря.
         /// Возвращает высоту добавленного блока.
         /// </summary>
+        /// <summary>
+        /// Цитаты ответов для показываемой страницы: id сообщения → текст и автор.
+        /// Заполняется PreloadQuotes перед отрисовкой, очищается после.
+        /// </summary>
+        private Dictionary<int, (string text, string sender)> _quotesInView;
+
+        /// <summary>
+        /// Забирает ВСЕ цитаты страницы одним запросом.
+        ///
+        /// Без этого каждое сообщение-ответ тянуло свою цитату отдельно, прямо
+        /// в цикле отрисовки и на потоке интерфейса. Пока база стояла рядом, это
+        /// терялось в шуме; на удалённом сервере сорок сообщений превращались в
+        /// сорок подключений подряд.
+        /// </summary>
+        public void PreloadQuotes(DataTable dt, bool isGroup)
+        {
+            _quotesInView = null;
+            if (dt == null || dt.Rows.Count == 0) return;
+            if (!dt.Columns.Contains("reply_to_id")) return;
+
+            var ids = new List<int>();
+            foreach (DataRow r in dt.Rows)
+            {
+                if (r["reply_to_id"] == DBNull.Value) continue;
+                int id = Convert.ToInt32(r["reply_to_id"]);
+                if (id > 0 && !ids.Contains(id)) ids.Add(id);
+            }
+            if (ids.Count == 0) return;
+
+            var map = new Dictionary<int, (string, string)>();
+            try
+            {
+                string table = isGroup ? "group_messages" : "messages";
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand($@"
+                    SELECT m.id, m.text, TRIM(CONCAT(u.Name,' ',u.Surname)) AS sname, u.login
+                    FROM {table} m
+                    JOIN users u ON u.id = m.sender_id
+                    WHERE m.id IN ({string.Join(",", ids)})", conn);
+                using var rd = cmd.ExecuteReader();
+                while (rd.Read())
+                {
+                    int id = Convert.ToInt32(rd["id"]);
+                    string text = "";
+                    try { text = Crypto.Dec(rd["text"] == DBNull.Value ? "" : rd["text"].ToString()); } catch { }
+                    string sender = rd["sname"] == DBNull.Value ? "" : rd["sname"].ToString().Trim();
+                    if (string.IsNullOrWhiteSpace(sender))
+                        sender = rd["login"] == DBNull.Value ? "" : rd["login"].ToString();
+                    map[id] = (text, sender);
+                }
+            }
+            catch { }
+            _quotesInView = map;
+        }
+
         public int BuildReplyQuote(Panel bubble, int replyToId, bool isGroup,
             bool isMine, int startY, int innerW, int pad)
         {
@@ -1145,24 +1201,38 @@ namespace PISMO
                 string qText = "";
                 string qSender = "";
 
-                using var conn = DBHelper.OpenConnection();
-                string table = isGroup ? "group_messages" : "messages";
-                string sql = $@"
-                    SELECT m.text, TRIM(CONCAT(u.Name,' ',u.Surname)) AS sname, u.login
-                    FROM {table} m
-                    JOIN users u ON u.id = m.sender_id
-                    WHERE m.id = @id";
-                using var cmd = new MySqlCommand(sql, conn);
-                cmd.Parameters.AddWithValue("@id", replyToId);
-                var dt = new DataTable();
-                new MySqlDataAdapter(cmd).Fill(dt);
-
-                if (dt.Rows.Count > 0)
+                // Цитаты на всю страницу забраны заранее, одним запросом
+                // (PreloadQuotes). Раньше здесь стоял отдельный поход в базу НА
+                // КАЖДОЕ сообщение с ответом, и на удалённом сервере это стоило
+                // 120 мс на подключение плюс сам запрос — по замеру отрисовка
+                // страницы занимала восемь секунд, а перерисовка шестнадцать.
+                if (_quotesInView != null && _quotesInView.TryGetValue(replyToId, out var q))
                 {
-                    qText = Crypto.Dec(dt.Rows[0]["text"].ToString());
-                    qSender = dt.Rows[0]["sname"].ToString().Trim();
-                    if (string.IsNullOrWhiteSpace(qSender))
-                        qSender = dt.Rows[0]["login"].ToString();
+                    qText = q.text;
+                    qSender = q.sender;
+                }
+                else
+                {
+                    // Запасной путь: цитата понадобилась вне отрисовки страницы.
+                    using var conn = DBHelper.OpenConnection();
+                    string table = isGroup ? "group_messages" : "messages";
+                    string sql = $@"
+                        SELECT m.text, TRIM(CONCAT(u.Name,' ',u.Surname)) AS sname, u.login
+                        FROM {table} m
+                        JOIN users u ON u.id = m.sender_id
+                        WHERE m.id = @id";
+                    using var cmd = new MySqlCommand(sql, conn);
+                    cmd.Parameters.AddWithValue("@id", replyToId);
+                    var dt = new DataTable();
+                    new MySqlDataAdapter(cmd).Fill(dt);
+
+                    if (dt.Rows.Count > 0)
+                    {
+                        qText = Crypto.Dec(dt.Rows[0]["text"].ToString());
+                        qSender = dt.Rows[0]["sname"].ToString().Trim();
+                        if (string.IsNullOrWhiteSpace(qSender))
+                            qSender = dt.Rows[0]["login"].ToString();
+                    }
                 }
 
                 if (string.IsNullOrEmpty(qText)) return 0;

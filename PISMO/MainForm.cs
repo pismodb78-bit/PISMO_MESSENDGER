@@ -2846,6 +2846,7 @@ namespace PISMO
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
+            PreloadQuotes(dt, isGroup: true);
             try { _pinnedInView = PinsRepository.PinnedIds(1); } catch { _pinnedInView = null; }
             try
             {
@@ -3173,6 +3174,8 @@ namespace PISMO
             {
                 try { _pinnedInView = PinsRepository.PinnedIds(0); } catch { _pinnedInView = null; }
             });
+            // Цитаты ответов — одним запросом на страницу, до цикла отрисовки.
+            Perf.Time("PreloadQuotes", () => PreloadQuotes(dt, isGroup: false));
             Perf.Time("Reactions.ForMessages", () =>
             {
                 try
