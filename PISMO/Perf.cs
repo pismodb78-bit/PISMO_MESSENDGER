@@ -25,11 +25,16 @@ namespace PISMO
 
         private static bool? _enabled;
 
+        /// <summary>
+        /// Включено, если рядом лежит perf.on ЛИБО подключён отладчик. Второе —
+        /// чтобы при запуске из студии ничего не надо было готовить заранее:
+        /// строки просто появятся в окне вывода.
+        /// </summary>
         public static bool Enabled
         {
             get
             {
-                _enabled ??= File.Exists(Path.Combine(Dir, "perf.on"));
+                _enabled ??= Debugger.IsAttached || File.Exists(Path.Combine(Dir, "perf.on"));
                 return _enabled.Value;
             }
         }
@@ -40,8 +45,9 @@ namespace PISMO
             if (!Enabled) return;
             try
             {
-                var line = $"{DateTime.Now:HH:mm:ss.fff}  {ms,6} мс  {stage}{Environment.NewLine}";
-                lock (Gate) File.AppendAllText(LogPath, line, Encoding.UTF8);
+                var line = $"{DateTime.Now:HH:mm:ss.fff}  {ms,6} мс  {stage}";
+                Debug.WriteLine("[PERF] " + line);
+                lock (Gate) File.AppendAllText(LogPath, line + Environment.NewLine, Encoding.UTF8);
             }
             catch { }
         }
@@ -52,8 +58,9 @@ namespace PISMO
             if (!Enabled) return;
             try
             {
-                var line = $"{DateTime.Now:HH:mm:ss.fff}         ── {stage}{Environment.NewLine}";
-                lock (Gate) File.AppendAllText(LogPath, line, Encoding.UTF8);
+                var line = $"{DateTime.Now:HH:mm:ss.fff}         ── {stage}";
+                Debug.WriteLine("[PERF] " + line);
+                lock (Gate) File.AppendAllText(LogPath, line + Environment.NewLine, Encoding.UTF8);
             }
             catch { }
         }
