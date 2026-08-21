@@ -126,7 +126,14 @@ namespace PISMO
                 if (seg.Length == 0) continue;
                 int eq = seg.IndexOf('=');
                 string key = (eq >= 0 ? seg.Substring(0, eq) : seg).Trim().ToLowerInvariant();
+                // Ключи не для СУБД: их читают WebSocketSignalingClient и
+                // LiveKitSettings прямо из файла. Оставить их здесь — значит
+                // получить «Option not supported (livekit)» и уронить разбор
+                // всей строки подключения.
                 if (key == "ws" || key == "websocket") continue;
+                if (key == "livekit" || key == "lk") continue;
+                if (key == "lkkey" || key == "livekitkey") continue;
+                if (key == "lksecret" || key == "livekitsecret") continue;
                 keep.Add(seg);
             }
             return string.Join(";", keep);

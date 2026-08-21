@@ -81,7 +81,7 @@ sudo systemctl status pismo-ws
 адресом WebSocket (точка с запятой — разделитель):
 
 ```
-server=5.181.23.167;port=3307;uid=user1;password=ВАШ_ПАРОЛЬ;database=bdauth;ws=ws://5.181.23.167:8080
+server=5.181.23.167;port=3307;uid=user1;password=ВАШ_ПАРОЛЬ;database=bdauth;ws=ws://5.181.23.167:8080;livekit=ws://5.181.23.167:7880
 ```
 
 Параметр `ws=` имеет приоритет. Если его нет — клиент берёт `server=` и порт 8080

@@ -477,8 +477,13 @@ systemctl is-active mariadb pismo-ws nginx fail2ban
 `ip.txt` рядом с `PISMO.exe`, одна строка (адрес уже обновлён в репозитории):
 
 ```
-server=5.181.23.167;port=3307;database=bdauth;uid=user1;pwd=scent01;ws=ws://5.181.23.167:8080/
+server=5.181.23.167;port=3307;database=bdauth;uid=user1;pwd=scent01;ws=ws://5.181.23.167:8080;livekit=ws://5.181.23.167:7880
 ```
+
+Ключи, которые читает не СУБД, а другие части приложения: `ws` — сигналинг,
+`livekit` — сервер звонков, `lkkey` и `lksecret` — ключ и секрет LiveKit,
+если решите их сменить. Чего в файле нет, то берётся из `livekitsettings.json`
+рядом с exe.
 
 Тонкость: `DBHelper` подменяет порт на 3306, если хост — `localhost`,
 `127.0.0.1` или адрес локальной подсети. У VPS адрес внешний, поэтому 3307

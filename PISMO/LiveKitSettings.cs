@@ -62,6 +62,7 @@ namespace PISMO
                 if (string.IsNullOrWhiteSpace(_model.Url)) _model.Url = "ws://5.181.23.167:7880";
                 if (string.IsNullOrWhiteSpace(_model.ApiKey)) _model.ApiKey = "APIkey5I8EkGBDSc4jdmI5QcVC";
                 if (string.IsNullOrWhiteSpace(_model.ApiSecret)) _model.ApiSecret = "Y3pIteGv4BxEEWSmIvE3P9YqDTBdc3nF7IzWNa51flCRS8Gx";
+                ApplyIpTxtOverrides();
                 Save();
             }
             catch
@@ -69,6 +70,75 @@ namespace PISMO
                 _model = new LiveKitSettingsModel();
                 try { Save(); } catch { }
             }
+        }
+
+        /// <summary>
+        /// Адрес сервера звонков можно задать прямо в ip.txt — там же, где база и
+        /// сигналинг:
+        ///
+        ///   server=IP;port=3307;uid=...;pwd=...;database=bdauth;
+        ///   ws=ws://IP:8080/;livekit=ws://IP:7880
+        ///
+        /// Зачем. Настройки звонков лежали только в livekitsettings.json рядом с
+        /// exe, и в интерфейсе их нет вовсе — поменять сервер можно было лишь
+        /// правкой json на каждой машине. ip.txt при этом и так раздаётся вместе
+        /// со сборкой. Держать адреса в двух разных местах — верный способ
+        /// однажды поменять только одно из них и потом искать, почему звонки
+        /// уходят на старый сервер.
+        ///
+        /// Ключи: livekit (или lk) — адрес, lkkey — API key, lksecret — секрет.
+        /// Любого из них может не быть: чего нет, то берётся из json.
+        ///
+        /// Что здесь есть — то и побеждает. Значения записываются в json, чтобы
+        /// в файле было видно, чем приложение пользуется на самом деле.
+        /// </summary>
+        private static void ApplyIpTxtOverrides()
+        {
+            try
+            {
+                string[] paths =
+                {
+                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ip.txt"),
+                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "ip.txt"),
+                    "ip.txt"
+                };
+
+                string line = null;
+                foreach (var p in paths)
+                    if (File.Exists(p)) { line = File.ReadAllText(p).Trim(); break; }
+
+                if (string.IsNullOrWhiteSpace(line) || line.IndexOf('=') < 0) return;
+
+                foreach (var part in line.Split(';'))
+                {
+                    var seg = part.Trim();
+                    int eq = seg.IndexOf('=');
+                    if (eq <= 0) continue;
+
+                    var key = seg.Substring(0, eq).Trim().ToLowerInvariant();
+                    // Берём ВСЁ после первого '=': секрет — base64 и сам может
+                    // заканчиваться на '='.
+                    var val = seg.Substring(eq + 1).Trim();
+                    if (val.Length == 0) continue;
+
+                    switch (key)
+                    {
+                        case "livekit":
+                        case "lk":
+                            _model.Url = val;
+                            break;
+                        case "lkkey":
+                        case "livekitkey":
+                            _model.ApiKey = val;
+                            break;
+                        case "lksecret":
+                        case "livekitsecret":
+                            _model.ApiSecret = val;
+                            break;
+                    }
+                }
+            }
+            catch { }
         }
 
         public static void Save()
