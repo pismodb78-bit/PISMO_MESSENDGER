@@ -1,67 +1,52 @@
-# Перенос базы и вебсокета на Ubuntu VPS
+# Перенос PISMO на Ubuntu VPS
 
-Что переезжает: **MySQL** (сейчас MAMP на ноутбуке, `85.174.248.59:3307`) и
-**ws-сервер** (сейчас там же, порт 8080).
+Порядок сплошной: сверху вниз, ничего не пропуская. Всё делается на
+`5.181.23.167` — там же, где уже работает LiveKit.
 
-Что НЕ переезжает и трогать не нужно: **LiveKit** — он уже на VPS
-(`5.181.23.167:7880`). Звонки к ноутбуку не привязаны.
+**Что переезжает:** MySQL (сейчас MAMP на ноутбуке, `85.174.248.59:3307`) и
+ws-сервер (там же, порт 8080).
 
-После переезда белый IP от провайдера не нужен: клиенты ходят только на VPS.
+**Что не трогаем:** LiveKit — он уже на этом VPS, порт 7880. Звонки от
+ноутбука не зависят.
 
----
+**Итог:** белый IP от провайдера больше не нужен, ноутбук можно гасить.
 
-## 0. Прежде чем начать
+**Адреса после переезда** — всё на одном хосте:
 
-**MariaDB, а не MySQL 8.** Причина конкретная: Android-клиент собран с
-драйвером `mysql-connector-java:5.1.49`, а он не умеет `caching_sha2_password`
-— способ проверки пароля, который MySQL 8 включает по умолчанию. С MySQL 8
-пришлось бы отдельно переключать пользователя на старый плагин, а в MySQL 8.4
-его уже нет вовсе. MariaDB использует `mysql_native_password` по умолчанию,
-дамп из MySQL 5.7 принимает без правок, и оба клиента работают с ней как есть.
-
-**Проверьте память VPS.** MySQL рядом с LiveKit и Node на дешёвом тарифе — это
-обычно 1–2 ГБ. Если меньше двух, добавьте подкачку (шаг 3.1), иначе первый же
-импорт дампа с вложениями упрётся в OOM.
-
-**Пароль придётся сменить.** Нынешний `scent01` лежит в публичном репозитории
-и в APK — то есть известен любому, кто откроет GitHub. Пока база стояла за
-домашним роутером, это было полбеды; на VPS с открытым портом это приглашение.
-Новый пароль ставим на шаге 4.
+| Что | Адрес |
+|---|---|
+| База | `5.181.23.167:3307` |
+| Сигналинг | `ws://5.181.23.167:8080/` |
+| LiveKit | `ws://5.181.23.167:7880` |
+| phpMyAdmin | `https://5.181.23.167:47821/` |
 
 ---
 
-## 1. Снять дамп с MAMP (на ноутбуке, Windows)
+## 1. Дамп с ноутбука
 
-В обычном `cmd`:
+На ноутбуке, в обычном `cmd`:
 
 ```bat
 "C:\MAMP\bin\mysql\bin\mysqldump.exe" -h 127.0.0.1 -P 3307 -u root -p ^
-  --default-character-set=utf8mb4 ^
-  --single-transaction ^
-  --routines ^
-  --hex-blob ^
-  --max-allowed-packet=512M ^
+  --default-character-set=utf8mb4 --single-transaction --routines ^
+  --hex-blob --max-allowed-packet=512M ^
   bdauth > %USERPROFILE%\Desktop\bdauth.sql
 ```
 
 Пароль root в MAMP по умолчанию `root`.
 
-Что означают ключи, потому что каждый здесь по делу:
+Ключи не для красоты: `--hex-blob` иначе испортит вложения (они лежат в базе
+как LONGBLOB), `--routines` иначе потеряет процедуру `add_column_safe`,
+`--max-allowed-packet` иначе оборвёт дамп на первом крупном файле,
+`--single-transaction` даёт целостный снимок не гася MAMP.
 
-* `--hex-blob` — вложения (LONGBLOB) пишутся шестнадцатеричными числами, а не
-  как строки. Без него дамп с картинками и голосовыми портится.
-* `--single-transaction` — снимок целостный, MAMP при этом можно не гасить.
-* `--routines` — в базе есть процедура `add_column_safe`, без ключа она
-  потеряется.
-* `--max-allowed-packet` — иначе дамп оборвётся на первом крупном вложении.
+**Проверьте размер файла.** Он должен быть сопоставим с папкой данных MAMP.
+Пара килобайт — дамп не удался, дальше идти нельзя.
 
-Проверьте размер файла: он должен быть сопоставим с размером папки данных
-MAMP. Если получилось несколько килобайт — что-то пошло не так, не продолжайте.
-
-Скопируйте файл на VPS:
+Отправьте на сервер:
 
 ```bat
-scp %USERPROFILE%\Desktop\bdauth.sql root@ВАШ_IP:/root/
+scp %USERPROFILE%\Desktop\bdauth.sql root@5.181.23.167:/root/
 ```
 
 ---
@@ -69,145 +54,134 @@ scp %USERPROFILE%\Desktop\bdauth.sql root@ВАШ_IP:/root/
 ## 2. Подготовка сервера
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo timedatectl set-timezone Europe/Moscow    # чтобы время сообщений совпадало
+ssh root@5.181.23.167
+
+apt update && apt upgrade -y
+timedatectl set-timezone Europe/Moscow
+free -h
 ```
 
-### 2.1 Подкачка, если памяти меньше 2 ГБ
+Если памяти меньше 2 ГБ — подкачка, иначе импорт с вложениями упрётся в OOM:
 
 ```bash
-free -h                                        # посмотреть, сколько есть
-sudo fallocate -l 2G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+fallocate -l 2G /swapfile && chmod 600 /swapfile
+mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```
 
 ---
 
 ## 3. MariaDB
 
-```bash
-sudo apt install -y mariadb-server
-sudo mysql_secure_installation
-```
+MariaDB, а не MySQL 8: Android-клиент собран с драйвером
+`mysql-connector-java:5.1.49`, а он не умеет `caching_sha2_password` —
+проверку пароля, которую MySQL 8 включает по умолчанию. В MySQL 8.4 старый
+способ убрали совсем. MariaDB работает со старым, дамп из вашей 5.7
+принимает как есть.
 
-В `mysql_secure_installation`: пароль root задать, анонимных пользователей
-удалить, удалённый вход root — **запретить** (приложение ходит под `user1`),
-тестовую базу удалить.
-
-### 3.1 Настройка
+### 3.1 Установка
 
 ```bash
-sudo nano /etc/mysql/mariadb.conf.d/60-pismo.cnf
+apt install -y mariadb-server
+mysql_secure_installation
 ```
 
-```ini
+В диалоге: пароль root задать, анонимных удалить, удалённый вход root
+**запретить**, тестовую базу удалить.
+
+### 3.2 Настройка
+
+```bash
+cat > /etc/mysql/mariadb.conf.d/60-pismo.cnf <<'EOF'
 [mysqld]
-# Порт оставляем 3307 — такой же, как был у MAMP. Это и меньше правок в
-# клиентах, и чуть тише: сканеры интернета долбятся в 3306.
 port = 3307
 bind-address = 0.0.0.0
 
-# Вложения лежат в базе как LONGBLOB и доходят до 200 МБ. Пакет должен быть
-# больше самого крупного вложения, иначе отправка обрывается посередине.
+# Вложения доходят до 200 МБ. Пакет должен быть больше самого крупного,
+# иначе отправка файла обрывается посередине.
 max_allowed_packet = 512M
 
-# Под 2 ГБ памяти. Если на VPS 4 ГБ и больше — можно 512M.
+# Под 2 ГБ памяти. На 4 ГБ и больше можно поставить 512M.
 innodb_buffer_pool_size = 256M
 innodb_log_file_size = 128M
 
 character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
-
-# Клиенты держат пул соединений и умеют переподключаться; полчаса простоя
-# рвать смысла нет, но и вечные соединения копить незачем.
 wait_timeout = 1800
 max_connections = 100
 
 [client]
 max_allowed_packet = 512M
+EOF
 ```
 
+### 3.3 Автозапуск
+
 ```bash
-sudo systemctl restart mariadb
-sudo systemctl status mariadb --no-pager
+systemctl enable mariadb
+systemctl restart mariadb
+systemctl status mariadb --no-pager
 ```
 
 ---
 
-## 4. База и пользователь
+## 4. База, пользователи, данные
+
+### 4.1 Создание
 
 ```bash
-sudo mysql
+mysql
 ```
 
 ```sql
 CREATE DATABASE bdauth CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
--- ── Администратор ──────────────────────────────────────────────────────
--- @'%' — доступен и с сервера, и снаружи: так решено, чтобы можно было
--- подключиться удалённо, не поднимая туннель.
+-- Администратор: phpMyAdmin и удалённые подключения.
 CREATE USER 'root1'@'%' IDENTIFIED BY 'scent01!';
 GRANT ALL PRIVILEGES ON *.* TO 'root1'@'%' WITH GRANT OPTION;
 
--- ── Учётка приложения ──────────────────────────────────────────────────
--- Ровно те права, что были на старом сервере: читать, писать, удалять,
--- создавать таблицы. Ничего административного.
+-- Приложение: ровно те права, что были на старом сервере.
 CREATE USER 'user1'@'%' IDENTIFIED BY 'scent01';
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE ON bdauth.* TO 'user1'@'%';
+
 FLUSH PRIVILEGES;
 EXIT;
 ```
 
-Два замечания к этим правам, оба по делу.
+FILE не переносим: приложению он не нужен (обычные выборки и вставки), право
+глобальное и позволяет читать и писать файлы сервера от имени СУБД.
 
-**FILE давать не стоит.** На старом сервере он у `user1` был, но приложению
-он не нужен ни для чего: оно делает обычные выборки и вставки. Права это
-глобальные, не на одну базу, и позволяют читать файлы сервера (`LOAD_FILE`)
-и писать файлы от имени СУБД. С паролем, который лежит в публичном
-репозитории, это уже не «лишняя галочка», а способ добраться до самой
-машины. Поэтому в списке выше его нет.
-
-**ALTER и INDEX — на ваше усмотрение.** Их у `user1` не было, и именно
-поэтому миграции схемы, которые приложение носит в себе, молча не
-применялись, а индексы приходилось вставлять руками через phpMyAdmin.
-Если добавить
+ALTER и INDEX — по желанию. Их не было, и поэтому миграции схемы, которые
+приложение носит в себе, не применялись, а индексы вы вставляли руками.
+Хотите, чтобы применялись само:
 
 ```sql
 GRANT ALTER, INDEX ON bdauth.* TO 'user1'@'%';
 ```
 
-то `DbMigrator` доведёт схему сам, и правки вроде `idx_msg_recv_read`
-перестанут требовать вашего участия. Если не добавлять — всё остаётся как
-было: SQL из папки `sql/` вы выполняете вручную под `root1`.
-
-### 4.1 Импорт дампа
+### 4.2 Импорт
 
 ```bash
-sudo mysql --max-allowed-packet=512M bdauth < /root/bdauth.sql
+mysql --max-allowed-packet=512M bdauth < /root/bdauth.sql
 ```
 
-Проверка, что доехало всё:
+### 4.3 Проверка
 
 ```bash
-sudo mysql -e "
-  SELECT table_name, table_rows
-  FROM information_schema.tables
-  WHERE table_schema='bdauth' ORDER BY table_rows DESC LIMIT 10;
+mysql -e "
   SELECT COUNT(*) AS messages FROM bdauth.messages;
+  SELECT COUNT(*) AS users FROM bdauth.users;
   SELECT id, name FROM bdauth.schema_migrations ORDER BY id;"
 ```
 
-Число сообщений должно совпасть с тем, что было в phpMyAdmin.
+Числа сверьте с тем, что было в phpMyAdmin на ноутбуке.
 
-### 4.2 Индекс, который снимает нагрузку
+### 4.4 Индекс, снимающий нагрузку
 
-Если он ещё не переехал вместе с дампом — приложение теперь создаст его само
-(права есть). Можно и руками, файл лежит в `sql/2026-08-20_feed_indexes.sql`:
+Если он не приехал с дампом:
 
 ```bash
-sudo mysql bdauth -e "
+mysql bdauth -e "
   ALTER TABLE messages
   ADD INDEX idx_msg_recv_read (receiver_id, is_read, sender_id);"
 ```
@@ -218,29 +192,41 @@ sudo mysql bdauth -e "
 
 ## 5. ws-сервер
 
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
+### 5.1 Установка
 
-sudo mkdir -p /opt/pismo-ws
-# скопировать в /opt/pismo-ws файлы ws-server/server.js и ws-server/package.json
-cd /opt/pismo-ws && sudo npm install --omit=dev
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+
+mkdir -p /opt/pismo-ws && cd /opt/pismo-ws
+B=claude/pismo-android-version-qd5fxr
+curl -fsSLO "https://raw.githubusercontent.com/pismodb78-bit/PISMO_MESSENDGER/$B/ws-server/server.js"
+curl -fsSLO "https://raw.githubusercontent.com/pismodb78-bit/PISMO_MESSENDGER/$B/ws-server/package.json"
+npm install --omit=dev
 ```
 
-Секрет — отдельным файлом, а не в юните: юниты читаются всеми, а это ключ
+### 5.2 Настройка
+
+Секрет отдельным файлом, а не в юните: юниты читаются всеми, а это ключ
 подписи токенов.
 
 ```bash
-sudo tee /etc/pismo-ws.env >/dev/null <<'EOF'
+cat > /etc/pismo-ws.env <<'EOF'
 PORT=8080
 REQUIRE_JWT=0
 JWT_SECRET=uc5KT2e+qYwa6tb0HUXnLZwsC55VuB93szkSpkucr8i1BFjKA6RXbyIrjk0+ign9
 EOF
-sudo chmod 600 /etc/pismo-ws.env
+chmod 600 /etc/pismo-ws.env
 ```
 
+`REQUIRE_JWT=0` — мягкий режим на время переезда: строгий отклоняет клиентов
+без токена, а среди них могут быть ещё не обновлённые. Когда все перейдут,
+поменяйте на `1` и перезапустите.
+
+### 5.3 Автозапуск
+
 ```bash
-sudo tee /etc/systemd/system/pismo-ws.service >/dev/null <<'EOF'
+cat > /etc/systemd/system/pismo-ws.service <<'EOF'
 [Unit]
 Description=PISMO WebSocket signaling
 After=network.target
@@ -261,128 +247,18 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable --now pismo-ws
-sudo systemctl status pismo-ws --no-pager
+systemctl daemon-reload
+systemctl enable --now pismo-ws
 journalctl -u pismo-ws -n 20 --no-pager
 ```
 
-В логе должно быть `[PISMO WS] Слушаю ws://0.0.0.0:8080`.
-
-`REQUIRE_JWT=0` оставлен на время переезда: строгий режим отклоняет клиентов
-без токена, а среди них могут оказаться ещё не обновлённые. Когда все перейдут
-— поменяйте на `1` и `sudo systemctl restart pismo-ws`.
+Ждём в логе `[PISMO WS] Слушаю ws://0.0.0.0:8080`.
 
 ---
 
-## 6. Фаервол
+## 6. phpMyAdmin
 
-```bash
-sudo ufw allow 22/tcp
-sudo ufw allow 3307/tcp
-sudo ufw allow 8080/tcp
-sudo ufw allow 7880/tcp          # LiveKit, если он на этом же VPS
-sudo ufw allow 7881/tcp
-sudo ufw allow 50000:60000/udp   # медиа LiveKit
-sudo ufw enable
-sudo ufw status numbered
-```
-
-И заведите fail2ban — порт базы теперь виден всему интернету:
-
-```bash
-sudo apt install -y fail2ban
-sudo systemctl enable --now fail2ban
-```
-
----
-
-## 7. Файлы подключения
-
-### ПК
-
-Рядом с `PISMO.exe` лежит `ip.txt`. Одна строка:
-
-```
-server=ВАШ_IP;port=3307;database=bdauth;uid=user1;pwd=НОВЫЙ_ПАРОЛЬ;ws=ws://ВАШ_IP:8080/
-```
-
-Тонкость: `DBHelper` подменяет порт на 3306, если хост — `localhost`,
-`127.0.0.1` или адрес из локальной подсети. У VPS адрес внешний, поэтому
-указанный 3307 останется как есть.
-
-### Android
-
-Настройки → «Подключение к базе данных»:
-
-| Поле | Значение |
-|---|---|
-| Хост | ВАШ_IP |
-| Порт | 3307 |
-| База | bdauth |
-| Пользователь | user1 |
-| Пароль | НОВЫЙ_ПАРОЛЬ |
-
-Вебсокет собирается сам как `ws://<хост>:8080/`, отдельно указывать не нужно —
-поле «Сигналинг» оставьте пустым.
-
-Значения по умолчанию зашиты в сборку (`Prefs.kt`), так что после переезда их
-стоит поменять и там — иначе на новом телефоне придётся вводить руками.
-
----
-
-## 8. Проверка
-
-```bash
-# С ноутбука — база отвечает?
-"C:\MAMP\bin\mysql\bin\mysql.exe" -h ВАШ_IP -P 3307 -u user1 -p bdauth -e "SELECT COUNT(*) FROM messages;"
-```
-
-Дальше в приложении: войти, открыть чат, отправить сообщение и вложение,
-позвонить. Отдельно проверьте, что уведомление о новом сообщении приходит
-мгновенно — это и есть признак, что вебсокет подключился.
-
----
-
-## 9. Откат
-
-MAMP не выключайте ещё пару дней. Если что-то пойдёт не так, верните в `ip.txt`
-и в настройках Android прежние `85.174.248.59:3307` — данные там останутся
-нетронутыми. Помните только, что сообщения, написанные на VPS, в старой базе не
-появятся: сводить две базы потом руками — работа на вечер.
-
-Когда убедитесь, что всё работает: погасите MAMP, откажитесь от белого IP и
-настройте резервные копии на VPS:
-
-```bash
-sudo tee /etc/cron.daily/pismo-backup >/dev/null <<'EOF'
-#!/bin/sh
-mysqldump --single-transaction --routines --hex-blob --max-allowed-packet=512M \
-  bdauth | gzip > /root/backup-bdauth-$(date +\%F).sql.gz
-find /root -name 'backup-bdauth-*.sql.gz' -mtime +7 -delete
-EOF
-sudo chmod +x /etc/cron.daily/pismo-backup
-```
-
----
-
-## 10. phpMyAdmin — база из браузера
-
-Ставим доступным снаружи, без туннеля. Защита складывается из трёх слоёв,
-каждый из которых стоит одной команды:
-
-1. **нестандартный порт** — в 80 и 443 сканеры ломятся постоянно, в
-   произвольный пятизначный почти никогда;
-2. **пароль nginx до phpMyAdmin** — переборщик не доходит даже до формы
-   входа, а значит и до самой панели с её уязвимостями;
-3. **разрешён вход только `root1`** — пароль `user1` лежит в публичном
-   репозитории и в APK, и без этого правила панель открывалась бы им.
-
-Плюс шифрование: без него логин и пароль идут по сети открытым текстом, и
-любой Wi-Fi в кафе их прочитает. Домена нет — значит самоподписанный
-сертификат: браузер один раз поругается, дальше всё как обычно.
-
-### 10.1 Установка
+### 6.1 Установка
 
 ```bash
 apt install -y nginx php-fpm php-mysql php-mbstring php-zip php-gd php-curl php-xml unzip apache2-utils
@@ -395,7 +271,7 @@ mkdir -p /var/lib/phpmyadmin/tmp
 chown -R www-data:www-data /var/lib/phpmyadmin
 ```
 
-### 10.2 Настройка phpMyAdmin
+### 6.2 Настройка phpMyAdmin
 
 ```bash
 cat > /usr/share/phpmyadmin/config.inc.php <<EOF
@@ -406,12 +282,9 @@ cat > /usr/share/phpmyadmin/config.inc.php <<EOF
 \$cfg['Servers'][\$i]['host'] = '127.0.0.1';
 \$cfg['Servers'][\$i]['port'] = '3307';
 \$cfg['Servers'][\$i]['AllowNoPassword'] = false;
-// Пускаем в панель ТОЛЬКО root1. Иначе войти сюда мог бы любой, кто знает
-// пароль user1 — а он лежит в открытом репозитории и в APK.
 \$cfg['Servers'][\$i]['AllowDeny']['order'] = 'deny,allow';
 \$cfg['Servers'][\$i]['AllowDeny']['rules'] = ['allow root1 from all'];
 \$cfg['TempDir'] = '/var/lib/phpmyadmin/tmp';
-// Вложения в базе крупные — иначе экспорт таблицы с медиа отвалится.
 \$cfg['ExecTimeLimit'] = 0;
 \$cfg['MemoryLimit'] = '512M';
 EOF
@@ -419,8 +292,13 @@ chown www-data:www-data /usr/share/phpmyadmin/config.inc.php
 chmod 640 /usr/share/phpmyadmin/config.inc.php
 ```
 
-PHP по умолчанию не пустит файл больше двух мегабайт — для импорта дампов
-этого мало:
+`AllowDeny` пускает только `root1`. Без него в панель вошёл бы `user1`, чей
+пароль лежит в публичном репозитории и в APK.
+
+### 6.3 Лимиты PHP
+
+По умолчанию PHP не примет файл больше двух мегабайт — для импорта дампов
+бесполезно:
 
 ```bash
 PHPVER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
@@ -433,23 +311,20 @@ EOF
 systemctl restart php$PHPVER-fpm
 ```
 
-### 10.3 Пароль на входе и сертификат
+### 6.4 Пароль на входе и сертификат
 
 ```bash
-# Логин и пароль ДО phpMyAdmin. Пусть отличаются от пароля базы.
 htpasswd -c /etc/nginx/.htpasswd pismo
 
-# Самоподписанный сертификат на десять лет.
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
   -keyout /etc/ssl/private/pma.key -out /etc/ssl/certs/pma.crt \
   -subj "/CN=5.181.23.167"
 chmod 600 /etc/ssl/private/pma.key
 ```
 
-### 10.4 nginx на нестандартном порту
+### 6.5 nginx и автозапуск
 
-Порт придумайте свой пятизначный и запомните — он часть защиты. Ниже для
-примера 47821.
+Порт придумайте свой пятизначный и запомните. Ниже для примера 47821.
 
 ```bash
 PMAPORT=47821
@@ -469,8 +344,6 @@ server {
     root /usr/share/phpmyadmin;
     index index.php;
     client_max_body_size 1024M;
-
-    # Не подсказываем сканерам, что здесь phpMyAdmin.
     server_tokens off;
 
     location / { try_files \$uri \$uri/ =404; }
@@ -484,23 +357,37 @@ server {
 EOF
 ln -sf /etc/nginx/sites-available/phpmyadmin /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl restart nginx
+nginx -t
+
+systemctl enable nginx php$PHPVER-fpm
+systemctl restart nginx php$PHPVER-fpm
+```
+
+---
+
+## 7. Фаервол
+
+**Сначала 22, потом `enable`** — иначе выкинет из ssh.
+
+```bash
+PMAPORT=47821
+ufw allow 22/tcp
+ufw allow 3307/tcp
+ufw allow 8080/tcp
 ufw allow $PMAPORT/tcp
+ufw allow 7880/tcp
+ufw allow 7881/tcp
+ufw allow 50000:60000/udp
+ufw --force enable
+ufw status numbered
 ```
 
-### 10.5 Как заходить
+Последние три правила — LiveKit, он на этом же сервере. Без них звонки
+отвалятся, если `ufw` раньше не был включён.
 
-В браузере:
+---
 
-```
-https://5.181.23.167:47821/
-```
-
-Сначала окно с логином и паролем от `htpasswd`, потом форма phpMyAdmin —
-логин `root1`, пароль `scent01!`. Браузер один раз предупредит про
-самоподписанный сертификат: «Дополнительно» → «Перейти».
-
-### 10.6 Защита от перебора
+## 8. Защита от перебора
 
 ```bash
 apt install -y fail2ban
@@ -519,9 +406,108 @@ logpath = /var/log/mysql/error.log
 maxretry = 5
 bantime = 3600
 EOF
+
+systemctl enable fail2ban
 systemctl restart fail2ban
 fail2ban-client status
 ```
 
-Порт базы теперь тоже виден всему интернету, и `root1` на нём отвечает —
-поэтому вторая клетка не менее важна первой.
+Две клетки, а не одна: порт базы тоже виден всему интернету, и `root1` на нём
+отвечает.
+
+---
+
+## 9. Резервные копии
+
+```bash
+cat > /etc/cron.daily/pismo-backup <<'EOF'
+#!/bin/sh
+mysqldump --single-transaction --routines --hex-blob --max-allowed-packet=512M \
+  bdauth | gzip > /root/backup-bdauth-$(date +\%F).sql.gz
+find /root -name 'backup-bdauth-*.sql.gz' -mtime +7 -delete
+EOF
+chmod +x /etc/cron.daily/pismo-backup
+
+/etc/cron.daily/pismo-backup && ls -lh /root/backup-*.gz
+```
+
+Хранится неделя. Раз в месяц копию стоит уносить с сервера — на диске VPS
+она не переживёт самого VPS.
+
+---
+
+## 10. Проверка
+
+Всё ли поднялось и включено в автозапуск:
+
+```bash
+systemctl is-enabled mariadb pismo-ws nginx fail2ban
+systemctl is-active  mariadb pismo-ws nginx fail2ban
+ss -tlnp | grep -E '3307|8080|47821|7880'
+```
+
+База отвечает снаружи (с ноутбука):
+
+```bat
+"C:\MAMP\bin\mysql\bin\mysql.exe" -h 5.181.23.167 -P 3307 -u user1 -p bdauth -e "SELECT COUNT(*) FROM messages;"
+```
+
+Панель: `https://5.181.23.167:47821/` → окно nginx (логин из `htpasswd`) →
+форма phpMyAdmin, `root1` / `scent01!`. Браузер один раз предупредит про
+самоподписанный сертификат: «Дополнительно» → «Перейти».
+
+Приложение: войти, открыть чат, отправить сообщение и вложение, позвонить.
+Уведомление о новом сообщении должно приходить мгновенно — это признак, что
+вебсокет подключился.
+
+Перезагрузка сервера — проверка автозапуска:
+
+```bash
+reboot
+# через минуту
+systemctl is-active mariadb pismo-ws nginx fail2ban
+```
+
+---
+
+## 11. Файлы подключения
+
+### ПК
+
+`ip.txt` рядом с `PISMO.exe`, одна строка (адрес уже обновлён в репозитории):
+
+```
+server=5.181.23.167;port=3307;database=bdauth;uid=user1;pwd=scent01;ws=ws://5.181.23.167:8080/
+```
+
+Тонкость: `DBHelper` подменяет порт на 3306, если хост — `localhost`,
+`127.0.0.1` или адрес локальной подсети. У VPS адрес внешний, поэтому 3307
+останется как указано.
+
+### Android
+
+Настройки → «Подключение к базе данных»:
+
+| Поле | Значение |
+|---|---|
+| Хост | 5.181.23.167 |
+| Порт | 3307 |
+| База | bdauth |
+| Пользователь | user1 |
+| Пароль | scent01 |
+
+Поле «Сигналинг» оставить пустым — он собирается сам как `ws://<хост>:8080/`.
+В сборке эти значения уже стоят по умолчанию.
+
+---
+
+## 12. Откат
+
+MAMP не выключайте ещё пару дней. Если что-то пойдёт не так — верните в
+`ip.txt` и в настройках Android прежние `85.174.248.59:3307`, данные там
+останутся нетронутыми.
+
+Помните только: сообщения, написанные на VPS, в старую базу не попадут.
+Сводить две базы потом руками — работа на вечер.
+
+Когда убедитесь, что всё работает: гасите MAMP и отказывайтесь от белого IP.
