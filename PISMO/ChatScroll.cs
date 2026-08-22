@@ -175,7 +175,37 @@ namespace PISMO
                 p.Disposed += (s, e) => { try { _t.Stop(); _t.Dispose(); } catch { } };
             }
 
-            private int MaxOffset => Math.Max(0, _p.DisplayRectangle.Height - _p.ClientSize.Height);
+            /// <summary>
+            /// Докуда вообще можно прокрутить.
+            ///
+            /// Считать это как «высота содержимого минус высота видимой части»
+            /// НЕДОСТАТОЧНО. Горизонтальную полосу мы прячем вызовом ShowScrollBar,
+            /// от которого Windows отдаёт клиентскую область на её высоту больше, —
+            /// а WinForms про это не знает и свой предел прокрутки считает по своей,
+            /// уменьшенной. В итоге ползунком мышью лента дотягивалась до конца, а
+            /// колесом останавливалась на полосу выше: последнее сообщение
+            /// оставалось подрезанным снизу.
+            ///
+            /// Поэтому берём БОЛЬШИЙ из двух пределов — свой и тот, по которому
+            /// живёт сама полоса прокрутки (её максимум минус страница). Промах
+            /// вверх безопасен: WinForms подрежет позицию сам, а кадр, который
+            /// ничего не сдвинул, мы считаем приездом (см. Tick).
+            /// </summary>
+            private int MaxOffset
+            {
+                get
+                {
+                    int byRect = _p.DisplayRectangle.Height - _p.ClientSize.Height;
+                    int byBar = 0;
+                    try
+                    {
+                        var v = _p.VerticalScroll;
+                        if (v != null) byBar = v.Maximum - v.LargeChange + 1;
+                    }
+                    catch { }
+                    return Math.Max(0, Math.Max(byRect, byBar));
+                }
+            }
             private int Current => -_p.AutoScrollPosition.Y;
             private int Clamp(int v) => Math.Max(0, Math.Min(MaxOffset, v));
 
@@ -241,6 +271,10 @@ namespace PISMO
                 int step = (int)Math.Round(diff * Ease);
                 if (Math.Abs(step) < MinStepPx) step = Math.Sign(diff) * Math.Min(MinStepPx, Math.Abs(diff));
                 try { _p.AutoScrollPosition = new Point(0, cur + step); } catch { }
+                // Просили сдвинуть, а лента не сдвинулась — значит приехали, дальше
+                // некуда. Это и страховка от завышенной цели: без неё кадры крутились
+                // бы вхолостую, снова и снова выставляя одно и то же значение.
+                if (Current == cur) { RepaintNow(_p, force: true); Finish(); return; }
                 // Кадр анимации двигает позицию напрямую и НЕ порождает WM_VSCROLL/
                 // WM_MOUSEWHEEL, поэтому перерисовываем сами (с ограничением частоты).
                 RepaintNow(_p);
@@ -283,6 +317,31 @@ namespace PISMO
         private const uint RDW_ERASE = 0x0004;
         private const uint RDW_ALLCHILDREN = 0x0080;
         private const uint RDW_UPDATENOW = 0x0100;
+
+        /// <summary>
+        /// Перерисовка после СМЕНЫ содержимого ленты — со стиранием фона.
+        ///
+        /// Обычный RepaintNow фон намеренно НЕ стирает (RDW_ERASE там нет): при
+        /// прокрутке это давало бы мигание на каждом кадре. Но при смене чата
+        /// нужно ровно обратное. Панель держит WS_CLIPCHILDREN, то есть родитель
+        /// не рисует под дочерними окнами; пузыри прошлого чата удаляются, новые
+        /// встают на другие места, и там, где под старым пузырём фон никто не
+        /// перерисовал, остаётся прежняя картинка — сообщения внахлёст и обрывки
+        /// изображений.
+        ///
+        /// Смена чата случается по нажатию, а не шестьдесят раз в секунду, так
+        /// что полное стирание с последующей отрисовкой здесь ничего не стоит.
+        /// </summary>
+        public static void RepaintAfterSwitch(Control c)
+        {
+            try
+            {
+                if (c == null || !c.IsHandleCreated) return;
+                RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            }
+            catch { }
+        }
 
         /// <summary>Немедленная (синхронная) перерисовка контрола вместе со всеми дочерними
         /// И с перекрывающими его СОСЕДЯМИ (плавающая кнопка «вниз к новым» — не ребёнок

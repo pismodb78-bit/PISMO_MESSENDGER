@@ -2940,12 +2940,12 @@ namespace PISMO
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
-                ChatScroll.RepaintNow(pnlMessages, force: true);   // после смены ленты стираем всё, что осталось от прошлой
+                ChatScroll.RepaintAfterSwitch(pnlMessages);   // после смены ленты стираем всё, что осталось от прошлой
             }
             catch (Exception ex)
             {
                 pnlMessages.ResumeLayout();
-                ChatScroll.RepaintNow(pnlMessages, force: true);
+                ChatScroll.RepaintAfterSwitch(pnlMessages);
                 MessageBox.Show("Ошибка загрузки сообщений группы: " + ex.Message);
             }
         }
@@ -3312,12 +3312,12 @@ namespace PISMO
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
-                ChatScroll.RepaintNow(pnlMessages, force: true);   // после смены ленты стираем всё, что осталось от прошлой
+                ChatScroll.RepaintAfterSwitch(pnlMessages);   // после смены ленты стираем всё, что осталось от прошлой
             }
             catch (Exception ex)
             {
                 pnlMessages.ResumeLayout();
-                ChatScroll.RepaintNow(pnlMessages, force: true);
+                ChatScroll.RepaintAfterSwitch(pnlMessages);
                 MessageBox.Show("Ошибка загрузки сообщений: " + ex.Message);
             }
         }

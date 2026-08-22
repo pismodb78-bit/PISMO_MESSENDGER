@@ -2157,9 +2157,9 @@ namespace PISMO
                 _srvLoadingOlder = false;
                 UpdateSrvScrollDownButton();
                 ApplySrvPendingJump();                 // переход к выбранной дате, если он ждёт
-                ChatScroll.RepaintNow(_pnlMessages, force: true);   // после смены ленты стираем всё, что осталось от прошлой
+                ChatScroll.RepaintAfterSwitch(_pnlMessages);   // после смены ленты стираем всё, что осталось от прошлой
             }
-            catch (Exception ex) { try { _pnlMessages.ResumeLayout(); } catch { } ChatScroll.RepaintNow(_pnlMessages, force: true); ShowDbError(ex); }
+            catch (Exception ex) { try { _pnlMessages.ResumeLayout(); } catch { } ChatScroll.RepaintAfterSwitch(_pnlMessages); ShowDbError(ex); }
         }
 
         private int _lastSrvTop = int.MaxValue;
