@@ -2934,12 +2934,6 @@ namespace PISMO
             ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
-            // Стираем фон СРАЗУ после очистки, а не только в конце отрисовки.
-            // Панель держит WS_CLIPCHILDREN — родитель не рисует под дочерними
-            // окнами, и пока собираются новые пузыри, под ними оставалась лента
-            // прошлого чата. Это и есть тот артефакт, что проскакивает при
-            // открытии другого чата. В каналах серверов так уже сделано.
-            ChatScroll.RepaintAfterSwitch(pnlMessages);
 
             try
             {
@@ -3029,12 +3023,12 @@ namespace PISMO
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
-                ChatScroll.RepaintAfterSwitch(pnlMessages);   // после смены ленты стираем всё, что осталось от прошлой
+                ChatScroll.ResumeDraw(pnlMessages);   // разморозка + показ собранного одним движением
             }
             catch (Exception ex)
             {
                 pnlMessages.ResumeLayout();
-                ChatScroll.RepaintAfterSwitch(pnlMessages);
+                ChatScroll.ResumeDraw(pnlMessages);
                 MessageBox.Show("Ошибка загрузки сообщений группы: " + ex.Message);
             }
         }
@@ -3276,12 +3270,6 @@ namespace PISMO
             ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
-            // Стираем фон СРАЗУ после очистки, а не только в конце отрисовки.
-            // Панель держит WS_CLIPCHILDREN — родитель не рисует под дочерними
-            // окнами, и пока собираются новые пузыри, под ними оставалась лента
-            // прошлого чата. Это и есть тот артефакт, что проскакивает при
-            // открытии другого чата. В каналах серверов так уже сделано.
-            ChatScroll.RepaintAfterSwitch(pnlMessages);
 
             // Если кто-то заблокирован — показываем уведомление и блокируем отправку
             if (iBlocked || theyBlockedMe)
@@ -3416,12 +3404,12 @@ namespace PISMO
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
-                ChatScroll.RepaintAfterSwitch(pnlMessages);   // после смены ленты стираем всё, что осталось от прошлой
+                ChatScroll.ResumeDraw(pnlMessages);   // разморозка + показ собранного одним движением
             }
             catch (Exception ex)
             {
                 pnlMessages.ResumeLayout();
-                ChatScroll.RepaintAfterSwitch(pnlMessages);
+                ChatScroll.ResumeDraw(pnlMessages);
                 MessageBox.Show("Ошибка загрузки сообщений: " + ex.Message);
             }
         }

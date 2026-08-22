@@ -317,6 +317,7 @@ namespace PISMO
         private const uint RDW_ERASE = 0x0004;
         private const uint RDW_ALLCHILDREN = 0x0080;
         private const uint RDW_UPDATENOW = 0x0100;
+        private const uint RDW_FRAME = 0x0400;
 
         /// <summary>
         /// Перерисовка после СМЕНЫ содержимого ленты — со стиранием фона.
@@ -338,7 +339,7 @@ namespace PISMO
             {
                 if (c == null || !c.IsHandleCreated) return;
                 RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
-                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
             }
             catch { }
         }
@@ -420,11 +421,42 @@ namespace PISMO
         }
         private static readonly ControlEventHandler _dbOnAdd = (s, e) => EnableDoubleBufferDeep(e.Control);
 
-        // Заморозка отрисовки через WM_SETREDRAW убрана: при наложении авто-обновления
-        // сервера на прокрутку она оставляла «рваные» полу-отрисованные пузыри.
-        // Достаточно SuspendLayout/ResumeLayout в самих методах пересборки.
-        public static void SuspendDraw(Control c) { }
-        public static void ResumeDraw(Control c) { }
+        /// <summary>
+        /// Заморозить отрисовку панели на время пересборки ленты.
+        ///
+        /// Раньше эти два метода были пустыми: WM_SETREDRAW пробовали и убрали,
+        /// потому что после разморозки оставались рваные, наполовину отрисованные
+        /// пузыри. Причина была не в самой заморозке, а в том, что после неё никто
+        /// не перерисовывал панель ЦЕЛИКОМ — со стиранием фона и вместе с детьми.
+        /// Теперь это делает ResumeDraw.
+        ///
+        /// Зачем это вообще нужно. Сборка страницы занимает 130 мс, и всё это
+        /// время панель уже пуста: старые пузыри удалены, новые ещё не добавлены.
+        /// Любая перерисовка в этот промежуток показывает пустоту — именно она и
+        /// мелькала при переходе между чатами. С замороженной отрисовкой ни одного
+        /// промежуточного кадра не появляется: лента сменяется одним движением.
+        /// </summary>
+        public static void SuspendDraw(Control c)
+        {
+            try { if (c != null && c.IsHandleCreated) SendMessage(c.Handle, WM_SETREDRAW, false, 0); }
+            catch { }
+        }
+
+        /// <summary>Разморозить и показать собранное — одним полным перерисовыванием.</summary>
+        public static void ResumeDraw(Control c)
+        {
+            try
+            {
+                if (c == null || !c.IsHandleCreated) return;
+                SendMessage(c.Handle, WM_SETREDRAW, true, 0);
+                // Пока отрисовка была заморожена, Windows не накапливает недействительные
+                // области — поэтому просто «разморозить» мало, нужно явно перерисовать
+                // всё: фон, детей и рамку (полоса прокрутки — не клиентская область,
+                // без RDW_FRAME она осталась бы от прошлого чата).
+                RepaintAfterSwitch(c);
+            }
+            catch { }
+        }
 
     }
 }

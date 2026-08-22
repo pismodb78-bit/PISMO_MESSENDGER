@@ -1869,10 +1869,6 @@ namespace PISMO
                 ChatScroll.SuspendDraw(_pnlMessages);   // заморозка — без мигания «загрузки заново»
                 _pnlMessages.SuspendLayout();
                 MainForm.DisposeAndClear(_pnlMessages);
-                // Стираем фон сразу после очистки: панель держит WS_CLIPCHILDREN,
-                // родитель под удалёнными пузырями не рисует, и пока идёт сборка
-                // новых там оставалась лента прошлого канала.
-                ChatScroll.RepaintAfterSwitch(_pnlMessages);
                 _msgControls.Clear();
                 _srvSelMark.Clear();
                 // -80: у бабла слева отступ под аватар (58) + правый паддинг (12).
@@ -2231,9 +2227,9 @@ namespace PISMO
                 _srvLoadingOlder = false;
                 UpdateSrvScrollDownButton();
                 ApplySrvPendingJump();                 // переход к выбранной дате, если он ждёт
-                ChatScroll.RepaintAfterSwitch(_pnlMessages);   // после смены ленты стираем всё, что осталось от прошлой
+                ChatScroll.ResumeDraw(_pnlMessages);   // разморозка + показ собранного одним движением
             }
-            catch (Exception ex) { try { _pnlMessages.ResumeLayout(); } catch { } ChatScroll.RepaintAfterSwitch(_pnlMessages); ShowDbError(ex); }
+            catch (Exception ex) { try { _pnlMessages.ResumeLayout(); } catch { } ChatScroll.ResumeDraw(_pnlMessages); ShowDbError(ex); }
         }
 
         private int _lastSrvTop = int.MaxValue;
