@@ -75,6 +75,23 @@ namespace PISMO
         // полное пересоздание пузырей лишнее и тормозит).
         private string _renderedChatKey;
         private string _renderedChatSig;
+        /// <summary>
+        /// Метаданные страницы (закреплённые, цитаты ответов, реакции) по чатам,
+        /// собранные в ФОНЕ. Отрисовка берёт готовое и в базу не ходит.
+        ///
+        /// Замер: три запроса разом стоили 60–75 мс, но прямо на потоке интерфейса,
+        /// внутри отрисовки, — окно на это время стоит, и так на каждое открытие
+        /// чата. Ровно то же было в каналах серверов, там это уже вынесено в фон.
+        /// </summary>
+        private sealed class PageMeta
+        {
+            public HashSet<int> Pinned;
+            public Dictionary<int, (string text, string sender)> Quotes;
+            public Dictionary<int, List<ReactionsRepository.Reaction>> Reactions;
+            public string Sig = "";
+        }
+        private readonly Dictionary<string, PageMeta> _pageMetaCache = new();
+
         private HashSet<int> _pinnedInView;   // id закреплённых сообщений текущего чата (2.0)
         private Dictionary<int, List<ReactionsRepository.Reaction>> _reactionsInView;  // реакции всех видимых сообщений (2.0)
 
@@ -2867,6 +2884,8 @@ namespace PISMO
                 if (dt == null) return;
                 // Медиа страницы — одним запросом в фоне (см. пояснение в ЛС).
                 try { PrefetchPageMedia(dt, isGroup: true); } catch { }
+                // И метаданные страницы — тоже здесь, а не на потоке интерфейса.
+                try { FetchPageMeta("g" + group, dt, isGroup: true); } catch { }
                 _dmHasMore = dt.Rows.Count >= _dmLimit;
                 try { MessageCache.Save(MessageCache.GroupKey(group), dt); } catch { }
                 if (IsDisposed || !IsHandleCreated) return;
@@ -2890,7 +2909,8 @@ namespace PISMO
             if (_currentGroupId != group) return;
 
             // Пропускаем повторную отрисовку, если та же группа и данные не изменились.
-            string key = "g" + group, sig = SigOf(dt) + "|m" + CachedMediaCount(dt);
+            string key = "g" + group,
+                   sig = SigOf(dt) + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("g" + group);
             if (_renderedChatKey == key && _renderedChatSig == sig)
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
@@ -2901,7 +2921,7 @@ namespace PISMO
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
-            LoadPageMeta(dt, isGroup: true);
+            ApplyPageMeta(key);
 
             // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
             // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
@@ -2917,6 +2937,12 @@ namespace PISMO
             try
             {
                 int yOffset = 10;
+                // Пузыри копим и добавляем ОДНИМ вызовом: каждый отдельный
+                // Controls.Add тянет пересчёт раскладки и порядка окон, а их тут
+                // сорок. Кружки выделения по-прежнему добавляются сразу — они
+                // должны остаться ПОВЕРХ пузырей, а AddRange кладёт добавленное
+                // последним ниже по порядку окон.
+                var pendingBubbles = new List<Control>(dt.Rows.Count + 8);
                 string lastDate = "";
 
                 foreach (DataRow row in dt.Rows)
@@ -2935,7 +2961,7 @@ namespace PISMO
                     {
                         var sep = BuildDateSeparator(date);
                         sep.Top = yOffset;
-                        pnlMessages.Controls.Add(sep);
+                        pendingBubbles.Add(sep);
                         yOffset += sep.Height + 4;
                         lastDate = date;
                     }
@@ -2966,11 +2992,12 @@ namespace PISMO
                     // Полная дата отправки — для выпадающего списка результатов поиска.
                     bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
 
-                    pnlMessages.Controls.Add(bubble);
+                    pendingBubbles.Add(bubble);
                     AddSelectMark(bubble, msgId);
                     yOffset += bubble.Height + 8;
                 }
 
+                pnlMessages.Controls.AddRange(pendingBubbles.ToArray());
                 _lastGroupMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
@@ -3154,6 +3181,11 @@ namespace PISMO
                 {
                     try { PrefetchPageMedia(dt, isGroup: false); } catch { }
                 });
+                // Метаданные страницы — здесь же, в фоне. Раньше их собирала сама
+                // отрисовка, на потоке интерфейса: 60–75 мс стоячего окна на каждое
+                // открытие чата.
+                try { FetchPageMeta("d" + partner, dt, isGroup: false); } catch { }
+
                 _dmHasMore = dt.Rows.Count >= _dmLimit;   // набрали полную страницу → возможно есть ещё
                 // Сохраняем в постоянный кеш переписки (текст зашифрован, как в БД).
                 Perf.Time("MessageCache.Save (диск)", () =>
@@ -3208,7 +3240,7 @@ namespace PISMO
             // не появлялись бы до следующего сообщения: текст-то тот же.
             string key = "d" + partner,
                    sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0)
-                       + "|m" + CachedMediaCount(dt);
+                       + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("d" + partner);
             if (_renderedChatKey == key && _renderedChatSig == sig)
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
@@ -3224,7 +3256,7 @@ namespace PISMO
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
-            LoadPageMeta(dt, isGroup: false);
+            ApplyPageMeta(key);
 
             // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
             // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
@@ -3267,6 +3299,8 @@ namespace PISMO
             try
             {
                 int yOffset = (iBlocked || theyBlockedMe) ? 10 + 32 + 8 : 10;
+                // См. пояснение в RenderGroupMessages: копим пузыри и добавляем разом.
+                var pendingBubbles = new List<Control>(dt.Rows.Count + 8);
                 string lastDate = "";
 
                 foreach (DataRow row in dt.Rows)
@@ -3290,7 +3324,7 @@ namespace PISMO
                     {
                         var sep = BuildDateSeparator(date);
                         sep.Top = yOffset;
-                        pnlMessages.Controls.Add(sep);
+                        pendingBubbles.Add(sep);
                         yOffset += sep.Height + 4;
                         lastDate = date;
                     }
@@ -3334,11 +3368,12 @@ namespace PISMO
                     // Полная дата отправки — для выпадающего списка результатов поиска.
                     bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
 
-                    pnlMessages.Controls.Add(bubble);
+                    pendingBubbles.Add(bubble);
                     AddSelectMark(bubble, msgId);
                     yOffset += bubble.Height + 8;
                 }
 
+                pnlMessages.Controls.AddRange(pendingBubbles.ToArray());
                 _lastMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
@@ -5201,9 +5236,30 @@ namespace PISMO
         /// самый долгий из трёх вместо суммы. Ждать приходится здесь же:
         /// результат нужен циклу отрисовки, который идёт следом.
         /// </summary>
-        private void LoadPageMeta(DataTable dt, bool isGroup)
+        /// <summary>Достаёт метаданные страницы из кеша в поля отрисовки. В базу
+        /// НЕ ходит: наполняет кеш фоновая FetchPageMeta.</summary>
+        private void ApplyPageMeta(string chatKey)
         {
-            Perf.Time("Метаданные страницы (3 запроса разом)", () =>
+            PageMeta m;
+            lock (_pageMetaCache) m = _pageMetaCache.TryGetValue(chatKey, out var v) ? v : null;
+            _pinnedInView = m?.Pinned;
+            _quotesInView = m?.Quotes;
+            _reactionsInView = m?.Reactions;
+        }
+
+        /// <summary>Подпись метаданных — чтобы отрисовка после фоновой выборки не
+        /// пропускалась как «данные не изменились»: текст страницы тот же, а
+        /// закрепления и реакции поменялись.</summary>
+        private string PageMetaSig(string chatKey)
+        {
+            lock (_pageMetaCache) return _pageMetaCache.TryGetValue(chatKey, out var m) ? m.Sig : "0";
+        }
+
+        /// <summary>Собирает метаданные страницы. Зовётся ИЗ ФОНА, вместе с
+        /// выборкой самой страницы.</summary>
+        private void FetchPageMeta(string chatKey, DataTable dt, bool isGroup)
+        {
+            Perf.Time("Метаданные страницы (3 запроса разом, в фоне)", () =>
             {
                 int scope = isGroup ? 1 : 0;
                 var rScope = isGroup ? ReactionsRepository.Scope.Group : ReactionsRepository.Scope.Direct;
@@ -5231,9 +5287,23 @@ namespace PISMO
 
                 try { System.Threading.Tasks.Task.WaitAll(tPins, tQuotes, tReacts); } catch { }
 
-                _pinnedInView = tPins.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? tPins.Result : null;
-                _quotesInView = tQuotes.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? tQuotes.Result : null;
-                _reactionsInView = tReacts.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? tReacts.Result : null;
+                var meta = new PageMeta
+                {
+                    Pinned = tPins.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? tPins.Result : null,
+                    Quotes = tQuotes.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? tQuotes.Result : null,
+                    Reactions = tReacts.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? tReacts.Result : null,
+                };
+                var sb = new System.Text.StringBuilder();
+                if (meta.Pinned != null) foreach (var id in meta.Pinned) sb.Append(id).Append(',');
+                sb.Append('|');
+                if (meta.Reactions != null)
+                    foreach (var kv in meta.Reactions)
+                    {
+                        sb.Append(kv.Key).Append(':');
+                        foreach (var r in kv.Value) sb.Append(r.Emoji).Append(r.Count).Append(',');
+                    }
+                meta.Sig = sb.Length + "_" + sb.ToString().GetHashCode().ToString("x");
+                lock (_pageMetaCache) _pageMetaCache[chatKey] = meta;
             });
         }
 
