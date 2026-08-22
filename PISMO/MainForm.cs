@@ -627,7 +627,6 @@ namespace PISMO
             catch { }
         }
 
-        private Label _lblTyping;
         private System.Windows.Forms.Timer _typingHideTimer;
         private DateTime _lastTypingSent = DateTime.MinValue;
 
@@ -637,24 +636,20 @@ namespace PISMO
         {
             try
             {
-                _lblTyping = new Label
-                {
-                    Text = "",
-                    Font = new Font("Segoe UI Italic", 8.5f, FontStyle.Italic),
-                    ForeColor = Color.FromArgb(150, 152, 158),
-                    AutoSize = false,
-                    Size = new Size(220, 20),
-                    Location = new Point(pnlChatHeader.Width - 290, 14),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                    TextAlign = ContentAlignment.MiddleRight,
-                    BackColor = Color.Transparent,
-                    Visible = false
-                };
-                pnlChatHeader.Controls.Add(_lblTyping);
-                _lblTyping.BringToFront();
-
                 _typingHideTimer = new System.Windows.Forms.Timer { Interval = 4000 };
-                _typingHideTimer.Tick += (s, e) => { _typingHideTimer.Stop(); if (_lblTyping != null) _lblTyping.Visible = false; };
+                _typingHideTimer.Tick += (s, e) =>
+                {
+                    _typingHideTimer.Stop();
+                    _typingUntilUtc = DateTime.MinValue;
+                    // В личке возвращаем обычную подпись («в сети», «был(а) …»),
+                    // в группе просто прячем: статуса в шапке группы нет.
+                    try
+                    {
+                        if (_currentChatPartnerId > 0) UpdateChatHeaderPresence();
+                        else if (_lblChatPresence != null) _lblChatPresence.Visible = false;
+                    }
+                    catch { }
+                };
 
                 txtMessage.TextChanged += (s, e) =>
                 {
@@ -675,18 +670,65 @@ namespace PISMO
             catch { }
         }
 
-        /// <summary>Показать «X печатает…» на пару секунд (по WS-событию).</summary>
+        /// <summary>До какого момента показываем «печатает…». Нужно, чтобы опрос
+        /// присутствия, идущий раз в несколько секунд, не затирал надпись своим
+        /// «в сети» ровно в тот момент, когда собеседник печатает.</summary>
+        private DateTime _typingUntilUtc = DateTime.MinValue;
+
+        /// <summary>Печатает ли собеседник открытого ЛС прямо сейчас.</summary>
+        private bool TypingActive => DateTime.UtcNow < _typingUntilUtc;
+
+        /// <summary>
+        /// Показать «печатает…» на пару секунд (по WS-событию).
+        ///
+        /// В личке надпись идёт ТУДА ЖЕ, где обычно статус собеседника — в подпись
+        /// рядом с именем в шапке. Раньше для неё была отдельная метка, поставленная
+        /// в шапку по фиксированному смещению от правого края, между кнопками; её
+        /// запросто могло быть не видно, и со стороны это выглядело так, будто
+        /// «печатает…» на ПК нет вовсе. На телефоне надпись показана именно как
+        /// подпись под именем — теперь совпадает.
+        ///
+        /// В группах статуса в шапке нет, там остаётся отдельная метка.
+        ///
+        /// Имя собеседника берём из открытого чата, а не запросом в базу: метод
+        /// зовётся из обработчика сокета, и ходить за именем в базу на каждую
+        /// «печатает» ни к чему.
+        /// </summary>
         private void ShowTyping(int fromUid, bool group, int groupOrPeer)
         {
-            if (_lblTyping == null) return;
-            bool relevant = group ? (_currentGroupId == groupOrPeer) : (_currentChatPartnerId == fromUid);
-            if (!relevant || fromUid == UserSession.EffectiveId) return;
-            string name = GetNameFromCards(fromUid);
-            if (string.IsNullOrWhiteSpace(name)) name = "Собеседник";
-            _lblTyping.Text = $"✍ {name} печатает…";
-            _lblTyping.Visible = true;
-            _typingHideTimer.Stop();
-            _typingHideTimer.Start();
+            try
+            {
+                bool relevant = group ? (_currentGroupId == groupOrPeer) : (_currentChatPartnerId == fromUid);
+                if (!relevant || fromUid == UserSession.EffectiveId) return;
+
+                _typingUntilUtc = DateTime.UtcNow.AddSeconds(4);
+
+                // Пока открыта строка поиска, подпись не показываем: она делит место
+                // в шапке с полем поиска. Ровно на этом старая отдельная метка и
+                // налезала на кнопку поиска, обрезая текст.
+                if (_searchRowOpen) return;
+
+                EnsureChatPresenceLabel();
+                if (_lblChatPresence == null) return;
+
+                // В личке имя очевидно из заголовка — пишем просто «печатает…».
+                // В группе без имени непонятно, кто именно, и берём его из карточек.
+                string text = "печатает…";
+                if (group)
+                {
+                    string name = GetNameFromCards(fromUid);
+                    text = string.IsNullOrWhiteSpace(name) ? "кто-то печатает…" : $"{name} печатает…";
+                }
+                _lblChatPresence.Text = "✍ " + text;
+                _lblChatPresence.ForeColor = Color.FromArgb(120, 132, 255);
+                PositionChatPresence();
+                _lblChatPresence.Visible = true;
+                _lblChatPresence.BringToFront();
+
+                _typingHideTimer.Stop();
+                _typingHideTimer.Start();
+            }
+            catch { }
         }
 
         private Button _btnPins;

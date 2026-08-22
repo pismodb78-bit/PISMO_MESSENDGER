@@ -324,6 +324,10 @@ namespace PISMO
                     BeginInvoke(new Action(() =>
                     {
                         if (_currentChatPartnerId != peer) return;   // чат уже переключили
+                        // Пока собеседник печатает, подпись занята надписью
+                        // «печатает…» — не затираем её своим «в сети». Опрос идёт
+                        // раз в несколько секунд и иначе гасил бы её на полпути.
+                        if (TypingActive) return;
                         if (info == null) { _lblChatPresence.Visible = false; return; }
                         _lblChatPresence.Text = info.Value.text;
                         _lblChatPresence.ForeColor = info.Value.color;
