@@ -1210,11 +1210,12 @@ namespace PISMO
             _srvHasMore = false; _srvLoadingOlder = false; _srvRestoreFromBottom = -1;
             EnsureSrvScrollHook();
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
-            MainForm.DisposeAndClear(_pnlMessages);
+            Perf.Mark($"SelectChannel #{cid} ({type})");
+            Perf.Time("DisposeAndClear (панель канала)", () => MainForm.DisposeAndClear(_pnlMessages));
             // Стираем сразу: между очисткой панели и первой отрисовкой окно успевает
             // перерисоваться, а под удалёнными пузырями фон никто не трогал — там
             // так и оставалась лента прошлого канала.
-            ChatScroll.RepaintAfterSwitch(_pnlMessages);
+            Perf.Time("Стирание панели", () => ChatScroll.RepaintAfterSwitch(_pnlMessages));
             _renderedKey = null; _renderedSig = null; // панель очищена — не пропускать отрисовку
             CancelServerReply();
             ClearChannelPending();   // не тащим превью вложения между каналами
@@ -1621,7 +1622,8 @@ namespace PISMO
                 // сообщениям — из-за этого переход срабатывал бы только со второго клика.
                 int savedJump = _srvPendingJumpId;
                 _srvPendingJumpId = 0;
-                RenderMessages(MainForm.TakeLastRows(cachedDt, _srvLimit), channel);
+                Perf.Time("RenderMessages канала (из кеша)",
+                    () => RenderMessages(MainForm.TakeLastRows(cachedDt, _srvLimit), channel));
                 _srvPendingJumpId = savedJump;
             }
 
@@ -1630,7 +1632,8 @@ namespace PISMO
             {
                 var media = new Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)>();
                 int lim = _srvLimit;
-                DataTable dt = FetchChannelMessages(channel, media, lim);
+                DataTable dt = Perf.Time("FetchChannelMessages (запрос + медиа)",
+                    () => FetchChannelMessages(channel, media, lim));
                 if (dt == null) return;
                 _srvHasMore = dt.Rows.Count >= lim;   // полная страница → возможно есть ещё старые
                 // В кеш на диск пишем только метаданные (без тяжёлых BLOB).
@@ -1643,7 +1646,7 @@ namespace PISMO
                         if (_channelId != channel) return; // уже переключились
                         foreach (var kv in media) _serverMedia[kv.Key] = kv.Value;
                         _chanMetaCache[channel] = dt;
-                        RenderMessages(dt, channel);
+                        Perf.Time("RenderMessages канала (свежие)", () => RenderMessages(dt, channel));
                     }));
                 }
                 catch { }
@@ -1845,15 +1848,18 @@ namespace PISMO
                             - SystemInformation.VerticalScrollBarWidth - 90;
                 int msgWidth = Math.Max(120, Math.Min(avail, 900));
                 // Реакции всей страницы — одним запросом, ДО цикла.
-                try
+                Perf.Time("Реакции канала (1 запрос)", () =>
                 {
-                    var rids = new List<int>();
-                    foreach (DataRow rr in dt.Rows)
-                        if (rr["id"] != DBNull.Value) rids.Add(Convert.ToInt32(rr["id"]));
-                    _reactionsInView = ReactionsRepository.ForMessages(
-                        rids, ReactionsRepository.Scope.Server, _me);
-                }
-                catch { _reactionsInView = null; }
+                    try
+                    {
+                        var rids = new List<int>();
+                        foreach (DataRow rr in dt.Rows)
+                            if (rr["id"] != DBNull.Value) rids.Add(Convert.ToInt32(rr["id"]));
+                        _reactionsInView = ReactionsRepository.ForMessages(
+                            rids, ReactionsRepository.Scope.Server, _me);
+                    }
+                    catch { _reactionsInView = null; }
+                });
 
                 string lastDate = null;
                 foreach (DataRow r in dt.Rows)
