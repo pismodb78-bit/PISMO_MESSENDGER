@@ -119,6 +119,27 @@ namespace PISMO
         /// </summary>
         private Dictionary<int, List<ReactionsRepository.Reaction>> _reactionsInView;
 
+        /// <summary>Реакции по каналам, собранные в ФОНЕ. Отрисовка берёт готовое и
+        /// в базу не ходит: замер показал, что запрос реакций стоил 65 мс прямо
+        /// посреди отрисовки, на потоке интерфейса, — окно на это время стоит.</summary>
+        private readonly Dictionary<int, Dictionary<int, List<ReactionsRepository.Reaction>>> _chanReactions = new();
+
+        /// <summary>Короткая подпись карты реакций — чтобы отрисовка после фоновой
+        /// выборки не пропускалась как «данные не изменились»: текст сообщений тот
+        /// же, поменялись только реакции.</summary>
+        private static string ReactionsSig(Dictionary<int, List<ReactionsRepository.Reaction>> m)
+        {
+            if (m == null || m.Count == 0) return "0";
+            var sb = new System.Text.StringBuilder();
+            foreach (var kv in m)
+            {
+                sb.Append(kv.Key).Append(':');
+                foreach (var r in kv.Value) sb.Append(r.Emoji).Append(r.Count).Append(',');
+                sb.Append('|');
+            }
+            return sb.Length.ToString() + "_" + sb.ToString().GetHashCode().ToString("x");
+        }
+
         // Медиа сообщений канала в памяти (id -> байты). В дисковый кеш не пишется.
         private readonly Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> _serverMedia = new();
         // Запись голосового в канал.
@@ -1211,12 +1232,11 @@ namespace PISMO
             EnsureSrvScrollHook();
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
             Perf.Mark($"SelectChannel #{cid} ({type})");
-            Perf.Time("DisposeAndClear (панель канала)", () => MainForm.DisposeAndClear(_pnlMessages));
-            // Стираем сразу: между очисткой панели и первой отрисовкой окно успевает
-            // перерисоваться, а под удалёнными пузырями фон никто не трогал — там
-            // так и оставалась лента прошлого канала.
-            Perf.Time("Стирание панели", () => ChatScroll.RepaintAfterSwitch(_pnlMessages));
-            _renderedKey = null; _renderedSig = null; // панель очищена — не пропускать отрисовку
+            // Панель здесь НЕ чистим. Замер показал, что эта очистка стоит 22–106 мс,
+            // и она лишняя: если кеш канала есть, его отрисовка начинается с той же
+            // очистки, а если кеша нет — чистит LoadMessages. Раньше панель
+            // очищалась дважды за переход, и оба раза на потоке интерфейса.
+            _renderedKey = null; _renderedSig = null; // рисуем заново в любом случае
             CancelServerReply();
             ClearChannelPending();   // не тащим превью вложения между каналами
             try { UpdateForwardNotice(); } catch { }
@@ -1612,6 +1632,7 @@ namespace PISMO
             if ((cachedDt == null || _srvLoadingOlder) && _renderedKey != "c" + channel)
             {
                 try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
+                ChatScroll.RepaintAfterSwitch(_pnlMessages);   // пусто и чисто, пока ждём базу
                 _renderedKey = null; _renderedSig = null;
             }
 
@@ -1636,6 +1657,17 @@ namespace PISMO
                     () => FetchChannelMessages(channel, media, lim));
                 if (dt == null) return;
                 _srvHasMore = dt.Rows.Count >= lim;   // полная страница → возможно есть ещё старые
+
+                // Реакции страницы — здесь же, в фоне, одним запросом.
+                Dictionary<int, List<ReactionsRepository.Reaction>> reacts = null;
+                try
+                {
+                    var rids = new List<int>();
+                    foreach (DataRow rr in dt.Rows)
+                        if (rr["id"] != DBNull.Value) rids.Add(Convert.ToInt32(rr["id"]));
+                    reacts = ReactionsRepository.ForMessages(rids, ReactionsRepository.Scope.Server, _me);
+                }
+                catch { }
                 // В кеш на диск пишем только метаданные (без тяжёлых BLOB).
                 try { MessageCache.Save(MessageCache.ChannelKey(channel), dt); } catch { }
                 if (IsDisposed || !IsHandleCreated) return;
@@ -1646,6 +1678,7 @@ namespace PISMO
                         if (_channelId != channel) return; // уже переключились
                         foreach (var kv in media) _serverMedia[kv.Key] = kv.Value;
                         _chanMetaCache[channel] = dt;
+                        if (reacts != null) _chanReactions[channel] = reacts;
                         Perf.Time("RenderMessages канала (свежие)", () => RenderMessages(dt, channel));
                     }));
                 }
@@ -1807,7 +1840,9 @@ namespace PISMO
             int mediaForChan = 0;
             foreach (DataRow rr in dt.Rows)
                 if (_serverMedia.ContainsKey(Convert.ToInt32(rr["id"]))) mediaForChan++;
-            string key = "c" + channel, sig = MainForm.SigOf(dt) + "|m" + mediaForChan;
+            string key = "c" + channel,
+                   sig = MainForm.SigOf(dt) + "|m" + mediaForChan
+                       + "|r" + ReactionsSig(_chanReactions.TryGetValue(channel, out var rsig) ? rsig : null);
             if (_renderedKey == key && _renderedSig == sig)
             {
                 // См. пояснение в MainForm: без сброса флага догрузка старых сообщений
@@ -1834,6 +1869,10 @@ namespace PISMO
                 ChatScroll.SuspendDraw(_pnlMessages);   // заморозка — без мигания «загрузки заново»
                 _pnlMessages.SuspendLayout();
                 MainForm.DisposeAndClear(_pnlMessages);
+                // Стираем фон сразу после очистки: панель держит WS_CLIPCHILDREN,
+                // родитель под удалёнными пузырями не рисует, и пока идёт сборка
+                // новых там оставалась лента прошлого канала.
+                ChatScroll.RepaintAfterSwitch(_pnlMessages);
                 _msgControls.Clear();
                 _srvSelMark.Clear();
                 // -80: у бабла слева отступ под аватар (58) + правый паддинг (12).
@@ -1848,19 +1887,11 @@ namespace PISMO
                             - SystemInformation.VerticalScrollBarWidth - 90;
                 int msgWidth = Math.Max(120, Math.Min(avail, 900));
                 // Реакции всей страницы — одним запросом, ДО цикла.
-                Perf.Time("Реакции канала (1 запрос)", () =>
-                {
-                    try
-                    {
-                        var rids = new List<int>();
-                        foreach (DataRow rr in dt.Rows)
-                            if (rr["id"] != DBNull.Value) rids.Add(Convert.ToInt32(rr["id"]));
-                        _reactionsInView = ReactionsRepository.ForMessages(
-                            rids, ReactionsRepository.Scope.Server, _me);
-                    }
-                    catch { _reactionsInView = null; }
-                });
+                // Реакции берём из готового, собранного в фоне. В базу отсюда не
+                // ходим вовсе: этот запрос стоил 65 мс на потоке интерфейса.
+                _reactionsInView = _chanReactions.TryGetValue(channel, out var rmap) ? rmap : null;
 
+                var pending = new List<Control>(dt.Rows.Count + 8);
                 string lastDate = null;
                 foreach (DataRow r in dt.Rows)
                 {
@@ -1883,7 +1914,7 @@ namespace PISMO
                         // Нативная полоса скрыта (её место не резервируется), поэтому
                         // НЕ вычитаем её ширину — иначе линия не дотягивает до края.
                         int sepWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 20);
-                        _pnlMessages.Controls.Add(MainForm.BuildDateSeparatorW(dsep, sepWidth));
+                        pending.Add(MainForm.BuildDateSeparatorW(dsep, sepWidth));
                     }
 
                     // Меня упомянули (@логин/@роль/@все) — подсветим бабл зеленоватым.
@@ -2167,9 +2198,14 @@ namespace PISMO
 
                     AttachServerMsgMenu(holder, head, id, senderId, text, nm);
                     _msgControls[id] = holder;
-                    _pnlMessages.Controls.Add(holder);
+                    pending.Add(holder);
                 }
                 _lastMsgCount = dt.Rows.Count;
+                // Все пузыри — ОДНИМ добавлением. Каждый отдельный Controls.Add
+                // тянет за собой пересчёт раскладки и порядка окон, и на сорока
+                // сообщениях это заметная часть тех двухсот миллисекунд, которые
+                // окно стоит. AddRange делает эту работу один раз.
+                _pnlMessages.Controls.AddRange(pending.ToArray());
                 _pnlMessages.ResumeLayout();
                 if (_srvRestoreFromBottom >= 0)
                 {
