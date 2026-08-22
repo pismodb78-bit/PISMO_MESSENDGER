@@ -108,6 +108,17 @@ namespace PISMO
             catch { _mediaColPresent = false; }
             return _mediaColPresent;
         }
+        /// <summary>
+        /// Реакции всех сообщений страницы — одним запросом перед циклом отрисовки.
+        ///
+        /// Раньше цикл звал ForMessage на КАЖДОЕ сообщение: сорок сообщений —
+        /// сорок походов в базу, на потоке интерфейса, и так дважды за переход
+        /// (сначала рисуем из кеша, потом свежее). Это и был долгий переход между
+        /// каналами и артефакты, которые висели всё это время. В личных чатах
+        /// реакции забирались пачкой уже давно, здесь — нет.
+        /// </summary>
+        private Dictionary<int, List<ReactionsRepository.Reaction>> _reactionsInView;
+
         // Медиа сообщений канала в памяти (id -> байты). В дисковый кеш не пишется.
         private readonly Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> _serverMedia = new();
         // Запись голосового в канал.
@@ -1200,6 +1211,10 @@ namespace PISMO
             EnsureSrvScrollHook();
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
             MainForm.DisposeAndClear(_pnlMessages);
+            // Стираем сразу: между очисткой панели и первой отрисовкой окно успевает
+            // перерисоваться, а под удалёнными пузырями фон никто не трогал — там
+            // так и оставалась лента прошлого канала.
+            ChatScroll.RepaintAfterSwitch(_pnlMessages);
             _renderedKey = null; _renderedSig = null; // панель очищена — не пропускать отрисовку
             CancelServerReply();
             ClearChannelPending();   // не тащим превью вложения между каналами
@@ -1829,6 +1844,17 @@ namespace PISMO
                 int avail = _pnlMessages.ClientSize.Width
                             - SystemInformation.VerticalScrollBarWidth - 90;
                 int msgWidth = Math.Max(120, Math.Min(avail, 900));
+                // Реакции всей страницы — одним запросом, ДО цикла.
+                try
+                {
+                    var rids = new List<int>();
+                    foreach (DataRow rr in dt.Rows)
+                        if (rr["id"] != DBNull.Value) rids.Add(Convert.ToInt32(rr["id"]));
+                    _reactionsInView = ReactionsRepository.ForMessages(
+                        rids, ReactionsRepository.Scope.Server, _me);
+                }
+                catch { _reactionsInView = null; }
+
                 string lastDate = null;
                 foreach (DataRow r in dt.Rows)
                 {
@@ -2044,7 +2070,13 @@ namespace PISMO
                     // «＋» — добавить новую через пикер. ─────────────────────────
                     try
                     {
-                        var reacts = ReactionsRepository.ForMessage(id, ReactionsRepository.Scope.Server, _me);
+                        // Из карты, собранной перед циклом. Запасной путь оставлен на
+                        // случай, если пакетная выборка не удалась (нет связи и т.п.).
+                        var reacts = _reactionsInView != null
+                            ? (_reactionsInView.TryGetValue(id, out var rl)
+                                   ? rl
+                                   : new List<ReactionsRepository.Reaction>())
+                            : ReactionsRepository.ForMessage(id, ReactionsRepository.Scope.Server, _me);
                         if (reacts.Count > 0)
                         {
                             int rx = LEFT;
