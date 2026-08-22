@@ -4815,17 +4815,32 @@ namespace PISMO
         {
             if (c == null) return;
             c.AllowDrop = true;
+            // Принимаем не только «файл из проводника»: картинку, перетащенную из
+            // браузера или редактора, Windows отдаёт не путём, а самим изображением.
             c.DragEnter += (s, e) =>
             {
-                e.Effect = (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
-                    ? DragDropEffects.Copy : DragDropEffects.None;
+                bool ok = e.Data != null
+                          && (e.Data.GetDataPresent(DataFormats.FileDrop)
+                              || e.Data.GetDataPresent(DataFormats.Bitmap));
+                e.Effect = ok ? DragDropEffects.Copy : DragDropEffects.None;
             };
             c.DragDrop += (s, e) =>
             {
                 try
                 {
                     if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+                    {
                         AttachFileByPath(files[0]);   // прикрепляем первый файл в превью
+                        return;
+                    }
+                    if (e.Data?.GetData(DataFormats.Bitmap) is Image img)
+                    {
+                        using var ms = new MemoryStream();
+                        img.Save(ms, ImageFormat.Png);
+                        _pendingImageBytes = ms.ToArray();
+                        _pendingAttach = new PendingAttachment(_pendingImageBytes, "image.png", AttachKind.Image);
+                        ShowPreview(_pendingAttach);
+                    }
                 }
                 catch { }
             };

@@ -183,6 +183,10 @@ namespace PISMO
             BuildUi();
             EnableChannelFileDrop(_pnlMessages);   // перетаскивание файлов в канал
             EnableChannelFileDrop(_txtInput);
+            // Ctrl+V — вставить картинку или файл из буфера. В мессенджере это было
+            // с самого начала, до каналов не дошло: обработчика клавиш на поле ввода
+            // здесь не было вовсе.
+            try { _txtInput.KeyDown += ChannelInput_KeyDown; } catch { }
             // Плавность отрисовки всего окна серверов (буферизация всех контролов).
             try { ChatScroll.EnableDoubleBufferDeep(this); } catch { }
 
@@ -3377,22 +3381,74 @@ namespace PISMO
             UpdateBottomHeight();
         }
 
+        /// <summary>
+        /// Ctrl+V в поле ввода канала: картинка из буфера или файл из проводника
+        /// становятся вложением-превью, ровно как в личных чатах.
+        /// </summary>
+        private void ChannelInput_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (!e.Control || e.KeyCode != Keys.V || _channelId <= 0) return;
+            try
+            {
+                // Скриншот или картинка, скопированная из браузера/редактора.
+                if (Clipboard.ContainsImage())
+                {
+                    var img = Clipboard.GetImage();
+                    if (img != null)
+                    {
+                        using var ms = new MemoryStream();
+                        img.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                        StageChannelAttachment(ms.ToArray(), "image.png", isImg: true);
+                        e.Handled = true;
+                    }
+                    return;
+                }
+
+                // Файл, скопированный в проводнике.
+                if (Clipboard.ContainsFileDropList())
+                {
+                    var files = Clipboard.GetFileDropList();
+                    if (files.Count > 0 && !string.IsNullOrEmpty(files[0]))
+                    {
+                        AttachChannelFileByPath(files[0]);
+                        e.Handled = true;
+                    }
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Не удалось вставить: " + ex.Message, "PISMO"); }
+        }
+
         /// <summary>Включает перетаскивание файлов на контрол → превью в канале
         /// (без немедленной отправки).</summary>
         private void EnableChannelFileDrop(Control c)
         {
             if (c == null) return;
             c.AllowDrop = true;
+            // Принимаем не только «файл из проводника»: картинку, перетащенную из
+            // браузера или редактора, Windows отдаёт не путём, а самим изображением.
+            // Раньше на неё курсор показывал «нельзя», и со стороны это выглядело
+            // так, будто перетаскивание в каналах не работает вовсе.
+            static bool Acceptable(IDataObject d)
+                => d != null && (d.GetDataPresent(DataFormats.FileDrop) || d.GetDataPresent(DataFormats.Bitmap));
+
             c.DragEnter += (s, e) =>
-                e.Effect = (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
-                    ? DragDropEffects.Copy : DragDropEffects.None;
+                e.Effect = Acceptable(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
             c.DragDrop += (s, e) =>
             {
                 try
                 {
-                    // Только первый файл (одно вложение за раз, как в мессенджере).
+                    // Только первое вложение за раз, как в мессенджере.
                     if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+                    {
                         AttachChannelFileByPath(files[0]);
+                        return;
+                    }
+                    if (e.Data?.GetData(DataFormats.Bitmap) is Image img)
+                    {
+                        using var ms = new MemoryStream();
+                        img.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                        StageChannelAttachment(ms.ToArray(), "image.png", isImg: true);
+                    }
                 }
                 catch { }
             };
