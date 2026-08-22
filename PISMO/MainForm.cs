@@ -2864,6 +2864,7 @@ namespace PISMO
             if ((cachedDt == null || _dmLoadingOlder) && _renderedChatKey != "g" + group)
             {
                 DisposeAndClear(pnlMessages);
+                ChatScroll.RepaintAfterSwitch(pnlMessages);   // пусто и чисто, пока ждём базу
                 _renderedChatKey = null; _renderedChatSig = null;
             }
 
@@ -2933,6 +2934,12 @@ namespace PISMO
             ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
+            // Стираем фон СРАЗУ после очистки, а не только в конце отрисовки.
+            // Панель держит WS_CLIPCHILDREN — родитель не рисует под дочерними
+            // окнами, и пока собираются новые пузыри, под ними оставалась лента
+            // прошлого чата. Это и есть тот артефакт, что проскакивает при
+            // открытии другого чата. В каналах серверов так уже сделано.
+            ChatScroll.RepaintAfterSwitch(pnlMessages);
 
             try
             {
@@ -3135,6 +3142,7 @@ namespace PISMO
             if ((cachedDt == null || _dmLoadingOlder) && _renderedChatKey != "d" + partner)
             {
                 DisposeAndClear(pnlMessages);
+                ChatScroll.RepaintAfterSwitch(pnlMessages);   // пусто и чисто, пока ждём базу
                 _renderedChatKey = null; _renderedChatSig = null;
             }
 
@@ -3268,6 +3276,12 @@ namespace PISMO
             ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
+            // Стираем фон СРАЗУ после очистки, а не только в конце отрисовки.
+            // Панель держит WS_CLIPCHILDREN — родитель не рисует под дочерними
+            // окнами, и пока собираются новые пузыри, под ними оставалась лента
+            // прошлого чата. Это и есть тот артефакт, что проскакивает при
+            // открытии другого чата. В каналах серверов так уже сделано.
+            ChatScroll.RepaintAfterSwitch(pnlMessages);
 
             // Если кто-то заблокирован — показываем уведомление и блокируем отправку
             if (iBlocked || theyBlockedMe)
