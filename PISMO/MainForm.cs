@@ -3148,8 +3148,9 @@ namespace PISMO
                 // именно из-за этого переход «срабатывал» только со второго клика.
                 var savedJump = _pendingJumpDate;
                 _pendingJumpDate = null;
-                Perf.Time("RenderMessages (из кеша)",
-                    () => RenderMessages(TakeLastRows(cachedDt, _dmLimit), myId, partner, cib, ctb));
+                var page = TakeLastRows(cachedDt, _dmLimit);
+                Perf.Time($"RenderMessages (из кеша, {page.Rows.Count} сообщ.)",
+                    () => RenderMessages(page, myId, partner, cib, ctb));
                 _pendingJumpDate = savedJump;
             }
 
@@ -3222,7 +3223,7 @@ namespace PISMO
                         if (_currentChatPartnerId != partner) return; // уже переключились
                         _msgMetaCache[partner] = dt;
                         _blockCache[partner] = (iB, tB);
-                        Perf.Time("RenderMessages (свежие)", () => RenderMessages(dt, myId, partner, iB, tB));
+                        Perf.Time($"RenderMessages (свежие, {dt.Rows.Count} сообщ.)", () => RenderMessages(dt, myId, partner, iB, tB));
                     }));
                 }
                 catch { }

@@ -1647,8 +1647,9 @@ namespace PISMO
                 // сообщениям — из-за этого переход срабатывал бы только со второго клика.
                 int savedJump = _srvPendingJumpId;
                 _srvPendingJumpId = 0;
-                Perf.Time("RenderMessages канала (из кеша)",
-                    () => RenderMessages(MainForm.TakeLastRows(cachedDt, _srvLimit), channel));
+                var page = MainForm.TakeLastRows(cachedDt, _srvLimit);
+                Perf.Time($"RenderMessages канала (из кеша, {page.Rows.Count} сообщ.)",
+                    () => RenderMessages(page, channel));
                 _srvPendingJumpId = savedJump;
             }
 
@@ -1683,7 +1684,8 @@ namespace PISMO
                         foreach (var kv in media) _serverMedia[kv.Key] = kv.Value;
                         _chanMetaCache[channel] = dt;
                         if (reacts != null) _chanReactions[channel] = reacts;
-                        Perf.Time("RenderMessages канала (свежие)", () => RenderMessages(dt, channel));
+                        Perf.Time($"RenderMessages канала (свежие, {dt.Rows.Count} сообщ.)",
+                            () => RenderMessages(dt, channel));
                     }));
                 }
                 catch { }
