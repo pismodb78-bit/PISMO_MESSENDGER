@@ -1181,10 +1181,15 @@ namespace PISMO
         /// сорок подключений подряд.
         /// </summary>
         public void PreloadQuotes(DataTable dt, bool isGroup)
+            => _quotesInView = BuildQuotesMap(dt, isGroup);
+
+        /// <summary>Цитаты страницы одним запросом. Ничего не присваивает —
+        /// чтобы вызывать её можно было из фонового потока, вместе с другими
+        /// запросами страницы.</summary>
+        public Dictionary<int, (string text, string sender)> BuildQuotesMap(DataTable dt, bool isGroup)
         {
-            _quotesInView = null;
-            if (dt == null || dt.Rows.Count == 0) return;
-            if (!dt.Columns.Contains("reply_to_id")) return;
+            if (dt == null || dt.Rows.Count == 0) return null;
+            if (!dt.Columns.Contains("reply_to_id")) return null;
 
             var ids = new List<int>();
             foreach (DataRow r in dt.Rows)
@@ -1193,9 +1198,9 @@ namespace PISMO
                 int id = Convert.ToInt32(r["reply_to_id"]);
                 if (id > 0 && !ids.Contains(id)) ids.Add(id);
             }
-            if (ids.Count == 0) return;
+            if (ids.Count == 0) return null;
 
-            var map = new Dictionary<int, (string, string)>();
+            var map = new Dictionary<int, (string text, string sender)>();
             try
             {
                 string table = isGroup ? "group_messages" : "messages";
@@ -1218,7 +1223,7 @@ namespace PISMO
                 }
             }
             catch { }
-            _quotesInView = map;
+            return map;
         }
 
         public int BuildReplyQuote(Panel bubble, int replyToId, bool isGroup,

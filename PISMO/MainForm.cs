@@ -2846,15 +2846,7 @@ namespace PISMO
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
-            PreloadQuotes(dt, isGroup: true);
-            try { _pinnedInView = PinsRepository.PinnedIds(1); } catch { _pinnedInView = null; }
-            try
-            {
-                var ids = new List<int>();
-                foreach (DataRow rr in dt.Rows) if (rr["id"] != DBNull.Value) ids.Add(Convert.ToInt32(rr["id"]));
-                _reactionsInView = ReactionsRepository.ForMessages(ids, ReactionsRepository.Scope.Group, UserSession.EffectiveId);
-            }
-            catch { _reactionsInView = null; }
+            LoadPageMeta(dt, isGroup: true);
 
             // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
             // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
@@ -3085,11 +3077,19 @@ namespace PISMO
                 DataTable dt = null;
                 try
                 {
-                    Perf.Time("blockState (1 запрос)", () =>
+                    // Блокировки и сама страница друг от друга не зависят —
+                    // шлём разом и ждём длинный из двух, а не сумму.
+                    Perf.Time("Страница + блокировки (2 запроса разом)", () =>
                     {
-                        (iB, tB) = BlockStateBoth(myId, partner);
+                        var tBlock = System.Threading.Tasks.Task.Run(() => BlockStateBoth(myId, partner));
+                        var tPage = System.Threading.Tasks.Task.Run(
+                            () => LoadMessagesMetaOnly(myId, partner, _dmLimit));
+                        try { System.Threading.Tasks.Task.WaitAll(tBlock, tPage); } catch { }
+                        if (tBlock.Status == System.Threading.Tasks.TaskStatus.RanToCompletion)
+                            (iB, tB) = tBlock.Result;
+                        if (tPage.Status == System.Threading.Tasks.TaskStatus.RanToCompletion)
+                            dt = tPage.Result;
                     });
-                    dt = Perf.Time("LoadMessagesMetaOnly", () => LoadMessagesMetaOnly(myId, partner, _dmLimit));
                 }
                 catch { }
                 if (dt == null) return;
@@ -3169,22 +3169,7 @@ namespace PISMO
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
-            Perf.Time("PinnedIds", () =>
-            {
-                try { _pinnedInView = PinsRepository.PinnedIds(0); } catch { _pinnedInView = null; }
-            });
-            // Цитаты ответов — одним запросом на страницу, до цикла отрисовки.
-            Perf.Time("PreloadQuotes", () => PreloadQuotes(dt, isGroup: false));
-            Perf.Time("Reactions.ForMessages", () =>
-            {
-                try
-                {
-                    var ids = new List<int>();
-                    foreach (DataRow rr in dt.Rows) if (rr["id"] != DBNull.Value) ids.Add(Convert.ToInt32(rr["id"]));
-                    _reactionsInView = ReactionsRepository.ForMessages(ids, ReactionsRepository.Scope.Direct, UserSession.EffectiveId);
-                }
-                catch { _reactionsInView = null; }
-            });
+            LoadPageMeta(dt, isGroup: false);
 
             // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
             // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
@@ -5147,6 +5132,56 @@ namespace PISMO
         /// <summary>Очищает панель сообщений С УНИЧТОЖЕНием дочерних контролов.
         /// Critically: Controls.Clear() НЕ вызывает Dispose, из-за чего встроенные
         /// видео-плееры (WebView2) продолжали играть звук в фоне после смены чата.</summary>
+        /// <summary>
+        /// Всё, что нужно знать о странице перед отрисовкой: закреплённые,
+        /// цитаты ответов и реакции.
+        ///
+        /// Три независимых запроса, которые раньше шли друг за другом и прямо на
+        /// потоке интерфейса — то есть окно стояло три круга до сервера, и так
+        /// дважды на открытие чата: один раз перед отрисовкой из кеша, второй
+        /// перед отрисовкой свежей выборки. Пока база была в локальной сети,
+        /// это не читалось; против VPS это заметная задержка на ровном месте.
+        ///
+        /// Запросы друг от друга не зависят, поэтому уходят разом, а ждём мы
+        /// самый долгий из трёх вместо суммы. Ждать приходится здесь же:
+        /// результат нужен циклу отрисовки, который идёт следом.
+        /// </summary>
+        private void LoadPageMeta(DataTable dt, bool isGroup)
+        {
+            Perf.Time("Метаданные страницы (3 запроса разом)", () =>
+            {
+                int scope = isGroup ? 1 : 0;
+                var rScope = isGroup ? ReactionsRepository.Scope.Group : ReactionsRepository.Scope.Direct;
+                int me = UserSession.EffectiveId;
+
+                var tPins = System.Threading.Tasks.Task.Run(() =>
+                {
+                    try { return PinsRepository.PinnedIds(scope); } catch { return null; }
+                });
+                var tQuotes = System.Threading.Tasks.Task.Run(() =>
+                {
+                    try { return BuildQuotesMap(dt, isGroup); } catch { return null; }
+                });
+                var tReacts = System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        var ids = new List<int>();
+                        foreach (DataRow rr in dt.Rows)
+                            if (rr["id"] != DBNull.Value) ids.Add(Convert.ToInt32(rr["id"]));
+                        return ReactionsRepository.ForMessages(ids, rScope, me);
+                    }
+                    catch { return null; }
+                });
+
+                try { System.Threading.Tasks.Task.WaitAll(tPins, tQuotes, tReacts); } catch { }
+
+                _pinnedInView = tPins.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? tPins.Result : null;
+                _quotesInView = tQuotes.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? tQuotes.Result : null;
+                _reactionsInView = tReacts.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? tReacts.Result : null;
+            });
+        }
+
         internal static void DisposeAndClear(Control parent)
         {
             if (parent == null) return;
