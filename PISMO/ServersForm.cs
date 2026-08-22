@@ -2156,10 +2156,10 @@ namespace PISMO
                 _lastScrollChannel = channel;
                 _srvLoadingOlder = false;
                 UpdateSrvScrollDownButton();
-                ChatScroll.ResumeDraw(_pnlMessages);   // разморозка ПОСЛЕ восстановления позиции
                 ApplySrvPendingJump();                 // переход к выбранной дате, если он ждёт
+                ChatScroll.RepaintNow(_pnlMessages, force: true);   // после смены ленты стираем всё, что осталось от прошлой
             }
-            catch (Exception ex) { try { _pnlMessages.ResumeLayout(); } catch { } ChatScroll.ResumeDraw(_pnlMessages); ShowDbError(ex); }
+            catch (Exception ex) { try { _pnlMessages.ResumeLayout(); } catch { } ChatScroll.RepaintNow(_pnlMessages, force: true); ShowDbError(ex); }
         }
 
         private int _lastSrvTop = int.MaxValue;

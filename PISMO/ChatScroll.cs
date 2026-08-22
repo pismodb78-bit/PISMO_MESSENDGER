@@ -152,12 +152,19 @@ namespace PISMO
             // пути, поэтому сдвиг между кадрами крошечный и движение «маслянистое».
             private const double Ease = 0.09;
             private const int MinFrameMs = 15;   // ~65 кадров/с
+            private const int MinStepPx = 6;     // минимальный сдвиг за кадр — чтобы хвост не полз
 
             private readonly Panel _p;
             private readonly System.Windows.Forms.Timer _t;
             private readonly Action _onScrolled;
             private int _target;
             private int _lastSet = int.MinValue;   // что выставили мы сами
+            // Цель — «в самый низ». Тогда её нельзя запоминать числом: пока идёт
+            // прокрутка, лента ещё растёт (дорисовываются картинки, подгружаются
+            // аватары — пузыри становятся выше), и низ уезжает дальше. Со старой
+            // целью прокрутка останавливалась там, где низ был В МОМЕНТ ЩЕЛЧКА, и
+            // до конца не доходила. С этим флагом цель каждый кадр берётся заново.
+            private bool _toEnd;
 
             public SmoothScroller(Panel p, Action onScrolled)
             {
@@ -181,6 +188,7 @@ namespace PISMO
 
                 if (!_t.Enabled) _target = Current;              // старт с текущей позиции
                 _target = Clamp(_target - Math.Sign(delta) * StepPx);   // накопление
+                _toEnd = _target >= MaxOffset;                  // целимся ровно в конец
                 if (!_t.Enabled)
                 {
                     _lastSet = Current;
@@ -195,6 +203,7 @@ namespace PISMO
             private void Finish()
             {
                 _t.Stop();
+                _toEnd = false;
                 _animating.Remove(_p);
                 try { _onScrolled?.Invoke(); } catch { }
             }
@@ -204,11 +213,18 @@ namespace PISMO
                 if (_p.IsDisposed || !_p.IsHandleCreated) { Finish(); return; }
 
                 int cur = Current;
-                // Позицию сдвинул кто-то другой (перерисовка ленты / догрузка / ползунок)
-                // — прекращаем анимацию, чтобы не дёргать взад-вперёд.
-                if (_lastSet != int.MinValue && Math.Abs(cur - _lastSet) > 2) { Finish(); return; }
+                // Позицию сдвинул кто-то другой (перерисовка ленты / догрузка / ползунок).
+                // Обычно это повод прекратить анимацию, чтобы не дёргать взад-вперёд.
+                // Но если мы едем в самый низ, прекращать нельзя: перерисовка ленты
+                // как раз и восстанавливает позицию, и прокрутка замирала посреди
+                // пути. Просто продолжаем с того места, куда нас поставили.
+                if (_lastSet != int.MinValue && Math.Abs(cur - _lastSet) > 2)
+                {
+                    if (!_toEnd) { Finish(); return; }
+                    _lastSet = cur;
+                }
 
-                _target = Clamp(_target);
+                _target = _toEnd ? MaxOffset : Clamp(_target);
                 int diff = _target - cur;
                 if (Math.Abs(diff) <= 1)
                 {
@@ -218,8 +234,12 @@ namespace PISMO
                     return;
                 }
 
+                // Замедление к концу приятно смотрится, но хвост у него бесконечный:
+                // последние десятки пикселей ползли кадр за кадром по одному, и любая
+                // помеха оставляла ленту не доехавшей. Минимальный шаг делает конец
+                // движения коротким и предсказуемым, не портя саму плавность.
                 int step = (int)Math.Round(diff * Ease);
-                if (step == 0) step = Math.Sign(diff);
+                if (Math.Abs(step) < MinStepPx) step = Math.Sign(diff) * Math.Min(MinStepPx, Math.Abs(diff));
                 try { _p.AutoScrollPosition = new Point(0, cur + step); } catch { }
                 // Кадр анимации двигает позицию напрямую и НЕ порождает WM_VSCROLL/
                 // WM_MOUSEWHEEL, поэтому перерисовываем сами (с ограничением частоты).
@@ -346,5 +366,6 @@ namespace PISMO
         // Достаточно SuspendLayout/ResumeLayout в самих методах пересборки.
         public static void SuspendDraw(Control c) { }
         public static void ResumeDraw(Control c) { }
+
     }
 }
