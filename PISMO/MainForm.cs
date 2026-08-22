@@ -92,6 +92,11 @@ namespace PISMO
         }
         private readonly Dictionary<string, PageMeta> _pageMetaCache = new();
 
+        /// <summary>Идёт отрисовка страницы. Пока он поднят, вспомогательные части
+        /// пузыря не имеют права ходить в базу поштучно: всё, что нужно странице,
+        /// собрано заранее и лежит в _pageMetaCache.</summary>
+        private bool _drawingPage;
+
         private HashSet<int> _pinnedInView;   // id закреплённых сообщений текущего чата (2.0)
         private Dictionary<int, List<ReactionsRepository.Reaction>> _reactionsInView;  // реакции всех видимых сообщений (2.0)
 
@@ -2923,6 +2928,7 @@ namespace PISMO
             }
             _renderedChatKey = key; _renderedChatSig = sig;
             ApplyPageMeta(key);
+            _drawingPage = true;
 
             // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
             // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
@@ -3023,10 +3029,12 @@ namespace PISMO
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
+                _drawingPage = false;
                 ChatScroll.ResumeDraw(pnlMessages);   // разморозка + показ собранного одним движением
             }
             catch (Exception ex)
             {
+                _drawingPage = false;
                 pnlMessages.ResumeLayout();
                 ChatScroll.ResumeDraw(pnlMessages);
                 MessageBox.Show("Ошибка загрузки сообщений группы: " + ex.Message);
@@ -3260,6 +3268,7 @@ namespace PISMO
             }
             _renderedChatKey = key; _renderedChatSig = sig;
             ApplyPageMeta(key);
+            _drawingPage = true;
 
             // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
             // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
@@ -3405,10 +3414,12 @@ namespace PISMO
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
+                _drawingPage = false;
                 ChatScroll.ResumeDraw(pnlMessages);   // разморозка + показ собранного одним движением
             }
             catch (Exception ex)
             {
+                _drawingPage = false;
                 pnlMessages.ResumeLayout();
                 ChatScroll.ResumeDraw(pnlMessages);
                 MessageBox.Show("Ошибка загрузки сообщений: " + ex.Message);

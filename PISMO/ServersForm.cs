@@ -2109,13 +2109,17 @@ namespace PISMO
                     // «＋» — добавить новую через пикер. ─────────────────────────
                     try
                     {
-                        // Из карты, собранной перед циклом. Запасной путь оставлен на
-                        // случай, если пакетная выборка не удалась (нет связи и т.п.).
-                        var reacts = _reactionsInView != null
-                            ? (_reactionsInView.TryGetValue(id, out var rl)
-                                   ? rl
-                                   : new List<ReactionsRepository.Reaction>())
-                            : ReactionsRepository.ForMessage(id, ReactionsRepository.Scope.Server, _me);
+                        // ТОЛЬКО из карты, собранной в фоне. Поштучного запасного пути
+                        // здесь быть не должно: на ПЕРВОМ открытии канала карты ещё
+                        // нет — её наполняет фоновая выборка, — и запасной путь давал
+                        // запрос на КАЖДОЕ сообщение. По замеру это и были те 2583 мс
+                        // первой отрисовки против 60–120 у последующих. Если карты нет,
+                        // реакции просто не рисуем: фоновая выборка придёт следом, а её
+                        // подпись входит в подпись страницы, так что перерисовка
+                        // случится и реакции появятся.
+                        var reacts = _reactionsInView != null && _reactionsInView.TryGetValue(id, out var rl)
+                            ? rl
+                            : new List<ReactionsRepository.Reaction>();
                         if (reacts.Count > 0)
                         {
                             int rx = LEFT;
