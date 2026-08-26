@@ -100,6 +100,9 @@ namespace PISMO
                     cmd.Parameters.AddWithValue("@id", sessionId);
                     cmd.ExecuteNonQuery();
                     WebSocketSignalingClient.Instance.SendMessage("call_status", callerId, sessionId, "rejected");
+                    // И своим остальным устройствам — там звонит такой же входящий.
+                    WebSocketSignalingClient.Instance.SendMessage(
+                        "call_status", UserSession.EffectiveId, sessionId, "rejected");
                 }
                 catch { }
 
@@ -142,7 +145,12 @@ namespace PISMO
                         using var cmd = new MySqlCommand("SELECT status FROM call_sessions WHERE id=@id", conn);
                         cmd.Parameters.AddWithValue("@id", sessionId);
                         var obj = cmd.ExecuteScalar();
-                        ended = obj != null && obj.ToString() == "ended";
+                        // Закрываемся на ЛЮБОМ статусе, кроме «звонит». Раньше здесь
+                        // стояло только «ended», и случай «трубку взяли на другом
+                        // моём устройстве» (статус становится active) не считался
+                        // поводом: телефон продолжал звонить после ответа с ПК.
+                        string st = obj?.ToString();
+                        ended = !string.IsNullOrEmpty(st) && st != "ringing";
                     }
                     catch { }
                     finally { _checkBusy = false; }
@@ -165,7 +173,9 @@ namespace PISMO
         private void OnWebSocketMessage(string type, int senderId, int sId, string payload)
         {
             if (sId != _sessionId || IsDisposed) return;
-            if (type == "call_status" && payload == "ended")
+            // Любой статус, кроме «звонит», означает, что этот вызов уже не наш:
+            // отменили, отклонили — или взяли трубку на другом моём устройстве.
+            if (type == "call_status" && payload != "ringing")
             {
                 try { BeginInvoke(() => Close()); } catch { }
             }

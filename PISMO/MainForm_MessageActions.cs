@@ -1524,6 +1524,11 @@ namespace PISMO
                                 u2.Parameters.AddWithValue("@id", sid);
                                 u2.ExecuteNonQuery();
                                 WebSocketSignalingClient.Instance.SendMessage("call_status", callerId, sid, "active");
+                                // И СВОИМ остальным устройствам: там сейчас звонит
+                                // такой же входящий, и без этого он продолжал бы
+                                // звонить после того, как трубку уже взяли здесь.
+                                WebSocketSignalingClient.Instance.SendMessage(
+                                    "call_status", UserSession.EffectiveId, sid, "active");
                             }
                             catch { }
 
