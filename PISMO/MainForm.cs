@@ -2331,6 +2331,20 @@ namespace PISMO
             ctxMenu.Items.Add("👥 Участники группы", null, (s, ev) => ShowGroupMembers(gid, name));
             ctxMenu.Items.Add("➕ Добавить участников", null, (s, ev) => QuickAddMembers(gid, name));
             ctxMenu.Items.Add(new ToolStripSeparator());
+            // Не принимать звонки этой группы: сообщения приходят как обычно,
+            // молчит только вызов. Меню собирается при открытии, поэтому подпись
+            // всегда показывает текущее состояние.
+            ctxMenu.Opening += (s, ev) =>
+            {
+                var it = ctxMenu.Items["noCalls"];
+                if (it != null)
+                    it.Text = CallBlocks.IsBlocked(CallBlocks.GroupKey(gid))
+                        ? "📞 Принимать звонки группы" : "🚫 Не принимать звонки группы";
+            };
+            var itemGroupCalls = new ToolStripMenuItem("🚫 Не принимать звонки группы") { Name = "noCalls" };
+            itemGroupCalls.Click += (s, ev) => CallBlocks.Toggle(CallBlocks.GroupKey(gid));
+            ctxMenu.Items.Add(itemGroupCalls);
+            ctxMenu.Items.Add(new ToolStripSeparator());
             ctxMenu.Items.Add("🚪 Покинуть группу", null, (s, ev) => LeaveGroup(gid, name));
             pnl.ContextMenuStrip = ctxMenu;
 

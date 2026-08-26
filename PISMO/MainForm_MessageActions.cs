@@ -1508,6 +1508,12 @@ namespace PISMO
                     // если бы нас не было на месте.
                     if (ChatMutes.IsMuted(callerId)) return;
 
+                    // Отдельный запрет «не принимать звонки»: сообщения от человека
+                    // приходят как обычно, а вызов не показываем и не звеним. Для
+                    // группового звонка запрет ставится на саму группу.
+                    if (CallBlocks.IsBlocked(callerId)) return;
+                    if (groupId > 0 && CallBlocks.IsBlocked(CallBlocks.GroupKey(groupId))) return;
+
                     // Показываем входящий звонок
                     var incoming = new IncomingCallForm(sid, cname, callerId);
                     incoming.FormClosed += (s, e) =>
@@ -1634,6 +1640,18 @@ namespace PISMO
                         catch { }
                     };
                     menu.Items.Add(itemPinChat);
+                }
+                catch { }
+
+                // Не принимать звонки от этого человека (локально). Отдельно от
+                // «игнорировать»: сообщения продолжают приходить, молчит только вызов.
+                try
+                {
+                    bool noCalls = CallBlocks.IsBlocked(partnerId);
+                    var itemCalls = new ToolStripMenuItem(
+                        noCalls ? "📞 Принимать звонки" : "🚫 Не принимать звонки");
+                    itemCalls.Click += (s2, e2) => CallBlocks.Toggle(partnerId);
+                    menu.Items.Add(itemCalls);
                 }
                 catch { }
 
