@@ -3144,7 +3144,32 @@ namespace PISMO
             var lbl = new Label { Text = "Отправка " + title, ForeColor = Color.FromArgb(220, 221, 222), TextAlign = ContentAlignment.MiddleCenter, Location = new Point(10, 92), Size = new Size(280, 46), Font = new Font("Segoe UI", 9f) };
             var btnCancel = new Button { Text = "Отмена", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Size = new Size(120, 30), Location = new Point(90, 146), Cursor = Cursors.Hand };
             btnCancel.FlatAppearance.BorderSize = 0;
-            btnCancel.Click += (s, e) => { cancelled = true; btnCancel.Enabled = false; btnCancel.Text = "Отмена…"; try { activeCmd?.Cancel(); } catch { } try { var c = activeConn; c?.Close(); } catch { } };
+            btnCancel.Click += (s, e) =>
+            {
+                // Окно закрываем СРАЗУ, не дожидаясь, пока отзовётся драйвер.
+                //
+                // Раньше здесь отменяли команду, закрывали соединение и ждали, что
+                // фоновая задача упадёт с ошибкой и закроет окно сама. Но Cancel
+                // помогает, только если команда в этот момент опубликована (между
+                // кусками большого файла её нет), а Close на соединении с
+                // выполняющимся запросом из чужого потока может и не разбудить
+                // его, и подвиснуть сам. Отсюда «Отмена…» навсегда.
+                //
+                // Отмена — это «я больше не жду». Окно уходит немедленно, а
+                // прерывание запроса идёт в фоне: даже если драйвер очнётся не
+                // сразу, пользователя это уже не держит. Незавершённая вставка
+                // не оставляет следов — INSERT атомарен, а дозапись кусками
+                // проверяет признак отмены и удаляет строку.
+                cancelled = true;
+                btnCancel.Enabled = false;
+                var cmd0 = activeCmd; var conn0 = activeConn;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try { cmd0?.Cancel(); } catch { }
+                    try { conn0?.Close(); } catch { }
+                });
+                dlg.Close();
+            };
             dlg.Controls.Add(pic); dlg.Controls.Add(lbl); dlg.Controls.Add(btnCancel);
             var anim = new System.Windows.Forms.Timer { Interval = 60 };
             anim.Tick += (s, e) => { angle = (angle + 24) % 360; pic.Invalidate(); };
@@ -3228,7 +3253,20 @@ namespace PISMO
                     else { _mediaColPresent = false; err = "Медиа в каналах недоступно: не выполнена миграция server_messages."; }
                 }
                 catch (Exception ex) { if (!cancelled) err = ex.Message; }
-                finally { try { dlg.BeginInvoke(() => dlg.Close()); } catch { } }
+                finally
+                {
+                    // Окно могло уже закрыться (отмена) — тогда закрывать нечего.
+                    // Проверка на созданный дескриптор нужна и на другом конце:
+                    // при мгновенной ошибке задача добегает сюда раньше, чем
+                    // ShowDialog успевает показать окно, и BeginInvoke падал бы,
+                    // оставляя окно висеть навсегда.
+                    try
+                    {
+                        if (!dlg.IsDisposed && dlg.IsHandleCreated) dlg.BeginInvoke(() => dlg.Close());
+                        else if (!dlg.IsDisposed) dlg.Shown += (s2, e2) => dlg.Close();
+                    }
+                    catch { }
+                }
             });
 
             dlg.ShowDialog(this);

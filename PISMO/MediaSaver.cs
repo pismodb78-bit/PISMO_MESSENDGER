@@ -12,8 +12,29 @@ namespace PISMO
     internal static class MediaSaver
     {
         /// <summary>Показывает «Сохранить как…» и пишет файл.</summary>
+        /// <summary>
+        /// Владелец для системных окон. Без него окно сохранения принадлежит
+        /// рабочему столу и запросто оказывается ПОД приложением: оно модальное,
+        /// щёлкать по программе нельзя, а само окно не видно и не поднять —
+        /// выбраться можно было только закрытием всего приложения.
+        ///
+        /// Владелец приходит не всегда: пункт «Скачать» живёт в контекстном меню,
+        /// а меню показывается по координатам курсора, и SourceControl у него
+        /// пустой. Поэтому берём активное окно приложения, а в крайнем случае —
+        /// главное.
+        /// </summary>
+        private static IWin32Window OwnerOf(IWin32Window owner)
+        {
+            if (owner is Form f && !f.IsDisposed) return f;
+            if (owner != null) return owner;
+            try { if (Form.ActiveForm is { IsDisposed: false } a) return a; } catch { }
+            try { if (MainForm.Current is { IsDisposed: false } m) return m; } catch { }
+            return null;
+        }
+
         public static void Save(IWin32Window owner, byte[] data, string suggestedName)
         {
+            owner = OwnerOf(owner);
             if (data == null || data.Length == 0)
             {
                 MessageBox.Show(owner,
