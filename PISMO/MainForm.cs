@@ -5107,7 +5107,9 @@ namespace PISMO
                 using var save = new SaveFileDialog { FileName = fileName, Title = "Сохранить файл" };
                 // С владельцем: без него окно оказывается под приложением, и
                 // выбраться из модального состояния можно только закрыв программу.
-                if (save.ShowDialog(this) == DialogResult.OK)
+                // Метод статический, поэтому владельца берём тем же способом, что
+                // и MediaSaver: активное окно приложения, иначе главное.
+                if (save.ShowDialog(MediaSaver.OwnerOf(null)) == DialogResult.OK)
                 {
                     File.WriteAllBytes(save.FileName, fileData);
                     try { Process.Start(new ProcessStartInfo(save.FileName) { UseShellExecute = true }); }

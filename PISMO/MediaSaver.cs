@@ -23,7 +23,7 @@ namespace PISMO
         /// пустой. Поэтому берём активное окно приложения, а в крайнем случае —
         /// главное.
         /// </summary>
-        private static IWin32Window OwnerOf(IWin32Window owner)
+        internal static IWin32Window OwnerOf(IWin32Window owner)
         {
             if (owner is Form f && !f.IsDisposed) return f;
             if (owner != null) return owner;
