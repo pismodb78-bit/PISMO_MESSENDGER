@@ -318,6 +318,7 @@ namespace PISMO
         private const uint RDW_ALLCHILDREN = 0x0080;
         private const uint RDW_UPDATENOW = 0x0100;
         private const uint RDW_FRAME = 0x0400;
+        private const uint RDW_NOERASE = 0x0020;
 
         /// <summary>
         /// Перерисовка после СМЕНЫ содержимого ленты — со стиранием фона.
@@ -370,8 +371,17 @@ namespace PISMO
                 if (!force && unchecked(now - _lastRepaintTick) < RepaintMinIntervalMs) return;
                 _lastRepaintTick = now;
 
+                // RDW_NOERASE — против мерцания при прокрутке.
+                //
+                // Без него каждый кадр прокрутки (до 65 в секунду) заставляет
+                // каждого ребёнка сначала залить свой фон, а потом нарисовать
+                // содержимое. Для текстовых полей это заметно глазом: буквы
+                // моргают. Стирать здесь и не нужно — содержимое перекрывает
+                // свою область целиком. Там, где стирание действительно нужно
+                // (смена чата, под удалёнными пузырями остаётся прошлое), для
+                // этого есть отдельный RepaintAfterSwitch.
                 RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
-                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 
                 var parent = c.Parent;
                 if (parent == null) return;
@@ -384,7 +394,7 @@ namespace PISMO
                     // отрисовка соседа на каждом кадре как раз и давала фриз, когда
                     // кнопка появлялась.
                     RedrawWindow(sib.Handle, IntPtr.Zero, IntPtr.Zero,
-                        RDW_INVALIDATE | RDW_ALLCHILDREN);
+                        RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
                 }
             }
             catch { }
