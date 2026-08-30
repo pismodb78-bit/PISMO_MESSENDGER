@@ -2179,12 +2179,58 @@ namespace PISMO
                 foreach (DataRow row in dt.Rows)
                     if (!ChatPins.IsPinned(Convert.ToInt32(row["id"]))) ordered.Add(row);
 
+                // Последние сообщения — ОДНИМ запросом на весь список. В этом
+                // списке превью не было вовсе: карточка показывала только имя, и
+                // понять, где что-то новое, было нельзя. Блобы не выбираем, только
+                // признаки их наличия — иначе запрос поднял бы вложения с диска.
+                var lastByPartner = new Dictionary<int, string>();
+                try
+                {
+                    using var pcmd = new MySqlCommand(@"
+                        SELECT c.partner_id, lm.text, lm.file_name,
+                               (lm.image_data IS NOT NULL) AS has_img,
+                               (lm.audio_data IS NOT NULL) AS has_audio,
+                               (lm.video_data IS NOT NULL) AS has_video
+                        FROM (
+                            SELECT partner_id, MAX(id) AS last_id FROM (
+                                SELECT receiver_id AS partner_id, MAX(id) AS id
+                                FROM messages WHERE sender_id=@me GROUP BY receiver_id
+                                UNION ALL
+                                SELECT sender_id AS partner_id, MAX(id) AS id
+                                FROM messages WHERE receiver_id=@me GROUP BY sender_id
+                            ) t GROUP BY partner_id
+                        ) c
+                        JOIN messages lm ON lm.id = c.last_id", conn);
+                    pcmd.Parameters.AddWithValue("@me", UserSession.UserId);
+                    using var prd = pcmd.ExecuteReader();
+                    while (prd.Read())
+                    {
+                        int pid = Convert.ToInt32(prd["partner_id"]);
+                        string txt = "";
+                        try { txt = Crypto.Dec(prd["text"] == DBNull.Value ? "" : prd["text"].ToString()); }
+                        catch { }
+                        bool hi = prd["has_img"] != DBNull.Value && Convert.ToBoolean(prd["has_img"]);
+                        bool ha = prd["has_audio"] != DBNull.Value && Convert.ToBoolean(prd["has_audio"]);
+                        bool hv = prd["has_video"] != DBNull.Value && Convert.ToBoolean(prd["has_video"]);
+                        string fn = prd["file_name"] == DBNull.Value ? null : prd["file_name"].ToString();
+                        lastByPartner[pid] =
+                            !string.IsNullOrWhiteSpace(txt) ? txt
+                            : hi ? "📷 Фото"
+                            : ha ? "🎤 Голосовое сообщение"
+                            : hv ? "🎥 Видео"
+                            : !string.IsNullOrWhiteSpace(fn) ? "📎 " + fn
+                            : "";
+                    }
+                }
+                catch { }
+
                 foreach (DataRow row in ordered)
                 {
                     int uid = Convert.ToInt32(row["id"]);
                     string name = BuildName(row["Name"], row["Surname"], row["login"]);
                     string role = row["role"].ToString();
-                    AddAdminUserCard(uid, name, role);
+                    AddAdminUserCard(uid, name, role,
+                        lastByPartner.TryGetValue(uid, out var lp) ? lp : "");
                 }
                 try { pnlUserList_Resize(null, null); } catch { }
                 try { ChatScroll.ApplyDarkScrollbar(pnlUserList); } catch { }   // тёмная полоса в списке пользователей
@@ -2558,7 +2604,7 @@ namespace PISMO
             _userPanels.Add(pnl);
         }
 
-        private void AddAdminUserCard(int uid, string name, string role)
+        private void AddAdminUserCard(int uid, string name, string role, string lastMsg = "")
         {
             bool isAdminCard = (uid == UserSession.UserId);
             var pnl = new Panel
@@ -2595,13 +2641,18 @@ namespace PISMO
                        + (isAdminCard ? $"{name} (Вы)" : name),
                 Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
-                Location = new Point(54, 18),  // по центру по вертикали (нет подписи роли)
+                // Есть превью — имя уезжает вверх, под ним приписка. Нет — имя
+                // стоит по центру, как раньше.
+                Location = new Point(54, string.IsNullOrWhiteSpace(lastMsg) ? 18 : 10),
                 Size = new Size(pnl.Width - 60, 22),
                 AutoSize = true
             };
 
             pnl.Controls.Add(avatar);
             pnl.Controls.Add(lblName);
+            if (!string.IsNullOrWhiteSpace(lastMsg))
+                pnl.Controls.Add(MakePreviewControl(
+                    lastMsg, new Point(56, 32), new Size(pnl.Width - 90, 18)));
 
             void SetHover(bool on) =>
                 pnl.BackColor = on || _currentChatPartnerId == uid

@@ -880,14 +880,33 @@ namespace PISMO
             string prev = ctype == "text" && _channelPreviews.TryGetValue(cid, out var pv) ? (pv ?? "") : "";
             if (!string.IsNullOrWhiteSpace(prev))
             {
+                // Обе строки рисуем СВОИМИ метками, а текст самой кнопки убираем.
+                // С кнопочным текстом раскладка не давала гарантий: название
+                // оставалось по центру и приписка налезала на него.
                 b.Height = 46;
-                b.TextAlign = ContentAlignment.TopLeft;
-                b.Padding = new Padding(0, 4, 0, 0);
-                var pc = MainForm.MakePreviewControl(prev, new Point(10, 24), new Size(b.Width - 20, 16));
-                // Клик по приписке должен открывать канал, а не проваливаться мимо.
-                pc.Click += (s, e) => SelectChannel(cid, ctype, cname);
-                pc.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowChannelMenu(cid, ctype, cname); };
-                b.Controls.Add(pc);
+                b.Text = "";
+
+                var lblName = new Label
+                {
+                    Text = (ctype == "voice" ? "🔊 " : "# ") + cname,
+                    Font = b.Font,
+                    ForeColor = Color.FromArgb(220, 221, 222),
+                    BackColor = Color.Transparent,
+                    AutoSize = false,
+                    Location = new Point(10, 5),
+                    Size = new Size(b.Width - 20, 18),
+                    AutoEllipsis = true,
+                };
+                var pc = MainForm.MakePreviewControl(prev, new Point(10, 25), new Size(b.Width - 20, 16));
+
+                // Клик по любой из строк открывает канал, правая кнопка — меню:
+                // иначе нажатие проваливается мимо кнопки.
+                foreach (Control child in new Control[] { lblName, pc })
+                {
+                    child.Click += (s, e) => SelectChannel(cid, ctype, cname);
+                    child.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowChannelMenu(cid, ctype, cname); };
+                    b.Controls.Add(child);
+                }
             }
             _pnlChannels.Controls.Add(b);
 
