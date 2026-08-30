@@ -2101,8 +2101,9 @@ namespace PISMO
                         // WPF, иначе GDI отдаёт монохромный контур. Обычный текст
                         // остаётся полем, которое можно выделять.
                         var fore = Color.FromArgb(235, 236, 240);
+                        var msgFont = new Font("Segoe UI", 10.5f);
                         var emojiText = EmojiRender.ContainsEmoji(text)
-                            ? EmojiRender.RenderMessage(text, "Segoe UI", 10.5f, fore, bubbleBg, msgWidth - 10)
+                            ? EmojiRender.RenderMessage(text, msgFont, fore, bubbleBg, msgWidth - 10)
                             : null;
                         if (emojiText != null)
                         {
@@ -2113,7 +2114,32 @@ namespace PISMO
                                 Location = new Point(LEFT, y),
                                 BackColor = bubbleBg,
                             };
-                            picBody.Disposed += (s2, e2) => { try { emojiText.Dispose(); } catch { } };
+                            // Пока цветная картинка эмодзи догружается, нарисован
+                            // силуэт; по событию Loaded перерисовываем — как чипы.
+                            var capText = text; var capBg = bubbleBg; var capW = msgWidth - 10;
+                            void OnEmojiLoaded(string _)
+                            {
+                                if (picBody.IsDisposed) return;
+                                try
+                                {
+                                    picBody.BeginInvoke(new Action(() =>
+                                    {
+                                        if (picBody.IsDisposed) return;
+                                        var fresh = EmojiRender.RenderMessage(capText, msgFont, fore, capBg, capW);
+                                        if (fresh == null) return;
+                                        var prev = picBody.Image;
+                                        picBody.Image = fresh;
+                                        try { prev?.Dispose(); } catch { }
+                                    }));
+                                }
+                                catch { }
+                            }
+                            EmojiRender.Loaded += OnEmojiLoaded;
+                            picBody.Disposed += (s2, e2) =>
+                            {
+                                try { EmojiRender.Loaded -= OnEmojiLoaded; } catch { }
+                                try { picBody.Image?.Dispose(); } catch { }
+                            };
                             holder.Controls.Add(picBody);
                             y += picBody.Height + 6;
                         }

@@ -4091,8 +4091,9 @@ namespace PISMO
                 // мышью, поэтому картинкой рисуются только такие сообщения;
                 // скопировать их по-прежнему можно через меню.
                 var fore = Color.FromArgb(235, 236, 240);
+                var msgFont = new Font("Segoe UI", 10.5f);
                 Bitmap emojiText = EmojiRender.ContainsEmoji(text)
-                    ? EmojiRender.RenderMessage(text, "Segoe UI", 10.5f, fore, bubble.BackColor, innerW)
+                    ? EmojiRender.RenderMessage(text, msgFont, fore, bubble.BackColor, innerW)
                     : null;
 
                 if (emojiText != null)
@@ -4104,7 +4105,32 @@ namespace PISMO
                         Location = new Point(PAD, innerY),
                         BackColor = bubble.BackColor,
                     };
-                    picMsg.Disposed += (s, e) => { try { emojiText.Dispose(); } catch { } };
+                    // Цветная картинка эмодзи может ещё догружаться — тогда сейчас
+                    // нарисован силуэт. Событие Loaded говорит, что пора
+                    // перерисовать; ровно так же ведут себя чипы реакций.
+                    void OnEmojiLoaded(string _)
+                    {
+                        if (picMsg.IsDisposed) return;
+                        try
+                        {
+                            picMsg.BeginInvoke(new Action(() =>
+                            {
+                                if (picMsg.IsDisposed) return;
+                                var fresh = EmojiRender.RenderMessage(text, msgFont, fore, bubble.BackColor, innerW);
+                                if (fresh == null) return;
+                                var prev = picMsg.Image;
+                                picMsg.Image = fresh;
+                                try { prev?.Dispose(); } catch { }
+                            }));
+                        }
+                        catch { }
+                    }
+                    EmojiRender.Loaded += OnEmojiLoaded;
+                    picMsg.Disposed += (s, e) =>
+                    {
+                        try { EmojiRender.Loaded -= OnEmojiLoaded; } catch { }
+                        try { picMsg.Image?.Dispose(); } catch { }
+                    };
                     bubble.Controls.Add(picMsg);
                     innerY += picMsg.Height + 4;
                 }

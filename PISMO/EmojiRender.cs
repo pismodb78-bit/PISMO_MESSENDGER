@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Windows.Forms;
 
 namespace PISMO
 {
@@ -185,58 +186,147 @@ namespace PISMO
             return false;
         }
 
-        /// <summary>
-        /// Рисует текст сообщения ЦЕЛИКОМ через WPF и отдаёт картинку.
-        ///
-        /// Зачем. Текст сообщения живёт в TextBox, а тот рисуется средствами
-        /// GDI, которые цветные шрифты (COLR/CBDT) не умеют — эмодзи выходят
-        /// монохромным контуром. Тот же эмодзи в чипе реакции цветной именно
-        /// потому, что чип рисуется вот этим путём, через DirectWrite.
-        ///
-        /// Цена — выделение текста мышью: картинка не выделяется. Поэтому
-        /// картинкой рисуются ТОЛЬКО сообщения с эмодзи, остальные остаются
-        /// полем. Скопировать такое сообщение по-прежнему можно через меню.
-        ///
-        /// Фон рисуем сплошным цветом пузыря, а не прозрачным: прозрачность у
-        /// WinForms не настоящая, она подставляет фон родителя, и на цветном
-        /// пузыре это дало бы кайму.
-        /// </summary>
-        public static Bitmap RenderMessage(string text, string fontFamily, float fontPt,
-                                           Color fore, Color back, int maxWidthPx)
+        /// <summary>Эмодзи и его ширина — кусок разобранного сообщения.</summary>
+        private readonly record struct Atom(string Text, bool IsEmoji, int Width, bool Break);
+
+        /// <summary>Начинается ли в этой позиции эмодзи, и какой длины кластер.</summary>
+        private static int EmojiClusterLength(string s, int i)
         {
-            if (string.IsNullOrEmpty(text)) return null;
+            if (i >= s.Length) return 0;
+            int start = i, len = 0;
+            bool first = true;
+            while (i < s.Length)
+            {
+                int cp = char.ConvertToUtf32(s, i);
+                int size = char.IsSurrogatePair(s, i) ? 2 : 1;
+                bool baseEmoji = cp >= 0x1F000 || (cp >= 0x2190 && cp <= 0x2BFF) || cp == 0xA9 || cp == 0xAE;
+                bool joiner = cp == 0xFE0F || cp == 0x200D || cp == 0x20E3
+                              || (cp >= 0x1F3FB && cp <= 0x1F3FF);
+                if (first)
+                {
+                    if (!baseEmoji) return 0;
+                    first = false;
+                }
+                else if (!joiner)
+                {
+                    // Продолжаем кластер только после соединителя.
+                    if (len == 0 || s[start + len - 1] != '\u200D') break;
+                    if (!baseEmoji) break;
+                }
+                i += size; len += size;
+            }
+            return len;
+        }
+
+        /// <summary>
+        /// Рисует текст сообщения картинкой: обычные слова — средствами GDI+,
+        /// эмодзи — теми же картинками, что и чипы реакций.
+        ///
+        /// ПОЧЕМУ НЕ ЦЕЛИКОМ ЧЕРЕЗ WPF. Первая попытка так и делала — и дала
+        /// белый силуэт. У Get цепочка из трёх шагов: цветной Twemoji с диска,
+        /// затем DirectWrite, но ТОЛЬКО если он реально вернул цвет, иначе
+        /// силуэт временно и докачка цветного в фоне. На машинах, где
+        /// DirectWrite цвета не даёт, весь цвет приходит из этих загруженных
+        /// картинок — а голый WPF о них не знает.
+        ///
+        /// Пока картинка эмодзи не докачалась, на её месте силуэт; событие
+        /// Loaded говорит вызывающему, что пора перерисовать, — так же
+        /// устроены чипы реакций.
+        /// </summary>
+        public static Bitmap RenderMessage(string text, Font font, Color fore, Color back, int maxWidthPx)
+        {
+            if (string.IsNullOrEmpty(text) || font == null || maxWidthPx <= 8) return null;
             try
             {
-                var tb = new System.Windows.Controls.TextBlock
+                int em = font.Height;                       // эмодзи ростом со строку
+                const TextFormatFlags F = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix;
+
+                // ── разбор на «атомы»: слова, эмодзи, переводы строк ──────────
+                var atoms = new List<Atom>();
+                using (var probe = new Bitmap(1, 1))
+                using (var g0 = Graphics.FromImage(probe))
                 {
-                    Text = text,
-                    FontFamily = new System.Windows.Media.FontFamily(fontFamily + ", Segoe UI Emoji"),
-                    // WinForms меряет шрифт в пунктах, WPF — в единицах 1/96 дюйма.
-                    FontSize = fontPt * 96.0 / 72.0,
-                    Foreground = new System.Windows.Media.SolidColorBrush(
-                        System.Windows.Media.Color.FromRgb(fore.R, fore.G, fore.B)),
-                    Background = new System.Windows.Media.SolidColorBrush(
-                        System.Windows.Media.Color.FromRgb(back.R, back.G, back.B)),
-                    TextWrapping = System.Windows.TextWrapping.Wrap,
-                    MaxWidth = maxWidthPx,
-                };
-                tb.Measure(new System.Windows.Size(maxWidthPx, double.PositiveInfinity));
-                tb.Arrange(new System.Windows.Rect(tb.DesiredSize));
-                tb.UpdateLayout();
+                    var word = new System.Text.StringBuilder();
+                    void FlushWord()
+                    {
+                        if (word.Length == 0) return;
+                        string w = word.ToString(); word.Clear();
+                        int wd = TextRenderer.MeasureText(g0, w, font, new Size(int.MaxValue, int.MaxValue), F).Width;
+                        atoms.Add(new Atom(w, false, wd, false));
+                    }
+                    for (int i = 0; i < text.Length;)
+                    {
+                        if (text[i] == '\n') { FlushWord(); atoms.Add(new Atom("", false, 0, true)); i++; continue; }
+                        int el = EmojiClusterLength(text, i);
+                        if (el > 0)
+                        {
+                            FlushWord();
+                            atoms.Add(new Atom(text.Substring(i, el), true, em, false));
+                            i += el;
+                            continue;
+                        }
+                        word.Append(text[i]);
+                        // Пробел — граница переноса, но остаётся в слове.
+                        if (text[i] == ' ') FlushWord();
+                        i++;
+                    }
+                    FlushWord();
+                }
+                if (atoms.Count == 0) return null;
 
-                int w = Math.Max(1, (int)Math.Ceiling(tb.DesiredSize.Width));
-                int h = Math.Max(1, (int)Math.Ceiling(tb.DesiredSize.Height));
-                var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
-                    w, h, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-                rtb.Render(tb);
+                // ── раскладка по строкам ─────────────────────────────────────
+                var lines = new List<List<Atom>>();
+                var cur = new List<Atom>();
+                int curW = 0;
+                foreach (var a in atoms)
+                {
+                    if (a.Break) { lines.Add(cur); cur = new List<Atom>(); curW = 0; continue; }
+                    if (curW > 0 && curW + a.Width > maxWidthPx)
+                    {
+                        lines.Add(cur); cur = new List<Atom>(); curW = 0;
+                    }
+                    cur.Add(a); curW += a.Width;
+                }
+                lines.Add(cur);
 
-                var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
-                enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
-                using var ms = new MemoryStream();
-                enc.Save(ms);
-                ms.Position = 0;
-                using var tmp = new Bitmap(ms);
-                return new Bitmap(tmp);
+                int width = 0;
+                foreach (var line in lines)
+                {
+                    int w = 0;
+                    foreach (var a in line) w += a.Width;
+                    if (w > width) width = w;
+                }
+                width = Math.Max(1, Math.Min(width, maxWidthPx));
+                int lineH = Math.Max(em, font.Height);
+                int height = Math.Max(1, lines.Count * lineH);
+
+                // ── отрисовка ────────────────────────────────────────────────
+                var bmp = new Bitmap(width, height);
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(back);
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    int y = 0;
+                    foreach (var line in lines)
+                    {
+                        int x = 0;
+                        foreach (var a in line)
+                        {
+                            if (a.IsEmoji)
+                            {
+                                var img = Get(a.Text, em);
+                                if (img != null) g.DrawImage(img, new Rectangle(x, y, em, em));
+                            }
+                            else
+                            {
+                                TextRenderer.DrawText(g, a.Text, font, new Point(x, y), fore, F);
+                            }
+                            x += a.Width;
+                        }
+                        y += lineH;
+                    }
+                }
+                return bmp;
             }
             catch { return null; }
         }
