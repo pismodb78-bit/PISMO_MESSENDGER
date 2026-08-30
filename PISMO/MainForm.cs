@@ -2293,9 +2293,11 @@ namespace PISMO
                 AutoEllipsis = true
             };
 
-            string preview = string.IsNullOrWhiteSpace(lastMsg)
-                ? $"{memberCount} участник(ов)"
-                : (lastMsg.Length > 42 ? lastMsg[..42] + "…" : lastMsg);
+            // В группе показываем ЧИСЛО УЧАСТНИКОВ, а не последнее сообщение.
+            // Раньше число появлялось только в пустой группе, и список выглядел
+            // вразнобой: где-то состав, где-то обрывок переписки. Последнее
+            // сообщение остаётся у личных чатов, где оно и полезно.
+            string preview = $"{memberCount} участник(ов)";
 
             var lblLast = new Label
             {
@@ -2516,16 +2518,8 @@ namespace PISMO
                 AutoEllipsis = true
             };
 
-            var lblLast = new Label
-            {
-                Name = "lastPreview",   // чтобы обновлять превью локально (без перезагрузки списка)
-                Text = lastMsg.Length > 42 ? lastMsg[..42] + "…" : lastMsg,
-                Font = new Font("Segoe UI", 8.5f),
-                ForeColor = Color.FromArgb(114, 118, 125),
-                Location = new Point(56, 32),
-                Size = new Size(pnl.Width - 90, 18),
-                AutoEllipsis = true
-            };
+            var lblLast = MakePreviewControl(
+                lastMsg, new Point(56, 32), new Size(pnl.Width - 90, 18));
 
             pnl.Controls.Add(avatar);
             pnl.Controls.Add(lblName);
@@ -4474,6 +4468,54 @@ namespace PISMO
         /// <summary>Обновляет превью последнего сообщения на карточке ЛОКАЛЬНО —
         /// без перезагрузки всего списка чатов (это давало сильный пролаг
         /// при каждой отправке).</summary>
+        /// <summary>
+        /// Превью последнего сообщения в карточке чата.
+        ///
+        /// Если в тексте есть эмодзи — рисуем картинкой: обычная метка рисуется
+        /// средствами GDI, а те цветные шрифты не умеют, и вместо смайлика
+        /// выходил контур. Фон картинки прозрачный, поэтому подсветка карточки
+        /// при наведении работает как раньше — PictureBox подставляет фон
+        /// родителя.
+        /// </summary>
+        private static Control MakePreviewControl(string text, Point loc, Size size)
+        {
+            string t = text ?? "";
+            if (t.Length > 42) t = t[..42] + "…";
+            var font = new Font("Segoe UI", 8.5f);
+            var fore = Color.FromArgb(114, 118, 125);
+
+            if (EmojiRender.ContainsEmoji(t))
+            {
+                var img = EmojiRender.RenderMessage(t, font, fore, Color.Transparent, size.Width);
+                if (img != null)
+                {
+                    var pic = new PictureBox
+                    {
+                        Name = "lastPreview",
+                        Image = img,
+                        SizeMode = PictureBoxSizeMode.AutoSize,
+                        Location = loc,
+                        BackColor = Color.Transparent,
+                        Tag = t,
+                    };
+                    pic.Disposed += (s, e) => { try { pic.Image?.Dispose(); } catch { } };
+                    return pic;
+                }
+            }
+
+            return new Label
+            {
+                Name = "lastPreview",   // чтобы обновлять превью локально (без перезагрузки списка)
+                Text = t,
+                Font = font,
+                ForeColor = fore,
+                Location = loc,
+                Size = size,
+                AutoEllipsis = true,
+                Tag = t,
+            };
+        }
+
         private void UpdateCardPreview(List<Panel> panels, int id, string preview)
         {
             try
@@ -4484,7 +4526,41 @@ namespace PISMO
                     if (p.Tag is int t && t == id)
                     {
                         foreach (Control c in p.Controls)
-                            if (c is Label l && l.Name == "lastPreview") { l.Text = preview; return; }
+                            if (c.Name == "lastPreview")
+                            {
+                                // Тип контрола зависит от того, есть ли в тексте
+                                // эмодзи, поэтому подменяем целиком, а не текст.
+                                var host = c.Parent;
+                                var loc = c.Location;
+                                var size = c.Size;
+                                if (Equals(c.Tag, preview)) return;   // не изменилось
+                                host.Controls.Remove(c);
+                                try { c.Dispose(); } catch { }
+                                var fresh = MakePreviewControl(preview, loc, size);
+                                // Карточка вешает обработчики мыши на всех своих
+                                // детей при создании; подменённое превью их бы не
+                                // получило — по нему не работали бы ни подсветка,
+                                // ни открытие чата. Вешаем те же.
+                                if (host is Panel card && card.Tag is int cardId)
+                                {
+                                    string nm = card.AccessibleName ?? "";
+                                    var hot = Theme.Map(Color.FromArgb(65, 68, 75));
+                                    bool Selected() => _currentChatPartnerId == cardId
+                                                       || _currentGroupId == cardId;
+                                    fresh.MouseEnter += (s2, e2) => card.BackColor = hot;
+                                    fresh.MouseLeave += (s2, e2) =>
+                                        card.BackColor = Selected() ? hot : Color.Transparent;
+                                    fresh.MouseClick += (s2, e2) =>
+                                    {
+                                        if (e2.Button != MouseButtons.Left) return;
+                                        if (_groupPanels.Contains(card)) OpenGroup(cardId, nm);
+                                        else OpenChat(cardId, nm);
+                                    };
+                                }
+                                host.Controls.Add(fresh);
+                                fresh.BringToFront();
+                                return;
+                            }
                         return;
                     }
             }

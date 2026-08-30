@@ -301,10 +301,17 @@ namespace PISMO
                 int height = Math.Max(1, lines.Count * lineH);
 
                 // ── отрисовка ────────────────────────────────────────────────
+                // Прозрачный фон — для превью в списке чатов: карточка меняет
+                // цвет при наведении, и картинка с запечённым фоном показывала бы
+                // на ней прямоугольник чужого цвета. С прозрачностью PictureBox
+                // подставляет фон карточки, и подсветка работает как раньше.
+                bool transparent = back.A == 0;
                 var bmp = new Bitmap(width, height);
                 using (var g = Graphics.FromImage(bmp))
                 {
-                    g.Clear(back);
+                    if (transparent) g.TextRenderingHint =
+                        System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                    else g.Clear(back);
                     g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                     int y = 0;
                     foreach (var line in lines)
@@ -316,6 +323,14 @@ namespace PISMO
                             {
                                 var img = Get(a.Text, em);
                                 if (img != null) g.DrawImage(img, new Rectangle(x, y, em, em));
+                            }
+                            else if (transparent)
+                            {
+                                // GDI (TextRenderer) рисует непрозрачно и затирает
+                                // альфу — на прозрачном фоне нужен GDI+.
+                                using var br = new SolidBrush(fore);
+                                g.DrawString(a.Text, font, br, new PointF(x, y),
+                                    System.Drawing.StringFormat.GenericTypographic);
                             }
                             else
                             {
