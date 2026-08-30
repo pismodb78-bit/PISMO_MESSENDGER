@@ -124,6 +124,9 @@ namespace PISMO
         /// посреди отрисовки, на потоке интерфейса, — окно на это время стоит.</summary>
         private readonly Dictionary<int, Dictionary<int, List<ReactionsRepository.Reaction>>> _chanReactions = new();
 
+        /// <summary>Последнее сообщение каждого канала — для превью в списке.</summary>
+        private readonly Dictionary<int, string> _channelPreviews = new();
+
         /// <summary>Короткая подпись карты реакций — чтобы отрисовка после фоновой
         /// выборки не пропускалась как «данные не изменились»: текст сообщений тот
         /// же, поменялись только реакции.</summary>
@@ -799,6 +802,34 @@ namespace PISMO
                     cmd2.Parameters.AddWithValue("@s", _serverId);
                     new MySqlDataAdapter(cmd2).Fill(dt);
                 }
+                // Последние сообщения каналов — ОДНИМ запросом на весь список.
+                // В личных чатах превью есть давно, у каналов его не было вовсе,
+                // и понять, где что-то новое, можно было только зайдя в каждый.
+                _channelPreviews.Clear();
+                try
+                {
+                    var ids = new List<int>();
+                    foreach (DataRow r in dt.Rows) ids.Add(Convert.ToInt32(r["id"]));
+                    if (ids.Count > 0)
+                    {
+                        string list = string.Join(",", ids);
+                        using var pcmd = new MySqlCommand(
+                            "SELECT sm.channel_id, sm.text FROM server_messages sm " +
+                            "JOIN (SELECT channel_id, MAX(id) AS id FROM server_messages " +
+                            $"      WHERE channel_id IN ({list}) GROUP BY channel_id) t ON t.id = sm.id", conn);
+                        using var prd = pcmd.ExecuteReader();
+                        while (prd.Read())
+                        {
+                            int cid = Convert.ToInt32(prd["channel_id"]);
+                            string raw = prd["text"] == DBNull.Value ? "" : prd["text"].ToString();
+                            string txt = "";
+                            try { txt = Crypto.Dec(raw); } catch { }
+                            _channelPreviews[cid] = txt;
+                        }
+                    }
+                }
+                catch { }
+
                 _voiceContainers.Clear();
                 _voiceSig.Clear();
                 _channelLimits.Clear();
@@ -840,6 +871,22 @@ namespace PISMO
             b.Click += (s, e) => SelectChannel(cid, ctype, cname);
             // ПКМ: меню действий канала.
             b.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowChannelMenu(cid, ctype, cname); };
+
+            // Превью последнего сообщения — как в списке личных чатов. Название
+            // уезжает вверх, снизу приписка; эмодзи в ней цветные, потому что
+            // превью собирает тот же MakePreviewControl, что и в мессенджере.
+            string prev = _channelPreviews.TryGetValue(cid, out var pv) ? (pv ?? "") : "";
+            if (!string.IsNullOrWhiteSpace(prev))
+            {
+                b.Height = 46;
+                b.TextAlign = ContentAlignment.TopLeft;
+                b.Padding = new Padding(0, 4, 0, 0);
+                var pc = MainForm.MakePreviewControl(prev, new Point(10, 24), new Size(b.Width - 20, 16));
+                // Клик по приписке должен открывать канал, а не проваливаться мимо.
+                pc.Click += (s, e) => SelectChannel(cid, ctype, cname);
+                pc.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowChannelMenu(cid, ctype, cname); };
+                b.Controls.Add(pc);
+            }
             _pnlChannels.Controls.Add(b);
 
             // Бейдж непрочитанных/упоминаний канала (число). Красный = упоминания/

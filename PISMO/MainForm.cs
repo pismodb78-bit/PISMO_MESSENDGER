@@ -4477,7 +4477,7 @@ namespace PISMO
         /// при наведении работает как раньше — PictureBox подставляет фон
         /// родителя.
         /// </summary>
-        private static Control MakePreviewControl(string text, Point loc, Size size)
+        internal static Control MakePreviewControl(string text, Point loc, Size size)
         {
             string t = text ?? "";
             if (t.Length > 42) t = t[..42] + "…";
