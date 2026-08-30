@@ -161,6 +161,86 @@ namespace PISMO
             return http;
         }
 
+        /// <summary>
+        /// Есть ли в строке хоть один эмодзи.
+        ///
+        /// Нужно, чтобы не гонять через WPF ВСЕ сообщения: обычный текст
+        /// прекрасно живёт в поле ввода, которое к тому же можно выделять.
+        /// Картинкой рисуем только те, где иначе будет монохромный контур.
+        /// </summary>
+        public static bool ContainsEmoji(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                // Суррогатная пара — почти наверняка эмодзи: сюда попадают
+                // все плоскости выше базовой, включая 1F300–1FAFF.
+                if (char.IsHighSurrogate(c)) return true;
+                // Символьные блоки, у которых есть цветные начертания:
+                // разное типографское (2190–2BFF) и «Dingbats».
+                if (c >= 0x2190 && c <= 0x2BFF) return true;
+                if (c == 0xFE0F) return true;   // селектор эмодзи-начертания
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Рисует текст сообщения ЦЕЛИКОМ через WPF и отдаёт картинку.
+        ///
+        /// Зачем. Текст сообщения живёт в TextBox, а тот рисуется средствами
+        /// GDI, которые цветные шрифты (COLR/CBDT) не умеют — эмодзи выходят
+        /// монохромным контуром. Тот же эмодзи в чипе реакции цветной именно
+        /// потому, что чип рисуется вот этим путём, через DirectWrite.
+        ///
+        /// Цена — выделение текста мышью: картинка не выделяется. Поэтому
+        /// картинкой рисуются ТОЛЬКО сообщения с эмодзи, остальные остаются
+        /// полем. Скопировать такое сообщение по-прежнему можно через меню.
+        ///
+        /// Фон рисуем сплошным цветом пузыря, а не прозрачным: прозрачность у
+        /// WinForms не настоящая, она подставляет фон родителя, и на цветном
+        /// пузыре это дало бы кайму.
+        /// </summary>
+        public static Bitmap RenderMessage(string text, string fontFamily, float fontPt,
+                                           Color fore, Color back, int maxWidthPx)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            try
+            {
+                var tb = new System.Windows.Controls.TextBlock
+                {
+                    Text = text,
+                    FontFamily = new System.Windows.Media.FontFamily(fontFamily + ", Segoe UI Emoji"),
+                    // WinForms меряет шрифт в пунктах, WPF — в единицах 1/96 дюйма.
+                    FontSize = fontPt * 96.0 / 72.0,
+                    Foreground = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(fore.R, fore.G, fore.B)),
+                    Background = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(back.R, back.G, back.B)),
+                    TextWrapping = System.Windows.TextWrapping.Wrap,
+                    MaxWidth = maxWidthPx,
+                };
+                tb.Measure(new System.Windows.Size(maxWidthPx, double.PositiveInfinity));
+                tb.Arrange(new System.Windows.Rect(tb.DesiredSize));
+                tb.UpdateLayout();
+
+                int w = Math.Max(1, (int)Math.Ceiling(tb.DesiredSize.Width));
+                int h = Math.Max(1, (int)Math.Ceiling(tb.DesiredSize.Height));
+                var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                    w, h, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                rtb.Render(tb);
+
+                var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
+                using var ms = new MemoryStream();
+                enc.Save(ms);
+                ms.Position = 0;
+                using var tmp = new Bitmap(ms);
+                return new Bitmap(tmp);
+            }
+            catch { return null; }
+        }
+
         // ── DirectWrite (быстрый путь, если даёт цвет) ────────────────────
         private static Bitmap RenderWpf(string emoji, int px)
         {

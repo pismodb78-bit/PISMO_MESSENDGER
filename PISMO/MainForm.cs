@@ -4084,11 +4084,38 @@ namespace PISMO
             // или правый клик, а не только всё сообщение целиком).
             if (!string.IsNullOrEmpty(text))
             {
-                var txtMsg = MakeSelectableText(text, bubble.BackColor,
-                    Color.FromArgb(235, 236, 240), new Font("Segoe UI", 10.5f), innerW);
-                txtMsg.Location = new Point(PAD, innerY);
-                bubble.Controls.Add(txtMsg);
-                innerY += txtMsg.Height + 4;
+                // Сообщения С ЭМОДЗИ рисуем картинкой через WPF: поле ввода
+                // рисуется средствами GDI, а те цветные шрифты не умеют — эмодзи
+                // выходил монохромным контуром, хотя тот же эмодзи в чипе реакции
+                // цветной (чип как раз рисуется этим путём). Цена — выделение
+                // мышью, поэтому картинкой рисуются только такие сообщения;
+                // скопировать их по-прежнему можно через меню.
+                var fore = Color.FromArgb(235, 236, 240);
+                Bitmap emojiText = EmojiRender.ContainsEmoji(text)
+                    ? EmojiRender.RenderMessage(text, "Segoe UI", 10.5f, fore, bubble.BackColor, innerW)
+                    : null;
+
+                if (emojiText != null)
+                {
+                    var picMsg = new PictureBox
+                    {
+                        Image = emojiText,
+                        SizeMode = PictureBoxSizeMode.AutoSize,
+                        Location = new Point(PAD, innerY),
+                        BackColor = bubble.BackColor,
+                    };
+                    picMsg.Disposed += (s, e) => { try { emojiText.Dispose(); } catch { } };
+                    bubble.Controls.Add(picMsg);
+                    innerY += picMsg.Height + 4;
+                }
+                else
+                {
+                    var txtMsg = MakeSelectableText(text, bubble.BackColor,
+                        fore, new Font("Segoe UI", 10.5f), innerW);
+                    txtMsg.Location = new Point(PAD, innerY);
+                    bubble.Controls.Add(txtMsg);
+                    innerY += txtMsg.Height + 4;
+                }
             }
 
             // Время (+ "изменено")

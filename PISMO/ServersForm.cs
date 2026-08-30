@@ -2097,12 +2097,34 @@ namespace PISMO
                     }
                     else if (!string.IsNullOrEmpty(text))
                     {
-                        var body = MainForm.MakeSelectableText(text, bubbleBg,
-                            Color.FromArgb(235, 236, 240), new Font("Segoe UI", 10.5f),
-                            msgWidth - 10);
-                        body.Location = new Point(LEFT, y);
-                        holder.Controls.Add(body);
-                        y += body.Height + 6;
+                        // Как в личке: сообщения с эмодзи рисуем картинкой через
+                        // WPF, иначе GDI отдаёт монохромный контур. Обычный текст
+                        // остаётся полем, которое можно выделять.
+                        var fore = Color.FromArgb(235, 236, 240);
+                        var emojiText = EmojiRender.ContainsEmoji(text)
+                            ? EmojiRender.RenderMessage(text, "Segoe UI", 10.5f, fore, bubbleBg, msgWidth - 10)
+                            : null;
+                        if (emojiText != null)
+                        {
+                            var picBody = new PictureBox
+                            {
+                                Image = emojiText,
+                                SizeMode = PictureBoxSizeMode.AutoSize,
+                                Location = new Point(LEFT, y),
+                                BackColor = bubbleBg,
+                            };
+                            picBody.Disposed += (s2, e2) => { try { emojiText.Dispose(); } catch { } };
+                            holder.Controls.Add(picBody);
+                            y += picBody.Height + 6;
+                        }
+                        else
+                        {
+                            var body = MainForm.MakeSelectableText(text, bubbleBg,
+                                fore, new Font("Segoe UI", 10.5f), msgWidth - 10);
+                            body.Location = new Point(LEFT, y);
+                            holder.Controls.Add(body);
+                            y += body.Height + 6;
+                        }
                     }
 
                     // ── Реакции (как в ЛС): чипы «эмодзи N», клик — поставить/снять,
