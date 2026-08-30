@@ -875,7 +875,9 @@ namespace PISMO
             // Превью последнего сообщения — как в списке личных чатов. Название
             // уезжает вверх, снизу приписка; эмодзи в ней цветные, потому что
             // превью собирает тот же MakePreviewControl, что и в мессенджере.
-            string prev = _channelPreviews.TryGetValue(cid, out var pv) ? (pv ?? "") : "";
+            // Только у ТЕКСТОВЫХ каналов. У голосового строка и так занята
+            // счётчиком участников и значком чата — вторая приписка её загромоздит.
+            string prev = ctype == "text" && _channelPreviews.TryGetValue(cid, out var pv) ? (pv ?? "") : "";
             if (!string.IsNullOrWhiteSpace(prev))
             {
                 b.Height = 46;
