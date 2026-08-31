@@ -2221,8 +2221,15 @@ namespace PISMO
                             : !string.IsNullOrWhiteSpace(fn) ? "📎 " + fn
                             : "";
                     }
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[ADMIN PREVIEW] собеседников с сообщениями: {lastByPartner.Count}");
                 }
-                catch { }
+                catch (Exception pex)
+                {
+                    // Молчаливый catch здесь уже один раз стоил лишнего круга
+                    // догадок: если запрос падает, это должно быть видно.
+                    System.Diagnostics.Debug.WriteLine("[ADMIN PREVIEW] ошибка запроса: " + pex.Message);
+                }
 
                 foreach (DataRow row in ordered)
                 {
