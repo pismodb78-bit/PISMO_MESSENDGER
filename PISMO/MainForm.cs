@@ -4564,7 +4564,35 @@ namespace PISMO
                         BackColor = Color.Transparent,
                         Tag = t,
                     };
-                    pic.Disposed += (s, e) => { try { pic.Image?.Dispose(); } catch { } };
+
+                    // Цветная картинка эмодзи может ещё догружаться — тогда сейчас
+                    // нарисован силуэт. Для пузырей перерисовка по событию уже
+                    // была, а превью её не имело: отсюда «в сообщении цветной, а
+                    // в списке нет».
+                    void OnLoaded(string _)
+                    {
+                        if (pic.IsDisposed) return;
+                        try
+                        {
+                            pic.BeginInvoke(new Action(() =>
+                            {
+                                if (pic.IsDisposed) return;
+                                var fresh = EmojiRender.RenderMessage(
+                                    t, font, fore, Color.Transparent, size.Width);
+                                if (fresh == null) return;
+                                var prev = pic.Image;
+                                pic.Image = fresh;
+                                try { prev?.Dispose(); } catch { }
+                            }));
+                        }
+                        catch { }
+                    }
+                    EmojiRender.Loaded += OnLoaded;
+                    pic.Disposed += (s, e) =>
+                    {
+                        try { EmojiRender.Loaded -= OnLoaded; } catch { }
+                        try { pic.Image?.Dispose(); } catch { }
+                    };
                     return pic;
                 }
             }
