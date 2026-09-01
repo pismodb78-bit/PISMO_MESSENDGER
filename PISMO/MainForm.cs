@@ -1700,6 +1700,7 @@ namespace PISMO
             if (!changed) return;
 
             UpdateBadgesOnCards(current);
+            RefreshListPreviews();
 
             int totalUnread = current.Values.Sum();
             string title = totalUnread > 0 ? $"● PISMO ({totalUnread} новых)" : "PISMO — Мессенджер";
@@ -1902,6 +1903,83 @@ namespace PISMO
             }
             catch { }
             return $"Пользователь #{uid}";
+        }
+
+        private bool _listPreviewBusy;
+
+        /// <summary>
+        /// Обновляет приписки последних сообщений в списке слева.
+        ///
+        /// Собираются они при построении списка, а список целиком перестраивается
+        /// редко — поэтому приписка застывала на том, что было при открытии
+        /// приложения. Своё отправленное обновлялось (UpdateCardPreview), а
+        /// входящее — нет.
+        ///
+        /// Запрос один на весь список, в фоне, и только когда опрос уже заметил
+        /// изменение непрочитанных — то есть не чаще, чем что-то реально пришло.
+        /// </summary>
+        private void RefreshListPreviews()
+        {
+            if (_listPreviewBusy) return;
+            _listPreviewBusy = true;
+            int me = UserSession.UserId;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var fresh = new Dictionary<int, string>();
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(@"
+                        SELECT c.partner_id, lm.text, lm.file_name,
+                               (lm.image_data IS NOT NULL) AS has_img,
+                               (lm.audio_data IS NOT NULL) AS has_audio,
+                               (lm.video_data IS NOT NULL) AS has_video
+                        FROM (
+                            SELECT partner_id, MAX(id) AS last_id FROM (
+                                SELECT receiver_id AS partner_id, MAX(id) AS id
+                                FROM messages WHERE sender_id=@me GROUP BY receiver_id
+                                UNION ALL
+                                SELECT sender_id AS partner_id, MAX(id) AS id
+                                FROM messages WHERE receiver_id=@me GROUP BY sender_id
+                            ) t GROUP BY partner_id
+                        ) c
+                        JOIN messages lm ON lm.id = c.last_id", conn);
+                    cmd.Parameters.AddWithValue("@me", me);
+                    using var rd = cmd.ExecuteReader();
+                    while (rd.Read())
+                    {
+                        int pid = Convert.ToInt32(rd["partner_id"]);
+                        string txt = "";
+                        try { txt = Crypto.Dec(rd["text"] == DBNull.Value ? "" : rd["text"].ToString()); }
+                        catch { }
+                        bool hi = rd["has_img"] != DBNull.Value && Convert.ToBoolean(rd["has_img"]);
+                        bool ha = rd["has_audio"] != DBNull.Value && Convert.ToBoolean(rd["has_audio"]);
+                        bool hv = rd["has_video"] != DBNull.Value && Convert.ToBoolean(rd["has_video"]);
+                        string fn = rd["file_name"] == DBNull.Value ? null : rd["file_name"].ToString();
+                        fresh[pid] =
+                            !string.IsNullOrWhiteSpace(txt) ? txt
+                            : hi ? "📷 Фото"
+                            : ha ? "🎤 Голосовое сообщение"
+                            : hv ? "🎥 Видео"
+                            : !string.IsNullOrWhiteSpace(fn) ? "📎 " + fn
+                            : "";
+                    }
+                }
+                catch { }
+                finally { _listPreviewBusy = false; }
+
+                if (fresh.Count == 0 || IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        foreach (var (pid, txt) in fresh)
+                            if (!string.IsNullOrWhiteSpace(txt))
+                                UpdateCardPreview(_userPanels, pid, txt);
+                    }));
+                }
+                catch { }
+            });
         }
 
         private void UpdateBadgesOnCards(Dictionary<int, int> unread)

@@ -448,9 +448,16 @@ namespace PISMO
 
         private void OnWs(string type, int senderId, int sessionId, string payload)
         {
-            if (type == "new_message" && payload == "server" && sessionId == _channelId)
+            if (type == "new_message" && payload == "server")
             {
-                try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(LoadMessages)); } catch { }
+                // Лента — только если это открытый канал.
+                if (sessionId == _channelId)
+                    try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(LoadMessages)); } catch { }
+
+                // А приписка под каналом — по ЛЮБОМУ сообщению сервера, в том
+                // числе в открытом: LoadMessages её не трогает, а обработчик
+                // раньше вообще не знал про остальные каналы.
+                try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(RefreshChannelPreviews)); } catch { }
             }
             else if (type == "channels_changed" && sessionId == _serverId)
             {
@@ -764,6 +771,7 @@ namespace PISMO
         {
             _pnlChannels.Controls.Clear();
             _channelPreviewCtl.Clear();
+            _textChannelIds.Clear();
             _channelBadgeLabels.Clear();   // ярлыки бейджей пересоздаются вместе с кнопками
             _pnlChannels.Controls.Add(MakeHeader("Каналы"));
 
@@ -853,6 +861,7 @@ namespace PISMO
                 {
                     if (r["type"].ToString() != "text") continue;
                     if (!textHeader) { _pnlChannels.Controls.Add(MakeHeader("Текстовые каналы")); textHeader = true; }
+                    _textChannelIds.Add(Convert.ToInt32(r["id"]));
                     AddChannelButton(Convert.ToInt32(r["id"]), r["name"].ToString(), "text");
                 }
                 foreach (DataRow r in dt.Rows)
@@ -873,6 +882,9 @@ namespace PISMO
         /// <summary>Рисует кнопку канала (+ контейнер «в эфире» для голосовых).</summary>
         /// <summary>Контролы приписок по каналам — чтобы обновлять их на месте.</summary>
         private readonly Dictionary<int, Control> _channelPreviewCtl = new();
+
+        /// <summary>Текстовые каналы сервера — у них есть приписка.</summary>
+        private readonly List<int> _textChannelIds = new();
         private bool _previewBusy;
 
         /// <summary>
@@ -888,9 +900,13 @@ namespace PISMO
         /// </summary>
         private void RefreshChannelPreviews()
         {
-            if (_serverId <= 0 || _previewBusy || _channelPreviewCtl.Count == 0) return;
+            if (_serverId <= 0 || _previewBusy || _textChannelIds.Count == 0) return;
             _previewBusy = true;
-            var ids = new List<int>(_channelPreviewCtl.Keys);
+            // Спрашиваем про ВСЕ текстовые каналы, а не только про те, где приписка
+            // уже есть. Иначе канал, в котором ещё не было сообщений, не получил бы
+            // её никогда: контрола под неё не создавалось, а значит и спрашивать
+            // было не о чем.
+            var ids = new List<int>(_textChannelIds);
             System.Threading.Tasks.Task.Run(() =>
             {
                 var fresh = new Dictionary<int, string>();
@@ -924,7 +940,14 @@ namespace PISMO
                         {
                             if (_channelPreviews.TryGetValue(cid, out var old) && old == txt) continue;
                             _channelPreviews[cid] = txt;
-                            if (!_channelPreviewCtl.TryGetValue(cid, out var ctl) || ctl.IsDisposed) continue;
+                            if (!_channelPreviewCtl.TryGetValue(cid, out var ctl) || ctl.IsDisposed)
+                            {
+                                // Первое сообщение в канале: места под приписку ещё
+                                // нет, кнопку надо собрать заново. Это редкий случай,
+                                // поэтому список пересобираем целиком и выходим.
+                                LoadChannels();
+                                return;
+                            }
                             var host = ctl.Parent;
                             if (host == null) continue;
                             var loc = ctl.Location; var size = ctl.Size;
