@@ -62,7 +62,7 @@ namespace PISMO
             btnAttach = new Button();
             btnVoice = new Button();
             btnVideoCircle = new Button();
-            txtMessage = new TextBox();
+            txtMessage = new RichTextBox();
             btnSend = new Button();
             pnlChatHeader = new Panel();
             lblChatTitle = new Label();
@@ -318,9 +318,20 @@ namespace PISMO
             txtMessage.Font = new Font("Segoe UI", 10.5F);
             txtMessage.ForeColor = Color.FromArgb(220, 221, 222);
             txtMessage.Location = new Point(146, 6);
-            txtMessage.Multiline = true;
             txtMessage.Name = "txtMessage";
-            txtMessage.PlaceholderText = "Написать сообщение...";
+            // Поле ввода — RichTextBox, а не TextBox.
+            //
+            // Обычное поле рисуется средствами GDI, а те цветные шрифты не умеют:
+            // эмодзи при наборе выходил монохромным контуром, хотя в отправленном
+            // сообщении он уже цветной (пузырь мы рисуем картинкой). RichTextBox
+            // работает на RichEdit — том же движке, на котором цветные эмодзи
+            // показывает WordPad.
+            //
+            // Многострочность у него всегда, отдельно включать нечего. Подсказки
+            // «Написать сообщение…» у него нет — она сделана меткой поверх, см.
+            // BuildInputPlaceholder.
+            txtMessage.ScrollBars = RichTextBoxScrollBars.Vertical;
+            txtMessage.DetectUrls = false;
             txtMessage.Size = new Size(530, 50);
             txtMessage.TabIndex = 3;
             txtMessage.KeyDown += txtMessage_KeyDown;
@@ -402,6 +413,6 @@ namespace PISMO
             pnlChatHeader.ResumeLayout(false);
             ResumeLayout(false);
         }
-        private TextBox txtMessage;
+        private RichTextBox txtMessage;
     }
 }

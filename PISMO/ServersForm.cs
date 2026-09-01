@@ -227,6 +227,7 @@ namespace PISMO
                 RefreshVoicePresence(); // presence нет в WS — обновляем (диффом, дёшево)
                 RefreshMemberPresence(); // статус участников сервера (точки), без пересборки
                 RefreshChannelBadges();  // цифры непрочит./упоминаний у каналов
+                RefreshChannelPreviews(); // приписка последнего сообщения под каналом
                 // Права по роли — раз в ~10 с, в фоне: роль могли выдать или забрать
                 // прямо сейчас, и это должно примениться без перезахода на сервер.
                 if ((++_permsTick % 5) == 0) RefreshPermsBackground();
@@ -762,6 +763,7 @@ namespace PISMO
         private void LoadChannels()
         {
             _pnlChannels.Controls.Clear();
+            _channelPreviewCtl.Clear();
             _channelBadgeLabels.Clear();   // ярлыки бейджей пересоздаются вместе с кнопками
             _pnlChannels.Controls.Add(MakeHeader("Каналы"));
 
@@ -869,6 +871,76 @@ namespace PISMO
         }
 
         /// <summary>Рисует кнопку канала (+ контейнер «в эфире» для голосовых).</summary>
+        /// <summary>Контролы приписок по каналам — чтобы обновлять их на месте.</summary>
+        private readonly Dictionary<int, Control> _channelPreviewCtl = new();
+        private bool _previewBusy;
+
+        /// <summary>
+        /// Обновляет приписку с последним сообщением под каналами.
+        ///
+        /// Заполняет её LoadChannels, а он зовётся при заходе на сервер и смене
+        /// прав — то есть приписка застывала на том, что было в момент открытия, и
+        /// новые сообщения в ней не появлялись. Пересобирать ради этого весь
+        /// список ни к чему: меняем текст на месте.
+        ///
+        /// Контрол подменяется целиком, а не правится: его тип зависит от того,
+        /// есть ли в тексте эмодзи (с эмодзи это картинка, без — метка).
+        /// </summary>
+        private void RefreshChannelPreviews()
+        {
+            if (_serverId <= 0 || _previewBusy || _channelPreviewCtl.Count == 0) return;
+            _previewBusy = true;
+            var ids = new List<int>(_channelPreviewCtl.Keys);
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var fresh = new Dictionary<int, string>();
+                try
+                {
+                    string list = string.Join(",", ids);
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "SELECT sm.channel_id, sm.text FROM server_messages sm " +
+                        "JOIN (SELECT channel_id, MAX(id) AS id FROM server_messages " +
+                        $"      WHERE channel_id IN ({list}) GROUP BY channel_id) t ON t.id = sm.id", conn);
+                    using var rd = cmd.ExecuteReader();
+                    while (rd.Read())
+                    {
+                        int cid = Convert.ToInt32(rd["channel_id"]);
+                        string raw = rd["text"] == DBNull.Value ? "" : rd["text"].ToString();
+                        string txt = "";
+                        try { txt = Crypto.Dec(raw); } catch { }
+                        fresh[cid] = txt;
+                    }
+                }
+                catch { }
+                finally { _previewBusy = false; }
+
+                if (fresh.Count == 0 || IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        foreach (var (cid, txt) in fresh)
+                        {
+                            if (_channelPreviews.TryGetValue(cid, out var old) && old == txt) continue;
+                            _channelPreviews[cid] = txt;
+                            if (!_channelPreviewCtl.TryGetValue(cid, out var ctl) || ctl.IsDisposed) continue;
+                            var host = ctl.Parent;
+                            if (host == null) continue;
+                            var loc = ctl.Location; var size = ctl.Size;
+                            host.Controls.Remove(ctl);
+                            try { ctl.Dispose(); } catch { }
+                            var pc = MainForm.MakePreviewControl(txt, loc, size);
+                            pc.Click += (s, e) => SelectChannel(cid, "text", host.AccessibleName ?? "");
+                            host.Controls.Add(pc);
+                            _channelPreviewCtl[cid] = pc;
+                        }
+                    }));
+                }
+                catch { }
+            });
+        }
+
         private void AddChannelButton(int cid, string cname, string ctype)
         {
             var b = MakeSideButton((ctype == "voice" ? "🔊 " : "# ") + cname, Color.FromArgb(54, 57, 63));
@@ -913,6 +985,7 @@ namespace PISMO
                     child.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowChannelMenu(cid, ctype, cname); };
                     b.Controls.Add(child);
                 }
+                _channelPreviewCtl[cid] = pc;
             }
             _pnlChannels.Controls.Add(b);
 

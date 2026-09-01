@@ -230,6 +230,7 @@ namespace PISMO
             BuildServerRail();          // левый рейл «Личные сообщения + серверы» (как в Discord)
             BuildPinsButton();          // 📌 кнопка «Закреплённые» в шапке чата (2.0)
             BuildTypingIndicator();     // «печатает…» (2.0)
+            BuildInputPlaceholder();    // подсказка в поле ввода (у RichTextBox своей нет)
             BuildMessageSearch();       // 🔍 поиск по открытому чату (2.0)
             BuildBackgroundStyling();   // мягкий градиент-подложка списка/чата (2.1.7)
             BuildReadAllButton();       // ✓✓ «прочитать все ЛС» в шапке сайдбара
@@ -651,6 +652,44 @@ namespace PISMO
 
         private System.Windows.Forms.Timer _typingHideTimer;
         private DateTime _lastTypingSent = DateTime.MinValue;
+
+        private Label _lblInputHint;
+
+        /// <summary>
+        /// Подсказка «Написать сообщение…» в поле ввода.
+        ///
+        /// У обычного поля она встроенная (PlaceholderText), но поле ввода теперь
+        /// RichTextBox — ради цветных эмодзи при наборе, — а у него такого
+        /// свойства нет. Поэтому метка поверх: гаснет, как только в поле
+        /// появляется текст, и нажатие по ней передаёт фокус в поле, чтобы она не
+        /// мешала попасть курсором.
+        /// </summary>
+        private void BuildInputPlaceholder()
+        {
+            try
+            {
+                _lblInputHint = new Label
+                {
+                    Text = "Написать сообщение...",
+                    Font = txtMessage.Font,
+                    ForeColor = Color.FromArgb(140, 143, 150),
+                    BackColor = txtMessage.BackColor,
+                    AutoSize = false,
+                    Location = new Point(txtMessage.Left + 2, txtMessage.Top + 2),
+                    Size = new Size(txtMessage.Width - 4, 22),
+                    Anchor = txtMessage.Anchor,
+                    Cursor = Cursors.IBeam,
+                };
+                _lblInputHint.Click += (s, e) => { try { txtMessage.Focus(); } catch { } };
+                txtMessage.Parent.Controls.Add(_lblInputHint);
+                _lblInputHint.BringToFront();
+
+                void Sync() => _lblInputHint.Visible = txtMessage.TextLength == 0;
+                txtMessage.TextChanged += (s, e) => Sync();
+                Sync();
+            }
+            catch { }
+        }
 
         /// <summary>Индикатор «печатает…» в шапке чата + отправка своего статуса
         /// набора по WS (не чаще раза в 2 c).</summary>
