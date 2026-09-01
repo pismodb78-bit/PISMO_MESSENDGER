@@ -12,6 +12,9 @@ namespace PISMO
     /// </summary>
     public static class ForwardHelper
     {
+        /// <summary>Пометка пересылки в начале текста.</summary>
+        public const string ForwardMark = "↪ Переслано";
+
         public static string TableOf(int scope) =>
             scope == 1 ? "group_messages" : scope == 2 ? "server_messages" : "messages";
 
@@ -22,6 +25,15 @@ namespace PISMO
             plainText ??= "";
             if (plainText.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
                 return plainText;
+
+            // Пересылают уже пересланное — второй пометки не добавляем.
+            // Иначе они копятся цепочкой: «↪ Переслано от Пети: ↪ Переслано от
+            // Васи: …», и в превью списка это выглядит как два значка подряд.
+            // Оставляем первую: она называет настоящего автора, а промежуточные
+            // посредники никому не интересны — так же ведут себя мессенджеры.
+            if (plainText.StartsWith(ForwardMark, StringComparison.Ordinal))
+                return plainText;
+
             return string.IsNullOrWhiteSpace(senderName)
                 ? $"↪ Переслано:\n{plainText}"
                 : $"↪ Переслано от {senderName}:\n{plainText}";
