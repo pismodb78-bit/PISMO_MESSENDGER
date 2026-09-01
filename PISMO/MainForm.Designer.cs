@@ -62,7 +62,7 @@ namespace PISMO
             btnAttach = new Button();
             btnVoice = new Button();
             btnVideoCircle = new Button();
-            txtMessage = new TextBox();
+            txtMessage = new EmojiTextBox();
             btnSend = new Button();
             pnlChatHeader = new Panel();
             lblChatTitle = new Label();
@@ -318,7 +318,6 @@ namespace PISMO
             txtMessage.Font = new Font("Segoe UI", 10.5F);
             txtMessage.ForeColor = Color.FromArgb(220, 221, 222);
             txtMessage.Location = new Point(146, 6);
-            txtMessage.Multiline = true;
             txtMessage.Name = "txtMessage";
             txtMessage.PlaceholderText = "Написать сообщение...";
             txtMessage.Size = new Size(530, 50);
@@ -402,6 +401,6 @@ namespace PISMO
             pnlChatHeader.ResumeLayout(false);
             ResumeLayout(false);
         }
-        private TextBox txtMessage;
+        private EmojiTextBox txtMessage;
     }
 }
