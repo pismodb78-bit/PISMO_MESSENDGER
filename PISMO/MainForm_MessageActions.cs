@@ -418,10 +418,17 @@ namespace PISMO
             _pnlForwardBar.Visible = true;
             RerenderCurrentChat();
 
-            MessageBox.Show(
-                "Выберите диалог, группу или канал сервера и нажмите «Отправить».\n" +
-                $"Будут пересланы выбранные сообщения ({cnt}).",
-                "PISMO — Пересылка", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // То же окно выбора, что и для одиночной пересылки.
+            try
+            {
+                using var picker = new ForwardPickerForm();
+                if (picker.ShowDialog(this) == DialogResult.OK && picker.TargetId > 0)
+                {
+                    SendForwardTo(picker.TargetScope, picker.TargetId);
+                    return;
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Не удалось открыть выбор: " + ex.Message, "PISMO"); }
             txtMessage.Focus();
         }
 
@@ -779,13 +786,64 @@ namespace PISMO
             _lblForwardInfo.Text = $"↪ Пересылка от {senderName}: {preview}";
             _pnlForwardBar.Visible = true;
 
-            MessageBox.Show(
-                "Выберите диалог, группу или канал сервера и нажмите «Отправить».\n" +
-                "Сообщение будет переслано туда.",
-                "PISMO — Пересылка",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // Окно выбора — как на телефоне. Раньше здесь была подсказка «идите
+            // и найдите нужный чат сами», и человек листал общий список; каналов
+            // серверов в нём вообще нет, так что переслать в канал из мессенджера
+            // было нельзя. Кто хочет по-старому — закрывает окно, полоска
+            // пересылки остаётся, и достаточно открыть чат и нажать «Отправить».
+            try
+            {
+                using var picker = new ForwardPickerForm();
+                if (picker.ShowDialog(this) == DialogResult.OK && picker.TargetId > 0)
+                {
+                    SendForwardTo(picker.TargetScope, picker.TargetId);
+                    return;
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Не удалось открыть выбор: " + ex.Message, "PISMO"); }
 
             txtMessage.Focus();
+        }
+
+        /// <summary>
+        /// Отправляет отложенную пересылку в выбранное место и снимает полоску.
+        /// Область: 0 — личка, 1 — группа, 2 — канал сервера.
+        /// </summary>
+        private void SendForwardTo(int scope, int targetId)
+        {
+            int me = UserSession.EffectiveId;
+            var batch = _forwardBatch.Count > 0
+                ? new System.Collections.Generic.List<(string sender, string text, int scope, int id)>(_forwardBatch)
+                : new System.Collections.Generic.List<(string sender, string text, int scope, int id)>
+                  { (_forwardSenderName, _forwardText, _forwardSrcScope, _forwardSrcId) };
+
+            try
+            {
+                foreach (var (sndr, txt, srcScope, srcId) in batch)
+                    ForwardHelper.Forward(srcScope, srcId, sndr, txt, scope, me, targetId);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка пересылки: " + ex.Message, "PISMO");
+                return;
+            }
+
+            // Уведомляем получателей. Адресат 0 — всем: адресная доставка обходила
+            // стороной второе устройство самого отправителя.
+            try
+            {
+                string kind = scope == 1 ? "group" : scope == 2 ? "server" : "direct";
+                WebSocketSignalingClient.Instance.SendMessage("new_message", 0, targetId, kind);
+            }
+            catch { }
+
+            _forwardBatch.Clear();
+            CancelForward();
+
+            // Если переслали в открытый сейчас чат — показываем сразу.
+            ForceMessageRerender();
+            if (scope == 1 && _currentGroupId == targetId) LoadGroupMessages();
+            else if (scope == 0 && _currentChatPartnerId == targetId) LoadMessages();
         }
 
         private void CancelForward()
