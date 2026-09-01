@@ -190,7 +190,7 @@ namespace PISMO
         private readonly record struct Atom(string Text, bool IsEmoji, int Width, bool Break);
 
         /// <summary>Начинается ли в этой позиции эмодзи, и какой длины кластер.</summary>
-        private static int EmojiClusterLength(string s, int i)
+        internal static int EmojiClusterLength(string s, int i)
         {
             if (i >= s.Length) return 0;
             int start = i, len = 0;
