@@ -296,7 +296,87 @@ namespace PISMO
                 // тогда индекс кладётся руками, sql/2026-08-20_feed_indexes.sql.
                 AddIndex(conn, "messages", "idx_msg_recv_read", "(receiver_id, is_read, sender_id)");
             }),
+
+            (18, "убрать двойные пометки пересылки в старых сообщениях", conn =>
+            {
+                // Пересылка уже пересланного навешивала пометку второй раз поверх
+                // первой: «↪ Переслано от Пети: ↪ Переслано от Васи: …». Сам код
+                // так больше не делает, но записанное в базу от этого не
+                // исправится — отсюда разовая чистка.
+                //
+                // SQL-ом её не сделать: текст в базе зашифрован, и ни LIKE, ни
+                // REPLACE до пометки не доберутся. Поэтому строки читаются,
+                // расшифровываются, чинятся и пишутся обратно — и только те, где
+                // пометка действительно повторяется.
+                //
+                // Прав хватает: нужны SELECT и UPDATE, ALTER здесь ни при чём.
+                foreach (string table in new[] { "messages", "group_messages", "server_messages" })
+                    StripDoubleForwardMarks(conn, table);
+            }),
         };
+
+        /// <summary>Чистит повторяющиеся пометки пересылки в одной таблице.</summary>
+        private static void StripDoubleForwardMarks(MySqlConnection conn, string table)
+        {
+            var fixes = new List<(int id, string text)>();
+            try
+            {
+                using var cmd = new MySqlCommand($"SELECT id, text FROM {table} WHERE text IS NOT NULL", conn);
+                using var rd = cmd.ExecuteReader();
+                while (rd.Read())
+                {
+                    string enc = rd["text"]?.ToString();
+                    if (string.IsNullOrEmpty(enc)) continue;
+
+                    string plain;
+                    try { plain = Crypto.Dec(enc); } catch { continue; }
+                    string cleaned = CollapseForwardMarks(plain);
+                    if (cleaned != plain)
+                        fixes.Add((Convert.ToInt32(rd["id"]), cleaned));
+                }
+            }
+            catch { return; }
+
+            foreach (var (id, text) in fixes)
+            {
+                try
+                {
+                    using var up = new MySqlCommand($"UPDATE {table} SET text=@t WHERE id=@id", conn);
+                    up.Parameters.AddWithValue("@t", Crypto.Enc(text));
+                    up.Parameters.AddWithValue("@id", id);
+                    up.ExecuteNonQuery();
+                }
+                catch { }
+            }
+            if (fixes.Count > 0)
+                System.Diagnostics.Debug.WriteLine(
+                    $"[DbMigrator] пометок пересылки вычищено в {table}: {fixes.Count}");
+        }
+
+        /// <summary>
+        /// Оставляет только ПЕРВУЮ пометку пересылки. Она называет настоящего
+        /// автора; все следующие — посредники, и в шапке им не место.
+        /// </summary>
+        internal static string CollapseForwardMarks(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            const string mark = "↪ Переслано";
+            if (!text.StartsWith(mark, StringComparison.Ordinal)) return text;
+
+            // Пометка занимает строку целиком и заканчивается двоеточием, дальше
+            // перевод строки и сам текст. Снимаем вторую и последующие.
+            int firstBreak = text.IndexOf('\n');
+            if (firstBreak < 0) return text;
+            string head = text[..(firstBreak + 1)];
+            string rest = text[(firstBreak + 1)..];
+            while (rest.StartsWith(mark, StringComparison.Ordinal))
+            {
+                int br = rest.IndexOf('\n');
+                if (br < 0) break;
+                rest = rest[(br + 1)..];
+            }
+            return head + rest;
+        }
 
         /// <summary>Максимальный номер применённой миграции после Run (для инфо).</summary>
         public static int CurrentVersion { get; private set; }
