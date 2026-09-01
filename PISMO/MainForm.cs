@@ -2648,18 +2648,22 @@ namespace PISMO
                        + (isAdminCard ? $"{name} (Вы)" : name),
                 Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(220, 221, 222),
-                // Есть превью — имя уезжает вверх, под ним приписка. Нет — имя
-                // стоит по центру, как раньше.
-                Location = new Point(54, string.IsNullOrWhiteSpace(lastMsg) ? 18 : 10),
+                Location = new Point(54, 10),
                 Size = new Size(pnl.Width - 60, 22),
                 AutoSize = true
             };
 
             pnl.Controls.Add(avatar);
             pnl.Controls.Add(lblName);
-            if (!string.IsNullOrWhiteSpace(lastMsg))
+            // Под именем — последнее сообщение, а пока переписки нет, роль. Так же
+            // устроен телефон. Раньше здесь не было ни того, ни другого: карточка
+            // показывала только имя, и понять по списку, где что-то новое, было
+            // нельзя. Роль в запасе нужна, чтобы строка не оставалась пустой —
+            // иначе карточка выглядит недогруженной.
+            string sub = string.IsNullOrWhiteSpace(lastMsg) ? (role ?? "") : lastMsg;
+            if (!string.IsNullOrWhiteSpace(sub))
                 pnl.Controls.Add(MakePreviewControl(
-                    lastMsg, new Point(56, 32), new Size(pnl.Width - 90, 18)));
+                    sub, new Point(56, 32), new Size(pnl.Width - 90, 18)));
 
             void SetHover(bool on) =>
                 pnl.BackColor = on || _currentChatPartnerId == uid
