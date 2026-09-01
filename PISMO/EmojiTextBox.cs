@@ -181,6 +181,10 @@ namespace PISMO
                 x += ww;
             }
 
+            // Замыкающий пустой кусок: без него курсор в пустом поле и сразу
+            // после перевода строки некуда поставить — он прилипал к концу
+            // предыдущей строки.
+            _runs.Add(new Run("", false, x, y, 0, lineH, _value.Length, 0));
             _contentHeight = y + lineH + 2;
         }
 
@@ -192,7 +196,6 @@ namespace PISMO
         private Point CaretPoint()
         {
             var font = Font;
-            int lineH = Math.Max(font.Height, 1);
             foreach (var r in _runs)
             {
                 if (_caret < r.Index || _caret > r.Index + r.Len) continue;
@@ -202,16 +205,12 @@ namespace PISMO
                     new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding).Width;
                 return new Point(r.X + w, r.Y);
             }
-            // Пустое поле или курсор в самом конце после перевода строки.
-            if (_runs.Count == 0) return new Point(2, 2);
-            var last = _runs[^1];
-            return new Point(last.X + last.W, last.Y);
+            return new Point(2, 2);   // сюда попадаем только при пустой раскладке
         }
 
         private int IndexFromPoint(Point p)
         {
             var font = Font;
-            int lineH = Math.Max(font.Height, 1);
             int y = p.Y + _scrollY;
 
             Run? best = null;
@@ -243,7 +242,7 @@ namespace PISMO
             int lineH = Math.Max(Font.Height, 1);
             if (pt.Y - _scrollY < 0) _scrollY = pt.Y;
             else if (pt.Y + lineH - _scrollY > Height) _scrollY = pt.Y + lineH - Height;
-            if (_scrollY < 0) _scrollY = 0;
+            _scrollY = ClampScroll(_scrollY);
         }
 
         // ── отрисовка ─────────────────────────────────────────────────────
@@ -328,6 +327,16 @@ namespace PISMO
 
         protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); _dragging = false; }
 
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            if (_contentHeight <= Height) return;
+            _scrollY = ClampScroll(_scrollY - e.Delta / 120 * Math.Max(Font.Height, 1));
+            Invalidate();
+        }
+
+        private int ClampScroll(int v) => Math.Max(0, Math.Min(v, Math.Max(0, _contentHeight - Height)));
+
         protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); _caretOn = true; Invalidate(); }
         protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
 
@@ -352,17 +361,12 @@ namespace PISMO
             switch (e.KeyCode)
             {
                 case Keys.Enter:
-                {
-                    // Отправку решает тот же обработчик, что и раньше: поднимаем
-                    // PreviewKeyDown сами, потому что для «своего» ввода система
-                    // его не поднимает.
-                    var pk = new PreviewKeyDownEventArgs(e.KeyData);
-                    OnPreviewKeyDown(pk);
-                    if (!shift) { e.Handled = true; return; }   // ушло на отправку
-                    Insert("\n");
+                    // Отправку делает txtMessage_PreviewKeyDown: WinForms поднимает
+                    // PreviewKeyDown на каждое нажатие ДО того, как оно дойдёт сюда,
+                    // и там же поле очищается. Нам остаётся только перенос строки.
+                    if (shift) Insert("\n");
                     e.Handled = true;
                     return;
-                }
                 case Keys.Back:
                     if (SelectionLength > 0) DeleteSelection();
                     else if (_caret > 0)
