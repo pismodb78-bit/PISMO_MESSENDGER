@@ -258,6 +258,12 @@ namespace PISMO
                             foreach (Control c in row.Controls)
                                 if (c is Panel) { try { c.Invalidate(); } catch { } }
                     try { _footerAvatar?.Invalidate(); } catch { }
+                    // И САМА ЛЕНТА. Аватар автора сообщения рисуется в пузыре, и
+                    // пока он грузится, на его месте буква. Перерисовать ленту было
+                    // некому: этот обработчик знал только про голосовые плитки и
+                    // список участников. Отсюда «после пересылки аватары буквами» —
+                    // у автора, которого в этом канале ещё не видели.
+                    try { _pnlMessages?.Invalidate(true); } catch { }
                     // Список участников справа: перерисовываем кнопку этого uid.
                     foreach (var (mUid, mBtn) in _memberButtons)
                         if (mUid == uid) { try { if (!mBtn.IsDisposed) mBtn.Invalidate(); } catch { } }

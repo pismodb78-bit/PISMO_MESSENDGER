@@ -1197,6 +1197,10 @@ namespace PISMO
                     foreach (Control c in p.Controls)
                         if (c is Panel av) { try { av.Invalidate(); } catch { } }
             }
+            // И лента сообщений: аватар автора рисуется в пузыре, и пока он
+            // грузится, там буква. Перерисовывать ленту было некому — этот метод
+            // знал только про карточки списка.
+            try { pnlMessages?.Invalidate(true); } catch { }
             // Свой кружок-аватар в футере.
             if (uid == UserSession.EffectiveId)
                 try { pnlMyAvatar?.Invalidate(); } catch { }
