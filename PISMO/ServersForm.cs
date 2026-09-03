@@ -3416,7 +3416,7 @@ namespace PISMO
                     byte[] bigData = null; string bigCol = null;
                     foreach (var (col, data) in new[] { ("image_data", image), ("audio_data", audio),
                                                         ("video_data", video), ("file_data", file) })
-                        if (data != null && data.LongLength > ChunkThreshold) { bigCol = col; bigData = data; break; }
+                        if (data != null && data.LongLength > ChunkThresholdFor(conn)) { bigCol = col; bigData = data; break; }
 
                     AddBlobParam(cmd, "@img", bigCol == "image_data" ? null : image);
                     AddBlobParam(cmd, "@aud", bigCol == "audio_data" ? null : audio);
@@ -3542,10 +3542,11 @@ namespace PISMO
         /// <summary>Кладёт вложение в ожидание и показывает полоску-превью над вводом.
         /// Второе вложение заменяет первое (как в мессенджере — одно за раз).</summary>
         /// <summary>Начиная с какого размера вложение заливается кусками.</summary>
-        private const long ChunkThreshold = 4L * 1024 * 1024;
+        /// <summary>Порог и размер порции берём у сервера — см. DBHelper.ChunkSize.</summary>
+        private static long ChunkThresholdFor(MySqlConnection conn) => DBHelper.ChunkSize(conn);
 
         /// <summary>
-        /// Дозаписывает блоб порциями по 4 МБ: 200-мегабайтный файл одним пакетом
+        /// Дозаписывает блоб порциями: 200-мегабайтный файл одним пакетом
         /// сервер не примет (max_allowed_packet обычно кратно меньше). Возвращает
         /// false, если отменили или что-то упало — вызывающий удалит строку.
         /// </summary>
@@ -3555,7 +3556,7 @@ namespace PISMO
         {
             try
             {
-                const int CHUNK = 4 * 1024 * 1024;
+                int CHUNK = DBHelper.ChunkSize(conn);
                 long off = 0, total = data.LongLength;
                 while (off < total)
                 {

@@ -4958,8 +4958,15 @@ namespace PISMO
                     }
                     catch { }
 
-                    // 2) Пытаемся записать файл ОДНИМ запросом (быстро, O(n)).
-                    try
+                    // 2) Записываем файл. Сколько сервер принимает за раз —
+                    // спрашиваем его самого. Раньше здесь сначала шла попытка
+                    // залить файл ЦЕЛИКОМ: он уходил по сети полностью, сервер
+                    // отвергал его по max_allowed_packet, и только потом
+                    // начиналась настоящая дозапись. Большой файл шёл дважды, а
+                    // кружок всё это время просто крутился вхолостую.
+                    int CHUNK = DBHelper.ChunkSize(conn);
+
+                    if (total <= CHUNK)
                     {
                         using var upd = new MySqlCommand($"UPDATE {table} SET file_data=@fd WHERE id=@id", conn);
                         upd.Parameters.Add("@fd", MySqlDbType.LongBlob).Value = fileData;
@@ -4970,27 +4977,21 @@ namespace PISMO
                         activeCmd = null;
                         try { dlg.BeginInvoke(() => { prog = 1.0; pic.Invalidate(); }); } catch { }
                     }
-                    catch
+                    else
                     {
-                        activeCmd = null;
-                        if (cancelled) { try { conn.Close(); } catch { } using var cc = DBHelper.OpenConnection(); DeleteMsgRow(cc, table, newId); return; }
-                        // Пакет великоват для max_allowed_packet — откат на порционную дозапись.
-                        // Соединение могло «упасть» после fatal — берём свежее.
-                        try { conn.Close(); } catch { }
-                        using var conn2 = DBHelper.OpenConnection();
-                        activeConn = conn2;
-                        const int CHUNK = 4 * 1024 * 1024; // 4 МБ (безопасно для дефолтного пакета)
+                        // Не влезает — сразу порциями, без выброшенной попытки.
+                        // Кружок теперь показывает настоящую долю с первой порции.
                         long off = 0;
-                        using (var clr = new MySqlCommand($"UPDATE {table} SET file_data=NULL WHERE id=@id", conn2))
+                        using (var clr = new MySqlCommand($"UPDATE {table} SET file_data=NULL WHERE id=@id", conn))
                         { clr.Parameters.AddWithValue("@id", newId); clr.ExecuteNonQuery(); }
                         while (off < total)
                         {
-                            if (cancelled) { DeleteMsgRow(conn2, table, newId); return; }
+                            if (cancelled) { DeleteMsgRow(conn, table, newId); return; }
                             int len = (int)Math.Min(CHUNK, total - off);
                             var chunk = new byte[len];
                             Array.Copy(fileData, off, chunk, 0, len);
                             using (var up2 = new MySqlCommand(
-                                $"UPDATE {table} SET file_data = CONCAT(IFNULL(file_data, _binary''), @c) WHERE id=@id", conn2))
+                                $"UPDATE {table} SET file_data = CONCAT(IFNULL(file_data, _binary''), @c) WHERE id=@id", conn))
                             {
                                 up2.Parameters.Add("@c", MySqlDbType.LongBlob).Value = chunk;
                                 up2.Parameters.AddWithValue("@id", newId);
