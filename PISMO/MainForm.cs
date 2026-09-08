@@ -30,7 +30,10 @@ namespace PISMO
         private int _currentChatPartnerId = -1;
         private string _currentChatPartnerName = "";
         private byte[] _pendingImageBytes = null;
-        private PendingAttachment _pendingAttach = null;
+        /// <summary>Прикреплённые вложения. Их может быть несколько: в строке
+        /// базы место ровно под одно, поэтому каждое уходит своим сообщением,
+        /// а подпись достаётся первому.</summary>
+        private readonly List<PendingAttachment> _pendingAttach = new();
 
         // true, когда открыт встроенный вид сервера (ЛС-панель скрыта). Тогда
         // входящие ЛС не помечаем прочитанными и уведомляем обо всех — чат не виден.
@@ -4554,25 +4557,32 @@ namespace PISMO
                 if (TrySendForward()) return;
             }
 
-            // Прикреплённый файл/изображение/GIF
-            if (_pendingAttach != null)
+            // Прикреплённые файлы/изображения/GIF — каждое своим сообщением.
+            if (_pendingAttach.Count > 0)
             {
-                if (_pendingAttach.Kind == AttachKind.Image || _pendingAttach.Kind == AttachKind.Gif)
-                {
-                    if (isGroup) SendGroupMessage(text, _pendingAttach.Data, null, null, null, null);
-                    else SendMessage(text, _pendingAttach.Data, null, null, null, null);
-                }
-                else
-                {
-                    if (isGroup) SendGroupMessage(text, null, null, null, _pendingAttach.Data, _pendingAttach.FileName);
-                    else SendMessage(text, null, null, null, _pendingAttach.Data, _pendingAttach.FileName);
-                }
-
-                _pendingAttach = null;
+                // Список забираем себе и сразу чистим панель: отправка файла
+                // открывает модальное окно с прогрессом, и оставлять под ним
+                // живое превью, которое уже отправляется, незачем.
+                var batch = _pendingAttach.ToList();
+                _pendingAttach.Clear();
                 _pendingImageBytes = null;
                 pnlPreview.Visible = false;
                 pnlPreview.Controls.Clear();
                 txtMessage.Clear();
+
+                for (int i = 0; i < batch.Count; i++)
+                {
+                    var att = batch[i];
+                    string caption = i == 0 ? text : "";   // подпись только первому
+                    bool asImage = att.Kind == AttachKind.Image || att.Kind == AttachKind.Gif;
+                    byte[] img = asImage ? att.Data : null;
+                    byte[] file = asImage ? null : att.Data;
+                    string name = asImage ? null : att.FileName;
+
+                    if (isGroup) SendGroupMessage(caption, img, null, null, file, name);
+                    else SendMessage(caption, img, null, null, file, name);
+                }
+
                 ApplyReplyToLastMessage(isGroup);
                 return;
             }
@@ -5089,11 +5099,12 @@ namespace PISMO
                     "Документы|*.docx;*.doc;*.xlsx;*.xls;*.pptx;*.ppt;*.pdf;*.txt;*.rtf|" +
                     "Архивы|*.zip;*.rar;*.7z;*.tar;*.gz|" +
                     "Все файлы|*.*",
-                FilterIndex = 1
+                FilterIndex = 1,
+                Multiselect = true
             };
 
             if (dlg.ShowDialog() != DialogResult.OK) return;
-            AttachFileByPath(dlg.FileName);
+            foreach (var f in dlg.FileNames) AttachFileByPath(f);
         }
 
         /// <summary>Прикрепить файл по пути (диалог/перетаскивание) — читает, проверяет
@@ -5134,8 +5145,8 @@ namespace PISMO
             if (isImg && bytes.Length > 2 * 1024 * 1024)
                 bytes = CompressImageIfNeeded(bytes);
 
-            _pendingAttach = new PendingAttachment(bytes, Path.GetFileName(path), kind);
-            ShowPreview(_pendingAttach);
+            _pendingAttach.Add(new PendingAttachment(bytes, Path.GetFileName(path), kind));
+            ShowPreview();
         }
 
         /// <summary>Включает перетаскивание файлов из проводника на контрол → прикрепить.</summary>
@@ -5158,7 +5169,8 @@ namespace PISMO
                 {
                     if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
                     {
-                        AttachFileByPath(files[0]);   // прикрепляем первый файл в превью
+                        // Всю пачку, а не только первый: бросают обычно несколько.
+                        foreach (var f in files) AttachFileByPath(f);
                         return;
                     }
                     if (e.Data?.GetData(DataFormats.Bitmap) is Image img)
@@ -5166,8 +5178,8 @@ namespace PISMO
                         using var ms = new MemoryStream();
                         img.Save(ms, ImageFormat.Png);
                         _pendingImageBytes = ms.ToArray();
-                        _pendingAttach = new PendingAttachment(_pendingImageBytes, "image.png", AttachKind.Image);
-                        ShowPreview(_pendingAttach);
+                        _pendingAttach.Add(new PendingAttachment(_pendingImageBytes, "image.png", AttachKind.Image));
+                        ShowPreview();
                     }
                 }
                 catch { }
@@ -5175,8 +5187,23 @@ namespace PISMO
         }
 
         /// <summary>Показывает превью прикреплённого файла/изображения/GIF над полем ввода.</summary>
-        private void ShowPreview(PendingAttachment att)
+        /// <summary>
+        /// Превью прикреплённого над строкой ввода.
+        ///
+        /// Вложений может быть несколько — тогда показываем значок первого и
+        /// строку «N файлов», иначе панель пришлось бы растить на весь экран.
+        /// Крестик снимает всю пачку разом.
+        /// </summary>
+        private void ShowPreview()
         {
+            if (_pendingAttach.Count == 0)
+            {
+                pnlPreview.Visible = false;
+                pnlPreview.Controls.Clear();
+                return;
+            }
+
+            var att = _pendingAttach[0];
             pnlPreview.Controls.Clear();
 
             Control icon;
@@ -5202,11 +5229,16 @@ namespace PISMO
             }
             pnlPreview.Controls.Add(icon);
 
-            long kb = att.Data.Length / 1024;
+            long totalBytes = 0;
+            foreach (var a in _pendingAttach) totalBytes += a.Data.LongLength;
+            long kb = totalBytes / 1024;
             string sz = kb > 1024 ? $"{kb / 1024.0:F1} МБ" : $"{kb} КБ";
+            string caption = _pendingAttach.Count == 1
+                ? $"{att.FileName}  ({sz})"
+                : $"{_pendingAttach.Count} файл(ов)  ({sz})";
             var lbl = new Label
             {
-                Text = $"{att.FileName}  ({sz})",
+                Text = caption,
                 Font = new Font("Segoe UI", 9f),
                 ForeColor = Color.FromArgb(185, 187, 190),
                 Location = new Point(70, 20),
@@ -5229,7 +5261,7 @@ namespace PISMO
             btnCancel.Location = new Point(pnlPreview.Width - 36, 18);
             btnCancel.Click += (s, ev) =>
             {
-                _pendingAttach = null;
+                _pendingAttach.Clear();
                 _pendingImageBytes = null;
                 pnlPreview.Visible = false;
                 pnlPreview.Controls.Clear();
@@ -5705,8 +5737,8 @@ namespace PISMO
                     using var ms = new MemoryStream();
                     img.Save(ms, ImageFormat.Png);
                     _pendingImageBytes = ms.ToArray();
-                    _pendingAttach = new PendingAttachment(_pendingImageBytes, "image.png", AttachKind.Image);
-                    ShowPreview(_pendingAttach);
+                    _pendingAttach.Add(new PendingAttachment(_pendingImageBytes, "image.png", AttachKind.Image));
+                    ShowPreview();
                     e.Handled = true;
                 }
                 return;
@@ -5735,8 +5767,8 @@ namespace PISMO
                         if (isImg && bytes.Length > 2 * 1024 * 1024)
                             bytes = CompressImageIfNeeded(bytes);
 
-                        _pendingAttach = new PendingAttachment(bytes, Path.GetFileName(path), kind);
-                        ShowPreview(_pendingAttach);
+                        _pendingAttach.Add(new PendingAttachment(bytes, Path.GetFileName(path), kind));
+                        ShowPreview();
                         e.Handled = true;
                     }
                     catch (Exception ex) { MessageBox.Show("Ошибка: " + ex.Message); }

@@ -57,9 +57,10 @@ namespace PISMO
 
         // Отложенное вложение канала (файл/картинка ждёт нажатия «Отправить»,
         // а не улетает сразу при перетаскивании/выборе) — как в мессенджере.
-        private byte[] _chPendingImg;
-        private byte[] _chPendingFile;
-        private string _chPendingFileName;
+        /// <summary>Ожидающие вложения канала. Их может быть несколько: в строке
+        /// базы место ровно под одно, поэтому каждое уходит своим сообщением,
+        /// а подпись достаётся первому.</summary>
+        private readonly List<(byte[] Data, string Name, bool IsImg)> _chPending = new();
         private Panel _chPreview;      // полоска-превью над полем ввода
         private Label _chPreviewLbl;
         private System.Windows.Forms.Timer _refresh;
@@ -3039,16 +3040,22 @@ namespace PISMO
 
             // Ожидающее вложение (перетащенный/выбранный файл) — уходит именно сейчас,
             // по «Отправить»; текст, если есть, идёт подписью к нему.
-            if (_chPendingImg != null || _chPendingFile != null)
+            if (_chPending.Count > 0)
             {
-                var img = _chPendingImg; var file = _chPendingFile; var fn = _chPendingFileName;
+                var batch = _chPending.ToList();
                 ClearChannelPending();
                 _txtInput.Clear();
                 // Текст идёт ПОДПИСЬЮ к вложению — одним сообщением (раньше уходило
                 // двумя: медиа + отдельный текст, из-за чего тег в подписи попадал
-                // во второе сообщение).
-                if (img != null) SendChannelMedia(img, null, null, null, null, text);
-                else SendChannelMedia(null, null, null, file, fn, text);
+                // во второе сообщение). При пачке подпись достаётся первому, иначе
+                // она повторилась бы под каждым файлом.
+                for (int i = 0; i < batch.Count; i++)
+                {
+                    var (data, nm, isImg) = batch[i];
+                    string caption = i == 0 ? text : "";
+                    if (isImg) SendChannelMedia(data, null, null, null, null, caption);
+                    else SendChannelMedia(null, null, null, data, nm, caption);
+                }
                 return;
             }
 
@@ -3582,15 +3589,20 @@ namespace PISMO
         private void StageChannelAttachment(byte[] bytes, string fileName, bool isImg)
         {
             if (bytes == null || bytes.Length == 0) return;
-            _chPendingImg = isImg ? bytes : null;
-            _chPendingFile = isImg ? null : bytes;
-            _chPendingFileName = isImg ? null : fileName;
+            _chPending.Add((bytes, fileName, isImg));
 
             if (_chPreview != null && _chPreviewLbl != null)
             {
-                string sizeTxt = bytes.Length >= 1024 * 1024
-                    ? $"{bytes.Length / 1024.0 / 1024.0:0.0} МБ"
-                    : $"{Math.Max(1, bytes.Length / 1024)} КБ";
+                // Показываем значок первого вложения и общий размер: панель под
+                // строкой ввода узкая, а списком из десятка файлов она заняла бы
+                // пол-экрана. Крестик снимает всю пачку разом.
+                var first = _chPending[0];
+                bytes = first.Data; fileName = first.Name; isImg = first.IsImg;
+                long totalBytes = 0;
+                foreach (var a in _chPending) totalBytes += a.Data.LongLength;
+                string sizeTxt = totalBytes >= 1024 * 1024
+                    ? $"{totalBytes / 1024.0 / 1024.0:0.0} МБ"
+                    : $"{Math.Max(1, totalBytes / 1024)} КБ";
 
                 // Убираем старую иконку/миниатюру (кроме постоянных label и крестика).
                 for (int i = _chPreview.Controls.Count - 1; i >= 0; i--)
@@ -3622,6 +3634,7 @@ namespace PISMO
                 _chPreview.Controls.Add(icon);
                 icon.SendToBack();
 
+                if (_chPending.Count > 1) nm = $"{_chPending.Count} файл(ов)";
                 _chPreviewLbl.Text = $"{nm}  ({sizeTxt}) — нажмите «Отправить»";
                 _chPreview.Height = 68;
                 _chPreview.Visible = true;
@@ -3633,9 +3646,7 @@ namespace PISMO
         /// <summary>Сбрасывает ожидающее вложение и прячет полоску-превью.</summary>
         private void ClearChannelPending()
         {
-            _chPendingImg = null;
-            _chPendingFile = null;
-            _chPendingFileName = null;
+            _chPending.Clear();
             if (_chPreview != null)
             {
                 _chPreview.Visible = false;
@@ -3703,7 +3714,8 @@ namespace PISMO
                     // Только первое вложение за раз, как в мессенджере.
                     if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
                     {
-                        AttachChannelFileByPath(files[0]);
+                        // Всю пачку, а не только первый: бросают обычно несколько.
+                        foreach (var f in files) AttachChannelFileByPath(f);
                         return;
                     }
                     if (e.Data?.GetData(DataFormats.Bitmap) is Image img)
@@ -3723,23 +3735,31 @@ namespace PISMO
             using var ofd = new OpenFileDialog
             {
                 Title = imageOnly ? "Выберите изображение" : "Выберите файл",
-                Filter = imageOnly ? "Изображения|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp" : "Все файлы|*.*"
+                Filter = imageOnly ? "Изображения|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp" : "Все файлы|*.*",
+                Multiselect = true,
             };
             if (ofd.ShowDialog(this) != DialogResult.OK) return;
-            try
+            // Слишком большие пропускаем поимённо, а не бросаем всю пачку.
+            var skipped = new List<string>();
+            foreach (var path in ofd.FileNames)
             {
-                var bytes = File.ReadAllBytes(ofd.FileName);
-                if (bytes.LongLength > 200L * 1024 * 1024)
+                try
                 {
-                    MessageBox.Show("Файл слишком большой (>200 МБ).", "PISMO");
-                    return;
+                    var bytes = File.ReadAllBytes(path);
+                    if (bytes.LongLength > 200L * 1024 * 1024)
+                    {
+                        skipped.Add(Path.GetFileName(path));
+                        continue;
+                    }
+                    string ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+                    bool isImg = ext is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp";
+                    // Как в мессенджере: показываем превью, отправка — по «Отправить».
+                    StageChannelAttachment(bytes, Path.GetFileName(path), imageOnly || isImg);
                 }
-                string ext = Path.GetExtension(ofd.FileName).TrimStart('.').ToLowerInvariant();
-                bool isImg = ext is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp";
-                // Как в мессенджере: показываем превью, отправка — по «Отправить».
-                StageChannelAttachment(bytes, Path.GetFileName(ofd.FileName), imageOnly || isImg);
+                catch (Exception ex) { MessageBox.Show("Не удалось прикрепить файл: " + ex.Message, "PISMO"); }
             }
-            catch (Exception ex) { MessageBox.Show("Не удалось прикрепить файл: " + ex.Message, "PISMO"); }
+            if (skipped.Count > 0)
+                MessageBox.Show("Не приложено (>200 МБ): " + string.Join(", ", skipped), "PISMO");
         }
 
         private void RecordChannelCircle()
