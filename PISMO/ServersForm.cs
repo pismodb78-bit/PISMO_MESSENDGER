@@ -3589,6 +3589,15 @@ namespace PISMO
         private void StageChannelAttachment(byte[] bytes, string fileName, bool isImg)
         {
             if (bytes == null || bytes.Length == 0) return;
+            // Предел общий на всё прикреплённое: пачка лежит в памяти до отправки.
+            long used = 0;
+            foreach (var a in _chPending) used += a.Data.LongLength;
+            if (used + bytes.LongLength > 200L * 1024 * 1024)
+            {
+                MessageBox.Show($"Не помещается: всего можно приложить 200 МБ за раз.\n" +
+                                $"Уже приложено {used / 1024 / 1024} МБ.", "PISMO");
+                return;
+            }
             _chPending.Add((bytes, fileName, isImg));
 
             if (_chPreview != null && _chPreviewLbl != null)

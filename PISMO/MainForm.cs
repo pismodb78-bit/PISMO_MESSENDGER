@@ -5128,9 +5128,17 @@ namespace PISMO
             }
 
             const long MAX = 200L * 1024 * 1024; // 200 МБ
-            if (bytes.Length > MAX)
+            // Предел общий на всё прикреплённое, а не на каждый файл: пачка
+            // целиком лежит в памяти до отправки, и без этого десяток крупных
+            // файлов подряд просто съел бы её.
+            long used = 0;
+            foreach (var a in _pendingAttach) used += a.Data.LongLength;
+            if (used + bytes.LongLength > MAX)
             {
-                MessageBox.Show($"Файл слишком большой ({bytes.Length / 1024 / 1024} МБ).\nМаксимум — 200 МБ.");
+                MessageBox.Show(_pendingAttach.Count == 0
+                    ? $"Файл слишком большой ({bytes.Length / 1024 / 1024} МБ).\nМаксимум — 200 МБ."
+                    : $"Не помещается: всего можно приложить 200 МБ за раз.\n" +
+                      $"Уже приложено {used / 1024 / 1024} МБ.");
                 return;
             }
 
