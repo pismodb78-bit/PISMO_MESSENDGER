@@ -387,10 +387,23 @@ namespace PISMO
 
                 if (sid < 0) return;
 
+                // Участников берём только ЖИВЫХ.
+                //
+                // Строку в call_participants удаляет штатный выход из звонка, а
+                // статус сессии закрывает уход последнего участника. Если
+                // приложение закрыли крестиком, оно упало или пропала сеть —
+                // не происходит ни того, ни другого, и запись остаётся в базе
+                // навсегда. Отсюда и плашка «звонок идёт» без всякого звонка.
+                //
+                // Живость определяем по тому же last_seen, по которому
+                // считается «в сети»: в звонке приложение работает и метку
+                // обновляет, так что мёртвая запись отсеется за минуту.
                 var names = new List<string>();
                 using (var pc = new MySqlCommand(
                     "SELECT TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login FROM call_participants cp " +
-                    "JOIN users u ON u.id = cp.user_id WHERE cp.call_id=@cid AND cp.left_at IS NULL ORDER BY cp.joined_at ASC", conn))
+                    "JOIN users u ON u.id = cp.user_id WHERE cp.call_id=@cid AND cp.left_at IS NULL " +
+                    "AND u.last_seen IS NOT NULL AND TIMESTAMPDIFF(SECOND, u.last_seen, NOW()) <= 60 " +
+                    "ORDER BY cp.joined_at ASC", conn))
                 {
                     pc.Parameters.AddWithValue("@cid", sid);
                     using var r = pc.ExecuteReader();
@@ -402,13 +415,42 @@ namespace PISMO
                     }
                 }
 
+                if (names.Count == 0)
+                {
+                    // Никого живого — звонка нет. Прибираем за собой, иначе
+                    // плашка висела бы у всех, кто откроет эту переписку.
+                    CloseDeadCall(conn, sid);
+                    return;
+                }
+
                 callId = sid;
-                if (names.Count > 0)
-                    text = $"📞 Звонок идёт ({names.Count}): {string.Join(", ", names)} — нажмите, чтобы присоединиться";
-                else
-                    text = "📞 Звонок идёт — нажмите, чтобы присоединиться";
+                text = $"📞 Звонок идёт ({names.Count}): {string.Join(", ", names)} — нажмите, чтобы присоединиться";
             }
             catch { text = null; callId = -1; }
+        }
+
+        /// <summary>
+        /// Закрывает сессию, из которой все давно ушли, не сказав об этом базе.
+        /// Тот же самый набор действий, что делает штатный выход последнего
+        /// участника, — просто выполненный за него.
+        /// </summary>
+        private static void CloseDeadCall(MySqlConnection conn, int callId)
+        {
+            try
+            {
+                using (var d = new MySqlCommand(
+                    "DELETE FROM call_participants WHERE call_id=@cid", conn))
+                {
+                    d.Parameters.AddWithValue("@cid", callId);
+                    d.ExecuteNonQuery();
+                }
+                using var u = new MySqlCommand(
+                    "UPDATE call_sessions SET status='ended', ended_at=NOW() " +
+                    "WHERE id=@cid AND status IN ('ringing','active')", conn);
+                u.Parameters.AddWithValue("@cid", callId);
+                u.ExecuteNonQuery();
+            }
+            catch { }
         }
 
         private void ApplyCallBanner(string text, int callId)
