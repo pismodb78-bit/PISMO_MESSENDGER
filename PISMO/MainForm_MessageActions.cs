@@ -584,7 +584,14 @@ namespace PISMO
                 {
                     string shown = url.Length > 44 ? url[..44] + "…" : url;
                     var sub = new ToolStripMenuItem("🔗 " + shown);
-                    sub.DropDownItems.Add("Открыть", null, (s, e) => MainForm.OpenLink(url));
+                    // «Смотреть здесь» — только для того, что умеем проиграть.
+                    // Обещать и открыть пустое окно хуже, чем не обещать.
+                    if (VideoLinks.Of(url).Kind != VideoLinks.Kind.None)
+                    {
+                        sub.DropDownItems.Add("▶ Смотреть здесь", null,
+                            (s, e) => LinkVideoForm.TryPlay(this, url));
+                    }
+                    sub.DropDownItems.Add("Открыть в браузере", null, (s, e) => MainForm.OpenLink(url));
                     sub.DropDownItems.Add("Копировать ссылку", null, (s, e) =>
                     {
                         try { Clipboard.SetText(url); } catch { }

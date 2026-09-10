@@ -115,9 +115,11 @@ namespace PISMO
             };
             card.Controls.Add(badge);
 
+            bool playable = VideoLinks.Of(url).Kind != VideoLinks.Kind.None;
             var site = new Label
             {
-                Text = string.IsNullOrWhiteSpace(ready.Site) ? src.Title : ready.Site,
+                Text = (string.IsNullOrWhiteSpace(ready.Site) ? src.Title : ready.Site)
+                       + (playable ? "  ▶" : ""),
                 ForeColor = Color.FromArgb(0, 176, 244),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
                 AutoSize = true,
@@ -197,7 +199,12 @@ namespace PISMO
 
             card.Height = y + 4;
 
-            void Open(object s, EventArgs e) => MainForm.OpenLink(url);
+            // Видео открываем прямо здесь, остальное — в браузере. Уходить из
+            // переписки ради ролика не нужно.
+            void Open(object s, EventArgs e)
+            {
+                if (!LinkVideoForm.TryPlay(card.FindForm(), url)) MainForm.OpenLink(url);
+            }
             card.Click += Open;
             foreach (Control c in card.Controls) c.Click += Open;
             return card;
@@ -228,7 +235,7 @@ namespace PISMO
 
             var title = new Label
             {
-                Text = src.Title,
+                Text = src.Title + (VideoLinks.Of(url).Kind != VideoLinks.Kind.None ? "  ▶" : ""),
                 ForeColor = Color.FromArgb(160, 165, 175),
                 Font = new Font("Segoe UI", 8f),
                 AutoSize = true,
@@ -236,7 +243,10 @@ namespace PISMO
                 Cursor = Cursors.Hand,
             };
 
-            void Open(object s, EventArgs e) => MainForm.OpenLink(url);
+            void Open(object s, EventArgs e)
+            {
+                if (!LinkVideoForm.TryPlay(row.FindForm(), url)) MainForm.OpenLink(url);
+            }
             row.Click += Open; badge.Click += Open; title.Click += Open;
 
             row.Controls.Add(badge);
