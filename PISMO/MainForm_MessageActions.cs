@@ -582,8 +582,14 @@ namespace PISMO
             {
                 foreach (var url in MainForm.FindMessageLinks(text))
                 {
-                    string shown = url.Length > 48 ? url[..48] + "…" : url;
-                    menu.Items.Add("🔗 " + shown, null, (s, e) => MainForm.OpenLink(url));
+                    string shown = url.Length > 44 ? url[..44] + "…" : url;
+                    var sub = new ToolStripMenuItem("🔗 " + shown);
+                    sub.DropDownItems.Add("Открыть", null, (s, e) => MainForm.OpenLink(url));
+                    sub.DropDownItems.Add("Копировать ссылку", null, (s, e) =>
+                    {
+                        try { Clipboard.SetText(url); } catch { }
+                    });
+                    menu.Items.Add(sub);
                 }
                 if (menu.Items.Count > 0) menu.Items.Add(new ToolStripSeparator());
             }
@@ -660,11 +666,14 @@ namespace PISMO
             // ── Копировать текст (выделенное либо всё) ───────────────────
             if (!string.IsNullOrEmpty(text))
             {
-                // Находим выделяемый TextBox с текстом сообщения внутри пузыря.
-                TextBox FindTextBox()
+                // Поле с текстом сообщения внутри пузыря. Именно TextBoxBase:
+                // сообщения со ссылками показываются в RichTextBox, и по
+                // проверке «is TextBox» выделение в них не находилось —
+                // копировался весь текст вместо выделенного куска.
+                TextBoxBase FindTextBox()
                 {
                     foreach (Control c in bubble.Controls)
-                        if (c is TextBox tb) return tb;
+                        if (c is TextBoxBase tb) return tb;
                     return null;
                 }
 
