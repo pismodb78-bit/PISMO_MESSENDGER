@@ -4281,8 +4281,11 @@ namespace PISMO
                 }
                 else
                 {
-                    var txtMsg = MakeSelectableText(text, bubble.BackColor,
-                        fore, new Font("Segoe UI", 10.5f), innerW);
+                    // Со ссылкой — RichTextBox: он красит адрес и открывает
+                    // его по нажатию. Без ссылки остаётся обычное поле.
+                    Control txtMsg = HasLink(text)
+                        ? MakeLinkedText(text, bubble.BackColor, fore, new Font("Segoe UI", 10.5f), innerW)
+                        : MakeSelectableText(text, bubble.BackColor, fore, new Font("Segoe UI", 10.5f), innerW);
                     txtMsg.Location = new Point(PAD, innerY);
                     bubble.Controls.Add(txtMsg);
                     innerY += txtMsg.Height + 4;
@@ -4449,6 +4452,61 @@ namespace PISMO
 
         /// <summary>Текст сообщения, который можно выделять и копировать (read-only
         /// TextBox без рамки, выглядит как подпись). Высота считается по содержимому.</summary>
+        /// <summary>Есть ли в тексте ссылка. Дешёвая проверка перед регулярным.</summary>
+        internal static bool HasLink(string text) =>
+            !string.IsNullOrEmpty(text) &&
+            (text.Contains("http", StringComparison.OrdinalIgnoreCase) ||
+             text.Contains("www.", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// Текст сообщения со ссылками — RichTextBox с его собственным
+        /// распознаванием адресов: он сам красит их и сам сообщает о нажатии.
+        ///
+        /// Обычный TextBox покрасить кусок текста не умеет вовсе, поэтому
+        /// раньше адрес был просто буквами: чтобы открыть, приходилось
+        /// выделять и копировать вручную. Для сообщений БЕЗ ссылок остаётся
+        /// прежний TextBox — он легче.
+        /// </summary>
+        internal static RichTextBox MakeLinkedText(string text, Color back, Color fore, Font font, int maxW)
+        {
+            var rtb = new RichTextBox
+            {
+                Text = text,
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None,
+                BackColor = back,
+                ForeColor = fore,
+                Font = font,
+                TabStop = false,
+                DetectUrls = true,
+                ScrollBars = RichTextBoxScrollBars.None,
+                WordWrap = true,
+            };
+            rtb.LinkClicked += (s, e) => OpenLink(e.LinkText);
+
+            int w = Math.Min(TextRenderer.MeasureText(text, font).Width + 10, maxW);
+            int h = TextRenderer.MeasureText(text, font, new Size(w, 0),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl).Height + 6;
+            rtb.Size = new Size(w, h);
+            return rtb;
+        }
+
+        /// <summary>Открывает адрес в браузере. Только http/https: запускать
+        /// что попало из чужого сообщения нельзя.</summary>
+        internal static void OpenLink(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return;
+            if (url.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) url = "https://" + url;
+            if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return;
+            try
+            {
+                System.Diagnostics.Process.Start(
+                    new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch { }
+        }
+
         internal static TextBox MakeSelectableText(string text, Color back, Color fore, Font font, int maxW)
         {
             var tb = new TextBox

@@ -2316,8 +2316,13 @@ namespace PISMO
                         }
                         else
                         {
-                            var body = MainForm.MakeSelectableText(text, bubbleBg,
-                                fore, new Font("Segoe UI", 10.5f), msgWidth - 10);
+                            // Со ссылкой — поле, которое её красит и открывает
+                            // по нажатию; без ссылки остаётся обычное.
+                            Control body = MainForm.HasLink(text)
+                                ? MainForm.MakeLinkedText(text, bubbleBg, fore,
+                                    new Font("Segoe UI", 10.5f), msgWidth - 10)
+                                : MainForm.MakeSelectableText(text, bubbleBg, fore,
+                                    new Font("Segoe UI", 10.5f), msgWidth - 10);
                             body.Location = new Point(LEFT, y);
                             holder.Controls.Add(body);
                             y += body.Height + 6;
