@@ -84,7 +84,13 @@ namespace PISMO
         /// со значком, а полная карточка появляется при следующей отрисовке
         /// переписки — она и так происходит при каждом обновлении.
         /// </summary>
-        internal static Panel MakeCard(string url, int width)
+        /// <param name="bubbleBack">
+        /// Цвет пузыря, в котором карточка живёт. Нужен затем, что своего
+        /// цвета у неё быть не должно: раньше стоял постоянный тёмно-серый, и
+        /// в СВОЁМ, синем пузыре карточка выглядела чужой заплаткой. Телефон
+        /// делает то же самое — кладёт полупрозрачную черноту поверх пузыря.
+        /// </param>
+        internal static Panel MakeCard(string url, int width, Color bubbleBack)
         {
             var ready = LinkPreviews.Cached(url);
             if (ready == null)
@@ -97,7 +103,7 @@ namespace PISMO
             var card = new Panel
             {
                 Width = Math.Max(120, width),
-                BackColor = Color.FromArgb(38, 40, 45),
+                BackColor = Darken(bubbleBack, 0.13f),
                 Cursor = Cursors.Hand,
             };
             int y = 6;
@@ -202,6 +208,10 @@ namespace PISMO
             Hook(card, url);
             return card;
         }
+
+        /// <summary>Цвет чуть темнее исходного — ровно как чернота поверх пузыря.</summary>
+        private static Color Darken(Color c, float k) => Color.FromArgb(
+            (int)(c.R * (1 - k)), (int)(c.G * (1 - k)), (int)(c.B * (1 - k)));
 
         /// <summary>
         /// Нажатия на карточку ссылки: левой кнопкой — открыть, правой — меню.
