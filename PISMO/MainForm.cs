@@ -3079,6 +3079,7 @@ namespace PISMO
                 // сообщений в этом чате оставалась заблокированной навсегда.
                 _dmLoadingOlder = false;
                 ApplyPendingJump();   // см. пояснение в RenderMessages (переход к дате)
+                ApplyPendingMessageJump();
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
@@ -3182,6 +3183,7 @@ namespace PISMO
                 }
                 else pnlMessages.PerformLayout();   // ждём переход к дате — вниз не скидываем
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
+                ApplyPendingMessageJump();
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
                 _drawingPage = false;
@@ -3419,6 +3421,7 @@ namespace PISMO
                 // навсегда оставался в ожидании. Отсюда и «срабатывает со второго
                 // раза»: повторный клик шёл коротким путём (лимит уже поднят).
                 ApplyPendingJump();
+                ApplyPendingMessageJump();
                 return;
             }
             _renderedChatKey = key; _renderedChatSig = sig;
@@ -3567,6 +3570,7 @@ namespace PISMO
                 }
                 else pnlMessages.PerformLayout();   // ждём переход к дате — вниз не скидываем
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
+                ApplyPendingMessageJump();
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
                 _drawingPage = false;

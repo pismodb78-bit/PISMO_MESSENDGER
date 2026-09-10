@@ -750,26 +750,91 @@ namespace PISMO
         /// Без вспышки прыжок было не заметить: лента просто оказывалась в
         /// другом месте, и какое сообщение искомое — приходилось угадывать.
         /// </summary>
+        /// <summary>Сообщение, к которому надо прыгнуть, когда лента дорисуется.</summary>
+        private int _pendingJumpMsgId = 0;
+
         private void JumpToMessage(int msgId)
         {
             try
             {
-                var found = pnlMessages.Controls.Find("msg" + msgId, false);
-                if (found.Length == 0 || found[0].IsDisposed) return;
-                var target = found[0];
-                pnlMessages.ScrollControlIntoView(target);
+                if (ScrollAndFlash(msgId)) return;
 
-                var original = target.BackColor;
-                target.BackColor = Color.FromArgb(0, 120, 160);
-                var t = new System.Windows.Forms.Timer { Interval = 900 };
-                t.Tick += (s, e) =>
+                // Сообщения нет на загруженной странице — раньше нажатие на
+                // цитату в этом случае просто ничего не делало. Расширяем
+                // ленту ровно настолько, чтобы оно в неё вошло, и прыгаем
+                // после отрисовки. Тот же приём, что и у перехода по дате.
+                int need = CountSinceMsgId(msgId);
+                if (need <= 0) return;
+
+                _pendingJumpMsgId = msgId;
+                if (need + 5 > _dmLimit)
                 {
-                    t.Stop(); t.Dispose();
-                    try { if (!target.IsDisposed) target.BackColor = original; } catch { }
-                };
-                t.Start();
+                    _dmLimit = need + 5;
+                    _renderedChatKey = null; _renderedChatSig = null;
+                    if (_currentGroupId >= 0) LoadGroupMessages(); else LoadMessages(markRead: false);
+                }
+                else ApplyPendingMessageJump();
             }
             catch { }
+        }
+
+        /// <summary>Сколько сообщений в переписке начиная с этого — считая его.</summary>
+        private int CountSinceMsgId(int msgId)
+        {
+            try
+            {
+                bool grp = _currentGroupId >= 0;
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = grp
+                    ? new MySqlCommand(
+                        "SELECT COUNT(*) FROM group_messages WHERE group_id=@g AND id >= @id", conn)
+                    // Без OR — иначе запрос не ложится в индекс, как и в GetMsgCount.
+                    : new MySqlCommand(
+                        "SELECT (SELECT COUNT(*) FROM messages " +
+                        "        WHERE sender_id=@me AND receiver_id=@them AND id >= @id) " +
+                        "     + (SELECT COUNT(*) FROM messages " +
+                        "        WHERE sender_id=@them AND receiver_id=@me AND id >= @id)", conn);
+                if (grp) cmd.Parameters.AddWithValue("@g", _currentGroupId);
+                else
+                {
+                    cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
+                    cmd.Parameters.AddWithValue("@them", _currentChatPartnerId);
+                }
+                cmd.Parameters.AddWithValue("@id", msgId);
+                return Convert.ToInt32(cmd.ExecuteScalar());
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>Выполняет отложенный прыжок, когда лента уже отрисована.</summary>
+        private void ApplyPendingMessageJump()
+        {
+            if (_pendingJumpMsgId <= 0) return;
+            int id = _pendingJumpMsgId;
+            _pendingJumpMsgId = 0;
+            ScrollAndFlash(id);
+        }
+
+        /// <summary>
+        /// Прокручивает к пузырю и мигает им. false — пузыря на странице нет.
+        /// </summary>
+        private bool ScrollAndFlash(int msgId)
+        {
+            var found = pnlMessages.Controls.Find("msg" + msgId, false);
+            if (found.Length == 0 || found[0].IsDisposed) return false;
+            var target = found[0];
+            pnlMessages.ScrollControlIntoView(target);
+
+            var original = target.BackColor;
+            target.BackColor = Color.FromArgb(0, 120, 160);
+            var t = new System.Windows.Forms.Timer { Interval = 900 };
+            t.Tick += (s, e) =>
+            {
+                t.Stop(); t.Dispose();
+                try { if (!target.IsDisposed) target.BackColor = original; } catch { }
+            };
+            t.Start();
+            return true;
         }
 
         /// <summary>Чем было сообщение, если текста в нём нет.</summary>
