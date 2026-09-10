@@ -236,6 +236,7 @@ namespace PISMO
             BuildMessageSearch();       // 🔍 поиск по открытому чату (2.0)
             BuildBackgroundStyling();   // мягкий градиент-подложка списка/чата (2.1.7)
             BuildReadAllButton();       // ✓✓ «прочитать все ЛС» в шапке сайдбара
+            BuildTransfersButton();     // ⇅ кружок идущих передач файлов
             HookLinkPreviews();         // карточка ссылки — сразу, как только собралась
             this.Load += MainForm_Load;
         }
@@ -3218,7 +3219,7 @@ namespace PISMO
                     try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
                     _dmRestoreFromBottom = -1;
                 }
-                else if (_pendingJumpDate == null)
+                else if (_pendingJumpDate == null && _pendingJumpMsgId <= 0)
                 {
                     // ВАЖНО: сперва пересчитать layout, иначе диапазон прокрутки
                     // остаётся от ПРЕДЫДУЩЕГО (длинного) чата и MaxValue уводит в
@@ -3251,13 +3252,12 @@ namespace PISMO
 
             if (fileData != null && fileData.LongLength > 0)
             {
-                bool ok = SendFileWithProgress(isGroup: true, target: _currentGroupId, myId: myId, text: text,
+                // Уходит в фон: строка сообщения создаётся сразу, там же уходит
+                // и уведомление получателю, а за самой передачей можно следить
+                // из кружка в шапке списка чатов.
+                SendFileInBackground(isGroup: true, target: _currentGroupId, myId: myId, text: text,
                     imageData: imageData, audioData: audioData, videoData: videoData,
                     fileData: fileData, fileName: fileName);
-                if (ok)
-                    WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _currentGroupId, "group");
-                else
-                    return;
             }
             else
             try
@@ -3605,7 +3605,7 @@ namespace PISMO
                     try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
                     _dmRestoreFromBottom = -1;
                 }
-                else if (_pendingJumpDate == null)
+                else if (_pendingJumpDate == null && _pendingJumpMsgId <= 0)
                 {
                     // Прокручиваем в конец ПОСЛЕ пересчёта layout: иначе диапазон
                     // прокрутки остаётся от предыдущего (длинного) чата и MaxValue
@@ -4938,13 +4938,10 @@ namespace PISMO
             // Файл крупного размера отправляем чанками с круговым прогрессом.
             if (fileData != null && fileData.LongLength > 0)
             {
-                bool ok = SendFileWithProgress(isGroup: false, target: themId, myId: myId, text: text,
+                // Уходит в фон — см. пояснение в SendGroupMessage.
+                SendFileInBackground(isGroup: false, target: themId, myId: myId, text: text,
                     imageData: imageData, audioData: audioData, videoData: videoData,
                     fileData: fileData, fileName: fileName);
-                if (ok)
-                    WebSocketSignalingClient.Instance.SendMessage("new_message", 0, themId, "direct");
-                else
-                    return;
             }
             else
             try
@@ -4985,90 +4982,51 @@ namespace PISMO
         }
 
         /// <summary>
-        /// Загружает файловое сообщение на сервер чанками с круговым индикатором
-        /// прогресса. Сначала вставляет строку с метаданными (file_data=NULL),
-        /// затем дописывает file_data порциями (виден заполняющийся кружок).
-        /// Возвращает true при успехе. При любой ошибке/больших файлах вызывающий
-        /// код может откатиться на обычную единоразовую вставку.
+        /// Отправляет файловое сообщение В ФОНЕ: сначала строка с метаданными
+        /// (file_data=NULL), затем file_data порциями.
+        ///
+        /// РАНЬШЕ ЗДЕСЬ БЫЛО МОДАЛЬНОЕ ОКНО с крутящимся кружком, и всё время
+        /// отправки приложением нельзя было пользоваться: ни перейти в другой
+        /// чат, ни прочитать пришедшее. Файл на сотню мегабайт превращал
+        /// мессенджер в окно ожидания. Теперь передача живёт своей жизнью, а
+        /// следить за ней и отменять можно из кружка передач в шапке списка
+        /// чатов — как на телефоне.
+        ///
+        /// Ничего не возвращает намеренно: ответа «получилось» на момент
+        /// вызова ещё нет и быть не может. Строка сообщения создаётся сразу, и
+        /// получателю сразу же уходит уведомление, так что вызывающему коду
+        /// остаётся обычная работа после отправки — очистить поле и обновить
+        /// список. Отмена удаляет строку, и пузырь исчезает сам.
         /// </summary>
-        private bool SendFileWithProgress(bool isGroup, int target, int myId, string text,
+        private void SendFileInBackground(bool isGroup, int target, int myId, string text,
             byte[] imageData, byte[] audioData, byte[] videoData, byte[] fileData, string fileName)
         {
             long total = fileData.LongLength;
             string table = isGroup ? "group_messages" : "messages";
 
-            var dlg = new Form
-            {
-                Text = "Отправка файла",
-                FormBorderStyle = FormBorderStyle.FixedToolWindow,
-                StartPosition = FormStartPosition.CenterParent,
-                ShowInTaskbar = false,
-                ClientSize = new Size(300, 188),
-                BackColor = Color.FromArgb(40, 42, 46),
-                ControlBox = false
-            };
-            double prog = 0;     // -1 при завершении не используем; крутим спиннер
-            double angle = 0;    // угол вращающегося индикатора (без фейкового %)
             bool cancelled = false;
-            MySqlCommand activeCmd = null;     // текущая команда (для отмены)
-            MySqlConnection activeConn = null; // текущее соединение (жёсткий обрыв записи при отмене)
-            var pic = new Panel { Size = new Size(72, 72), Location = new Point(114, 14), BackColor = Color.Transparent };
-            pic.Paint += (s, e) =>
-            {
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                var rect = new Rectangle(6, 6, 58, 58);
-                using var track = new Pen(Color.FromArgb(90, 255, 255, 255), 6);
-                using var arc = new Pen(Color.FromArgb(88, 101, 242), 6);
-                e.Graphics.DrawEllipse(track, rect);
-                if (prog >= 1.0)
-                    e.Graphics.DrawArc(arc, rect, -90, 360); // готово — полный круг
-                else
-                    e.Graphics.DrawArc(arc, rect, (float)angle, 110); // крутящийся сегмент
-            };
-            var lbl = new Label
-            {
-                Text = $"Отправка {fileName}\n({FormatFileSize(total)})",
-                ForeColor = Color.FromArgb(220, 221, 222),
-                TextAlign = ContentAlignment.MiddleCenter,
-                Location = new Point(10, 92), Size = new Size(280, 46),
-                Font = new Font("Segoe UI", 9f)
-            };
-            var btnCancel = new Button
-            {
-                Text = "Отмена",
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(64, 68, 75),
-                ForeColor = Color.White,
-                Size = new Size(120, 30),
-                Location = new Point(90, 146),
-                Cursor = Cursors.Hand
-            };
-            btnCancel.FlatAppearance.BorderSize = 0;
-            btnCancel.Click += (s, e) =>
-            {
-                cancelled = true;
-                btnCancel.Enabled = false;
-                btnCancel.Text = "Отмена…";
-                // Cancel() не прерывает уже идущую потоковую запись blob — поэтому
-                // вдобавок ЖЁСТКО рвём соединение: запись обрывается сразу, а строку
-                // удалит обработчик catch (cancelled=true) на свежем соединении.
-                try { activeCmd?.Cancel(); } catch { }
-                try { var c = activeConn; c?.Close(); } catch { }
-            };
-            dlg.Controls.Add(pic);
-            dlg.Controls.Add(lbl);
-            dlg.Controls.Add(btnCancel);
+            MySqlCommand activeCmd = null;      // текущая команда (для отмены)
+            MySqlConnection activeConn = null;  // текущее соединение (жёсткий обрыв записи)
 
-            var animTimer = new System.Windows.Forms.Timer { Interval = 60 };
-            animTimer.Tick += (s, e) => { if (prog < 1.0) { angle = (angle + 24) % 360; pic.Invalidate(); } };
-            dlg.Shown += (s, e) => animTimer.Start();
-            dlg.FormClosed += (s, e) => { try { animTimer.Stop(); animTimer.Dispose(); } catch { } };
+            var item = Transfers.Begin(
+                string.IsNullOrWhiteSpace(fileName) ? "файл" : fileName,
+                upload: true, total: total,
+                cancel: () =>
+                {
+                    cancelled = true;
+                    // Cancel() не прерывает уже идущую потоковую запись blob —
+                    // поэтому вдобавок ЖЁСТКО рвём соединение: запись
+                    // обрывается сразу, а строку удалит обработчик catch.
+                    try { activeCmd?.Cancel(); } catch { }
+                    try { var c = activeConn; c?.Close(); } catch { }
+                });
 
-            bool success = false;
             string err = null;
 
+            bool sent = false;
             System.Threading.Tasks.Task.Run(() =>
             {
+                long rowId = 0;
                 try
                 {
                     // Для плохо сжатых форматов включаем сжатие протокола (меньше байт
@@ -5101,6 +5059,7 @@ namespace PISMO
                         ins.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
                         ins.ExecuteNonQuery();
                         newId = ins.LastInsertedId;
+                        rowId = newId;
                     }
 
                     if (cancelled) { DeleteMsgRow(conn, table, newId); return; }
@@ -5134,7 +5093,7 @@ namespace PISMO
                         activeCmd = upd;
                         upd.ExecuteNonQuery();
                         activeCmd = null;
-                        try { dlg.BeginInvoke(() => { prog = 1.0; pic.Invalidate(); }); } catch { }
+                        Transfers.Progress(item, total);
                     }
                     else
                     {
@@ -5160,8 +5119,7 @@ namespace PISMO
                                 activeCmd = null;
                             }
                             off += len;
-                            double p = (double)off / total;
-                            try { dlg.BeginInvoke(() => { prog = p; pic.Invalidate(); }); } catch { }
+                            Transfers.Progress(item, off);
                         }
                     }
 
@@ -5178,18 +5136,75 @@ namespace PISMO
                     }
                     catch { }
 
-                    success = true;
+                    sent = true;
+
+                    // Второе уведомление — уже с файлом. Первое ушло сразу
+                    // после создания строки, когда данных в ней ещё не было:
+                    // по нему у получателя появляется сообщение, по этому —
+                    // обновляется карточка файла.
+                    try
+                    {
+                        if (isGroup) WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "group");
+                        else WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "direct");
+                    }
+                    catch { }
                 }
                 catch (Exception ex) { if (!cancelled) err = ex.Message; }
-                finally { try { dlg.BeginInvoke(() => { dlg.Close(); }); } catch { } }
-            });
+                finally
+                {
+                    Transfers.Finish(item);
 
-            dlg.ShowDialog(this);
-            if (cancelled) return false;            // отменено пользователем — тихо
-            if (!success && err != null)
-                MessageBox.Show("Ошибка отправки файла: " + err, "PISMO",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return success;
+                    // Отменённую отправку убираем СО СВЕЖЕГО соединения. То, на
+                    // котором шла запись, отмена рвёт насильно — иначе её не
+                    // прервать, — и удалять строку с него уже нечем. Без этого
+                    // в переписке оставался пустой пузырь без файла.
+                    if (cancelled && rowId > 0)
+                    {
+                        try
+                        {
+                            using var c2 = DBHelper.OpenConnection();
+                            DeleteMsgRow(c2, table, rowId);
+                        }
+                        catch { }
+                        // Получателю уже ушло уведомление о сообщении, которого
+                        // теперь нет: пусть перечитает и уберёт его у себя.
+                        try
+                        {
+                            if (isGroup) WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "group");
+                            else WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "direct");
+                        }
+                        catch { }
+                    }
+                    // Из finally нельзя выходить по return — поэтому проверка
+                    // условием, а не ранним выходом.
+                    if (!IsDisposed && IsHandleCreated)
+                    {
+                        try
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                // Отменённое уходит тихо: строка удалена, пузыря нет.
+                                if (!cancelled && !sent && err != null)
+                                    MessageBox.Show("Ошибка отправки файла: " + err, "PISMO",
+                                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+                                // Обновляем переписку, если она всё ещё открыта:
+                                // за время передачи человек мог уйти в другой
+                                // чат, и дёргать чужой список незачем.
+                                bool sameChat = isGroup
+                                    ? _currentGroupId == target
+                                    : (_currentGroupId < 0 && _currentChatPartnerId == target);
+                                if (sameChat)
+                                {
+                                    ForceMessageRerender();
+                                    if (isGroup) LoadGroupMessages(); else LoadMessages(markRead: false);
+                                }
+                            }));
+                        }
+                        catch { }
+                    }
+                }
+            });
         }
 
         /// <summary>Удаляет строку сообщения (после отмены отправки файла).</summary>
@@ -5642,6 +5657,18 @@ namespace PISMO
                 lblSz.Text = "Загрузка… (клик — отмена)";
                 try { iconPnl.Invalidate(); } catch { }
 
+                // В общий список передач — чтобы загрузку было видно и можно
+                // было отменить из кружка, а не только из этого пузыря.
+                // Проценты не обещаем: файл читается одним запросом.
+                var tr = Transfers.Begin(fileName, upload: false,
+                    total: knownSize > 0 ? knownSize : 0,
+                    cancel: () =>
+                    {
+                        dlCancelled = true;
+                        try { activeDlCmd?.Cancel(); } catch { }
+                    },
+                    indeterminate: true);
+
                 var dlAnim = new System.Windows.Forms.Timer { Interval = 60 };
                 dlAnim.Tick += (ts, te) =>
                 {
@@ -5660,6 +5687,7 @@ namespace PISMO
                     {
                         byte[] got = null;
                         try { got = ldr(); } catch { }
+                        Transfers.Finish(tr);
                         try
                         {
                             card.BeginInvoke(new Action(() =>
@@ -5715,6 +5743,7 @@ namespace PISMO
                         }
                     }
                     catch (Exception ex) { activeDlCmd = null; if (!dlCancelled) err = ex.Message; }
+                    Transfers.Finish(tr);
 
                     try
                     {
@@ -6180,6 +6209,23 @@ namespace PISMO
                 ShowTrayHintDelayed();
                 return;
             }
+
+            // Настоящий выход при идущих передачах. Раньше спрашивать было не о
+            // чем: отправка держала модальное окно, и закрыть приложение мимо
+            // неё не получалось. Теперь она идёт в фоне — и оборвётся вместе с
+            // процессом молча, если не предупредить.
+            int running = Transfers.Count;
+            if (running > 0 && e.CloseReason == CloseReason.UserClosing)
+            {
+                if (MessageBox.Show(
+                        $"Идут передачи файлов ({running}). Выйти и прервать их?",
+                        "PISMO", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
+                    != DialogResult.Yes)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+            }
             base.OnFormClosing(e);
         }
 
@@ -6187,6 +6233,7 @@ namespace PISMO
         {
             _pollTimer?.Stop();
             _presenceTimer?.Stop();
+            try { _transfersTimer?.Stop(); } catch { }
             MarkSelfOffline();
             try { _trayIcon.Visible = false; _trayIcon.Dispose(); } catch { }
             _waveIn?.Dispose();

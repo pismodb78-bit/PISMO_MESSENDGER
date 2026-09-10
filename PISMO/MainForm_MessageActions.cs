@@ -783,27 +783,48 @@ namespace PISMO
         /// <summary>Сообщение, к которому надо прыгнуть, когда лента дорисуется.</summary>
         private int _pendingJumpMsgId = 0;
 
+        private System.Windows.Forms.Timer _msgJumpWatchdog;
+
+        /// <summary>
+        /// Снимает ожидание прыжка, даже если нужное сообщение так и не
+        /// появилось (обрыв связи, пустой ответ). Без сторожа флаг висел бы
+        /// вечно, а с ним лента навсегда перестала бы скидываться вниз к новым
+        /// сообщениям. Ровно тот же приём, что и у перехода к дате.
+        /// </summary>
+        private void ArmMsgJumpWatchdog()
+        {
+            try
+            {
+                _msgJumpWatchdog?.Stop();
+                _msgJumpWatchdog?.Dispose();
+                var t = new System.Windows.Forms.Timer { Interval = 6000 };
+                _msgJumpWatchdog = t;
+                t.Tick += (s, e) => { t.Stop(); _pendingJumpMsgId = 0; };
+                t.Start();
+            }
+            catch { }
+        }
+
         private void JumpToMessage(int msgId)
         {
             try
             {
                 if (ScrollAndFlash(msgId)) return;
 
-                // Сообщения нет на загруженной странице — раньше нажатие на
-                // цитату в этом случае просто ничего не делало. Расширяем
-                // ленту ровно настолько, чтобы оно в неё вошло, и прыгаем
-                // после отрисовки. Тот же приём, что и у перехода по дате.
+                // Сообщения нет на загруженной странице. Расширяем ленту ровно
+                // настолько, чтобы оно в неё вошло, и прыгаем после отрисовки.
                 int need = CountSinceMsgId(msgId);
                 if (need <= 0) return;
 
                 _pendingJumpMsgId = msgId;
-                if (need + 5 > _dmLimit)
-                {
-                    _dmLimit = need + 5;
-                    _renderedChatKey = null; _renderedChatSig = null;
-                    if (_currentGroupId >= 0) LoadGroupMessages(); else LoadMessages(markRead: false);
-                }
-                else ApplyPendingMessageJump();
+                ArmMsgJumpWatchdog();
+                if (need + 5 > _dmLimit) _dmLimit = need + 5;
+
+                // Перерисовываем ВСЕГДА, даже если лента формально достаточно
+                // длинная: раз пузыря на ней нет, страница собрана по устаревшим
+                // данным, и без свежей выборки прыгать всё равно некуда.
+                _renderedChatKey = null; _renderedChatSig = null;
+                if (_currentGroupId >= 0) LoadGroupMessages(); else LoadMessages(markRead: false);
             }
             catch { }
         }
@@ -836,13 +857,20 @@ namespace PISMO
             catch { return 0; }
         }
 
-        /// <summary>Выполняет отложенный прыжок, когда лента уже отрисована.</summary>
+        /// <summary>
+        /// Выполняет отложенный прыжок, когда лента уже отрисована.
+        ///
+        /// ОЖИДАНИЕ ЗДЕСЬ НЕ ГАСИТСЯ, и это главное. Переписка рисуется ДВАЖДЫ:
+        /// сперва мгновенно из кеша, следом — по свежим данным из базы. Раньше
+        /// прыжок «съедала» первая отрисовка, а вторая, ничего уже не зная о
+        /// нём, скидывала ленту вниз — и нажатие на цитату кидало в конец чата
+        /// вместо нужного сообщения. Теперь прыжок повторяется на каждой
+        /// отрисовке, пока его не снимет сторож.
+        /// </summary>
         private void ApplyPendingMessageJump()
         {
             if (_pendingJumpMsgId <= 0) return;
-            int id = _pendingJumpMsgId;
-            _pendingJumpMsgId = 0;
-            ScrollAndFlash(id);
+            ScrollAndFlash(_pendingJumpMsgId);
         }
 
         /// <summary>
@@ -853,7 +881,23 @@ namespace PISMO
             var found = pnlMessages.Controls.Find("msg" + msgId, false);
             if (found.Length == 0 || found[0].IsDisposed) return false;
             var target = found[0];
-            pnlMessages.ScrollControlIntoView(target);
+
+            // ScrollControlIntoView считает сдвиг по ТЕКУЩЕЙ раскладке и
+            // промахивается, пока высоты пузырей ещё уточняются, — отсюда
+            // «срабатывает через раз». Позиционируемся явно, как переход к
+            // дате: абсолютная координата цели в содержимом = Top минус
+            // текущее смещение прокрутки (оно отрицательное).
+            void ScrollToTarget()
+            {
+                if (target.IsDisposed) return;
+                pnlMessages.PerformLayout();
+                int abs = target.Top - pnlMessages.AutoScrollPosition.Y;
+                pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, abs - 12));
+            }
+            ScrollToTarget();
+            // Повтор после полного цикла раскладки: если высоты сместились
+            // (догрузилась картинка или видео), первая попытка неточна.
+            try { BeginInvoke(new Action(ScrollToTarget)); } catch { }
 
             var original = target.BackColor;
             target.BackColor = Color.FromArgb(0, 120, 160);
