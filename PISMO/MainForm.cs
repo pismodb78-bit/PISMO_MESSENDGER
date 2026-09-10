@@ -256,13 +256,15 @@ namespace PISMO
         /// </summary>
         private void HookLinkPreviews()
         {
-            var debounce = new Timer { Interval = 600 };
+            // Полное имя намеренно: в проекте включены неявные using, и
+            // короткий Timer оказывается сразу двумя разными классами.
+            var debounce = new System.Windows.Forms.Timer { Interval = 600 };
             debounce.Tick += (s, e) =>
             {
                 debounce.Stop();
                 try { RerenderCurrentChat(); } catch { }
             };
-            LinkPreviews.Ready += url =>
+            Action<string> onReady = url =>
             {
                 // Событие приходит с фонового потока — трогать окно оттуда нельзя.
                 try
@@ -271,6 +273,14 @@ namespace PISMO
                     BeginInvoke(new Action(() => { debounce.Stop(); debounce.Start(); }));
                 }
                 catch { }
+            };
+            LinkPreviews.Ready += onReady;
+            // Событие живёт дольше окна: без отписки закрытая форма осталась бы
+            // висеть в списке подписчиков и держать себя в памяти.
+            FormClosed += (s, e) =>
+            {
+                try { LinkPreviews.Ready -= onReady; } catch { }
+                try { debounce.Dispose(); } catch { }
             };
         }
 

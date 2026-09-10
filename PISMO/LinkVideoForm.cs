@@ -26,6 +26,9 @@ namespace PISMO
     /// Окно ровно одно на всё приложение: нажатие на другую ссылку
     /// переключает уже открытое, а не разводит десяток окон с ютубом.
     ///
+    /// Полный экран — по кнопке внутри проигрывателя: окно тогда снимает
+    /// рамку и накрывает экран целиком, вместе с панелью задач.
+    ///
     /// Чего это не умеет: если служба недоступна или ролик запрещён к
     /// встраиванию, внутри рамки будет её собственное сообщение об этом —
     /// что там, нам не видно. На этот случай в шапке есть «Открыть на сайте»
@@ -165,8 +168,6 @@ namespace PISMO
                 core.ContainsFullScreenElementChanged += (s, e) =>
                     SetFullScreen(core.ContainsFullScreenElement);
 
-                core.AcceleratorKeyPressed += OnAcceleratorKey;
-
                 // Папка, которую окно выдаёт за сайт. Складывать её рядом с
                 // настройками, а не во временные файлы: временные чистят.
                 string folder = PlayerFolder();
@@ -273,6 +274,15 @@ namespace PISMO
 
         // ── Полный экран ─────────────────────────────────────────────────
 
+        /// <summary>
+        /// Разворачивает окно на весь экран и обратно — по просьбе самой
+        /// страницы.
+        ///
+        /// Своей кнопки здесь нет намеренно: полный экран включает кнопка
+        /// внутри проигрывателя, там же, где перемотка и громкость, — как в
+        /// любом видео. Выход тоже её дело (и Esc, который Chromium
+        /// обрабатывает сам), поэтому нам остаётся только подвинуть окно.
+        /// </summary>
         private void SetFullScreen(bool on)
         {
             if (IsDisposed || on == _isFull) return;
@@ -295,24 +305,6 @@ namespace PISMO
                 WindowState = _stateBeforeFull;
                 if (_stateBeforeFull == FormWindowState.Normal) Bounds = _boundsBeforeFull;
                 _bar.Visible = true;
-            }
-        }
-
-        private void OnAcceleratorKey(object sender, CoreWebView2AcceleratorKeyPressedEventArgs e)
-        {
-            if (e.KeyEventKind != CoreWebView2KeyEventKind.KeyDown) return;
-            var key = (Keys)e.VirtualKey;
-            if (key == Keys.Escape)
-            {
-                // В полном экране Esc — дело страницы: она из него и выходит.
-                if (_isFull) return;
-                e.Handled = true;
-                BeginInvoke(new Action(Close));
-            }
-            else if (key == Keys.F11)
-            {
-                e.Handled = true;
-                BeginInvoke(new Action(() => SetFullScreen(!_isFull)));
             }
         }
 
