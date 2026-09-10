@@ -105,6 +105,10 @@ namespace PISMO
                 Width = Math.Max(120, width),
                 BackColor = Darken(bubbleBack, 0.13f),
                 Cursor = Cursors.Hand,
+                // По метке карточку потом находят в пузыре, чтобы заменить её
+                // на месте, когда сайт ответит, — вместо перерисовки всей
+                // переписки.
+                Tag = TagOf(url),
             };
             int y = 6;
 
@@ -209,6 +213,9 @@ namespace PISMO
             return card;
         }
 
+        /// <summary>Метка карточки: по ней её находят в пузыре.</summary>
+        internal static string TagOf(string url) => "link:" + url;
+
         /// <summary>Цвет чуть темнее исходного — ровно как чернота поверх пузыря.</summary>
         private static Color Darken(Color c, float k) => Color.FromArgb(
             (int)(c.R * (1 - k)), (int)(c.G * (1 - k)), (int)(c.B * (1 - k)));
@@ -274,6 +281,7 @@ namespace PISMO
                 Size = new Size(Math.Max(60, width), 20),
                 BackColor = Color.Transparent,
                 Cursor = Cursors.Hand,
+                Tag = TagOf(url),
             };
 
             var badge = new Label

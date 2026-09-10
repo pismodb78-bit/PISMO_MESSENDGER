@@ -797,7 +797,11 @@ namespace PISMO
             {
                 _msgJumpWatchdog?.Stop();
                 _msgJumpWatchdog?.Dispose();
-                var t = new System.Windows.Forms.Timer { Interval = 6000 };
+                // Две с половиной секунды: столько идёт свежая выборка из базы.
+                // Дольше держать нельзя — всё это время каждая отрисовка заново
+                // пересчитывает раскладку и двигает ленту, а лента в этот
+                // момент ещё достраивается (картинки, видео).
+                var t = new System.Windows.Forms.Timer { Interval = 2500 };
                 _msgJumpWatchdog = t;
                 t.Tick += (s, e) => { t.Stop(); _pendingJumpMsgId = 0; };
                 t.Start();
@@ -818,7 +822,15 @@ namespace PISMO
 
                 _pendingJumpMsgId = msgId;
                 ArmMsgJumpWatchdog();
-                if (need + 5 > _dmLimit) _dmLimit = need + 5;
+
+                // ПОТОЛОК. Раньше лента растягивалась ровно до нужного
+                // сообщения, сколько бы их ни было: нажатие на цитату к
+                // сообщению месячной давности разворачивало тысячу пузырей
+                // разом — со всеми картинками и встроенными проигрывателями.
+                // Приложение уходило в себя, а раскладка не поспевала за
+                // догружающимися картинками, и пузыри налезали друг на друга.
+                int want = Math.Min(need + 5, MsgPageSize * 6);
+                if (want > _dmLimit) _dmLimit = want;
 
                 // Перерисовываем ВСЕГДА, даже если лента формально достаточно
                 // длинная: раз пузыря на ней нет, страница собрана по устаревшим
@@ -899,9 +911,12 @@ namespace PISMO
             // (догрузилась картинка или видео), первая попытка неточна.
             try { BeginInvoke(new Action(ScrollToTarget)); } catch { }
 
+            // Подсветка держится 2,5 с: девятисот миллисекунд не хватало —
+            // за это время лента ещё доезжала до сообщения, и вспышка успевала
+            // погаснуть раньше, чем на него посмотрят.
             var original = target.BackColor;
             target.BackColor = Color.FromArgb(0, 120, 160);
-            var t = new System.Windows.Forms.Timer { Interval = 900 };
+            var t = new System.Windows.Forms.Timer { Interval = 2500 };
             t.Tick += (s, e) =>
             {
                 t.Stop(); t.Dispose();

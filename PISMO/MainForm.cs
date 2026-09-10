@@ -245,44 +245,84 @@ namespace PISMO
         /// Показывать карточку ссылки сразу, как сайт ответил.
         ///
         /// Разметку страницы тянет фоновая задача, и до её ответа под
-        /// сообщением видно только строку со значком службы. Раньше полная
-        /// карточка появлялась при СЛЕДУЮЩЕЙ отрисовке переписки — то есть,
-        /// на деле, при следующем сообщении: у себя в чате человек мог так её
-        /// и не увидеть. На телефоне такого нет, там карточка дорисовывается
-        /// сама, — теперь и здесь.
+        /// сообщением видно только строку со значком службы. На телефоне
+        /// карточка дорисовывается сама; здесь так не выйдет — пузыри стоят на
+        /// заранее посчитанных местах, и выросшая карточка накрыла бы то, что
+        /// под ней.
         ///
-        /// Задержка не для красоты: в сообщении бывает несколько ссылок, и их
-        /// ответы приходят вразнобой. Без неё каждая перерисовывала бы чат
-        /// заново.
+        /// ПОЭТОМУ МЕНЯЕМ КАРТОЧКУ НА МЕСТЕ, а не перерисовываем переписку.
+        /// Сначала было именно «перерисовать всё», и это оказалось дорогой
+        /// ошибкой: перерисовка пересобирает каждый пузырь, включая встроенные
+        /// проигрыватели видео, и приходила она в любой момент — сколько
+        /// ссылок, столько и полных пересборок. Приложение начинало
+        /// подтормаживать, а лента прыгала под руками.
         /// </summary>
         private void HookLinkPreviews()
         {
-            // Полное имя намеренно: в проекте включены неявные using, и
-            // короткий Timer оказывается сразу двумя разными классами.
-            var debounce = new System.Windows.Forms.Timer { Interval = 600 };
-            debounce.Tick += (s, e) =>
-            {
-                debounce.Stop();
-                try { RerenderCurrentChat(); } catch { }
-            };
             Action<string> onReady = url =>
             {
                 // Событие приходит с фонового потока — трогать окно оттуда нельзя.
                 try
                 {
                     if (IsDisposed || !IsHandleCreated) return;
-                    BeginInvoke(new Action(() => { debounce.Stop(); debounce.Start(); }));
+                    BeginInvoke(new Action(() => ApplyLinkPreview(url)));
                 }
                 catch { }
             };
             LinkPreviews.Ready += onReady;
             // Событие живёт дольше окна: без отписки закрытая форма осталась бы
             // висеть в списке подписчиков и держать себя в памяти.
-            FormClosed += (s, e) =>
+            FormClosed += (s, e) => { try { LinkPreviews.Ready -= onReady; } catch { } };
+        }
+
+        /// <summary>
+        /// Ставит готовую карточку вместо строки-заглушки и сдвигает всё, что
+        /// оказалось ниже, на разницу высот: и внутри пузыря, и сами пузыри.
+        /// </summary>
+        private void ApplyLinkPreview(string url)
+        {
+            if (IsDisposed || _drawingPage) return;
+            if (LinkPreviews.Cached(url) == null) return;
+            string tag = LinkSources.TagOf(url);
+
+            try
             {
-                try { LinkPreviews.Ready -= onReady; } catch { }
-                try { debounce.Dispose(); } catch { }
-            };
+                // Список пузырей копируем: правка идёт по ходу перебора.
+                var bubbles = new List<Control>();
+                foreach (Control c in pnlMessages.Controls) bubbles.Add(c);
+
+                foreach (var b in bubbles)
+                {
+                    if (b is not Panel bubble || bubble.IsDisposed) continue;
+
+                    Control old = null;
+                    foreach (Control ch in bubble.Controls)
+                        if (ch.Tag as string == tag) { old = ch; break; }
+                    if (old == null) continue;
+
+                    var fresh = LinkSources.MakeCard(url, old.Width, bubble.BackColor);
+                    int delta = fresh.Height - old.Height;
+                    int y = old.Top;
+                    fresh.Location = old.Location;
+
+                    bubble.SuspendLayout();
+                    bubble.Controls.Remove(old);
+                    try { old.Dispose(); } catch { }
+                    if (delta != 0)
+                        foreach (Control ch in bubble.Controls)
+                            if (ch.Top > y) ch.Top += delta;
+                    bubble.Controls.Add(fresh);
+                    bubble.Height += delta;
+                    bubble.ResumeLayout();
+
+                    if (delta == 0) continue;
+                    int by = bubble.Top;
+                    foreach (var other in bubbles)
+                        if (!ReferenceEquals(other, bubble) && !other.IsDisposed && other.Top > by)
+                            other.Top += delta;
+                }
+            }
+            catch { }
         }
 
         /// <summary>Кнопка «✓✓» в шапке списка чатов: помечает ВСЕ входящие ЛС
@@ -3210,6 +3250,7 @@ namespace PISMO
                 _lastGroupMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
+                RestackBubbles();                  // высоты могли уточниться по ходу
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -3230,6 +3271,10 @@ namespace PISMO
                 else pnlMessages.PerformLayout();   // ждём переход к дате — вниз не скидываем
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 ApplyPendingMessageJump();
+                // Ещё раз, когда раскладка отстоится: часть содержимого
+                // (видео, картинки из кеша) доезжает уже после отрисовки.
+                try { BeginInvoke(new Action(RestackBubbles)); } catch { }
+                ArmRestackSettle();
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
                 _drawingPage = false;
@@ -3592,6 +3637,7 @@ namespace PISMO
                 _lastMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
+                RestackBubbles();                  // высоты могли уточниться по ходу
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -3616,6 +3662,10 @@ namespace PISMO
                 else pnlMessages.PerformLayout();   // ждём переход к дате — вниз не скидываем
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
                 ApplyPendingMessageJump();
+                // Ещё раз, когда раскладка отстоится: часть содержимого
+                // (видео, картинки из кеша) доезжает уже после отрисовки.
+                try { BeginInvoke(new Action(RestackBubbles)); } catch { }
+                ArmRestackSettle();
                 _dmLoadingOlder = false;
                 UpdateScrollDownButton();
                 _drawingPage = false;
@@ -3806,6 +3856,119 @@ namespace PISMO
         /// AutoScroll-панели все пузыри уехали вниз, поднимает их обратно так, чтобы
         /// первый начинался со штатного отступа. Чтение и запись Top идут в одной и той
         /// же системе координат, поэтому сдвиг корректен при любом состоянии прокрутки.</summary>
+        private System.Windows.Forms.Timer _restackSettle;
+
+        /// <summary>
+        /// Ещё один пересчёт мест — через полторы секунды после отрисовки.
+        /// Встроенный проигрыватель видео поднимается не мгновенно, и цветные
+        /// эмодзи догружаются; немедленного пересчёта до них не хватает.
+        /// </summary>
+        private void ArmRestackSettle()
+        {
+            try
+            {
+                _restackSettle?.Stop();
+                _restackSettle?.Dispose();
+                var t = new System.Windows.Forms.Timer { Interval = 1500 };
+                _restackSettle = t;
+                t.Tick += (s, e) =>
+                {
+                    t.Stop();
+                    if (ReferenceEquals(_restackSettle, t)) _restackSettle = null;
+                    t.Dispose();
+                    RestackBubbles();
+                };
+                t.Start();
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Содержимое пузыря изменило высоту уже после отрисовки — сдвигаем
+        /// всё, что было под ним, и подгоняем сам пузырь.
+        ///
+        /// Так бывает у картинки эмодзи (цветной шрифт догружается) и у
+        /// карточки ссылки. Без этого подпись со временем наезжала бы на
+        /// картинку, а следующий пузырь — на этот.
+        /// </summary>
+        private void GrowBubble(Panel bubble, Control changed, int oldHeight)
+        {
+            try
+            {
+                if (bubble == null || bubble.IsDisposed || changed == null) return;
+                int delta = changed.Height - oldHeight;
+                if (delta == 0) return;
+                int y = changed.Top;
+                bubble.SuspendLayout();
+                foreach (Control ch in bubble.Controls)
+                    if (!ReferenceEquals(ch, changed) && ch.Top > y) ch.Top += delta;
+                bubble.Height += delta;
+                bubble.ResumeLayout();
+                RestackBubbles();
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Заново расставляет пузыри по вертикали, исходя из их НАСТОЯЩИХ высот.
+        ///
+        /// Лента собирается вручную: каждому пузырю считается Top по сумме высот
+        /// предыдущих. Пока высота известна заранее, это работает. Но часть
+        /// содержимого доезжает потом — картинка из кеша, встроенный
+        /// проигрыватель видео, картинка эмодзи, — и пузырь становится выше или
+        /// ниже уже после того, как соседям посчитали места. Тогда они налезают
+        /// друг на друга или между ними зияет пустота.
+        ///
+        /// Поэтому после каждой отрисовки места пересчитываются по фактическим
+        /// высотам. Это не перерисовка: пузыри те же, меняется только Top, —
+        /// стоит копейки и чинит расхождение, откуда бы оно ни взялось.
+        /// </summary>
+        private void RestackBubbles()
+        {
+            try
+            {
+                if (pnlMessages == null || pnlMessages.IsDisposed) return;
+                var list = new List<Control>();
+                foreach (Control c in pnlMessages.Controls)
+                    if (!c.IsDisposed && c.Visible) list.Add(c);
+                if (list.Count < 2) return;
+
+                // Были ли мы внизу ленты. Если да — там и останемся: сдвиг
+                // пузырей меняет высоту содержимого, и без этого чтение
+                // «последнего» превратилось бы в «предпоследнее».
+                bool atBottom = false;
+                try
+                {
+                    int viewport = pnlMessages.ClientSize.Height;
+                    int content = pnlMessages.DisplayRectangle.Height;
+                    atBottom = content <= viewport ||
+                               -pnlMessages.AutoScrollPosition.Y >= content - viewport - 24;
+                }
+                catch { }
+
+                list.Sort((a, b) => a.Top.CompareTo(b.Top));
+                int y = list[0].Top;
+                bool moved = false;
+                foreach (var c in list)
+                {
+                    if (c.Top != y) { c.Top = y; moved = true; }
+                    // Пузырь помечен Tag = isMine; всё прочее (разделители дат,
+                    // плашка блокировки) идёт с меньшим отступом — так же, как
+                    // при первичной расстановке.
+                    y += c.Height + (c.Tag is bool ? 8 : 4);
+                }
+
+                // Прокрутку трогаем ТОЛЬКО если что-то сдвинулось и мы стояли
+                // внизу: иначе перечитывание старого сообщения дёргало бы ленту.
+                if (moved && atBottom && _pendingJumpMsgId <= 0 && _pendingJumpDate == null)
+                {
+                    pnlMessages.PerformLayout();
+                    pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                }
+            }
+            catch { }
+        }
+
         private static void NormalizeTopOffset(Panel p)
         {
             if (p == null || p.Controls.Count == 0) return;
@@ -4309,8 +4472,12 @@ namespace PISMO
                                 var fresh = EmojiRender.RenderMessage(text, msgFont, fore, bubble.BackColor, innerW);
                                 if (fresh == null) return;
                                 var prev = picMsg.Image;
+                                int before = picMsg.Height;
                                 picMsg.Image = fresh;
                                 try { prev?.Dispose(); } catch { }
+                                // Новая картинка может быть другой высоты —
+                                // подпись со временем иначе наедет на неё.
+                                GrowBubble(bubble, picMsg, before);
                             }));
                         }
                         catch { }
@@ -6255,6 +6422,7 @@ namespace PISMO
             _pollTimer?.Stop();
             _presenceTimer?.Stop();
             try { _transfersTimer?.Stop(); } catch { }
+            try { _restackSettle?.Stop(); } catch { }
             MarkSelfOffline();
             try { _trayIcon.Visible = false; _trayIcon.Dispose(); } catch { }
             _waveIn?.Dispose();
