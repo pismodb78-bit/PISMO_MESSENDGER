@@ -5024,9 +5024,25 @@ namespace PISMO
             string err = null;
 
             bool sent = false;
-            System.Threading.Tasks.Task.Run(() =>
+
+            // ОЧЕРЕДЬ, А НЕ ГУРЬБОЙ. Пока отправка держала модальное окно,
+            // файлы уходили строго по одному: цикл по вложениям стоял на
+            // каждом. Окна больше нет — и три выбранных файла ринулись бы в
+            // базу разом, тремя соединениями, каждое со своим blob. На телефоне
+            // это уже проходили: половина передач падала с потерей связи.
+            // Поэтому задачи выстраиваются в цепочку и идут одна за другой, в
+            // том порядке, в котором их выбрали.
+            lock (UploadChainLock)
+            {
+                _uploadChain = _uploadChain.ContinueWith(_ => UploadBody(),
+                    System.Threading.Tasks.TaskScheduler.Default);
+            }
+
+            void UploadBody()
             {
                 long rowId = 0;
+                // Отменили, пока стояло в очереди, — до базы дело не доходит.
+                if (cancelled) { Transfers.Finish(item); return; }
                 try
                 {
                     // Для плохо сжатых форматов включаем сжатие протокола (меньше байт
@@ -5204,8 +5220,13 @@ namespace PISMO
                         catch { }
                     }
                 }
-            });
+            }
         }
+
+        /// <summary>Очередь отправок: одна за другой, а не все разом.</summary>
+        private static readonly object UploadChainLock = new();
+        private static System.Threading.Tasks.Task _uploadChain =
+            System.Threading.Tasks.Task.CompletedTask;
 
         /// <summary>Удаляет строку сообщения (после отмены отправки файла).</summary>
         private static void DeleteMsgRow(MySqlConnection conn, string table, long id)
