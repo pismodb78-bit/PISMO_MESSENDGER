@@ -517,6 +517,11 @@ namespace PISMO
             // Запоминаем текст/отправителя — понадобится для пакетной пересылки.
             if (msgId > 0) _msgMeta[msgId] = (senderName ?? "", text ?? "", isGroup ? 1 : 0);
 
+            // Имя пузыря — чтобы прыжок по цитате находил его среди контролов.
+            // Отдельный словарь тут не нужен: контролы пересоздаются на каждой
+            // отрисовке страницы, а имена вместе с ними.
+            if (msgId > 0) bubble.Name = "msg" + msgId;
+
             ContextMenuStrip menu = null;
             ContextMenuStrip Menu() => menu ??= BuildBubbleMenu(
                 bubble, msgId, isGroup, isMine, text, senderName,
@@ -737,6 +742,34 @@ namespace PISMO
             _lblReplyInfo.Text = $"↩ Ответ для {senderName}: {_replyToText}";
             _pnlReplyBar.Visible = true;
             txtMessage.Focus();
+        }
+
+        /// <summary>
+        /// Прокручивает ленту к сообщению и мигает его пузырём.
+        ///
+        /// Без вспышки прыжок было не заметить: лента просто оказывалась в
+        /// другом месте, и какое сообщение искомое — приходилось угадывать.
+        /// </summary>
+        private void JumpToMessage(int msgId)
+        {
+            try
+            {
+                var found = pnlMessages.Controls.Find("msg" + msgId, false);
+                if (found.Length == 0 || found[0].IsDisposed) return;
+                var target = found[0];
+                pnlMessages.ScrollControlIntoView(target);
+
+                var original = target.BackColor;
+                target.BackColor = Color.FromArgb(0, 120, 160);
+                var t = new System.Windows.Forms.Timer { Interval = 900 };
+                t.Tick += (s, e) =>
+                {
+                    t.Stop(); t.Dispose();
+                    try { if (!target.IsDisposed) target.BackColor = original; } catch { }
+                };
+                t.Start();
+            }
+            catch { }
         }
 
         /// <summary>Чем было сообщение, если текста в нём нет.</summary>
@@ -1377,7 +1410,11 @@ namespace PISMO
                     using var conn = DBHelper.OpenConnection();
                     string table = isGroup ? "group_messages" : "messages";
                     string sql = $@"
-                        SELECT m.text, TRIM(CONCAT(u.Name,' ',u.Surname)) AS sname, u.login
+                        SELECT m.text, m.file_name,
+                               (m.image_data IS NOT NULL) AS has_img,
+                               (m.audio_data IS NOT NULL) AS has_audio,
+                               (m.video_data IS NOT NULL) AS has_video,
+                               TRIM(CONCAT(u.Name,' ',u.Surname)) AS sname, u.login
                         FROM {table} m
                         JOIN users u ON u.id = m.sender_id
                         WHERE m.id = @id";
@@ -1388,7 +1425,13 @@ namespace PISMO
 
                     if (dt.Rows.Count > 0)
                     {
-                        qText = Crypto.Dec(dt.Rows[0]["text"].ToString());
+                        qText = QuotePreview(
+                            Crypto.Dec(dt.Rows[0]["text"].ToString()),
+                            Convert.ToBoolean(dt.Rows[0]["has_img"]),
+                            Convert.ToBoolean(dt.Rows[0]["has_audio"]),
+                            Convert.ToBoolean(dt.Rows[0]["has_video"]),
+                            dt.Rows[0]["file_name"] == DBNull.Value
+                                ? null : dt.Rows[0]["file_name"].ToString());
                         qSender = dt.Rows[0]["sname"].ToString().Trim();
                         if (string.IsNullOrWhiteSpace(qSender))
                             qSender = dt.Rows[0]["login"].ToString();
@@ -1415,6 +1458,14 @@ namespace PISMO
                     Location = new Point(pad + 6, startY + 2),
                     Padding = new Padding(0)
                 };
+
+                // Нажатие ведёт к исходному сообщению и подсвечивает его.
+                // Раньше цитата была просто надписью, и найти, на что
+                // отвечают, приходилось прокруткой вручную.
+                stripe.Cursor = Cursors.Hand;
+                lblQ.Cursor = Cursors.Hand;
+                stripe.Click += (s, e) => JumpToMessage(replyToId);
+                lblQ.Click += (s, e) => JumpToMessage(replyToId);
 
                 bubble.Controls.Add(stripe);
                 bubble.Controls.Add(lblQ);
