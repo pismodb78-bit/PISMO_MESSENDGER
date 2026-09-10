@@ -726,11 +726,40 @@ namespace PISMO
 
             _replyToId = msgId;
             _replyToSender = senderName;
-            _replyToText = text?.Length > 60 ? text[..60] + "…" : (text ?? "");
+
+            // Отвечая на фото, кружок или файл, текста нет — и полоска
+            // получалась «Ответ для X: » с пустотой после двоеточия. Спросим,
+            // чем было сообщение: один короткий запрос на нажатие.
+            string preview = text ?? "";
+            if (string.IsNullOrWhiteSpace(preview)) preview = KindOfMessage(msgId);
+            _replyToText = preview.Length > 60 ? preview[..60] + "…" : preview;
 
             _lblReplyInfo.Text = $"↩ Ответ для {senderName}: {_replyToText}";
             _pnlReplyBar.Visible = true;
             txtMessage.Focus();
+        }
+
+        /// <summary>Чем было сообщение, если текста в нём нет.</summary>
+        private string KindOfMessage(int msgId)
+        {
+            try
+            {
+                string table = _currentGroupId >= 0 ? "group_messages" : "messages";
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    $"SELECT file_name, (image_data IS NOT NULL) AS has_img, " +
+                    $"(audio_data IS NOT NULL) AS has_audio, (video_data IS NOT NULL) AS has_video " +
+                    $"FROM {table} WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", msgId);
+                using var rd = cmd.ExecuteReader();
+                if (!rd.Read()) return "";
+                return QuotePreview("",
+                    Convert.ToBoolean(rd["has_img"]),
+                    Convert.ToBoolean(rd["has_audio"]),
+                    Convert.ToBoolean(rd["has_video"]),
+                    rd["file_name"] == DBNull.Value ? null : rd["file_name"].ToString());
+            }
+            catch { return ""; }
         }
 
         private void CancelReply()
@@ -1263,8 +1292,17 @@ namespace PISMO
             {
                 string table = isGroup ? "group_messages" : "messages";
                 using var conn = DBHelper.OpenConnection();
+                // Берём и признаки вложений. Раньше выбирался ОДИН текст, и
+                // ответ на фото, кружок или файл выглядел пустой полоской с
+                // одним именем: по ней нельзя понять, на что отвечают. Сами
+                // вложения не тянем — только отметку о наличии, иначе цитата
+                // поднимала бы с диска весь файл.
                 using var cmd = new MySqlCommand($@"
-                    SELECT m.id, m.text, TRIM(CONCAT(u.Name,' ',u.Surname)) AS sname, u.login
+                    SELECT m.id, m.text, m.file_name,
+                           (m.image_data IS NOT NULL) AS has_img,
+                           (m.audio_data IS NOT NULL) AS has_audio,
+                           (m.video_data IS NOT NULL) AS has_video,
+                           TRIM(CONCAT(u.Name,' ',u.Surname)) AS sname, u.login
                     FROM {table} m
                     JOIN users u ON u.id = m.sender_id
                     WHERE m.id IN ({string.Join(",", ids)})", conn);
@@ -1277,11 +1315,31 @@ namespace PISMO
                     string sender = rd["sname"] == DBNull.Value ? "" : rd["sname"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(sender))
                         sender = rd["login"] == DBNull.Value ? "" : rd["login"].ToString();
-                    map[id] = (text, sender);
+                    map[id] = (QuotePreview(text,
+                        Convert.ToBoolean(rd["has_img"]),
+                        Convert.ToBoolean(rd["has_audio"]),
+                        Convert.ToBoolean(rd["has_video"]),
+                        rd["file_name"] == DBNull.Value ? null : rd["file_name"].ToString()), sender);
                 }
             }
             catch { }
             return map;
+        }
+
+        /// <summary>
+        /// Строка цитаты: сам текст, а если его нет — чем было сообщение.
+        /// Те же пометки, что и в превью списка чатов, чтобы не заводить
+        /// два разных словаря для одного и того же.
+        /// </summary>
+        internal static string QuotePreview(string text, bool hasImage, bool hasAudio,
+                                            bool hasVideo, string fileName)
+        {
+            if (!string.IsNullOrWhiteSpace(text)) return text;
+            if (hasImage) return "📷 Фото";
+            if (hasVideo) return "🎥 Видео";
+            if (hasAudio) return "🎤 Голосовое сообщение";
+            if (!string.IsNullOrWhiteSpace(fileName)) return "📎 " + fileName;
+            return "";
         }
 
         public int BuildReplyQuote(Panel bubble, int replyToId, bool isGroup,
