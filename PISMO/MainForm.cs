@@ -4304,7 +4304,7 @@ namespace PISMO
                         string dom = LinkSources.DomainOf(url);
                         if (shown.Contains(dom)) continue;
                         shown.Add(dom);
-                        var row = LinkSources.MakeRow(url, innerW);
+                        var row = LinkSources.MakeCard(url, innerW);
                         row.Location = new Point(PAD, innerY);
                         bubble.Controls.Add(row);
                         innerY += row.Height + 2;

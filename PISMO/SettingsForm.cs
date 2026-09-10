@@ -35,6 +35,7 @@ namespace PISMO
         private CheckBox _chkLightTheme;
         private CheckBox _chkAllMonitors;   // все мониторы в выборе демонстрации (WGC)
         private CheckBox _chkOverlay;         // игровой оверлей вкл/выкл
+        private CheckBox _chkLinkPreviews;    // карточки ссылок в переписке
         private NumericUpDown _numOverlayMax; // сколько участников показывать в оверлее
         private TrackBar _trkVoiceThreshold;
         private Label _lblVoiceThresholdValue;
@@ -243,6 +244,7 @@ namespace PISMO
 
             // Игровой оверлей.
             _chkOverlay.Checked = DeviceSettings.OverlayEnabled;
+            _chkLinkPreviews.Checked = DeviceSettings.LinkPreviews;
             _numOverlayMax.Value = Math.Clamp(DeviceSettings.OverlayMaxParticipants,
                                               (int)_numOverlayMax.Minimum, (int)_numOverlayMax.Maximum);
             _numOverlayMax.Enabled = _chkOverlay.Checked;
@@ -565,6 +567,7 @@ namespace PISMO
             // (пин на дискретку ронял fps на Optimus, NVENC в FFI нет).
             DeviceSettings.ScreenCaptureAllMonitors = _chkAllMonitors.Checked;
             DeviceSettings.OverlayEnabled = _chkOverlay.Checked;
+            DeviceSettings.LinkPreviews = _chkLinkPreviews.Checked;
             DeviceSettings.OverlayMaxParticipants = (int)_numOverlayMax.Value;
             bool newLight = _chkLightTheme.Checked;
             DeviceSettings.ThemeMode = newLight ? "light" : "dark";

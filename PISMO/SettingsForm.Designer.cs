@@ -695,7 +695,45 @@ namespace PISMO
             _btnSave.MouseEnter += (s, e) => _btnSave.BackColor = Color.FromArgb(71, 82, 196);
             _btnSave.MouseLeave += (s, e) => _btnSave.BackColor = Color.FromArgb(88, 101, 242);
 
-            _btnSave.Location = new Point(20, pnlKeys.Bottom + 20);
+            // ── Переписка ────────────────────────────────────────────────
+            var pnlChat = new Panel
+            {
+                BackColor = Color.FromArgb(47, 49, 54),
+                Location = new Point(20, pnlKeys.Bottom + 14),
+                Size = new Size(456, 108)
+            };
+            pnlChat.Controls.Add(new Label
+            {
+                Text = "💬 Переписка",
+                Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(14, 8)
+            });
+            _chkLinkPreviews = new CheckBox
+            {
+                Text = "Карточки ссылок",
+                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                BackColor = Color.FromArgb(47, 49, 54),
+                AutoSize = true,
+                Location = new Point(14, 38),
+                Cursor = Cursors.Hand
+            };
+            pnlChat.Controls.Add(_chkLinkPreviews);
+            pnlChat.Controls.Add(new Label
+            {
+                Text = "Чтобы показать заголовок и картинку, приложение открывает сам сайт.\n" +
+                       "Сайт при этом узнаёт, что вы открыли переписку, и видит ваш адрес —\n" +
+                       "ещё до того, как вы нажали на ссылку.",
+                Font = new Font("Segoe UI", 8f),
+                ForeColor = Color.FromArgb(140, 142, 146),
+                AutoSize = false,
+                Size = new Size(430, 50),
+                Location = new Point(16, 58)
+            });
+
+            _btnSave.Location = new Point(20, pnlChat.Bottom + 20);
 
             // Вычисляем реальную высоту всего контента
             int contentHeight = _btnSave.Bottom + 20;
@@ -713,7 +751,7 @@ namespace PISMO
             // Переносим все контролы в scrollPanel
             scrollPanel.Controls.AddRange(new Control[]
             {
-                lblTitle, pnlCamera, pnlMic, pnlScreen, pnlOverlay, pnlKeys, _btnSave
+                lblTitle, pnlCamera, pnlMic, pnlScreen, pnlOverlay, pnlKeys, pnlChat, _btnSave
             });
 
             // Форма фиксирована — содержимое скроллится

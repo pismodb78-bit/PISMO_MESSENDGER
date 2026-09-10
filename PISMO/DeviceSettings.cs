@@ -132,6 +132,14 @@ namespace PISMO
         /// игры (панель у правого края экрана). По умолчанию включён.</summary>
         public static bool OverlayEnabled { get; set; } = true;
 
+        /// <summary>
+        /// Показывать карточки ссылок. По умолчанию включено, но выключатель
+        /// нужен: чтобы собрать карточку, приложение само идёт на сайт по
+        /// ссылке, и сайт узнаёт, что сообщение открыли, — ещё до того, как
+        /// на неё нажали.
+        /// </summary>
+        public static bool LinkPreviews { get; set; } = true;
+
         /// <summary>Сколько участников максимум рисовать в игровом оверлее.
         /// Минимум 1 (ты сам) — иначе панель была бы пустой; остальные сворачиваются
         /// в строку «и ещё N…», чтобы большой канал не перекрывал полэкрана.</summary>
@@ -330,6 +338,9 @@ namespace PISMO
                         case "ScreenCaptureAllMonitors":
                             ScreenCaptureAllMonitors = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
                             break;
+                        case "LinkPreviews":
+                            LinkPreviews = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
+                            break;
                         case "OverlayEnabled":
                             OverlayEnabled = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
                             break;
@@ -396,6 +407,7 @@ namespace PISMO
                     $"ThemeMode={ThemeMode}\n" +
                     $"ScreenCaptureAllMonitors={(ScreenCaptureAllMonitors ? 1 : 0)}\n" +
                     $"OverlayEnabled={(OverlayEnabled ? 1 : 0)}\n" +
+                    $"LinkPreviews={(LinkPreviews ? 1 : 0)}\n" +
                     $"OverlayMaxParticipants={OverlayMaxParticipants}\n" +
                     $"OverlayX={OverlayX}\n" +
                     $"OverlayY={OverlayY}\n" +

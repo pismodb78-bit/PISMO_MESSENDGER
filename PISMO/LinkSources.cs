@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Windows.Forms;
 
 namespace PISMO
@@ -71,6 +72,135 @@ namespace PISMO
             foreach (var c in host)
                 if (char.IsLetterOrDigit(c)) { letter = char.ToUpperInvariant(c).ToString(); break; }
             return new Source(letter, Color.FromArgb(110, 118, 129), host);
+        }
+
+        /// <summary>
+        /// Карточка ссылки: значок и название службы, а если сайт уже отдавал
+        /// разметку — ещё заголовок, описание и картинка.
+        ///
+        /// Карточка собирается ТОЛЬКО из уже готового: разметку тянет фоновая
+        /// задача, и дорисовывать её в уже размеченный пузырь значило бы
+        /// двигать всё, что под ним. Поэтому в первый раз показывается строка
+        /// со значком, а полная карточка появляется при следующей отрисовке
+        /// переписки — она и так происходит при каждом обновлении.
+        /// </summary>
+        internal static Panel MakeCard(string url, int width)
+        {
+            var ready = LinkPreviews.Cached(url);
+            if (ready == null)
+            {
+                LinkPreviews.QueueFetch(url);
+                return MakeRow(url, width);
+            }
+
+            var src = Of(url);
+            var card = new Panel
+            {
+                Width = Math.Max(120, width),
+                BackColor = Color.FromArgb(38, 40, 45),
+                Cursor = Cursors.Hand,
+            };
+            int y = 6;
+
+            var badge = new Label
+            {
+                Text = src.Mark,
+                BackColor = src.Color,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", src.Mark.Length > 1 ? 6.5f : 8f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Size = new Size(18, 18),
+                Location = new Point(8, y),
+                Cursor = Cursors.Hand,
+            };
+            card.Controls.Add(badge);
+
+            var site = new Label
+            {
+                Text = string.IsNullOrWhiteSpace(ready.Site) ? src.Title : ready.Site,
+                ForeColor = Color.FromArgb(0, 176, 244),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+                AutoSize = true,
+                Location = new Point(32, y + 3),
+                Cursor = Cursors.Hand,
+            };
+            card.Controls.Add(site);
+            y += 24;
+
+            int textW = card.Width - 16;
+            if (!string.IsNullOrWhiteSpace(ready.Title))
+            {
+                var t = new Label
+                {
+                    Text = ready.Title,
+                    ForeColor = Color.FromArgb(235, 236, 240),
+                    Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                    AutoSize = false,
+                    Size = new Size(textW, TextRenderer.MeasureText(ready.Title,
+                        new Font("Segoe UI", 9f, FontStyle.Bold), new Size(textW, 0),
+                        TextFormatFlags.WordBreak).Height),
+                    Location = new Point(8, y),
+                    Cursor = Cursors.Hand,
+                };
+                card.Controls.Add(t);
+                y += t.Height + 3;
+            }
+
+            if (!string.IsNullOrWhiteSpace(ready.Description))
+            {
+                string desc = ready.Description.Length > 220
+                    ? ready.Description[..220] + "…" : ready.Description;
+                var font = new Font("Segoe UI", 8.5f);
+                var d = new Label
+                {
+                    Text = desc,
+                    ForeColor = Color.FromArgb(160, 165, 175),
+                    Font = font,
+                    AutoSize = false,
+                    Size = new Size(textW, TextRenderer.MeasureText(desc, font,
+                        new Size(textW, 0), TextFormatFlags.WordBreak).Height),
+                    Location = new Point(8, y),
+                    Cursor = Cursors.Hand,
+                };
+                card.Controls.Add(d);
+                y += d.Height + 4;
+            }
+
+            if (!string.IsNullOrEmpty(ready.ImagePath) && File.Exists(ready.ImagePath))
+            {
+                try
+                {
+                    // Читаем через поток и копируем: PictureBox из Image.FromFile
+                    // держит файл открытым, и кеш потом не почистить.
+                    Image img;
+                    using (var fs = File.OpenRead(ready.ImagePath))
+                    using (var src2 = Image.FromStream(fs))
+                        img = new Bitmap(src2);
+
+                    int w = textW;
+                    int h = Math.Max(1, (int)(img.Height * (w / (double)img.Width)));
+                    if (h > 220) { h = 220; w = Math.Max(1, (int)(img.Width * (h / (double)img.Height))); }
+                    var pic = new PictureBox
+                    {
+                        Image = img,
+                        SizeMode = PictureBoxSizeMode.Zoom,
+                        Size = new Size(w, h),
+                        Location = new Point(8, y),
+                        Cursor = Cursors.Hand,
+                    };
+                    pic.Disposed += (s, e) => { try { pic.Image?.Dispose(); } catch { } };
+                    card.Controls.Add(pic);
+                    y += h + 4;
+                }
+                catch { }
+            }
+
+            card.Height = y + 4;
+
+            void Open(object s, EventArgs e) => MainForm.OpenLink(url);
+            card.Click += Open;
+            foreach (Control c in card.Controls) c.Click += Open;
+            return card;
         }
 
         /// <summary>Строка «откуда ссылка»: цветной значок и название службы.</summary>
