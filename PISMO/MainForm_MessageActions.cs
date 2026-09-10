@@ -914,13 +914,40 @@ namespace PISMO
             // Подсветка держится 2,5 с: девятисот миллисекунд не хватало —
             // за это время лента ещё доезжала до сообщения, и вспышка успевала
             // погаснуть раньше, чем на него посмотрят.
+            //
+            // И красим не только сам пузырь. У его подписей и текстового поля
+            // свой фон — тот же, что у пузыря, выставленный при сборке. Пока
+            // красился один пузырь, от вспышки оставалась тонкая рамка по
+            // краю: со стороны это выглядело как «подсветки нет вовсе».
+            // Картинки не трогаем: у нарисованного текста с эмодзи фон впечён
+            // в саму картинку, и перекрашивать под ней бессмысленно.
+            var flash = Color.FromArgb(0, 120, 160);
             var original = target.BackColor;
-            target.BackColor = Color.FromArgb(0, 120, 160);
+            var painted = new List<Control>();
+
+            void PaintKids(Control root)
+            {
+                foreach (Control ch in root.Controls)
+                {
+                    bool textish = ch is Label || ch is TextBoxBase;
+                    if (textish && ch.BackColor == original)
+                    {
+                        ch.BackColor = flash;
+                        painted.Add(ch);
+                    }
+                    PaintKids(ch);
+                }
+            }
+            target.BackColor = flash;
+            PaintKids(target);
+
             var t = new System.Windows.Forms.Timer { Interval = 2500 };
             t.Tick += (s, e) =>
             {
                 t.Stop(); t.Dispose();
                 try { if (!target.IsDisposed) target.BackColor = original; } catch { }
+                foreach (var c in painted)
+                    try { if (!c.IsDisposed) c.BackColor = original; } catch { }
             };
             t.Start();
             return true;
