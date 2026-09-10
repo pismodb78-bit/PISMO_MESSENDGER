@@ -4290,6 +4290,27 @@ namespace PISMO
                     bubble.Controls.Add(txtMsg);
                     innerY += txtMsg.Height + 4;
                 }
+
+                // Строки «откуда ссылка» — под текстом. По самому адресу не
+                // всегда понятно, куда он ведёт: длинные обрезаются, а
+                // короткие вроде t.me/xxx не говорят ничего. Для сообщений с
+                // эмодзи это ещё и единственный способ нажать на ссылку —
+                // они рисуются картинкой.
+                if (HasLink(text))
+                {
+                    var shown = new List<string>();
+                    foreach (var url in FindMessageLinks(text))
+                    {
+                        string dom = LinkSources.DomainOf(url);
+                        if (shown.Contains(dom)) continue;
+                        shown.Add(dom);
+                        var row = LinkSources.MakeRow(url, innerW);
+                        row.Location = new Point(PAD, innerY);
+                        bubble.Controls.Add(row);
+                        innerY += row.Height + 2;
+                        if (shown.Count >= 3) break;   // больше трёх — уже полотно
+                    }
+                }
             }
 
             // Время (+ "изменено")
@@ -4489,6 +4510,27 @@ namespace PISMO
                 TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl).Height + 6;
             rtb.Size = new Size(w, h);
             return rtb;
+        }
+
+        /// <summary>
+        /// Адреса в тексте. Хвостовые точки, запятые и скобки почти всегда
+        /// принадлежат предложению, а не адресу: «зайди на example.com, там
+        /// всё есть» не должно вести на «example.com,».
+        /// </summary>
+        internal static List<string> FindMessageLinks(string text)
+        {
+            var found = new List<string>();
+            if (string.IsNullOrEmpty(text)) return found;
+            var rx = new System.Text.RegularExpressions.Regex(
+                @"(?i)\b(?:https?://|www\.)[^\s<>""']+");
+            foreach (System.Text.RegularExpressions.Match m in rx.Matches(text))
+            {
+                string raw = m.Value.TrimEnd('.', ',', ';', ':', '!', '?', ')', ']', '}', '»', '"', '\'');
+                if (raw.Length < 4) continue;
+                if (raw.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) raw = "https://" + raw;
+                if (!found.Contains(raw)) found.Add(raw);
+            }
+            return found;
         }
 
         /// <summary>Открывает адрес в браузере. Только http/https: запускать

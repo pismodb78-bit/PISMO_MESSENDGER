@@ -580,7 +580,7 @@ namespace PISMO
             // обычном тексте.
             if (MainForm.HasLink(text))
             {
-                foreach (var url in FindLinks(text))
+                foreach (var url in MainForm.FindMessageLinks(text))
                 {
                     string shown = url.Length > 48 ? url[..48] + "…" : url;
                     menu.Items.Add("🔗 " + shown, null, (s, e) => MainForm.OpenLink(url));
@@ -849,27 +849,6 @@ namespace PISMO
             };
             t.Start();
             return true;
-        }
-
-        /// <summary>
-        /// Адреса в тексте. Хвостовые точки, запятые и скобки почти всегда
-        /// принадлежат предложению, а не адресу: «зайди на example.com, там
-        /// всё есть» не должно вести на «example.com,».
-        /// </summary>
-        private static List<string> FindLinks(string text)
-        {
-            var found = new List<string>();
-            if (string.IsNullOrEmpty(text)) return found;
-            var rx = new System.Text.RegularExpressions.Regex(
-                @"(?i)\b(?:https?://|www\.)[^\s<>""']+");
-            foreach (System.Text.RegularExpressions.Match m in rx.Matches(text))
-            {
-                string raw = m.Value.TrimEnd('.', ',', ';', ':', '!', '?', ')', ']', '}', '»', '"', '\'');
-                if (raw.Length < 4) continue;
-                if (raw.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) raw = "https://" + raw;
-                if (!found.Contains(raw)) found.Add(raw);
-            }
-            return found;
         }
 
         /// <summary>Чем было сообщение, если текста в нём нет.</summary>
