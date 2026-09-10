@@ -21,6 +21,7 @@ namespace PISMO
     {
         internal enum Kind { None, Direct, Embed }
 
+        /// <param name="Url">Что открывать: сам файл или адрес встраивания.</param>
         internal readonly record struct Playable(Kind Kind, string Url, string Title);
 
         private static readonly string[] FileExt =
@@ -34,7 +35,7 @@ namespace PISMO
             string yt = YoutubeId(url, host);
             if (yt != null)
                 return new Playable(Kind.Embed,
-                    $"https://www.youtube.com/embed/{yt}?autoplay=1&rel=0", "YouTube");
+                    $"https://www.youtube.com/embed/{yt}?autoplay=1&rel=0&playsinline=1", "YouTube");
 
             string rt = RutubeId(url, host);
             if (rt != null)

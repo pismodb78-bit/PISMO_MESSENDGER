@@ -199,15 +199,60 @@ namespace PISMO
 
             card.Height = y + 4;
 
-            // Видео открываем прямо здесь, остальное — в браузере. Уходить из
-            // переписки ради ролика не нужно.
-            void Open(object s, EventArgs e)
-            {
-                if (!LinkVideoForm.TryPlay(card.FindForm(), url)) MainForm.OpenLink(url);
-            }
-            card.Click += Open;
-            foreach (Control c in card.Controls) c.Click += Open;
+            Hook(card, url);
             return card;
+        }
+
+        /// <summary>
+        /// Нажатия на карточку ссылки: левой кнопкой — открыть, правой — меню.
+        ///
+        /// Раньше здесь висел Click, и это оказалось не тем событием: WinForms
+        /// поднимает Click на ЛЮБУЮ кнопку мыши, а не только на левую. Из-за
+        /// этого правая кнопка одновременно открывала меню сообщения И уводила
+        /// по ссылке — то есть посмотреть, что за ссылка, было нельзя: она
+        /// открывалась от самой попытки спросить.
+        ///
+        /// Меню то же, что на телефоне по долгому нажатию на ссылку.
+        /// </summary>
+        private static void Hook(Panel root, string url)
+        {
+            var menu = new ContextMenuStrip
+            {
+                BackColor = Color.FromArgb(24, 25, 28),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                Font = new Font("Segoe UI", 9.5f),
+            };
+            // «Смотреть здесь» — только для того, что умеем проиграть: обещать
+            // и открыть пустое окно хуже, чем не обещать.
+            if (VideoLinks.Of(url).Kind != VideoLinks.Kind.None)
+            {
+                menu.Items.Add("▶ Смотреть здесь", null,
+                    (s, e) => LinkVideoForm.TryPlay(root.FindForm(), url));
+            }
+            menu.Items.Add("Открыть в браузере", null, (s, e) => MainForm.OpenLink(url));
+            menu.Items.Add("Копировать ссылку", null, (s, e) =>
+            {
+                try { Clipboard.SetText(url); } catch { }
+            });
+            root.Disposed += (s, e) => { try { menu.Dispose(); } catch { } };
+
+            void Attach(Control c)
+            {
+                c.ContextMenuStrip = menu;
+                c.MouseUp += (s, e) =>
+                {
+                    // Мышь захвачена тем, кто получил нажатие: без проверки
+                    // границ ссылка открывалась бы и после «увёл и отпустил».
+                    if (e.Button != MouseButtons.Left) return;
+                    if (!c.ClientRectangle.Contains(e.Location)) return;
+                    // Видео открываем прямо здесь, остальное — в браузере.
+                    // Уходить из переписки ради ролика не нужно.
+                    if (!LinkVideoForm.TryPlay(root.FindForm(), url)) MainForm.OpenLink(url);
+                };
+            }
+
+            Attach(root);
+            foreach (Control c in root.Controls) Attach(c);
         }
 
         /// <summary>Строка «откуда ссылка»: цветной значок и название службы.</summary>
@@ -243,14 +288,9 @@ namespace PISMO
                 Cursor = Cursors.Hand,
             };
 
-            void Open(object s, EventArgs e)
-            {
-                if (!LinkVideoForm.TryPlay(row.FindForm(), url)) MainForm.OpenLink(url);
-            }
-            row.Click += Open; badge.Click += Open; title.Click += Open;
-
             row.Controls.Add(badge);
             row.Controls.Add(title);
+            Hook(row, url);
             return row;
         }
     }
