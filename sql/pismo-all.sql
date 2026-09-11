@@ -31,6 +31,19 @@
 -- ============================================================================
 
 
+-- ── Куда всё это класть ─────────────────────────────────────────────────────
+--
+-- Строка ниже обязательна, и вот почему. В phpMyAdmin вкладка SQL открывается
+-- в контексте той базы, что подсвечена слева, — а подсвечена там по умолчанию
+-- information_schema. Без явного указания первая же команда пыталась создать
+-- таблицу в ней и получала «#1044 Access denied … to database
+-- 'information_schema'». Это не нехватка прав: information_schema доступна
+-- только на чтение вообще всем, включая root, и писать в неё нельзя никому.
+--
+-- Если база называется иначе — поменяйте имя здесь.
+USE bdauth;
+
+
 -- ── Журнал миграций ─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id         INT          NOT NULL PRIMARY KEY,
@@ -240,9 +253,12 @@ INSERT IGNORE INTO schema_migrations (id, name) VALUES
 
 -- ── Проверка ────────────────────────────────────────────────────────────────
 -- В журнале должны появиться отмеченные номера, а file_sha — в трёх таблицах.
+--
+-- Проверка нарочно сделана через SHOW, а не через information_schema: доступ к
+-- ней на части установок урезан, и проверочный запрос обрывал бы весь файл на
+-- ровном месте — после того, как всё нужное уже сделано.
 SELECT id, name, applied_at FROM schema_migrations ORDER BY id;
 
-SELECT TABLE_NAME, COLUMN_NAME
-FROM information_schema.COLUMNS
-WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'file_sha'
-ORDER BY TABLE_NAME;
+SHOW COLUMNS FROM messages        LIKE 'file_sha';
+SHOW COLUMNS FROM group_messages  LIKE 'file_sha';
+SHOW COLUMNS FROM server_messages LIKE 'file_sha';
