@@ -237,8 +237,32 @@ namespace PISMO
             BuildBackgroundStyling();   // мягкий градиент-подложка списка/чата (2.1.7)
             BuildReadAllButton();       // ✓✓ «прочитать все ЛС» в шапке сайдбара
             BuildTransfersButton();     // ⇅ кружок идущих передач файлов
+            HookChatPins();             // закрепы чатов приехали из базы — пересобрать список
             HookLinkPreviews();         // карточка ссылки — сразу, как только собралась
             this.Load += MainForm_Load;
+        }
+
+        /// <summary>
+        /// Закрепы чатов общие с телефоном и приезжают из базы в фоне. Когда
+        /// набор изменился (закрепили с телефона), список чатов надо собрать
+        /// заново — сам по себе он об этом не узнает.
+        /// </summary>
+        private void HookChatPins()
+        {
+            Action onChanged = () =>
+            {
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        try { LoadConversations(); } catch { }
+                    }));
+                }
+                catch { }
+            };
+            ChatPins.Changed += onChanged;
+            FormClosed += (s, e) => { try { ChatPins.Changed -= onChanged; } catch { } };
         }
 
         /// <summary>
@@ -2202,9 +2226,15 @@ namespace PISMO
                 // Пометка «не в друзьях» на карточках написавших не-друзей.
                 var friendIds = FriendsRepository.AcceptedIds(myId);
 
-                // Закреплённые чаты (2.1) — к ВЕРХУ списка ЛС (группы выше и не
+                // Закреплённые чаты — к ВЕРХУ списка ЛС (группы выше и не
                 // трогаются). Внутри закреплённых и обычных сохраняется порядок
-                // SQL (по свежести переписки). Закрепы хранятся локально.
+                // SQL (по свежести переписки).
+                //
+                // Список закрепов лежит в базе и общий с телефоном; здесь берём
+                // его из памяти, а сверку с базой заводим в фоне — она сама
+                // придерживает себя, чтобы не ходить на сервер каждые две с
+                // половиной секунды.
+                ChatPins.EnsureFresh();
                 var ordered = new List<DataRow>();
                 foreach (DataRow row in dt.Rows)
                     if (ChatPins.IsPinned(Convert.ToInt32(row["id"]))) ordered.Add(row);
@@ -2344,6 +2374,7 @@ namespace PISMO
                 new MySqlDataAdapter(cmd).Fill(dt);
 
                 // Закреплённые чаты — к верху (ниже групп), как в обычном списке.
+                ChatPins.EnsureFresh();
                 var ordered = new List<DataRow>();
                 foreach (DataRow row in dt.Rows)
                     if (ChatPins.IsPinned(Convert.ToInt32(row["id"]))) ordered.Add(row);

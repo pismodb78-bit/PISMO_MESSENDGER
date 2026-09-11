@@ -313,6 +313,26 @@ namespace PISMO
                 foreach (string table in new[] { "messages", "group_messages", "server_messages" })
                     StripDoubleForwardMarks(conn, table);
             }),
+
+            (19, "chat_pins: закреплённые ЧАТЫ (общие для ПК и телефона)", conn =>
+            {
+                // Раньше закреплённые чаты лежали у каждого клиента своим
+                // файлом: на ПК — pinned_chats_<id>.txt, на телефоне — в
+                // настройках приложения. Из-за этого один и тот же человек
+                // видел РАЗНЫЙ порядок списка на компьютере и в телефоне.
+                // Теперь закрепы живут в базе и у аккаунта они одни.
+                //
+                // scope оставлен на будущее теми же значениями, что у
+                // закреплённых сообщений: 0 — личный чат, 1 — групповой.
+                // Сейчас пишется только 0.
+                Exec(conn,
+                    "CREATE TABLE IF NOT EXISTS chat_pins (" +
+                    "user_id INT NOT NULL, " +
+                    "scope TINYINT NOT NULL DEFAULT 0, " +
+                    "target_id INT NOT NULL, " +
+                    "pinned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
+                    "PRIMARY KEY (user_id, scope, target_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            }),
         };
 
         /// <summary>Чистит повторяющиеся пометки пересылки в одной таблице.</summary>
