@@ -146,6 +146,65 @@ namespace PISMO
         //  ВСПОМОГАТЕЛЬНЫЕ
         // ────────────────────────────────────────────────────────────────
 
+        // ────────────────────────────────────────────────────────────────
+        //  ПО ОТПЕЧАТКУ СОДЕРЖИМОГО
+        // ────────────────────────────────────────────────────────────────
+        //
+        // Один и тот же файл в двух чатах — это два разных сообщения, но одни
+        // и те же байты. По номеру сообщения кеш их не узнаёт и качает второй
+        // раз целиком; по отпечатку — узнаёт сразу.
+
+        private static string HashPath(string sha, string fileName)
+        {
+            try
+            {
+                // Отпечаток идёт в ИМЯ ФАЙЛА, поэтому проверяем, что это
+                // действительно он: шестьдесят четыре шестнадцатеричных знака
+                // и ничего больше.
+                if (string.IsNullOrWhiteSpace(sha) || sha.Length != 64) return null;
+                foreach (char c in sha) if (!Uri.IsHexDigit(c)) return null;
+
+                string dir = Path.Combine(Root, "byhash");
+                try { Directory.CreateDirectory(dir); } catch { }
+                string ext = string.IsNullOrWhiteSpace(fileName)
+                    ? "bin"
+                    : Path.GetExtension(fileName).TrimStart('.').ToLower();
+                if (ext.Length == 0 || ext.Length > 12) ext = "bin";
+                return Path.Combine(dir, $"{sha}.{ext}");
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Байты по отпечатку содержимого. null — таких нет.</summary>
+        public static byte[] GetByHash(string sha, string fileName = null)
+        {
+            string path = HashPath(sha, fileName);
+            if (path == null || !File.Exists(path)) return null;
+            try { return File.ReadAllBytes(path); }
+            catch { return null; }
+        }
+
+        /// <summary>Есть ли такие байты (без чтения файла).</summary>
+        public static bool HasByHash(string sha, string fileName = null)
+        {
+            string path = HashPath(sha, fileName);
+            return path != null && File.Exists(path);
+        }
+
+        /// <summary>Кладёт байты под их отпечатком.</summary>
+        public static void PutByHash(string sha, byte[] data, string fileName = null)
+        {
+            if (data == null || data.Length == 0) return;
+            string path = HashPath(sha, fileName);
+            if (path == null) return;
+            try
+            {
+                File.WriteAllBytes(path, data);
+                System.Threading.ThreadPool.QueueUserWorkItem(_ => TrimCacheIfNeeded());
+            }
+            catch { }
+        }
+
         private static string GetPath(int msgId, string kind, string fileName)
         {
             try

@@ -5277,7 +5277,7 @@ namespace PISMO
                                 rowId = copied;
                                 Transfers.Progress(item, total);
                                 CacheOwnAttachment((int)copied, imageData, audioData,
-                                    videoData, fileData, fileName);
+                                    videoData, fileData, fileName, sha);
                                 sent = true;
                                 try
                                 {
@@ -5378,7 +5378,7 @@ namespace PISMO
                     // Только что отправленное кладём в локальный кеш: байты уже в
                     // руках, а иначе своё же вложение пришлось бы качать обратно из
                     // базы при первом же открытии.
-                    CacheOwnAttachment((int)newId, imageData, audioData, videoData, fileData, fileName);
+                    CacheOwnAttachment((int)newId, imageData, audioData, videoData, fileData, fileName, sha);
 
                     sent = true;
 
@@ -5460,12 +5460,16 @@ namespace PISMO
         /// Байты уже в руках, иначе при первом же открытии их пришлось бы
         /// качать обратно из базы.</summary>
         private static void CacheOwnAttachment(int msgId, byte[] img, byte[] aud,
-            byte[] vid, byte[] file, string fileName)
+            byte[] vid, byte[] file, string fileName, string sha = null)
         {
             if (msgId <= 0) return;
             try
             {
                 if (file is { Length: > 0 }) MediaCache.Put(msgId, "file", file, fileName);
+                // И под отпечатком: тот же файл, отправленный ещё кому-то,
+                // будет открываться из кеша, а не качаться заново.
+                if (sha != null && file is { Length: > 0 })
+                    MediaCache.PutByHash(sha, file, fileName);
                 if (img is { Length: > 0 }) MediaCache.Put(msgId, "img", img, fileName);
                 if (aud is { Length: > 0 }) MediaCache.Put(msgId, "audio", aud);
                 if (vid is { Length: > 0 }) MediaCache.Put(msgId, "video", vid);
@@ -5979,33 +5983,64 @@ namespace PISMO
                 {
                     byte[] result = null;
                     string err = null;
+                    string sha = null;
                     try
                     {
                         using var conn = DBHelper.OpenConnection();
 
-                        long total = knownSize;
-                        if (total <= 0)
+                        // Тот же файл мог уже приезжать в ДРУГОМ чате: сообщения
+                        // разные, а байты одни. Спрашиваем отпечаток — запрос
+                        // крошечный, тело файла в нём не участвует, — и если
+                        // такие байты уже лежат в кеше, качать нечего.
+                        try
                         {
-                            using var szCmd = new MySqlCommand($"SELECT OCTET_LENGTH(file_data) FROM {table} WHERE id=@id", conn);
-                            szCmd.Parameters.AddWithValue("@id", msgId);
-                            var o = szCmd.ExecuteScalar();
-                            total = (o != null && o != DBNull.Value) ? Convert.ToInt64(o) : 0;
+                            using var shaCmd = new MySqlCommand(
+                                $"SELECT file_sha FROM {table} WHERE id=@id", conn);
+                            shaCmd.Parameters.AddWithValue("@id", msgId);
+                            var so = shaCmd.ExecuteScalar();
+                            sha = (so == null || so == DBNull.Value) ? null : so.ToString();
+                        }
+                        catch { /* столбца ещё нет — качаем как раньше */ }
+
+                        if (!string.IsNullOrEmpty(sha))
+                        {
+                            var reused = MediaCache.GetByHash(sha, fileName);
+                            if (reused is { Length: > 0 })
+                            {
+                                result = reused;
+                                // Кладём ещё и под номером этого сообщения:
+                                // следующее открытие обойдётся уже без запроса
+                                // за отпечатком.
+                                MediaCache.Put(msgId, "file", reused, fileName);
+                            }
                         }
 
-                        if (total <= 0) { err = "Файл пуст"; }
-                        else
+                        if (result == null)
                         {
-                            // Читаем файл ОДНИМ запросом — без SUBSTRING по кускам
-                            // (он на каждый кусок перечитывал весь blob → квадратично/медленно).
-                            using var cmd = new MySqlCommand(
-                                $"SELECT file_data FROM {table} WHERE id=@id", conn);
-                            cmd.Parameters.AddWithValue("@id", msgId);
-                            cmd.CommandTimeout = 600;
-                            activeDlCmd = cmd;
-                            var o = cmd.ExecuteScalar();
-                            activeDlCmd = null;
-                            result = o as byte[];
-                            if (result == null || result.Length == 0) err = "Файл пуст";
+                            long total = knownSize;
+                            if (total <= 0)
+                            {
+                                using var szCmd = new MySqlCommand($"SELECT OCTET_LENGTH(file_data) FROM {table} WHERE id=@id", conn);
+                                szCmd.Parameters.AddWithValue("@id", msgId);
+                                var o = szCmd.ExecuteScalar();
+                                total = (o != null && o != DBNull.Value) ? Convert.ToInt64(o) : 0;
+                            }
+
+                            if (total <= 0) { err = "Файл пуст"; }
+                            else
+                            {
+                                // Читаем файл ОДНИМ запросом — без SUBSTRING по кускам
+                                // (он на каждый кусок перечитывал весь blob → квадратично/медленно).
+                                using var cmd = new MySqlCommand(
+                                    $"SELECT file_data FROM {table} WHERE id=@id", conn);
+                                cmd.Parameters.AddWithValue("@id", msgId);
+                                cmd.CommandTimeout = 600;
+                                activeDlCmd = cmd;
+                                var o = cmd.ExecuteScalar();
+                                activeDlCmd = null;
+                                result = o as byte[];
+                                if (result == null || result.Length == 0) err = "Файл пуст";
+                            }
                         }
                     }
                     catch (Exception ex) { activeDlCmd = null; if (!dlCancelled) err = ex.Message; }
@@ -6024,6 +6059,10 @@ namespace PISMO
                             {
                                 fileData = result;
                                 MediaCache.Put(msgId, "file", fileData, fileName);
+                                // И по отпечатку — чтобы тот же файл в другом
+                                // чате уже не качался.
+                                if (!string.IsNullOrEmpty(sha))
+                                    MediaCache.PutByHash(sha, fileData, fileName);
                                 lblSz.Text = FormatFileSize(fileData.Length);
                                 OpenIt();
                             }
