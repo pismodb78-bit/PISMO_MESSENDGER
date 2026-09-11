@@ -5257,6 +5257,39 @@ namespace PISMO
                     // рвёт соединение → "Fatal error encountered during command execution").
                     try { using var to = new MySqlCommand("SET SESSION net_read_timeout=600, net_write_timeout=600, wait_timeout=600", conn); to.ExecuteNonQuery(); } catch { }
 
+                    // 0) Может, этот файл уже лежит на сервере — среди НАШИХ
+                    //    отправленных. Тогда новое сообщение собирается прямо в
+                    //    базе, копией у неё внутри, и по сети не уходит ни
+                    //    байта: отправка того же видео второму собеседнику
+                    //    становится мгновенной.
+                    string sha = null;
+                    try { sha = FileDedup.Sha256Hex(fileData); } catch { }
+                    if (sha != null && !cancelled && FileDedup.Supported(conn))
+                    {
+                        var donor = FileDedup.FindDonor(conn, myId, sha);
+                        if (donor != null)
+                        {
+                            long copied = FileDedup.InsertCopy(conn, isGroup, target, myId,
+                                Crypto.Enc(text ?? ""), imageData, audioData, videoData,
+                                fileName, sha, donor.Value);
+                            if (copied > 0)
+                            {
+                                rowId = copied;
+                                Transfers.Progress(item, total);
+                                CacheOwnAttachment((int)copied, imageData, audioData,
+                                    videoData, fileData, fileName);
+                                sent = true;
+                                try
+                                {
+                                    if (isGroup) WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "group");
+                                    else WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "direct");
+                                }
+                                catch { }
+                                return;   // finally уберёт передачу из списка и обновит переписку
+                            }
+                        }
+                    }
+
                     // 1) Строка метаданных, file_data пока NULL (получаем id).
                     string insSql = isGroup
                         ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@g,@s,@t,@img,@aud,@vid,NULL,@fn)"
@@ -5337,18 +5370,15 @@ namespace PISMO
                         }
                     }
 
+                    // Отпечаток ставим ПОСЛЕ заливки: только теперь тело файла
+                    // в строке действительно есть, и её можно предлагать в
+                    // доноры следующей отправке того же файла.
+                    FileDedup.StampSha(conn, table, newId, sha);
+
                     // Только что отправленное кладём в локальный кеш: байты уже в
                     // руках, а иначе своё же вложение пришлось бы качать обратно из
                     // базы при первом же открытии.
-                    try
-                    {
-                        int mid = (int)newId;
-                        if (fileData is { Length: > 0 }) MediaCache.Put(mid, "file", fileData, fileName);
-                        if (imageData is { Length: > 0 }) MediaCache.Put(mid, "img", imageData, fileName);
-                        if (audioData is { Length: > 0 }) MediaCache.Put(mid, "audio", audioData);
-                        if (videoData is { Length: > 0 }) MediaCache.Put(mid, "video", videoData);
-                    }
-                    catch { }
+                    CacheOwnAttachment((int)newId, imageData, audioData, videoData, fileData, fileName);
 
                     sent = true;
 
@@ -5425,6 +5455,23 @@ namespace PISMO
         private static readonly object UploadChainLock = new();
         private static System.Threading.Tasks.Task _uploadChain =
             System.Threading.Tasks.Task.CompletedTask;
+
+        /// <summary>Своё только что отправленное вложение — сразу в локальный кеш.
+        /// Байты уже в руках, иначе при первом же открытии их пришлось бы
+        /// качать обратно из базы.</summary>
+        private static void CacheOwnAttachment(int msgId, byte[] img, byte[] aud,
+            byte[] vid, byte[] file, string fileName)
+        {
+            if (msgId <= 0) return;
+            try
+            {
+                if (file is { Length: > 0 }) MediaCache.Put(msgId, "file", file, fileName);
+                if (img is { Length: > 0 }) MediaCache.Put(msgId, "img", img, fileName);
+                if (aud is { Length: > 0 }) MediaCache.Put(msgId, "audio", aud);
+                if (vid is { Length: > 0 }) MediaCache.Put(msgId, "video", vid);
+            }
+            catch { }
+        }
 
         /// <summary>Удаляет строку сообщения (после отмены отправки файла).</summary>
         private static void DeleteMsgRow(MySqlConnection conn, string table, long id)

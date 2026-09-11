@@ -333,6 +333,28 @@ namespace PISMO
                     "pinned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
                     "PRIMARY KEY (user_id, scope, target_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
             }),
+
+            (20, "file_sha: отпечаток вложения, чтобы не заливать одно и то же дважды", conn =>
+            {
+                // Один и тот же файл, отправленный двум собеседникам, уходил на
+                // сервер дважды — второй раз ровно так же долго, как первый.
+                // Отпечаток позволяет узнать своё уже залитое вложение и
+                // скопировать его ВНУТРИ базы, не гоняя байты по сети.
+                //
+                // Прав ALTER у учётной записи приложения может не быть; тогда
+                // столбцы кладутся руками, sql/2026-09-11_file_sha.sql, а до
+                // тех пор всё работает по-старому — код проверяет наличие
+                // столбца и молча откатывается на обычную заливку.
+                foreach (string t in new[] { "messages", "group_messages", "server_messages" })
+                {
+                    if (!TableExists(conn, t)) continue;
+                    if (!ColumnExists(conn, t, "file_sha"))
+                        Exec(conn, $"ALTER TABLE {t} ADD COLUMN file_sha CHAR(64) NULL");
+                    // Индекс по (отправитель, отпечаток): донора ищем только
+                    // среди СВОИХ вложений, чужие не трогаем.
+                    AddIndex(conn, t, "idx_file_sha", "(sender_id, file_sha)");
+                }
+            }),
         };
 
         /// <summary>Чистит повторяющиеся пометки пересылки в одной таблице.</summary>
