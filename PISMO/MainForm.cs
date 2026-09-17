@@ -100,6 +100,9 @@ namespace PISMO
         /// собрано заранее и лежит в _pageMetaCache.</summary>
         private bool _drawingPage;
 
+        /// <summary>Лента в порядке сборки — по нему её пересчитывают.</summary>
+        private List<Control> _laidOut = new();
+
         private HashSet<int> _pinnedInView;   // id закреплённых сообщений текущего чата (2.0)
         private Dictionary<int, List<ReactionsRepository.Reaction>> _reactionsInView;  // реакции всех видимых сообщений (2.0)
 
@@ -3286,10 +3289,13 @@ namespace PISMO
                 }
 
                 pnlMessages.Controls.AddRange(pendingBubbles.ToArray());
+                // Запоминаем ПОРЯДОК, в котором лента собрана. По нему её потом
+                // и пересчитывают: он хронологический и не зависит ни от
+                // текущих координат, ни от z-порядка.
+                _laidOut = pendingBubbles;
                 _lastGroupMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
-                RestackBubbles();                  // высоты могли уточниться по ходу
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -3681,10 +3687,13 @@ namespace PISMO
                 }
 
                 pnlMessages.Controls.AddRange(pendingBubbles.ToArray());
+                // Запоминаем ПОРЯДОК, в котором лента собрана. По нему её потом
+                // и пересчитывают: он хронологический и не зависит ни от
+                // текущих координат, ни от z-порядка.
+                _laidOut = pendingBubbles;
                 _lastMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
-                RestackBubbles();                  // высоты могли уточниться по ходу
 
                 if (_dmRestoreFromBottom >= 0)
                 {
@@ -3998,9 +4007,25 @@ namespace PISMO
             try
             {
                 if (pnlMessages == null || pnlMessages.IsDisposed) return;
+                // Во время сборки ленты — ни в коем случае.
+                //
+                // Сборка пузыря с видео поднимает встроенный проигрыватель, а он
+                // по дороге прокручивает очередь сообщений окна. В эту щель
+                // успевал влезть отложенный пересчёт — и заставал ленту
+                // наполовину собранной. Отсюда и брался беспорядок.
+                if (_drawingPage) return;
+
+                // Идём по ПОРЯДКУ СБОРКИ, а не по текущим координатам.
+                //
+                // Раньше список сортировался по Top — и это была ошибка,
+                // которая сама себя закрепляла: если два пузыря налезли друг на
+                // друга, сортировка могла поменять их местами, а пересчёт затем
+                // расставлял их в этом неверном порядке уже насовсем. Отсюда
+                // сообщения не по времени: 17:30, потом 07:46, потом 13:39.
+                // Порядок сборки хронологический и испортиться не может.
                 var list = new List<Control>();
-                foreach (Control c in pnlMessages.Controls)
-                    if (!c.IsDisposed && c.Visible) list.Add(c);
+                foreach (var c in _laidOut)
+                    if (c != null && !c.IsDisposed && c.Parent == pnlMessages) list.Add(c);
                 if (list.Count < 2) return;
 
                 // Были ли мы внизу ленты. Если да — там и останемся: сдвиг
@@ -4016,7 +4041,6 @@ namespace PISMO
                 }
                 catch { }
 
-                list.Sort((a, b) => a.Top.CompareTo(b.Top));
                 int y = list[0].Top;
                 bool moved = false;
                 foreach (var c in list)
@@ -4737,6 +4761,15 @@ namespace PISMO
             }
 
             innerY += PAD - 4;
+
+            // Высоту сверяем с ФАКТИЧЕСКИМ содержимым, а не только с накопленной
+            // суммой. Сумму ведут вручную, слагаемое за слагаемым, и если хоть
+            // один ребёнок окажется выше предполагаемого, подпись со временем
+            // наедет на него, а сам пузырь — на следующий.
+            int contentBottom = 0;
+            foreach (Control ch in bubble.Controls)
+                if (ch.Bottom > contentBottom) contentBottom = ch.Bottom;
+            innerY = Math.Max(innerY, contentBottom + PAD - 4);
 
             bubble.Size = new Size(
                 Math.Max(120, CalcBubbleWidth(bubble, PAD)),
