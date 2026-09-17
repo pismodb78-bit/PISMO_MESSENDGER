@@ -116,6 +116,57 @@ namespace PISMO
         /// <summary>
         /// Шаг 1: Загружаем все сообщения БЕЗ BLOB-данных (быстро).
         /// </summary>
+        /// <summary>
+        /// Есть ли в переписке сообщения СТАРШЕ данного id.
+        ///
+        /// Раньше это выводили косвенно: если страница пришла ровно такого
+        /// размера, какой просили, — значит, наверное, есть и дальше. Вывод
+        /// неверен в обе стороны, и ошибается он молча. Достаточно одной
+        /// строки, отвалившейся на соединении с users (автор удалён), чтобы
+        /// страница оказалась короче запрошенной — и подгрузка вверх
+        /// останавливалась НАВСЕГДА, посреди переписки, без всякого признака,
+        /// что выше что-то есть.
+        ///
+        /// Теперь спрашиваем прямо. Две отдельные проверки вместо OR — чтобы
+        /// обе легли на индекс (sender_id, receiver_id); EXISTS прекращает
+        /// поиск на первой же найденной строке и в таблицу не заглядывает.
+        /// </summary>
+        public static bool HasOlderThan(int myId, int themId, int oldestId)
+        {
+            if (oldestId <= 0) return false;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT EXISTS(SELECT 1 FROM messages " +
+                    "              WHERE sender_id=@me AND receiver_id=@them AND id<@id) " +
+                    "    OR EXISTS(SELECT 1 FROM messages " +
+                    "              WHERE sender_id=@them AND receiver_id=@me AND id<@id)", conn);
+                cmd.Parameters.AddWithValue("@me", myId);
+                cmd.Parameters.AddWithValue("@them", themId);
+                cmd.Parameters.AddWithValue("@id", oldestId);
+                return Convert.ToInt32(cmd.ExecuteScalar()) != 0;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>То же для группы.</summary>
+        public static bool HasOlderInGroup(int groupId, int oldestId)
+        {
+            if (oldestId <= 0) return false;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT EXISTS(SELECT 1 FROM group_messages " +
+                    "              WHERE group_id=@g AND id<@id)", conn);
+                cmd.Parameters.AddWithValue("@g", groupId);
+                cmd.Parameters.AddWithValue("@id", oldestId);
+                return Convert.ToInt32(cmd.ExecuteScalar()) != 0;
+            }
+            catch { return false; }
+        }
+
         public static DataTable LoadMessagesMetaOnly(int myId, int themId, int limit = 0)
         {
             using var conn = DBHelper.OpenConnection();
@@ -154,10 +205,12 @@ namespace PISMO
                        NULL AS image_data, NULL AS audio_data,
                        NULL AS video_data, NULL AS file_data,
                        TIMESTAMPDIFF(SECOND, sub.created_at, NOW()) AS age_sec,
-                       TRIM(CONCAT(u.Name,' ',u.Surname)) AS sender_name, u.login
+                       COALESCE(NULLIF(TRIM(CONCAT(u.Name,' ',u.Surname)), ''),
+                                CONCAT('Пользователь #', sub.sender_id)) AS sender_name,
+                       COALESCE(u.login, '') AS login
                 FROM ( SELECT * FROM (" + inner + ") pair" +
                 (limit > 0 ? " ORDER BY id DESC LIMIT " + limit : "") + @" ) sub
-                JOIN users u ON u.id = sub.sender_id
+                LEFT JOIN users u ON u.id = sub.sender_id
                 ORDER BY sub.id ASC";
 
             using var cmd = new MySqlCommand(sql, conn);
@@ -181,13 +234,15 @@ namespace PISMO
                        NULL AS video_data, NULL AS file_data,
                        gm.file_name,
                        gm.reply_to_id, gm.is_deleted, gm.edited_at, gm.created_at,
-                       TRIM(CONCAT(u.Name,' ',u.Surname)) AS sender_name, u.login,
+                       COALESCE(NULLIF(TRIM(CONCAT(u.Name,' ',u.Surname)), ''),
+                                CONCAT('Пользователь #', gm.sender_id)) AS sender_name,
+                       COALESCE(u.login, '') AS login,
                        (gm.image_data IS NOT NULL) AS has_img,
                        (gm.audio_data IS NOT NULL) AS has_audio,
                        (gm.video_data IS NOT NULL) AS has_video,
                        (gm.file_data  IS NOT NULL) AS has_file
                 FROM group_messages gm
-                JOIN users u ON u.id = gm.sender_id
+                LEFT JOIN users u ON u.id = gm.sender_id
                 WHERE gm.group_id=@g
                 ORDER BY gm.id " + (limit > 0 ? "DESC LIMIT " + limit : "ASC");
             string sql = limit > 0 ? "SELECT * FROM (" + inner + ") sub ORDER BY id ASC" : inner;

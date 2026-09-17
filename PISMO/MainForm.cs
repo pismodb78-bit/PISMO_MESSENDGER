@@ -3164,7 +3164,14 @@ namespace PISMO
                 try { PrefetchPageMedia(dt, isGroup: true); } catch { }
                 // И метаданные страницы — тоже здесь, а не на потоке интерфейса.
                 try { FetchPageMeta("g" + group, dt, isGroup: true); } catch { }
-                _dmHasMore = dt.Rows.Count >= _dmLimit;
+                // Спрашиваем базу прямо, а не гадаем по длине страницы: см.
+                // пояснение у HasOlderInGroup. Страница приходит в
+                // хронологическом порядке, поэтому самое старое — первая строка.
+                int oldestG = 0;
+                try { if (dt.Rows.Count > 0) oldestG = Convert.ToInt32(dt.Rows[0]["id"]); } catch { }
+                _dmHasMore = oldestG > 0
+                    ? HasOlderInGroup(group, oldestG)
+                    : dt.Rows.Count >= _dmLimit;
                 try { MessageCache.Save(MessageCache.GroupKey(group), dt); } catch { }
                 if (IsDisposed || !IsHandleCreated) return;
                 try
@@ -3223,6 +3230,25 @@ namespace PISMO
                 // должны остаться ПОВЕРХ пузырей, а AddRange кладёт добавленное
                 // последним ниже по порядку окон.
                 var pendingBubbles = new List<Control>(dt.Rows.Count + 8);
+
+                // Кнопка «показать более старые» — первым элементом ленты.
+                //
+                // Раньше страница вверх подгружалась ТОЛЬКО по прокрутке: надо
+                // было доехать колесом почти до самого верха и при этом
+                // двигаться вверх. После каждой подгрузки лента возвращалась
+                // на прежнее место, то есть уже не у верха, и всё начиналось
+                // заново — отсюда ощущение «выше не поднимается». Кнопка
+                // убирает эту зависимость от прокрутки совсем, а заодно честно
+                // отвечает на вопрос «а есть ли ещё?»: нет кнопки — значит это
+                // и есть начало переписки.
+                if (_dmHasMore)
+                {
+                    var older = BuildLoadOlderButton();
+                    older.Top = yOffset;
+                    older.Left = Math.Max(8, (pnlMessages.ClientSize.Width - older.Width) / 2);
+                    pendingBubbles.Add(older);
+                    yOffset += older.Height + 8;
+                }
                 string lastDate = "";
 
                 foreach (DataRow row in dt.Rows)
@@ -3475,7 +3501,14 @@ namespace PISMO
                 // открытие чата.
                 try { FetchPageMeta("d" + partner, dt, isGroup: false); } catch { }
 
-                _dmHasMore = dt.Rows.Count >= _dmLimit;   // набрали полную страницу → возможно есть ещё
+                // Спрашиваем базу прямо, а не гадаем по длине страницы: см.
+                // пояснение у HasOlderThan. Страница приходит в хронологическом
+                // порядке, поэтому самое старое сообщение — первая строка.
+                int oldestD = 0;
+                try { if (dt.Rows.Count > 0) oldestD = Convert.ToInt32(dt.Rows[0]["id"]); } catch { }
+                _dmHasMore = oldestD > 0
+                    ? HasOlderThan(myId, partner, oldestD)
+                    : dt.Rows.Count >= _dmLimit;
                 // Сохраняем в постоянный кеш переписки (текст зашифрован, как в БД).
                 Perf.Time("MessageCache.Save (диск)", () =>
                 {
@@ -3592,6 +3625,25 @@ namespace PISMO
                 int yOffset = (iBlocked || theyBlockedMe) ? 10 + 32 + 8 : 10;
                 // См. пояснение в RenderGroupMessages: копим пузыри и добавляем разом.
                 var pendingBubbles = new List<Control>(dt.Rows.Count + 8);
+
+                // Кнопка «показать более старые» — первым элементом ленты.
+                //
+                // Раньше страница вверх подгружалась ТОЛЬКО по прокрутке: надо
+                // было доехать колесом почти до самого верха и при этом
+                // двигаться вверх. После каждой подгрузки лента возвращалась
+                // на прежнее место, то есть уже не у верха, и всё начиналось
+                // заново — отсюда ощущение «выше не поднимается». Кнопка
+                // убирает эту зависимость от прокрутки совсем, а заодно честно
+                // отвечает на вопрос «а есть ли ещё?»: нет кнопки — значит это
+                // и есть начало переписки.
+                if (_dmHasMore)
+                {
+                    var older = BuildLoadOlderButton();
+                    older.Top = yOffset;
+                    older.Left = Math.Max(8, (pnlMessages.ClientSize.Width - older.Width) / 2);
+                    pendingBubbles.Add(older);
+                    yOffset += older.Height + 8;
+                }
                 string lastDate = "";
 
                 foreach (DataRow row in dt.Rows)
@@ -3745,15 +3797,45 @@ namespace PISMO
             UpdateScrollDownButton();
         }
 
+        /// <summary>Кнопка «показать более старые» в самом верху ленты.</summary>
+        private Button BuildLoadOlderButton()
+        {
+            var b = new Button
+            {
+                Text = "↑  Показать более старые",
+                Size = new Size(230, 30),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(64, 68, 75),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                Font = new Font("Segoe UI", 9f),
+                Cursor = Cursors.Hand,
+                TabStop = false,
+            };
+            b.FlatAppearance.BorderSize = 0;
+            b.Click += (s, e) => LoadOlderNow();
+            return b;
+        }
+
         /// <summary>У верха списка и есть более старые сообщения — догружаем ещё
         /// страницу (ЛС или группа), сохраняя позицию (чат не скидывается вниз).</summary>
         private void MaybeLoadOlder()
+        {
+            // Порог поднят с шестидесяти точек до двухсот, а требование
+            // «двигаемся вверх» снято у самого верха. Прежние условия сходились
+            // слишком редко: после подгрузки лента возвращается на прежнее
+            // место, и до верха опять далеко.
+            int top = -pnlMessages.AutoScrollPosition.Y;
+            if (top > 200) return;
+            LoadOlderNow();
+        }
+
+        /// <summary>Одна страница вверх. Зовётся и прокруткой, и кнопкой.</summary>
+        private void LoadOlderNow()
         {
             bool grp = _currentGroupId >= 0;
             bool dm = !grp && _currentChatPartnerId >= 0;
             if (!grp && !dm) return;
             if (_dmLoadingOlder || !_dmHasMore) return;
-            if (-pnlMessages.AutoScrollPosition.Y > 60) return;   // ещё не у верха
             // Пауза между догрузками: каждая увеличивает страницу и перерисовывает
             // всю ленту, поэтому серия срабатываний подряд ощущается как фриз.
             if ((DateTime.UtcNow - _lastOlderLoad).TotalMilliseconds < 800) return;
