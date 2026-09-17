@@ -214,6 +214,11 @@ ALTER TABLE messages        ADD COLUMN IF NOT EXISTS file_sha CHAR(64) NULL;
 ALTER TABLE group_messages  ADD COLUMN IF NOT EXISTS file_sha CHAR(64) NULL;
 ALTER TABLE server_messages ADD COLUMN IF NOT EXISTS file_sha CHAR(64) NULL;
 
+-- Отпечатки считаются при заливке, поэтому у файлов, залитых ДО этой
+-- миграции, столбец останется пустым и донорами они не станут. Посчитать их
+-- задним числом — отдельный файл, 2026-09-17_file_sha_backfill.sql: работа
+-- разовая и тяжёлая, схемы она не касается, и запускать её стоит тогда, когда
+-- сервером никто не пользуется.
 ALTER TABLE messages        ADD INDEX IF NOT EXISTS idx_file_sha (sender_id, file_sha);
 ALTER TABLE group_messages  ADD INDEX IF NOT EXISTS idx_file_sha (sender_id, file_sha);
 ALTER TABLE server_messages ADD INDEX IF NOT EXISTS idx_file_sha (sender_id, file_sha);
