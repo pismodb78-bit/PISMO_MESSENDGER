@@ -3231,24 +3231,6 @@ namespace PISMO
                 // последним ниже по порядку окон.
                 var pendingBubbles = new List<Control>(dt.Rows.Count + 8);
 
-                // Кнопка «показать более старые» — первым элементом ленты.
-                //
-                // Раньше страница вверх подгружалась ТОЛЬКО по прокрутке: надо
-                // было доехать колесом почти до самого верха и при этом
-                // двигаться вверх. После каждой подгрузки лента возвращалась
-                // на прежнее место, то есть уже не у верха, и всё начиналось
-                // заново — отсюда ощущение «выше не поднимается». Кнопка
-                // убирает эту зависимость от прокрутки совсем, а заодно честно
-                // отвечает на вопрос «а есть ли ещё?»: нет кнопки — значит это
-                // и есть начало переписки.
-                if (_dmHasMore)
-                {
-                    var older = BuildLoadOlderButton();
-                    older.Top = yOffset;
-                    older.Left = Math.Max(8, (pnlMessages.ClientSize.Width - older.Width) / 2);
-                    pendingBubbles.Add(older);
-                    yOffset += older.Height + 8;
-                }
                 string lastDate = "";
 
                 foreach (DataRow row in dt.Rows)
@@ -3626,24 +3608,6 @@ namespace PISMO
                 // См. пояснение в RenderGroupMessages: копим пузыри и добавляем разом.
                 var pendingBubbles = new List<Control>(dt.Rows.Count + 8);
 
-                // Кнопка «показать более старые» — первым элементом ленты.
-                //
-                // Раньше страница вверх подгружалась ТОЛЬКО по прокрутке: надо
-                // было доехать колесом почти до самого верха и при этом
-                // двигаться вверх. После каждой подгрузки лента возвращалась
-                // на прежнее место, то есть уже не у верха, и всё начиналось
-                // заново — отсюда ощущение «выше не поднимается». Кнопка
-                // убирает эту зависимость от прокрутки совсем, а заодно честно
-                // отвечает на вопрос «а есть ли ещё?»: нет кнопки — значит это
-                // и есть начало переписки.
-                if (_dmHasMore)
-                {
-                    var older = BuildLoadOlderButton();
-                    older.Top = yOffset;
-                    older.Left = Math.Max(8, (pnlMessages.ClientSize.Width - older.Width) / 2);
-                    pendingBubbles.Add(older);
-                    yOffset += older.Height + 8;
-                }
                 string lastDate = "";
 
                 foreach (DataRow row in dt.Rows)
@@ -3797,39 +3761,26 @@ namespace PISMO
             UpdateScrollDownButton();
         }
 
-        /// <summary>Кнопка «показать более старые» в самом верху ленты.</summary>
-        private Button BuildLoadOlderButton()
-        {
-            var b = new Button
-            {
-                Text = "↑  Показать более старые",
-                Size = new Size(230, 30),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(64, 68, 75),
-                ForeColor = Color.FromArgb(220, 221, 222),
-                Font = new Font("Segoe UI", 9f),
-                Cursor = Cursors.Hand,
-                TabStop = false,
-            };
-            b.FlatAppearance.BorderSize = 0;
-            b.Click += (s, e) => LoadOlderNow();
-            return b;
-        }
-
         /// <summary>У верха списка и есть более старые сообщения — догружаем ещё
         /// страницу (ЛС или группа), сохраняя позицию (чат не скидывается вниз).</summary>
         private void MaybeLoadOlder()
         {
-            // Порог поднят с шестидесяти точек до двухсот, а требование
-            // «двигаемся вверх» снято у самого верха. Прежние условия сходились
-            // слишком редко: после подгрузки лента возвращается на прежнее
-            // место, и до верха опять далеко.
+            // Берём ВПЕРЁД, за целый экран до верха, а не у самой кромки.
+            //
+            // Прежние условия сходились слишком редко: нужно было доехать почти
+            // вплотную к верху и при этом двигаться вверх. А после каждой
+            // подгрузки лента возвращается на прежнее место — то есть снова не
+            // у верха, — и всё начиналось заново. Отсюда и ощущение, что выше
+            // она не поднимается. С запасом в экран следующая порция успевает
+            // приехать до того, как человек до неё домотает, и прокрутка идёт
+            // без остановок — как на телефоне.
             int top = -pnlMessages.AutoScrollPosition.Y;
-            if (top > 200) return;
+            int ahead = Math.Min(900, Math.Max(200, pnlMessages.ClientSize.Height));
+            if (top > ahead) return;
             LoadOlderNow();
         }
 
-        /// <summary>Одна страница вверх. Зовётся и прокруткой, и кнопкой.</summary>
+        /// <summary>Одна страница вверх, с сохранением места на экране.</summary>
         private void LoadOlderNow()
         {
             bool grp = _currentGroupId >= 0;
@@ -3838,14 +3789,20 @@ namespace PISMO
             if (_dmLoadingOlder || !_dmHasMore) return;
             // Пауза между догрузками: каждая увеличивает страницу и перерисовывает
             // всю ленту, поэтому серия срабатываний подряд ощущается как фриз.
-            if ((DateTime.UtcNow - _lastOlderLoad).TotalMilliseconds < 800) return;
+            if ((DateTime.UtcNow - _lastOlderLoad).TotalMilliseconds < 400) return;
             _lastOlderLoad = DateTime.UtcNow;
 
             _dmLoadingOlder = true;
             int viewport = pnlMessages.ClientSize.Height;
             int curTop = -pnlMessages.AutoScrollPosition.Y;
             _dmRestoreFromBottom = pnlMessages.DisplayRectangle.Height - (curTop + viewport);
-            _dmLimit += MsgPageSize;
+
+            // Шаг растёт вглубь. Каждая подгрузка перечитывает и перерисовывает
+            // ВСЮ страницу заново — не только новые сорок, — поэтому чем дальше
+            // в историю, тем дороже обходится шаг. Прибавляя треть уже
+            // показанного, до начала переписки доходим за восемь-девять
+            // подгрузок вместо тридцати, и суммарной работы выходит меньше.
+            _dmLimit += Math.Max(MsgPageSize, _dmLimit / 3);
             // Запоминаем «сколько долистано» — при переоткрытии покажем столько же.
             if (grp) LoadGroupMessages(); else LoadMessages(markRead: false);
         }
