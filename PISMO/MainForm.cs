@@ -3242,7 +3242,7 @@ namespace PISMO
                 _dmHasMore = oldestG > 0
                     ? HasOlderInGroup(group, oldestG)
                     : dt.Rows.Count >= _dmLimit;
-                try { MessageCache.Save(MessageCache.GroupKey(group), dt); } catch { }
+                try { MessageCache.Merge(MessageCache.GroupKey(group), dt); } catch { }
                 if (IsDisposed || !IsHandleCreated) return;
                 try
                 {
@@ -3543,7 +3543,7 @@ namespace PISMO
                 // Сохраняем в постоянный кеш переписки (текст зашифрован, как в БД).
                 Perf.Time("MessageCache.Save (диск)", () =>
                 {
-                    try { MessageCache.Save(MessageCache.DirectKey(myId, partner), dt); } catch { }
+                    try { MessageCache.Merge(MessageCache.DirectKey(myId, partner), dt); } catch { }
                 });
 
                 // Чат ОТКРЫТ — входящие, пришедшие пока сидим в нём, помечаем
@@ -3971,6 +3971,19 @@ namespace PISMO
             return (rows, more);
         }
 
+        /// <summary>Добавляет строку в таблицу, сопоставляя колонки по ИМЕНАМ.</summary>
+        private static void AppendByName(DataTable target, DataRow src)
+        {
+            var nr = target.NewRow();
+            foreach (DataColumn c in target.Columns)
+                if (src.Table.Columns.Contains(c.ColumnName))
+                {
+                    var v = src[c.ColumnName];
+                    if (v != null && v != DBNull.Value) nr[c] = v;
+                }
+            target.Rows.Add(nr);
+        }
+
         private void PrependOlder(bool grp, int chatId, int myId)
         {
             var basePage = _pageDt;
@@ -4016,6 +4029,25 @@ namespace PISMO
                 bool more = readyMore;
                 if (older == null)
                 {
+                    // Сначала — кеш переписки. Всё, что человек уже читал, лежит
+                    // на диске: подниматься по нему через сервер незачем, и
+                    // именно так это устроено на телефоне.
+                    //
+                    // «Есть ли ещё» кеш не знает — он мог просто кончиться
+                    // раньше начала переписки, — поэтому отвечаем «да»:
+                    // следующая порция не найдётся в кеше, уйдёт в базу и
+                    // ответит точно.
+                    try
+                    {
+                        var hit = MessageCache.Older(
+                            grp ? MessageCache.GroupKey(chatId) : MessageCache.DirectKey(myId, chatId),
+                            oldestId, OlderStep);
+                        if (hit != null && hit.Rows.Count > 0) { older = hit; more = true; }
+                    }
+                    catch { }
+                }
+                if (older == null)
+                {
                     try { (older, more) = FetchOlderPage(grp, chatId, myId, oldestId); }
                     catch { older = null; }
                 }
@@ -4024,7 +4056,11 @@ namespace PISMO
                     try
                     {
                         merged = older.Copy();
-                        foreach (DataRow r in baseCopy.Rows) merged.ImportRow(r);
+                        // По именам колонок, а не по их номерам: порция могла
+                        // прийти из кеша, записанного прошлой версией, и порядок
+                        // полей у неё свой. По номерам текст молча оказался бы
+                        // в имени файла.
+                        foreach (DataRow r in baseCopy.Rows) AppendByName(merged, r);
                     }
                     catch { merged = null; }
 
@@ -4184,12 +4220,14 @@ namespace PISMO
                 _pageDt = merged;
                 if (grp) { _groupMetaCache[chatId] = merged; _lastGroupMsgCount = merged.Rows.Count; }
                 else     { _msgMetaCache[chatId]   = merged; _lastMsgCount      = merged.Rows.Count; }
-                try
+                // Вливаем в историю переписки из фона: слияние читает и пишет
+                // файл, а мы на потоке интерфейса посреди вставки.
+                var forCache = merged; string cacheKey = grp ? MessageCache.GroupKey(chatId)
+                                                             : MessageCache.DirectKey(myId, chatId);
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    MessageCache.Save(grp ? MessageCache.GroupKey(chatId)
-                                          : MessageCache.DirectKey(myId, chatId), merged);
-                }
-                catch { }
+                    try { MessageCache.Merge(cacheKey, forCache); } catch { }
+                });
 
                 // Подпись ленты приводим к тому, что теперь на экране, и лимит —
                 // к её длине. Без этого ближайшая фоновая выборка (она берёт уже
