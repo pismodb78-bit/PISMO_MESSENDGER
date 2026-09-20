@@ -15,6 +15,12 @@ name: Релиз
 # если тег больше. Расхождение здесь означает либо вечное «есть обновление»,
 # либо его молчаливое отсутствие — поэтому несовпадение останавливает выпуск.
 on:
+  # По тегу — основной путь. Запуск кнопкой (workflow_dispatch) GitHub видит
+  # только для файлов, лежащих в ОСНОВНОЙ ветке, а этот появился в рабочей;
+  # с тегом такой беды нет — при пуше тега берутся файлы из него самого.
+  push:
+    tags:
+      - "*"
   workflow_dispatch:
     inputs:
       tag:
@@ -23,6 +29,10 @@ on:
       notes:
         description: "Описание релиза (необязательно)"
         required: false
+
+env:
+  # Откуда бы ни пришли — тег один.
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -42,7 +52,7 @@ jobs:
       - name: Сверить тег с версией проекта
         shell: pwsh
         run: |
-          $tag = "${{ github.event.inputs.tag }}".TrimStart('v')
+          $tag = "${{ env.TAG }}".TrimStart('v')
           $xml = [xml](Get-Content PISMO\PISMO.csproj)
           $ver = ($xml.Project.PropertyGroup.Version | Where-Object { $_ }) -as [string]
           $ver = $ver.Trim()
@@ -77,8 +87,8 @@ jobs:
       - name: Опубликовать релиз
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
           body: ${{ github.event.inputs.notes }}
           files: PISMO.zip
           fail_on_unmatched_files: true
