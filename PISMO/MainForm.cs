@@ -3299,10 +3299,18 @@ namespace PISMO
 
                 if (_dmRestoreFromBottom >= 0)
                 {
+                    // Держимся за КОНКРЕТНОЕ сообщение, а не за расстояние от
+                    // низа. Расстояние врёт: пока страница собиралась заново,
+                    // высоты пузырей ниже могли измениться — догрузилась
+                    // картинка, поднялся проигрыватель, — и лента откатывалась
+                    // на десяток-другой точек. Сообщение же остаётся собой.
                     pnlMessages.PerformLayout();
-                    int viewport = pnlMessages.ClientSize.Height;
-                    int newTop = pnlMessages.DisplayRectangle.Height - viewport - _dmRestoreFromBottom;
-                    try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
+                    if (!RestoreAnchor())
+                    {
+                        int viewport = pnlMessages.ClientSize.Height;
+                        int newTop = pnlMessages.DisplayRectangle.Height - viewport - _dmRestoreFromBottom;
+                        try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
+                    }
                     _dmRestoreFromBottom = -1;
                 }
                 else if (_pendingJumpDate == null && _pendingJumpMsgId <= 0)
@@ -3321,6 +3329,7 @@ namespace PISMO
                 try { BeginInvoke(new Action(RestackBubbles)); } catch { }
                 ArmRestackSettle();
                 _dmLoadingOlder = false;
+                ShowLoadingOlder(false);
                 UpdateScrollDownButton();
                 _drawingPage = false;
                 ChatScroll.ResumeDraw(pnlMessages);   // разморозка + показ собранного одним движением
@@ -3701,10 +3710,18 @@ namespace PISMO
                     // сообщения остаются на месте (не скидываем вниз). Восстанавливаем
                     // прежнее расстояние от низа контента (DisplayRectangle = полная
                     // высота контента у AutoScroll-панели).
+                    // Держимся за КОНКРЕТНОЕ сообщение, а не за расстояние от
+                    // низа. Расстояние врёт: пока страница собиралась заново,
+                    // высоты пузырей ниже могли измениться — догрузилась
+                    // картинка, поднялся проигрыватель, — и лента откатывалась
+                    // на десяток-другой точек. Сообщение же остаётся собой.
                     pnlMessages.PerformLayout();
-                    int viewport = pnlMessages.ClientSize.Height;
-                    int newTop = pnlMessages.DisplayRectangle.Height - viewport - _dmRestoreFromBottom;
-                    try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
+                    if (!RestoreAnchor())
+                    {
+                        int viewport = pnlMessages.ClientSize.Height;
+                        int newTop = pnlMessages.DisplayRectangle.Height - viewport - _dmRestoreFromBottom;
+                        try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, newTop)); } catch { }
+                    }
                     _dmRestoreFromBottom = -1;
                 }
                 else if (_pendingJumpDate == null && _pendingJumpMsgId <= 0)
@@ -3723,6 +3740,7 @@ namespace PISMO
                 try { BeginInvoke(new Action(RestackBubbles)); } catch { }
                 ArmRestackSettle();
                 _dmLoadingOlder = false;
+                ShowLoadingOlder(false);
                 UpdateScrollDownButton();
                 _drawingPage = false;
                 ChatScroll.ResumeDraw(pnlMessages);   // разморозка + показ собранного одним движением
@@ -3770,6 +3788,101 @@ namespace PISMO
             UpdateScrollDownButton();
         }
 
+        // ── Подгрузка старых: якорь и подпись ────────────────────────────
+        //
+        // Раньше место держали «расстоянием от низа содержимого». На бумаге
+        // верно, на деле врёт: пока страница собиралась заново, высоты пузырей
+        // НИЖЕ могли измениться — догрузилась картинка, поднялся встроенный
+        // проигрыватель, — и лента откатывалась на десяток-другой точек. Теперь
+        // держимся за конкретное сообщение: оно остаётся собой.
+
+        private int _anchorMsgId;
+        private int _anchorOffset;
+        private Label _lblLoadingOlder;
+
+        /// <summary>Запоминает верхнее видимое сообщение и его место на экране.</summary>
+        private void RememberAnchor()
+        {
+            _anchorMsgId = 0;
+            try
+            {
+                Control best = null;
+                foreach (Control c in pnlMessages.Controls)
+                {
+                    // Координата ребёнка у прокрученной панели уже отсчитана от
+                    // видимой области: ноль — верхняя кромка.
+                    if (c.Name == null || !c.Name.StartsWith("msg", StringComparison.Ordinal)) continue;
+                    if (c.Top + c.Height <= 0) continue;          // целиком выше экрана
+                    if (best == null || c.Top < best.Top) best = c;
+                }
+                if (best == null) return;
+                if (!int.TryParse(best.Name.AsSpan(3), out int id)) return;
+                _anchorMsgId = id;
+                _anchorOffset = best.Top;
+            }
+            catch { _anchorMsgId = 0; }
+        }
+
+        /// <summary>Возвращает ленту на то же место. false — якорь не нашёлся.</summary>
+        private bool RestoreAnchor()
+        {
+            if (_anchorMsgId <= 0) return false;
+            try
+            {
+                var found = pnlMessages.Controls.Find("msg" + _anchorMsgId, false);
+                if (found.Length == 0 || found[0].IsDisposed) return false;
+                // Прокрутка в этот момент сброшена в ноль (её обнуляет начало
+                // отрисовки), поэтому Top — это и есть координата в содержимом.
+                int target = found[0].Top - _anchorOffset;
+                pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, target));
+                return true;
+            }
+            catch { return false; }
+            finally { _anchorMsgId = 0; }
+        }
+
+        /// <summary>
+        /// Подпись «загружаю более ранние…» в шапке чата.
+        ///
+        /// В шапке, а не над самой лентой: плавающее поверх прокручиваемой
+        /// панели ломает быстрый путь прокрутки Windows — по этой причине
+        /// отсюда когда-то убрали кнопку «вниз к новым».
+        ///
+        /// Перерисовываем немедленно: следом поток надолго уходит в сборку
+        /// страницы, и без этого надпись появилась бы уже после того, как всё
+        /// закончилось.
+        /// </summary>
+        private void ShowLoadingOlder(bool on)
+        {
+            try
+            {
+                if (_lblLoadingOlder == null)
+                {
+                    if (pnlChatHeader == null) return;
+                    _lblLoadingOlder = new Label
+                    {
+                        Text = "⏳  загружаю более ранние…",
+                        AutoSize = true,
+                        BackColor = Color.Transparent,
+                        ForeColor = Color.FromArgb(140, 150, 165),
+                        Font = new Font("Segoe UI", 8.5f),
+                        Visible = false,
+                        TabStop = false,
+                    };
+                    pnlChatHeader.Controls.Add(_lblLoadingOlder);
+                }
+                if (!on) { _lblLoadingOlder.Visible = false; return; }
+
+                _lblLoadingOlder.Location = new Point(
+                    Math.Max(220, (pnlChatHeader.Width - _lblLoadingOlder.Width) / 2),
+                    Math.Max(4, (pnlChatHeader.Height - _lblLoadingOlder.Height) / 2));
+                _lblLoadingOlder.Visible = true;
+                _lblLoadingOlder.BringToFront();
+                _lblLoadingOlder.Update();
+            }
+            catch { }
+        }
+
         /// <summary>У верха списка и есть более старые сообщения — догружаем ещё
         /// страницу (ЛС или группа), сохраняя позицию (чат не скидывается вниз).</summary>
         private void MaybeLoadOlder()
@@ -3802,16 +3915,23 @@ namespace PISMO
             _lastOlderLoad = DateTime.UtcNow;
 
             _dmLoadingOlder = true;
+            RememberAnchor();
+            ShowLoadingOlder(true);
             int viewport = pnlMessages.ClientSize.Height;
             int curTop = -pnlMessages.AutoScrollPosition.Y;
             _dmRestoreFromBottom = pnlMessages.DisplayRectangle.Height - (curTop + viewport);
 
-            // Шаг растёт вглубь. Каждая подгрузка перечитывает и перерисовывает
-            // ВСЮ страницу заново — не только новые сорок, — поэтому чем дальше
-            // в историю, тем дороже обходится шаг. Прибавляя треть уже
-            // показанного, до начала переписки доходим за восемь-девять
-            // подгрузок вместо тридцати, и суммарной работы выходит меньше.
-            _dmLimit += Math.Max(MsgPageSize, _dmLimit / 3);
+            // Шаг постоянный, и это сознательный откат.
+            //
+            // Был растущий — «прибавляй треть уже показанного», — чтобы до
+            // начала переписки доходить за меньшее число подгрузок. Число
+            // вышло меньше, но каждая следующая становилась длиннее предыдущей:
+            // подгрузка перечитывает и пересобирает ВСЮ страницу заново, а не
+            // только новую порцию. Человек же чувствует не количество пауз, а
+            // их длину — и на глубине это были те самые три секунды.
+            // Шестьдесят сообщений собираются быстро и одинаково на любой
+            // глубине.
+            _dmLimit += 60;
             // Запоминаем «сколько долистано» — при переоткрытии покажем столько же.
             if (grp) LoadGroupMessages(); else LoadMessages(markRead: false);
         }
