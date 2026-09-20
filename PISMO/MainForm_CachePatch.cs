@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  MainForm — CachePatch (partial)
 //  Добавьте этот файл в проект. Он заменяет логику чтения
 //  медиабайтов из БД на чтение из локального кеша.
@@ -216,6 +216,95 @@ namespace PISMO
             using var cmd = new MySqlCommand(sql, conn);
             cmd.Parameters.AddWithValue("@me",   myId);
             cmd.Parameters.AddWithValue("@them", themId);
+            var dt = new DataTable();
+            new MySqlDataAdapter(cmd).Fill(dt);
+            return dt;
+        }
+
+        /// <summary>
+        /// Порция СТАРЫХ сообщений — тех, что идут выше уже показанных.
+        ///
+        /// Нужна для догрузки вверх. Раньше догрузка просто поднимала лимит и
+        /// перечитывала страницу ЦЕЛИКОМ: на глубине это сотни сообщений,
+        /// которые заново расшифровываются и заново собираются в пузыри, —
+        /// отсюда и пауза в несколько секунд у верхней кромки. Здесь берём
+        /// ровно недостающий кусок, и его размер не зависит от того, как
+        /// далеко человек успел долистать.
+        ///
+        /// Форма запроса та же, что и у страницы (см. пояснение ниже про
+        /// UNION ALL и индекс): добавлено только «id меньше такого-то».
+        /// </summary>
+        public static DataTable LoadMessagesOlderThan(int myId, int themId, int beforeId, int limit)
+        {
+            if (beforeId <= 0 || limit <= 0) return new DataTable();
+            using var conn = DBHelper.OpenConnection();
+
+            string cols = @"
+                       m.id, m.sender_id, m.text,
+                       m.file_name,
+                       m.reply_to_id, m.is_deleted, m.edited_at, m.created_at,
+                       m.is_read,
+                       (m.image_data IS NOT NULL) AS has_img,
+                       (m.audio_data IS NOT NULL) AS has_audio,
+                       (m.video_data IS NOT NULL) AS has_video,
+                       (m.file_data  IS NOT NULL) AS has_file";
+
+            string tail = " AND m.id<@before ORDER BY m.id DESC LIMIT " + limit;
+            string inner =
+                "( SELECT " + cols + " FROM messages m " +
+                "  WHERE m.sender_id=@me AND m.receiver_id=@them" + tail + " )" +
+                " UNION ALL " +
+                "( SELECT " + cols + " FROM messages m " +
+                "  WHERE m.sender_id=@them AND m.receiver_id=@me" + tail + " )";
+
+            string sql = @"
+                SELECT sub.*,
+                       NULL AS image_data, NULL AS audio_data,
+                       NULL AS video_data, NULL AS file_data,
+                       TIMESTAMPDIFF(SECOND, sub.created_at, NOW()) AS age_sec,
+                       COALESCE(NULLIF(TRIM(CONCAT(u.Name,' ',u.Surname)), ''),
+                                CONCAT('Пользователь #', sub.sender_id)) AS sender_name,
+                       COALESCE(u.login, '') AS login
+                FROM ( SELECT * FROM (" + inner + ") pair ORDER BY id DESC LIMIT " + limit + @" ) sub
+                LEFT JOIN users u ON u.id = sub.sender_id
+                ORDER BY sub.id ASC";
+
+            using var cmd = new MySqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@me",     myId);
+            cmd.Parameters.AddWithValue("@them",   themId);
+            cmd.Parameters.AddWithValue("@before", beforeId);
+            var dt = new DataTable();
+            new MySqlDataAdapter(cmd).Fill(dt);
+            return dt;
+        }
+
+        /// <summary>То же для группы.</summary>
+        public static DataTable LoadGroupMessagesOlderThan(int groupId, int beforeId, int limit)
+        {
+            if (beforeId <= 0 || limit <= 0) return new DataTable();
+            using var conn = DBHelper.OpenConnection();
+            string inner = @"
+                SELECT gm.id, gm.sender_id, gm.text,
+                       NULL AS image_data, NULL AS audio_data,
+                       NULL AS video_data, NULL AS file_data,
+                       gm.file_name,
+                       gm.reply_to_id, gm.is_deleted, gm.edited_at, gm.created_at,
+                       COALESCE(NULLIF(TRIM(CONCAT(u.Name,' ',u.Surname)), ''),
+                                CONCAT('Пользователь #', gm.sender_id)) AS sender_name,
+                       COALESCE(u.login, '') AS login,
+                       (gm.image_data IS NOT NULL) AS has_img,
+                       (gm.audio_data IS NOT NULL) AS has_audio,
+                       (gm.video_data IS NOT NULL) AS has_video,
+                       (gm.file_data  IS NOT NULL) AS has_file
+                FROM group_messages gm
+                LEFT JOIN users u ON u.id = gm.sender_id
+                WHERE gm.group_id=@g AND gm.id<@before
+                ORDER BY gm.id DESC LIMIT " + limit;
+            string sql = "SELECT * FROM (" + inner + ") sub ORDER BY id ASC";
+
+            using var cmd = new MySqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@g",      groupId);
+            cmd.Parameters.AddWithValue("@before", beforeId);
             var dt = new DataTable();
             new MySqlDataAdapter(cmd).Fill(dt);
             return dt;

@@ -102,6 +102,11 @@ namespace PISMO
 
         /// <summary>Лента в порядке сборки — по нему её пересчитывают.</summary>
         private List<Control> _laidOut = new();
+        // Строки, которые СЕЙЧАС на экране, и состояние блокировки, с которым
+        // их рисовали. Нужны догрузке вверх: она вставляет порцию в уже
+        // собранную ленту и обязана знать, во что вставляет.
+        private DataTable _pageDt;
+        private bool _pageBlockedI, _pageBlockedThem;
 
         private HashSet<int> _pinnedInView;   // id закреплённых сообщений текущего чата (2.0)
         private Dictionary<int, List<ReactionsRepository.Reaction>> _reactionsInView;  // реакции всех видимых сообщений (2.0)
@@ -3232,67 +3237,17 @@ namespace PISMO
                 // сорок. Кружки выделения по-прежнему добавляются сразу — они
                 // должны остаться ПОВЕРХ пузырей, а AddRange кладёт добавленное
                 // последним ниже по порядку окон.
-                var pendingBubbles = new List<Control>(dt.Rows.Count + 8);
-
-                string lastDate = "";
-
-                foreach (DataRow row in dt.Rows)
-                {
-                    int senderId = Convert.ToInt32(row["sender_id"]);
-                    bool isMine = senderId == myId;
-                    string text = Crypto.Dec(row["text"].ToString());
-                    string sname = row["sender_name"].ToString().Trim();
-                    if (string.IsNullOrWhiteSpace(sname)) sname = row["login"].ToString();
-                    DateTime dt2 = ToViewerLocal(Convert.ToDateTime(row["created_at"]));
-                    string time = dt2.ToString("HH:mm");
-                    string date = dt2.ToString("d MMMM yyyy",
-                                        new System.Globalization.CultureInfo("ru-RU"));
-
-                    if (date != lastDate)
-                    {
-                        var sep = BuildDateSeparator(date);
-                        sep.Top = yOffset;
-                        pendingBubbles.Add(sep);
-                        yOffset += sep.Height + 4;
-                        lastDate = date;
-                    }
-
-                    int msgId = Convert.ToInt32(row["id"]);
-                    int replyToId = row["reply_to_id"] == DBNull.Value ? 0 : Convert.ToInt32(row["reply_to_id"]);
-                    bool isDeleted = Convert.ToBoolean(row["is_deleted"]);
-                    bool isEdited = row["edited_at"] != DBNull.Value;
-                    string fileName = row["file_name"] == DBNull.Value ? null : row["file_name"].ToString();
-
-                    bool hasImg = row["has_img"] != DBNull.Value && Convert.ToBoolean(row["has_img"]);
-                    bool hasAudio = row["has_audio"] != DBNull.Value && Convert.ToBoolean(row["has_audio"]);
-                    bool hasVideo = row["has_video"] != DBNull.Value && Convert.ToBoolean(row["has_video"]);
-                    bool hasFile = row["has_file"] != DBNull.Value && Convert.ToBoolean(row["has_file"]);
-
-                    long fileSize = row.Table.Columns.Contains("file_size") && row["file_size"] != DBNull.Value
-                        ? Convert.ToInt64(row["file_size"]) : -1;
-
-                    var (img, audio, video, fileData) = LoadMediaForMessage(
-                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile,
-                        isGroup: true, fileSize, cacheOnly: true);
-
-                    var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
-                        fileData, fileName, msgId, isGroup: true, replyToId, isDeleted, isEdited, fileSize);
-                    bubble.Top = yOffset;
-                    PositionBubble(bubble, isMine);
-                    bubble.Tag = isMine;
-                    // Полная дата отправки — для выпадающего списка результатов поиска.
-                    bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
-
-                    pendingBubbles.Add(bubble);
-                    AddSelectMark(bubble, msgId);
-                    yOffset += bubble.Height + 8;
-                }
+                var pendingBubbles = BuildRows(dt, myId, isGroup: true,
+                                               iBlocked: false, theyBlockedMe: false,
+                                               yStart: yOffset).items;
 
                 pnlMessages.Controls.AddRange(pendingBubbles.ToArray());
                 // Запоминаем ПОРЯДОК, в котором лента собрана. По нему её потом
                 // и пересчитывают: он хронологический и не зависит ни от
                 // текущих координат, ни от z-порядка.
                 _laidOut = pendingBubbles;
+                _pageDt = dt;
+                _pageBlockedI = _pageBlockedThem = false;
                 _lastGroupMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
@@ -3621,85 +3576,17 @@ namespace PISMO
             {
                 int yOffset = (iBlocked || theyBlockedMe) ? 10 + 32 + 8 : 10;
                 // См. пояснение в RenderGroupMessages: копим пузыри и добавляем разом.
-                var pendingBubbles = new List<Control>(dt.Rows.Count + 8);
-
-                string lastDate = "";
-
-                foreach (DataRow row in dt.Rows)
-                {
-                    int senderId = Convert.ToInt32(row["sender_id"]);
-                    bool isMine = senderId == myId;
-
-                    // Если чат в режиме блокировки — скрываем входящие сообщения партнёра
-                    if ((iBlocked || theyBlockedMe) && !isMine)
-                        continue;
-
-                    string text = Crypto.Dec(row["text"].ToString());
-                    string sname = row["sender_name"].ToString().Trim();
-                    if (string.IsNullOrWhiteSpace(sname)) sname = row["login"].ToString();
-                    DateTime dt2 = ToViewerLocal(Convert.ToDateTime(row["created_at"]));
-                    string time = dt2.ToString("HH:mm");
-                    string date = dt2.ToString("d MMMM yyyy",
-                                        new System.Globalization.CultureInfo("ru-RU"));
-
-                    if (date != lastDate)
-                    {
-                        var sep = BuildDateSeparator(date);
-                        sep.Top = yOffset;
-                        pendingBubbles.Add(sep);
-                        yOffset += sep.Height + 4;
-                        lastDate = date;
-                    }
-
-                    int msgId = Convert.ToInt32(row["id"]);
-                    int replyToId = row["reply_to_id"] == DBNull.Value ? 0 : Convert.ToInt32(row["reply_to_id"]);
-                    bool isDeleted = Convert.ToBoolean(row["is_deleted"]);
-                    bool isEdited = row["edited_at"] != DBNull.Value;
-                    string fileName = row["file_name"] == DBNull.Value ? null : row["file_name"].ToString();
-
-                    bool hasImg = row["has_img"] != DBNull.Value && Convert.ToBoolean(row["has_img"]);
-                    bool hasAudio = row["has_audio"] != DBNull.Value && Convert.ToBoolean(row["has_audio"]);
-                    bool hasVideo = row["has_video"] != DBNull.Value && Convert.ToBoolean(row["has_video"]);
-                    bool hasFile = row["has_file"] != DBNull.Value && Convert.ToBoolean(row["has_file"]);
-
-                    long fileSize = row.Table.Columns.Contains("file_size") && row["file_size"] != DBNull.Value
-                        ? Convert.ToInt64(row["file_size"]) : -1;
-
-                    var (img, audio, video, fileData) = LoadMediaForMessage(
-                        msgId, fileName, hasImg, hasAudio, hasVideo, hasFile,
-                        isGroup: false, fileSize, cacheOnly: true);
-
-                    // Статус прочтения для МОИХ сообщений: 0 — отправляется (1 серая),
-                    // 1 — доставлено на сервер (2 серые), 2 — прочитано (2 синие).
-                    int readState = -1;
-                    if (isMine)
-                    {
-                        bool isRead = row.Table.Columns.Contains("is_read")
-                            && row["is_read"] != DBNull.Value && Convert.ToInt32(row["is_read"]) != 0;
-                        // Прочитано → ✓✓ синие; иначе доставлено → ✓✓ серые.
-                        // (Состояние «отправляется по возрасту» убрано: оно зависело от
-                        // age_sec, которого нет в подписи перерисовки → галочка застывала.)
-                        readState = isRead ? 2 : 1;
-                    }
-
-                    var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
-                        fileData, fileName, msgId, isGroup: false, replyToId, isDeleted, isEdited, fileSize, readState);
-                    bubble.Top = yOffset;
-                    PositionBubble(bubble, isMine);
-                    bubble.Tag = isMine;
-                    // Полная дата отправки — для выпадающего списка результатов поиска.
-                    bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
-
-                    pendingBubbles.Add(bubble);
-                    AddSelectMark(bubble, msgId);
-                    yOffset += bubble.Height + 8;
-                }
+                var pendingBubbles = BuildRows(dt, myId, isGroup: false,
+                                               iBlocked: iBlocked, theyBlockedMe: theyBlockedMe,
+                                               yStart: yOffset).items;
 
                 pnlMessages.Controls.AddRange(pendingBubbles.ToArray());
                 // Запоминаем ПОРЯДОК, в котором лента собрана. По нему её потом
                 // и пересчитывают: он хронологический и не зависит ни от
                 // текущих координат, ни от z-порядка.
                 _laidOut = pendingBubbles;
+                _pageDt = dt;
+                _pageBlockedI = iBlocked; _pageBlockedThem = theyBlockedMe;
                 _lastMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
                 NormalizeTopOffset(pnlMessages);   // подстраховка от «пустоты» сверху
@@ -3788,6 +3675,306 @@ namespace PISMO
             UpdateScrollDownButton();
         }
 
+        // ── Сборка пузырей страницы ─────────────────────────────────────
+        //
+        // Одно тело на три случая: личный чат, группа и догрузка вверх.
+        // Раньше цикл был написан дважды — для ЛС и для групп, — и догрузка
+        // воспользоваться им не могла: ей оставалось звать отрисовку целиком.
+        private (List<Control> items, int yEnd, string lastDate) BuildRows(
+            DataTable dt, int myId, bool isGroup, bool iBlocked, bool theyBlockedMe,
+            int yStart, string lastDate = "")
+        {
+            var items = new List<Control>(dt.Rows.Count + 8);
+            int yOffset = yStart;
+
+            foreach (DataRow row in dt.Rows)
+            {
+                int senderId = Convert.ToInt32(row["sender_id"]);
+                bool isMine = senderId == myId;
+
+                // Чат в режиме блокировки — входящие скрыты.
+                if (!isGroup && (iBlocked || theyBlockedMe) && !isMine) continue;
+
+                string text = Crypto.Dec(row["text"].ToString());
+                string sname = row["sender_name"].ToString().Trim();
+                if (string.IsNullOrWhiteSpace(sname)) sname = row["login"].ToString();
+                DateTime dt2 = ToViewerLocal(Convert.ToDateTime(row["created_at"]));
+                string time = dt2.ToString("HH:mm");
+                string date = dt2.ToString("d MMMM yyyy",
+                                    new System.Globalization.CultureInfo("ru-RU"));
+
+                if (date != lastDate)
+                {
+                    var sep = BuildDateSeparator(date);
+                    sep.Top = yOffset;
+                    // По этой подписи догрузка узнаёт верхний разделитель — и
+                    // понимает, не повторяет ли он день, который она уже начала.
+                    sep.AccessibleName = date;
+                    items.Add(sep);
+                    yOffset += sep.Height + 4;
+                    lastDate = date;
+                }
+
+                int msgId = Convert.ToInt32(row["id"]);
+                int replyToId = row["reply_to_id"] == DBNull.Value ? 0 : Convert.ToInt32(row["reply_to_id"]);
+                bool isDeleted = Convert.ToBoolean(row["is_deleted"]);
+                bool isEdited = row["edited_at"] != DBNull.Value;
+                string fileName = row["file_name"] == DBNull.Value ? null : row["file_name"].ToString();
+
+                bool hasImg = row["has_img"] != DBNull.Value && Convert.ToBoolean(row["has_img"]);
+                bool hasAudio = row["has_audio"] != DBNull.Value && Convert.ToBoolean(row["has_audio"]);
+                bool hasVideo = row["has_video"] != DBNull.Value && Convert.ToBoolean(row["has_video"]);
+                bool hasFile = row["has_file"] != DBNull.Value && Convert.ToBoolean(row["has_file"]);
+
+                long fileSize = row.Table.Columns.Contains("file_size") && row["file_size"] != DBNull.Value
+                    ? Convert.ToInt64(row["file_size"]) : -1;
+
+                var (img, audio, video, fileData) = LoadMediaForMessage(
+                    msgId, fileName, hasImg, hasAudio, hasVideo, hasFile,
+                    isGroup, fileSize, cacheOnly: true);
+
+                // Статус прочтения — только для МОИХ сообщений в личном чате:
+                // 1 — доставлено (две серые), 2 — прочитано (две синие).
+                int readState = -1;
+                if (!isGroup && isMine)
+                {
+                    bool isRead = row.Table.Columns.Contains("is_read")
+                        && row["is_read"] != DBNull.Value && Convert.ToInt32(row["is_read"]) != 0;
+                    readState = isRead ? 2 : 1;
+                }
+
+                var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
+                    fileData, fileName, msgId, isGroup, replyToId, isDeleted, isEdited,
+                    fileSize, readState);
+                bubble.Top = yOffset;
+                PositionBubble(bubble, isMine);
+                bubble.Tag = isMine;
+                // Полная дата отправки — для выпадающего списка результатов поиска.
+                bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
+
+                items.Add(bubble);
+                AddSelectMark(bubble, msgId);
+                yOffset += bubble.Height + 8;
+            }
+
+            return (items, yOffset, lastDate);
+        }
+
+        // ── Догрузка вверх вставкой, без пересборки ленты ────────────────
+        //
+        // Раньше это выглядело так: поднять лимит, перечитать страницу
+        // ЦЕЛИКОМ и собрать её заново. На глубине в три-четыре сотни
+        // сообщений — те самые три секунды стоячего окна у верхней кромки,
+        // причём каждый следующий заход дольше предыдущего: работы с каждым
+        // разом больше. И попасть обратно точно на прежнее место пересборка
+        // не могла — отсюда «откатывает немного вниз».
+        //
+        // Теперь из базы приезжают ровно недостающие шестьдесят сообщений,
+        // пузыри собираются только для них, а видимые остаются как есть.
+        // Работы столько же, сколько на одну страницу при открытии чата, и
+        // она не растёт с глубиной. Место держится не на глаз: содержимое
+        // выросло сверху на известную величину — на неё же двигаем прокрутку.
+
+        private const int OlderStep = 60;   // сколько сообщений добираем за раз
+
+        private void PrependOlder(bool grp, int chatId, int myId)
+        {
+            var basePage = _pageDt;
+            string key = (grp ? "g" : "d") + chatId;
+            int oldestId = 0;
+            try
+            {
+                if (basePage != null && basePage.Rows.Count > 0)
+                    oldestId = Convert.ToInt32(basePage.Rows[0]["id"]);
+            }
+            catch { }
+
+            // Вставлять можно только в ленту, которую мы же и собрали и которая
+            // прямо сейчас никуда не едет. Во всех прочих случаях — старый путь:
+            // он медленный, зато работает всегда.
+            if (oldestId <= 0 || _laidOut == null || _laidOut.Count == 0
+                || _renderedChatKey != key || _drawingPage
+                || _pendingJumpDate != null || _pendingJumpMsgId > 0)
+            {
+                LoadOlderFull(grp);
+                return;
+            }
+
+            DataTable baseCopy;
+            try { baseCopy = basePage.Copy(); }
+            catch { LoadOlderFull(grp); return; }
+
+            _dmLoadingOlder = true;
+            ShowLoadingOlderSoon();
+            bool iB = _pageBlockedI, tB = _pageBlockedThem;
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                DataTable older = null, merged = null;
+                bool more = false;
+                try
+                {
+                    older = grp ? LoadGroupMessagesOlderThan(chatId, oldestId, OlderStep)
+                                : LoadMessagesOlderThan(myId, chatId, oldestId, OlderStep);
+                }
+                catch { }
+                if (older != null && older.Rows.Count > 0)
+                {
+                    // Медиа — только для новой порции: у показанных оно уже в кеше.
+                    try { PrefetchPageMedia(older, grp); } catch { }
+                    try
+                    {
+                        merged = older.Copy();
+                        foreach (DataRow r in baseCopy.Rows) merged.ImportRow(r);
+                    }
+                    catch { merged = null; }
+                    // Метаданные пересобираем по ВСЕЙ ленте, а не по порции:
+                    // карта цитат строится от страницы, и подменять её куском
+                    // нельзя — пропали бы цитаты у сообщений, которые на экране.
+                    try { FetchPageMeta(key, merged ?? older, grp); } catch { }
+                    int next = 0;
+                    try { next = Convert.ToInt32(older.Rows[0]["id"]); } catch { }
+                    more = next > 0 && (grp ? HasOlderInGroup(chatId, next)
+                                            : HasOlderThan(myId, chatId, next));
+                }
+
+                if (IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        bool rows = older != null && older.Rows.Count > 0;
+                        bool ok = rows && merged != null
+                               && SplicePrepend(older, merged, basePage, grp,
+                                                chatId, myId, iB, tB, key);
+                        // Глубину переписываем, только если база ОТВЕТИЛА. На
+                        // оборванном запросе older == null, и «дальше ничего
+                        // нет» из этого не следует — иначе одна неудачная
+                        // попытка запирала прокрутку до переоткрытия чата.
+                        if (older != null) _dmHasMore = rows && more;
+                        _dmLoadingOlder = false;
+                        ShowLoadingOlder(false);
+                        // Вставить не удалось — ленту пересобрали, пока мы ходили
+                        // в базу. Доберём старым путём, он сработает наверняка.
+                        if (rows && !ok) { _lastOlderLoad = DateTime.MinValue; LoadOlderFull(grp); }
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        /// <summary>Вставляет готовую порцию сверху. false — лента уже другая.</summary>
+        private bool SplicePrepend(DataTable older, DataTable merged, DataTable basePage,
+                                   bool grp, int chatId, int myId, bool iB, bool tB, string key)
+        {
+            if (!ReferenceEquals(_pageDt, basePage)) return false;
+            if (_laidOut == null || _laidOut.Count == 0) return false;
+            if (_renderedChatKey != key || _drawingPage) return false;
+            if (grp ? _currentGroupId != chatId : _currentChatPartnerId != chatId) return false;
+            if (pnlMessages == null || pnlMessages.IsDisposed) return false;
+
+            bool suspended = false, ok = false;
+            int curTop = -pnlMessages.AutoScrollPosition.Y;
+            _drawingPage = true;
+            ChatScroll.SuspendDraw(pnlMessages);
+            try
+            {
+                pnlMessages.SuspendLayout(); suspended = true;
+
+                // Переходим в координаты СОДЕРЖИМОГО: у прокрученной панели Top
+                // отсчитывается от сдвинутого начала, и новые пузыри уехали бы
+                // вниз ровно на величину прокрутки. Панель заморожена — сброса
+                // никто не увидит, а в конце прокрутка встанет на посчитанное место.
+                try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
+
+                // Свежие метаданные (цитаты, реакции, закрепления) кладём в поля
+                // отрисовки ДО сборки: их читает сам конструктор пузыря.
+                ApplyPageMeta(key);
+
+                // Начало ленты берём у неё же, а не «десять от края»: в чате с
+                // блокировкой сверху висит плашка, и лента начинается ниже.
+                int blockTop = _laidOut[0].Top;
+                var built = BuildRows(older, myId, grp, iB, tB, yStart: blockTop);
+                if (built.items.Count == 0) return false;
+
+                // Верхний разделитель даты мог стать лишним: если порция
+                // заканчивается тем же днём, с которого лента начиналась, свой
+                // разделитель этот день уже получил внутри порции.
+                var top = _laidOut[0];
+                if (top != null && !(top.Tag is bool)
+                    && string.Equals(top.AccessibleName, built.lastDate, StringComparison.Ordinal))
+                {
+                    _laidOut.RemoveAt(0);
+                    try { pnlMessages.Controls.Remove(top); top.Dispose(); } catch { }
+                }
+                if (_laidOut.Count == 0) return false;
+
+                Control firstOld = _laidOut[0];
+                int oldTop = firstOld.Top;
+
+                pnlMessages.Controls.AddRange(built.items.ToArray());
+                _laidOut.InsertRange(0, built.items);
+
+                // Расставляем по порядку сборки — тем же правилом, что и обычный
+                // пересчёт: сначала порция, за ней прежняя лента.
+                int y = blockTop;
+                foreach (var c in _laidOut)
+                {
+                    if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
+                    if (c.Top != y) c.Top = y;
+                    y += c.Height + (c.Tag is bool ? 8 : 4);
+                }
+
+                int delta = firstOld.Top - oldTop;   // на столько выросло содержимое сверху
+                pnlMessages.ResumeLayout(); suspended = false;
+                pnlMessages.PerformLayout();         // без него диапазон прокрутки ещё старый
+                try { pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, curTop + delta)); }
+                catch { }
+                _lastDmTop = -pnlMessages.AutoScrollPosition.Y;
+
+                _pageDt = merged;
+                if (grp) { _groupMetaCache[chatId] = merged; _lastGroupMsgCount = merged.Rows.Count; }
+                else     { _msgMetaCache[chatId]   = merged; _lastMsgCount      = merged.Rows.Count; }
+                try
+                {
+                    MessageCache.Save(grp ? MessageCache.GroupKey(chatId)
+                                          : MessageCache.DirectKey(myId, chatId), merged);
+                }
+                catch { }
+
+                // Подпись ленты приводим к тому, что теперь на экране, и лимит —
+                // к её длине. Без этого ближайшая фоновая выборка (она берёт уже
+                // увеличенный лимит) сочла бы данные изменившимися и пересобрала
+                // всё заново — ровно тот фриз, от которого мы здесь уходим.
+                _dmLimit += older.Rows.Count;
+                _renderedChatSig = SigOf(merged)
+                    + (grp ? "" : "|b" + (iB ? 1 : 0) + (tB ? 1 : 0))
+                    + "|m" + CachedMediaCount(merged) + "|p" + PageMetaSig(key);
+                ok = true;
+                return true;
+            }
+            catch { return false; }
+            finally
+            {
+                if (suspended) { try { pnlMessages.ResumeLayout(); } catch { } }
+                // Не получилось — обязаны вернуть прокрутку. Мы её обнулили,
+                // чтобы считать в координатах содержимого, и без этого человек
+                // оказался бы в начале переписки вместо того места, где читал.
+                if (!ok)
+                {
+                    try
+                    {
+                        pnlMessages.PerformLayout();
+                        pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, curTop));
+                    }
+                    catch { }
+                }
+                _drawingPage = false;
+                ChatScroll.ResumeDraw(pnlMessages);
+                try { UpdateScrollDownButton(); } catch { }
+            }
+        }
+
         // ── Подгрузка старых: якорь и подпись ────────────────────────────
         //
         // Раньше место держали «расстоянием от низа содержимого». На бумаге
@@ -3852,10 +4039,41 @@ namespace PISMO
         /// страницы, и без этого надпись появилась бы уже после того, как всё
         /// закончилось.
         /// </summary>
+        private System.Windows.Forms.Timer _loadingOlderDelay;
+
+        /// <summary>
+        /// Показать подпись, но не сию секунду.
+        ///
+        /// Догрузка вставкой укладывается в доли секунды, и подпись, возникая
+        /// и пропадая в тот же миг, читалась бы как моргание у шапки. Ждём
+        /// треть секунды: если к этому времени лента уже поехала — показывать
+        /// было нечего; если нет, человек как раз начинает недоумевать, и
+        /// объяснение приходит вовремя.
+        /// </summary>
+        private void ShowLoadingOlderSoon()
+        {
+            try
+            {
+                if (_loadingOlderDelay == null)
+                {
+                    _loadingOlderDelay = new System.Windows.Forms.Timer { Interval = 300 };
+                    _loadingOlderDelay.Tick += (s, e) =>
+                    {
+                        _loadingOlderDelay.Stop();
+                        if (_dmLoadingOlder) ShowLoadingOlder(true);
+                    };
+                }
+                _loadingOlderDelay.Stop();
+                _loadingOlderDelay.Start();
+            }
+            catch { }
+        }
+
         private void ShowLoadingOlder(bool on)
         {
             try
             {
+                if (!on && _loadingOlderDelay != null) _loadingOlderDelay.Stop();
                 if (_lblLoadingOlder == null)
                 {
                     if (pnlChatHeader == null) return;
@@ -3909,30 +4127,35 @@ namespace PISMO
             bool dm = !grp && _currentChatPartnerId >= 0;
             if (!grp && !dm) return;
             if (_dmLoadingOlder || !_dmHasMore) return;
-            // Пауза между догрузками: каждая увеличивает страницу и перерисовывает
-            // всю ленту, поэтому серия срабатываний подряд ощущается как фриз.
-            if ((DateTime.UtcNow - _lastOlderLoad).TotalMilliseconds < 400) return;
+            // Короткая пауза между заходами — чтобы одно движение колеса не
+            // запускало сразу три запроса. Раньше она была вдвое длиннее:
+            // каждая догрузка пересобирала ленту целиком, и частые срабатывания
+            // сливались в фриз. Теперь догрузка стоит одну страницу, и держать
+            // человека дольше незачем — прокрутка идёт без остановок.
+            if ((DateTime.UtcNow - _lastOlderLoad).TotalMilliseconds < 200) return;
             _lastOlderLoad = DateTime.UtcNow;
 
+            PrependOlder(grp, grp ? _currentGroupId : _currentChatPartnerId,
+                         UserSession.EffectiveId);
+        }
+
+        /// <summary>
+        /// Старый путь: поднять лимит и перечитать страницу целиком.
+        ///
+        /// Оставлен про запас — на случаи, когда вставлять некуда: ленту как
+        /// раз пересобирают, ждёт переход к дате или к сообщению, страница
+        /// ещё не отрисована. Он медленный, зато не зависит от состояния
+        /// экрана и потому всегда доводит дело до конца.
+        /// </summary>
+        private void LoadOlderFull(bool grp)
+        {
             _dmLoadingOlder = true;
             RememberAnchor();
             ShowLoadingOlder(true);
             int viewport = pnlMessages.ClientSize.Height;
             int curTop = -pnlMessages.AutoScrollPosition.Y;
             _dmRestoreFromBottom = pnlMessages.DisplayRectangle.Height - (curTop + viewport);
-
-            // Шаг постоянный, и это сознательный откат.
-            //
-            // Был растущий — «прибавляй треть уже показанного», — чтобы до
-            // начала переписки доходить за меньшее число подгрузок. Число
-            // вышло меньше, но каждая следующая становилась длиннее предыдущей:
-            // подгрузка перечитывает и пересобирает ВСЮ страницу заново, а не
-            // только новую порцию. Человек же чувствует не количество пауз, а
-            // их длину — и на глубине это были те самые три секунды.
-            // Шестьдесят сообщений собираются быстро и одинаково на любой
-            // глубине.
-            _dmLimit += 60;
-            // Запоминаем «сколько долистано» — при переоткрытии покажем столько же.
+            _dmLimit += OlderStep;
             if (grp) LoadGroupMessages(); else LoadMessages(markRead: false);
         }
 
