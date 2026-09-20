@@ -313,12 +313,17 @@ namespace PISMO
         /// </summary>
         private void ApplyLinkPreview(string url)
         {
-            if (IsDisposed || _drawingPage) return;
+            if (IsDisposed) return;
             if (LinkPreviews.Cached(url) == null) return;
+            // Лента как раз собирается — карточку ставить некуда. Но и бросать
+            // нельзя: событие о готовности приходит ОДИН раз, и брошенная
+            // карточка оставила бы на своём месте строку-заглушку навсегда.
+            if (_drawingPage) { RetrySoon(() => ApplyLinkPreview(url)); return; }
             string tag = LinkSources.TagOf(url);
 
             try
             {
+                bool grew = false;
                 // Список пузырей копируем: правка идёт по ходу перебора.
                 var bubbles = new List<Control>();
                 foreach (Control c in pnlMessages.Controls) bubbles.Add(c);
@@ -346,13 +351,38 @@ namespace PISMO
                     bubble.Controls.Add(fresh);
                     bubble.Height += delta;
                     bubble.ResumeLayout();
-
-                    if (delta == 0) continue;
-                    int by = bubble.Top;
-                    foreach (var other in bubbles)
-                        if (!ReferenceEquals(other, bubble) && !other.IsDisposed && other.Top > by)
-                            other.Top += delta;
+                    if (delta != 0) grew = true;
                 }
+
+                // Расставить ленту заново — одним общим проходом, а не здесь.
+                //
+                // Раньше этот метод двигал соседей сам: «всё, у чего Top ниже
+                // моего, сдвинуть на разницу». Двигать по ТЕКУЩЕЙ координате —
+                // та самая ошибка, из-за которой пузыри уже слипались однажды:
+                // стоит двум налезть друг на друга, и сравнение по Top решает
+                // их судьбу неверно, а дальше эта неверность закрепляется. Хуже
+                // того, карточек на странице бывает несколько, и каждая двигала
+                // соседей поверх уже сдвинутых — итог зависел от порядка обхода.
+                //
+                // Общий пересчёт идёт по ПОРЯДКУ СБОРКИ ленты: он хронологический
+                // и испортиться не может.
+                if (grew) RestackBubbles();
+            }
+            catch { }
+        }
+
+        /// <summary>Повторить попытку, когда лента достроится.</summary>
+        private void RetrySoon(Action what)
+        {
+            try
+            {
+                var t = new System.Windows.Forms.Timer { Interval = 300 };
+                t.Tick += (s, e) =>
+                {
+                    t.Stop(); t.Dispose();
+                    if (!IsDisposed && IsHandleCreated) what();
+                };
+                t.Start();
             }
             catch { }
         }
@@ -3783,6 +3813,15 @@ namespace PISMO
                 bubble.Top = yOffset;
                 PositionBubble(bubble, isMine);
                 bubble.Tag = isMine;
+                // Пузырь сам просит пересчёт, когда вырос.
+                //
+                // Высота в момент сборки — не окончательная: картинка ещё
+                // декодируется, проигрыватель ещё не поднялся, карточка ссылки
+                // ещё едет с сайта. Раньше каждый такой случай должен был
+                // ВСПОМНИТЬ про пересчёт сам, и кто-то неизбежно забывал —
+                // отсюда и наехавшие друг на друга пузыри. Теперь помнить
+                // ничего не нужно: выросла высота — лента перестроится.
+                bubble.SizeChanged += (s, e) => ArmRestackSoon();
                 // Полная дата отправки — для выпадающего списка результатов поиска.
                 bubble.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
 
@@ -4369,13 +4408,24 @@ namespace PISMO
             {
                 _restackSettle?.Stop();
                 _restackSettle?.Dispose();
-                var t = new System.Windows.Forms.Timer { Interval = 1500 };
+                // Несколько проходов, а не один.
+                //
+                // Один проход через полторы секунды закрывал картинки из кеша,
+                // но не то, что едет из сети: карточка ссылки приезжает и через
+                // три секунды, и через пять. А главное — такой рост не всегда
+                // меняет высоту САМОГО пузыря, и тогда его некому заметить,
+                // кроме общего пересчёта.
+                var t = new System.Windows.Forms.Timer { Interval = 1200 };
                 _restackSettle = t;
+                int left = 4;
                 t.Tick += (s, e) =>
                 {
-                    t.Stop();
-                    if (ReferenceEquals(_restackSettle, t)) _restackSettle = null;
-                    t.Dispose();
+                    if (--left <= 0)
+                    {
+                        t.Stop();
+                        if (ReferenceEquals(_restackSettle, t)) _restackSettle = null;
+                        t.Dispose();
+                    }
                     RestackBubbles();
                 };
                 t.Start();
@@ -4428,14 +4478,15 @@ namespace PISMO
             try
             {
                 if (pnlMessages == null || pnlMessages.IsDisposed) return;
+                // Занято — просьбу НЕ теряем, а повторяем: именно потерянные
+                // просьбы и оставляли ленту в беспорядке.
+                if (_drawingPage) { ArmRestackSoon(); return; }
                 // Во время сборки ленты — ни в коем случае.
                 //
                 // Сборка пузыря с видео поднимает встроенный проигрыватель, а он
                 // по дороге прокручивает очередь сообщений окна. В эту щель
                 // успевал влезть отложенный пересчёт — и заставал ленту
                 // наполовину собранной. Отсюда и брался беспорядок.
-                if (_drawingPage) return;
-
                 // Идём по ПОРЯДКУ СБОРКИ, а не по текущим координатам.
                 //
                 // Раньше список сортировался по Top — и это была ошибка,
@@ -4466,11 +4517,17 @@ namespace PISMO
                 bool moved = false;
                 foreach (var c in list)
                 {
+                    // Высота — по ФАКТИЧЕСКОМУ содержимому, а не по тому, что
+                    // записано в пузыре. Содержимое и запись расходятся: кто-то
+                    // добавил в пузырь картинку или чип реакции, а высоту
+                    // поправить забыл, — и содержимое вылезает за край пузыря
+                    // на соседа. Видно это как «картинка шире своего пузыря».
+                    int h = FitBubble(c);
                     if (c.Top != y) { c.Top = y; moved = true; }
                     // Пузырь помечен Tag = isMine; всё прочее (разделители дат,
                     // плашка блокировки) идёт с меньшим отступом — так же, как
                     // при первичной расстановке.
-                    y += c.Height + (c.Tag is bool ? 8 : 4);
+                    y += h + (c.Tag is bool ? 8 : 4);
                 }
 
                 // Прокрутку трогаем ТОЛЬКО если что-то сдвинулось и мы стояли
@@ -4480,6 +4537,50 @@ namespace PISMO
                     pnlMessages.PerformLayout();
                     pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
                 }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Высота пузыря, которой хватает его содержимому. Только вверх:
+        /// ужимать нельзя, у пузыря есть и собственные поля.
+        /// </summary>
+        private static int FitBubble(Control c)
+        {
+            try
+            {
+                if (!(c.Tag is bool) || c.Controls.Count == 0) return c.Height;
+                int bottom = 0;
+                foreach (Control ch in c.Controls)
+                    if (ch.Visible && ch.Bottom > bottom) bottom = ch.Bottom;
+                if (bottom <= 0) return c.Height;
+                int want = bottom + 8;            // нижнее поле — как при сборке
+                if (want > c.Height) c.Height = want;
+                return c.Height;
+            }
+            catch { return c.Height; }
+        }
+
+        private System.Windows.Forms.Timer _restackSoon;
+
+        /// <summary>
+        /// Пересчитать места, когда содержимое утихнет.
+        ///
+        /// Короткая отсрочка нужна, чтобы пачка изменений (страница картинок
+        /// доехала разом) стоила одного прохода, а не сорока.
+        /// </summary>
+        private void ArmRestackSoon()
+        {
+            try
+            {
+                if (IsDisposed || !IsHandleCreated) return;
+                if (_restackSoon == null)
+                {
+                    _restackSoon = new System.Windows.Forms.Timer { Interval = 120 };
+                    _restackSoon.Tick += (s, e) => { _restackSoon.Stop(); RestackBubbles(); };
+                }
+                _restackSoon.Stop();
+                _restackSoon.Start();
             }
             catch { }
         }
