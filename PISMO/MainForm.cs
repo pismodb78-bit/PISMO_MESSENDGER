@@ -3201,6 +3201,16 @@ namespace PISMO
         {
             if (_currentGroupId != group) return;
 
+            // Пересборка ПОВЕРХ незаконченной сборки — гарантированный беспорядок.
+            //
+            // Отрисовка начинается с очистки панели, а приезжает она отложенным
+            // вызовом. Пузырь с видео по дороге прокручивает очередь сообщений
+            // окна — и в эту щель отложенный вызов влезает прямо посреди сборки:
+            // внутренний стирает пузыри, которые внешний как раз расставляет.
+            // Пропускаем. Данные при этом не теряются: подпись ленты мы не
+            // трогаем, и ближайшее обновление увидит расхождение и нарисует всё.
+            if (_drawingPage) return;
+
             // Пропускаем повторную отрисовку, если та же группа и данные не изменились.
             string key = "g" + group,
                    sig = SigOf(dt) + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("g" + group);
@@ -3209,7 +3219,14 @@ namespace PISMO
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
                 // «пустой» перезагрузки (данные не изменились) подгрузка старых
                 // сообщений в этом чате оставалась заблокированной навсегда.
+                //
+                // И остальной след догрузки снимаем здесь же. Раньше снимался
+                // только флаг: подпись «загружаю…» оставалась висеть в шапке, а
+                // отложенное восстановление места срабатывало потом, на первой
+                // же посторонней отрисовке, и дёргало ленту неизвестно куда.
                 _dmLoadingOlder = false;
+                _dmRestoreFromBottom = -1;
+                ShowLoadingOlder(false);
                 ApplyPendingJump();   // см. пояснение в RenderMessages (переход к дате)
                 ApplyPendingMessageJump();
                 return;
@@ -3507,6 +3524,16 @@ namespace PISMO
         {
             if (_currentChatPartnerId != partner) return;
 
+            // Пересборка ПОВЕРХ незаконченной сборки — гарантированный беспорядок.
+            //
+            // Отрисовка начинается с очистки панели, а приезжает она отложенным
+            // вызовом. Пузырь с видео по дороге прокручивает очередь сообщений
+            // окна — и в эту щель отложенный вызов влезает прямо посреди сборки:
+            // внутренний стирает пузыри, которые внешний как раз расставляет.
+            // Пропускаем. Данные при этом не теряются: подпись ленты мы не
+            // трогаем, и ближайшее обновление увидит расхождение и нарисует всё.
+            if (_drawingPage) return;
+
             // Пропускаем повторную отрисовку, если тот же чат и данные не изменились.
             // В подпись входит и число сообщений страницы, чьи вложения уже лежат
             // в кеше. Без этого перерисовка после фоновой предзагрузки медиа
@@ -3520,7 +3547,14 @@ namespace PISMO
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
                 // «пустой» перезагрузки (данные не изменились) подгрузка старых
                 // сообщений в этом чате оставалась заблокированной навсегда.
+                //
+                // И остальной след догрузки снимаем здесь же. Раньше снимался
+                // только флаг: подпись «загружаю…» оставалась висеть в шапке, а
+                // отложенное восстановление места срабатывало потом, на первой
+                // же посторонней отрисовке, и дёргало ленту неизвестно куда.
                 _dmLoadingOlder = false;
+                _dmRestoreFromBottom = -1;
+                ShowLoadingOlder(false);
                 // И переход к дате обязаны выполнить ЗДЕСЬ. Отрисовка из кеша уже
                 // нарисовала нужную страницу и записала подпись; свежая выборка
                 // приходит с ТОЙ ЖЕ подписью — раньше мы просто выходили, и переход
@@ -3873,12 +3907,44 @@ namespace PISMO
             if (grp ? _currentGroupId != chatId : _currentChatPartnerId != chatId) return false;
             if (pnlMessages == null || pnlMessages.IsDisposed) return false;
 
-            bool suspended = false, ok = false;
+            // Запоминаем ленту, в которую собрались вставлять, — её же потом и
+            // сверим. Сборка пузырей долгая и НЕ безобидная: пузырь с видео
+            // поднимает встроенный проигрыватель, а тот по дороге прокручивает
+            // очередь сообщений окна. В эту щель успевает влезть отложенная
+            // перерисовка и собрать ленту заново — и тогда вставлять уже некуда.
+            var feed = _laidOut;
+            int feedCount = feed.Count;
+
+            bool suspended = false, drawFrozen = false, ok = false, attached = false;
             int curTop = -pnlMessages.AutoScrollPosition.Y;
             _drawingPage = true;
-            ChatScroll.SuspendDraw(pnlMessages);
+            List<Control> built = null;
             try
             {
+                // Свежие метаданные (цитаты, реакции, закрепления) кладём в поля
+                // отрисовки ДО сборки: их читает сам конструктор пузыря.
+                ApplyPageMeta(key);
+
+                // СНАЧАЛА собираем, и только потом трогаем панель. Пока идёт
+                // сборка, лента на экране живёт прежней жизнью: её не морозят,
+                // не чистят и не прокручивают. Координаты здесь неважны —
+                // расстановка ниже назначит их заново.
+                var rows = BuildRows(older, myId, grp, iB, tB, yStart: 0);
+                built = rows.items;
+                if (built.Count == 0) return false;
+
+                // Пока собирали, ленту могли заменить. Тогда отступаем: вставка
+                // в чужую ленту — это и есть тот беспорядок, за которым следом
+                // идут наехавшие друг на друга пузыри.
+                if (!ReferenceEquals(_pageDt, basePage) || !ReferenceEquals(_laidOut, feed)
+                    || feed.Count != feedCount || _renderedChatKey != key
+                    || (grp ? _currentGroupId != chatId : _currentChatPartnerId != chatId)
+                    || pnlMessages.IsDisposed)
+                    return false;
+                foreach (var c in feed)
+                    if (c == null || c.IsDisposed || c.Parent != pnlMessages) return false;
+
+                ChatScroll.SuspendDraw(pnlMessages); drawFrozen = true;
                 pnlMessages.SuspendLayout(); suspended = true;
 
                 // Переходим в координаты СОДЕРЖИМОГО: у прокрученной панели Top
@@ -3887,38 +3953,33 @@ namespace PISMO
                 // никто не увидит, а в конце прокрутка встанет на посчитанное место.
                 try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
 
-                // Свежие метаданные (цитаты, реакции, закрепления) кладём в поля
-                // отрисовки ДО сборки: их читает сам конструктор пузыря.
-                ApplyPageMeta(key);
-
                 // Начало ленты берём у неё же, а не «десять от края»: в чате с
                 // блокировкой сверху висит плашка, и лента начинается ниже.
-                int blockTop = _laidOut[0].Top;
-                var built = BuildRows(older, myId, grp, iB, tB, yStart: blockTop);
-                if (built.items.Count == 0) return false;
+                int blockTop = feed[0].Top;
 
                 // Верхний разделитель даты мог стать лишним: если порция
                 // заканчивается тем же днём, с которого лента начиналась, свой
                 // разделитель этот день уже получил внутри порции.
-                var top = _laidOut[0];
-                if (top != null && !(top.Tag is bool)
-                    && string.Equals(top.AccessibleName, built.lastDate, StringComparison.Ordinal))
+                var top = feed[0];
+                if (!(top.Tag is bool)
+                    && string.Equals(top.AccessibleName, rows.lastDate, StringComparison.Ordinal))
                 {
-                    _laidOut.RemoveAt(0);
+                    feed.RemoveAt(0);
                     try { pnlMessages.Controls.Remove(top); top.Dispose(); } catch { }
                 }
-                if (_laidOut.Count == 0) return false;
+                if (feed.Count == 0) return false;
 
-                Control firstOld = _laidOut[0];
+                Control firstOld = feed[0];
                 int oldTop = firstOld.Top;
 
-                pnlMessages.Controls.AddRange(built.items.ToArray());
-                _laidOut.InsertRange(0, built.items);
+                pnlMessages.Controls.AddRange(built.ToArray());
+                feed.InsertRange(0, built);
+                attached = true;
 
                 // Расставляем по порядку сборки — тем же правилом, что и обычный
                 // пересчёт: сначала порция, за ней прежняя лента.
                 int y = blockTop;
-                foreach (var c in _laidOut)
+                foreach (var c in feed)
                 {
                     if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
                     if (c.Top != y) c.Top = y;
@@ -3957,11 +4018,17 @@ namespace PISMO
             finally
             {
                 if (suspended) { try { pnlMessages.ResumeLayout(); } catch { } }
-                // Не получилось — обязаны вернуть прокрутку. Мы её обнулили,
-                // чтобы считать в координатах содержимого, и без этого человек
-                // оказался бы в начале переписки вместо того места, где читал.
                 if (!ok)
                 {
+                    // Собранное никуда не пошло — освобождаем. Пузырь с видео
+                    // держит окно проигрывателя, и брошенный он утечёт вместе с
+                    // ним. Но только пока оно не в ленте: уже вставленное трогать
+                    // нельзя, иначе на экране останутся дыры от убитых пузырей.
+                    if (built != null && !attached)
+                        foreach (var c in built) { try { c.Dispose(); } catch { } }
+                    // И возвращаем прокрутку: мы её обнуляли, чтобы считать в
+                    // координатах содержимого, и без этого человек оказался бы
+                    // в начале переписки вместо места, где читал.
                     try
                     {
                         pnlMessages.PerformLayout();
@@ -3970,7 +4037,18 @@ namespace PISMO
                     catch { }
                 }
                 _drawingPage = false;
-                ChatScroll.ResumeDraw(pnlMessages);
+                if (drawFrozen) ChatScroll.ResumeDraw(pnlMessages);
+                if (ok)
+                {
+                    // Пересчёт, когда раскладка отстоится, — то же, чем кончается
+                    // обычная отрисовка, и пропускать его было нельзя. Высоты
+                    // пузырей на момент вставки ещё не окончательные: картинка
+                    // доезжает из кеша, проигрыватель поднимается, карточка
+                    // ссылки приходит из сети — и всё это уже ПОСЛЕ вставки.
+                    // Без пересчёта выросший пузырь просто наезжает на соседей.
+                    try { BeginInvoke(new Action(RestackBubbles)); } catch { }
+                    ArmRestackSettle();
+                }
                 try { UpdateScrollDownButton(); } catch { }
             }
         }
