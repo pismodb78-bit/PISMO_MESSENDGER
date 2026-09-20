@@ -1,0 +1,84 @@
+name: Релиз
+
+# Выпуск версии: собрать, запаковать и опубликовать Release на GitHub.
+#
+# Зачем отдельно от build.yml: тот кладёт сборку прямо в ветку, и обновиться
+# из неё можно только через git pull. Само приложение обновляется иначе — оно
+# смотрит на ПОСЛЕДНИЙ Release репозитория (см. PISMO/Updater.cs) и качает
+# оттуда PISMO.zip. Пока релиза нет, у всех остаётся та версия, что была.
+#
+# Как выпустить:
+#   Actions → Релиз → Run workflow → tag = 2.8.10
+#
+# Номер тега ОБЯЗАН совпадать с <Version> в PISMO/PISMO.csproj: обновлялка
+# сравнивает тег с версией запущенной сборки и предложит обновление, только
+# если тег больше. Расхождение здесь означает либо вечное «есть обновление»,
+# либо его молчаливое отсутствие — поэтому несовпадение останавливает выпуск.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Версия релиза (как в PISMO.csproj, например 2.8.10)"
+        required: true
+      notes:
+        description: "Описание релиза (необязательно)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Сверить тег с версией проекта
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag }}".TrimStart('v')
+          $xml = [xml](Get-Content PISMO\PISMO.csproj)
+          $ver = ($xml.Project.PropertyGroup.Version | Where-Object { $_ }) -as [string]
+          $ver = $ver.Trim()
+          Write-Host "Тег: $tag   csproj: $ver"
+          # В csproj версия четырёхчастная (2.8.10.0), тег — трёхчастный.
+          if ($ver -ne $tag -and $ver -ne "$tag.0") {
+            throw "Тег $tag не совпадает с версией в PISMO.csproj ($ver). Подними версию или исправь тег."
+          }
+
+      - name: Restore
+        run: dotnet restore PISMO.sln
+
+      - name: Publish
+        run: dotnet publish PISMO/PISMO.csproj -c Release --no-restore
+
+      - name: Запаковать PISMO.zip
+        shell: pwsh
+        run: |
+          # Берём папку, где лежит собранный exe. publish кладёт туда же, куда
+          # и build, но искать надёжнее по самому файлу: имя папки зависит от
+          # TargetFramework и менялось уже дважды.
+          $exe = Get-ChildItem -Recurse -Filter PISMO.exe -Path PISMO\bin\Release |
+                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $exe) { throw "PISMO.exe не найден" }
+          $dir = $exe.Directory.FullName
+          Write-Host "Пакуем: $dir"
+          # Содержимое папки в КОРЕНЬ архива: обновлялка распаковывает поверх
+          # установленной, и вложенная папка сломала бы обновление.
+          Compress-Archive -Path (Join-Path $dir '*') -DestinationPath PISMO.zip -Force
+          "{0:N1} МБ" -f ((Get-Item PISMO.zip).Length / 1MB)
+
+      - name: Опубликовать релиз
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.tag }}
+          body: ${{ github.event.inputs.notes }}
+          files: PISMO.zip
+          fail_on_unmatched_files: true

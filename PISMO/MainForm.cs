@@ -62,6 +62,7 @@ namespace PISMO
         private bool _pollBusy = false;
         private int _lastOpenSig = -1;   // число сообщений открытого чата на прошлом опросе (детект новых)
         private int _lastOpenMax = -1;   // максимальный id открытого чата (дешёвый детект нового)
+        private string _lastPinsSig;     // отпечаток закрепов на прошлом опросе
         private int _lastOpenRead = -1;  // сколько МОИХ сообщений собеседник ещё не прочитал
         private int _openTick;           // счётчик тиков: счёт строк спрашиваем не каждый раз
         private readonly Dictionary<int, int> _prevUnread = new();
@@ -1244,6 +1245,16 @@ namespace PISMO
                             if (_currentGroupId > 0) LoadGroupMessages();
                             else if (_currentChatPartnerId > 0) LoadMessages();
                         }
+                        else if (type == "pin")
+                        {
+                            // Кто-то закрепил или открепил сообщение — открытый
+                            // чат перечитываем сразу. Закрепы приходят вместе с
+                            // метаданными страницы, поэтому достаточно снять
+                            // подпись и перезагрузить.
+                            ForceMessageRerender();
+                            if (_currentGroupId > 0) LoadGroupMessages();
+                            else if (_currentChatPartnerId > 0) LoadMessages(markRead: false);
+                        }
                         else if (type == "edit")
                         {
                             // Собеседник отредактировал/удалил сообщение — перегружаем
@@ -1572,7 +1583,7 @@ namespace PISMO
                     try { friendReq = FriendsRepository.CountIncoming(UserSession.EffectiveId); } catch { }
 
                     // Дёшево смотрим, изменилось ли число сообщений в открытом чате.
-                    bool openChanged = false;
+                    bool openChanged = false, pinsChanged = false;
                     try
                     {
                         // Дёшево — это МАКСИМАЛЬНЫЙ id: одно движение к концу индекса,
@@ -1586,6 +1597,20 @@ namespace PISMO
                         // галочка раньше появлялась только со следующим сообщением.
                         _openTick++;
                         bool countNow = _openTick % 8 == 0;
+
+                        // Закрепы. Событие по ws до своего же второго входа не
+                        // доходит (сервер держит одно соединение на пользователя),
+                        // а «открепил на телефоне — вижу на ПК» это именно тот
+                        // случай. Поэтому отпечаток сверяем и опросом.
+                        if (grp >= 0 || dm >= 0)
+                        {
+                            string pf = PinsRepository.Fingerprint();
+                            if (pf.Length > 0)
+                            {
+                                if (_lastPinsSig != null && pf != _lastPinsSig) pinsChanged = true;
+                                _lastPinsSig = pf;
+                            }
+                        }
 
                         if (grp >= 0)
                         {
@@ -1626,10 +1651,17 @@ namespace PISMO
                             // путём, опрос — страховкой; лишней работы это не даёт,
                             // потому что openChanged истинно только когда в чате и
                             // правда что-то поменялось.
-                            if ((forced || openChanged) && !OnServerView)
+                            if ((forced || openChanged || pinsChanged) && !OnServerView)
                             {
+                                // Закрепы в подпись ленты входят, но сравнивать
+                                // её не с чем, пока никто не перечитал страницу.
+                                // Поэтому при изменении закрепов подпись снимаем:
+                                // иначе перезагрузка отсеклась бы как «данные те же».
+                                if (pinsChanged) ForceMessageRerender();
                                 if (_currentGroupId >= 0) LoadGroupMessages();
-                                else if (_currentChatPartnerId >= 0) LoadMessages();
+                                // markRead не ставим: сам по себе чужой закреп не
+                                // повод гасить непрочитанные.
+                                else if (_currentChatPartnerId >= 0) LoadMessages(markRead: !pinsChanged);
                             }
                             if (unread != null) ApplyUnreadAndNotify(unread);
                             if (groupNew != null) ApplyGroupNotify(groupNew);

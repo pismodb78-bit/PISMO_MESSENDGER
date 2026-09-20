@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using MySqlConnector;
 
@@ -51,6 +51,7 @@ namespace PISMO
                         del.Parameters.AddWithValue("@m", messageId);
                         del.Parameters.AddWithValue("@s", scope);
                         del.ExecuteNonQuery();
+                        Announce(messageId);
                         return false;
                     }
                 }
@@ -62,9 +63,51 @@ namespace PISMO
                     ins.Parameters.AddWithValue("@u", byUserId);
                     ins.ExecuteNonQuery();
                 }
+                Announce(messageId);
                 return true;
             }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// Сказать остальным, что закрепы изменились.
+        ///
+        /// Шлём отсюда, а не от кнопки: закрепляют из нескольких мест (меню
+        /// пузыря, список закреплённых), и каждое пришлось бы помнить об этом
+        /// отдельно — рано или поздно кто-то забудет. Здесь место одно.
+        ///
+        /// Широковещательно, как new_message: получателю всё равно нужно
+        /// перечитать закрепы своего открытого чата, кто бы их ни тронул.
+        /// </summary>
+        private static void Announce(int messageId)
+        {
+            try { WebSocketSignalingClient.Instance.SendMessage("pin", 0, messageId, ""); }
+            catch { }
+        }
+
+        /// <summary>
+        /// Отпечаток закрепов — чтобы опрос замечал правку, до которой событие
+        /// не дошло.
+        ///
+        /// Дойти оно может не всегда: ws-сервер держит по ОДНОМУ соединению на
+        /// пользователя, поэтому свой же второй вход (телефон рядом с
+        /// компьютером) события не получает вовсе. А именно этот случай и
+        /// встречается чаще всего: открепил на телефоне — хочу видеть на ПК.
+        ///
+        /// Закрепов в переписке единицы, так что пересчёт по таблице дёшев.
+        /// </summary>
+        public static string Fingerprint()
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT COUNT(*), COALESCE(SUM(message_id),0) FROM pinned_messages", conn);
+                using var r = cmd.ExecuteReader();
+                if (!r.Read()) return "";
+                return r.GetInt64(0) + ":" + r.GetInt64(1);
+            }
+            catch { return ""; }
         }
 
         /// <summary>Множество id закреплённых сообщений для диапазона (для отметки в рендере).</summary>
