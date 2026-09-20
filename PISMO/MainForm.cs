@@ -3848,7 +3848,96 @@ namespace PISMO
         // она не растёт с глубиной. Место держится не на глаз: содержимое
         // выросло сверху на известную величину — на неё же двигаем прокрутку.
 
-        private const int OlderStep = 60;   // сколько сообщений добираем за раз
+        private const int OlderStep = 80;   // сколько сообщений добираем за раз
+
+        // ── Страница «про запас» ─────────────────────────────────────────
+        //
+        // Пока человек читает только что приехавшие сообщения, канал до базы
+        // свободен — и это лучшее время, чтобы съездить за следующей порцией.
+        // Когда он домотает доверху, она уже лежит готовой, вместе с картинками,
+        // и подгрузка обходится БЕЗ единого похода в базу: остаётся собрать
+        // пузыри и вставить. Именно походы к серверу и составляли почти всю
+        // паузу — сама сборка восьмидесяти пузырей занимает десятки миллисекунд.
+        private DataTable _olderReserve;
+        private string _olderReserveKey;
+        private int _olderReserveBefore;
+        private bool _olderReserveMore;
+        private bool _olderReserveBusy;
+
+        /// <summary>Съездить за следующей порцией заранее, в фоне.</summary>
+        private void WarmOlderReserve(bool grp, int chatId, int myId, string key, int beforeId)
+        {
+            if (beforeId <= 0 || _olderReserveBusy) return;
+            // Уже лежит нужная — второй раз не ездим.
+            if (_olderReserve != null && _olderReserveKey == key && _olderReserveBefore == beforeId) return;
+            _olderReserveBusy = true;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                DataTable rows = null; bool more = false;
+                try
+                {
+                    (rows, more) = FetchOlderPage(grp, chatId, myId, beforeId);
+                    if (rows != null && rows.Rows.Count > 0) PrefetchPageMedia(rows, grp);
+                }
+                catch { rows = null; }
+                if (IsDisposed || !IsHandleCreated) { _olderReserveBusy = false; return; }
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (rows != null)
+                        {
+                            _olderReserve = rows; _olderReserveKey = key;
+                            _olderReserveBefore = beforeId; _olderReserveMore = more;
+                        }
+                        _olderReserveBusy = false;
+                    }));
+                }
+                catch { _olderReserveBusy = false; }
+            });
+        }
+
+        /// <summary>Подвезти запас к текущему верху ленты.</summary>
+        private void WarmFromCurrentPage()
+        {
+            if (!_dmHasMore || _dmLoadingOlder || _drawingPage) return;
+            bool grp = _currentGroupId >= 0;
+            if (!grp && _currentChatPartnerId < 0) return;
+            int chatId = grp ? _currentGroupId : _currentChatPartnerId;
+            string key = (grp ? "g" : "d") + chatId;
+            if (_renderedChatKey != key) return;
+            // Запас от другого чата держать незачем — он уже не пригодится.
+            if (_olderReserveKey != null && _olderReserveKey != key)
+            {
+                _olderReserve = null; _olderReserveKey = null; _olderReserveBefore = 0;
+            }
+            int oldest = 0;
+            try { if (_pageDt != null && _pageDt.Rows.Count > 0) oldest = Convert.ToInt32(_pageDt.Rows[0]["id"]); }
+            catch { }
+            if (oldest > 0) WarmOlderReserve(grp, chatId, UserSession.EffectiveId, key, oldest);
+        }
+
+        /// <summary>
+        /// Порция старых сообщений и ответ на вопрос «есть ли ещё».
+        ///
+        /// Просим на одно сообщение больше, чем покажем. Пришло больше — значит
+        /// дальше есть, лишнее выбрасываем. Раньше на этот вопрос уходил
+        /// ОТДЕЛЬНЫЙ запрос к базе, то есть ещё один круг по сети на каждую
+        /// подгрузку; здесь ответ достаётся даром, вместе с самой порцией.
+        /// </summary>
+        private static (DataTable rows, bool more) FetchOlderPage(bool grp, int chatId, int myId, int beforeId)
+        {
+            DataTable rows = grp ? LoadGroupMessagesOlderThan(chatId, beforeId, OlderStep + 1)
+                                 : LoadMessagesOlderThan(myId, chatId, beforeId, OlderStep + 1);
+            bool more = false;
+            if (rows != null && rows.Rows.Count > OlderStep)
+            {
+                // Строки идут от старых к новым, поэтому лишняя — первая.
+                rows.Rows.RemoveAt(0);
+                more = true;
+            }
+            return (rows, more);
+        }
 
         private void PrependOlder(bool grp, int chatId, int myId)
         {
@@ -3877,38 +3966,56 @@ namespace PISMO
             try { baseCopy = basePage.Copy(); }
             catch { LoadOlderFull(grp); return; }
 
+            // Запас подошёл? Тогда за сообщениями ехать уже не надо.
+            DataTable ready = null; bool readyMore = false;
+            if (_olderReserve != null && _olderReserveKey == key && _olderReserveBefore == oldestId)
+            {
+                ready = _olderReserve; readyMore = _olderReserveMore;
+                _olderReserve = null; _olderReserveKey = null; _olderReserveBefore = 0;
+            }
+
             _dmLoadingOlder = true;
             ShowLoadingOlderSoon();
             bool iB = _pageBlockedI, tB = _pageBlockedThem;
 
             System.Threading.Tasks.Task.Run(() =>
             {
-                DataTable older = null, merged = null;
-                bool more = false;
-                try
+                DataTable older = ready, merged = null;
+                bool more = readyMore;
+                if (older == null)
                 {
-                    older = grp ? LoadGroupMessagesOlderThan(chatId, oldestId, OlderStep)
-                                : LoadMessagesOlderThan(myId, chatId, oldestId, OlderStep);
+                    try { (older, more) = FetchOlderPage(grp, chatId, myId, oldestId); }
+                    catch { older = null; }
                 }
-                catch { }
                 if (older != null && older.Rows.Count > 0)
                 {
-                    // Медиа — только для новой порции: у показанных оно уже в кеше.
-                    try { PrefetchPageMedia(older, grp); } catch { }
                     try
                     {
                         merged = older.Copy();
                         foreach (DataRow r in baseCopy.Rows) merged.ImportRow(r);
                     }
                     catch { merged = null; }
+
+                    // Картинки и метаданные — РАЗОМ, а не одно за другим: друг от
+                    // друга они не зависят, и ждать их сумму было незачем. Для
+                    // запаса картинки уже привезены, и остаётся только второе.
+                    var tMedia = ready != null ? null : System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { PrefetchPageMedia(older, grp); } catch { }
+                    });
                     // Метаданные пересобираем по ВСЕЙ ленте, а не по порции:
                     // карта цитат строится от страницы, и подменять её куском
                     // нельзя — пропали бы цитаты у сообщений, которые на экране.
-                    try { FetchPageMeta(key, merged ?? older, grp); } catch { }
-                    int next = 0;
-                    try { next = Convert.ToInt32(older.Rows[0]["id"]); } catch { }
-                    more = next > 0 && (grp ? HasOlderInGroup(chatId, next)
-                                            : HasOlderThan(myId, chatId, next));
+                    var tMeta = System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { FetchPageMeta(key, merged ?? older, grp); } catch { }
+                    });
+                    try
+                    {
+                        if (tMedia != null) System.Threading.Tasks.Task.WaitAll(tMedia, tMeta);
+                        else tMeta.Wait();
+                    }
+                    catch { }
                 }
 
                 if (IsDisposed || !IsHandleCreated) return;
@@ -3930,6 +4037,16 @@ namespace PISMO
                         // Вставить не удалось — ленту пересобрали, пока мы ходили
                         // в базу. Доберём старым путём, он сработает наверняка.
                         if (rows && !ok) { _lastOlderLoad = DateTime.MinValue; LoadOlderFull(grp); }
+                        // И сразу везём следующую порцию: человек читает
+                        // приехавшее, канал свободен — к его приходу наверх
+                        // она уже будет лежать готовой.
+                        else if (ok && _dmHasMore)
+                        {
+                            int next = 0;
+                            try { if (merged.Rows.Count > 0) next = Convert.ToInt32(merged.Rows[0]["id"]); }
+                            catch { }
+                            if (next > 0) WarmOlderReserve(grp, chatId, myId, key, next);
+                        }
                     }));
                 }
                 catch { }
@@ -4232,7 +4349,17 @@ namespace PISMO
             // приехать до того, как человек до неё домотает, и прокрутка идёт
             // без остановок — как на телефоне.
             int top = -pnlMessages.AutoScrollPosition.Y;
-            int ahead = Math.Min(900, Math.Max(200, pnlMessages.ClientSize.Height));
+            int viewport = Math.Max(200, pnlMessages.ClientSize.Height);
+
+            // Запас начинаем везти ЗАДОЛГО до порога — за четыре экрана.
+            //
+            // Почти вся пауза при подгрузке — это походы к серверу, а не
+            // сборка пузырей. Значит, лучший способ её убрать — сходить
+            // заранее, пока человек ещё читает и канал свободен. К моменту,
+            // когда порция понадобится, ехать будет уже некуда.
+            if (top <= viewport * 4) WarmFromCurrentPage();
+
+            int ahead = Math.Min(1800, viewport * 2);
             if (top > ahead) return;
             LoadOlderNow();
         }
@@ -4245,11 +4372,12 @@ namespace PISMO
             if (!grp && !dm) return;
             if (_dmLoadingOlder || !_dmHasMore) return;
             // Короткая пауза между заходами — чтобы одно движение колеса не
-            // запускало сразу три запроса. Раньше она была вдвое длиннее:
+            // запускало сразу три запроса. Раньше она была вдесятеро длиннее:
             // каждая догрузка пересобирала ленту целиком, и частые срабатывания
-            // сливались в фриз. Теперь догрузка стоит одну страницу, и держать
-            // человека дольше незачем — прокрутка идёт без остановок.
-            if ((DateTime.UtcNow - _lastOlderLoad).TotalMilliseconds < 200) return;
+            // сливались в фриз. Теперь порция чаще всего уже привезена заранее,
+            // и подгрузка стоит одной сборки пузырей — держать человека дольше
+            // незачем, прокрутка идёт без остановок.
+            if ((DateTime.UtcNow - _lastOlderLoad).TotalMilliseconds < 80) return;
             _lastOlderLoad = DateTime.UtcNow;
 
             PrependOlder(grp, grp ? _currentGroupId : _currentChatPartnerId,
