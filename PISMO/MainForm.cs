@@ -1115,7 +1115,8 @@ namespace PISMO
                         }
                         if (chip != null)
                             chip.Location = new Point(
-                                Math.Max(0, pnl.Width - 12 - chip.Width - (hasBadge ? 30 : 0)), 11);
+                                Math.Max(0, pnl.Width - 12 - chip.Width - (hasBadge ? 30 : 0)),
+                                chip.Top);   // по вертикали уже выровнена при сборке
                         int nameCut = chip != null ? chip.Width + 8 : 0;
 
                         foreach (Control c in pnl.Controls)
@@ -2883,7 +2884,14 @@ namespace PISMO
         {
             const string text = "не в друзьях";
             var font = new Font("Segoe UI", 7.5f);
-            int w = TextRenderer.MeasureText(text, font).Width + 12;
+            // Меряем БЕЗ служебных полей TextRenderer: по умолчанию он
+            // прибавляет к ширине свой запас, причём не поровну с двух сторон,
+            // и надпись внутри плашки вставала левее середины. Здесь ширина —
+            // ровно текст плюс одинаковые поля слева и справа.
+            const int padX = 7;
+            int w = TextRenderer.MeasureText(text, font, Size.Empty,
+                        TextFormatFlags.NoPadding).Width + padX * 2;
+            const int h = 16;
             var chip = new Label
             {
                 Text = text,
@@ -2891,11 +2899,15 @@ namespace PISMO
                 ForeColor = Color.FromArgb(142, 146, 153),
                 BackColor = Theme.Map(Color.FromArgb(54, 57, 63)),
                 Name = "strangerChip",
-                Size = new Size(w, 16),
+                AutoSize = false,
+                Size = new Size(w, h),
                 TextAlign = ContentAlignment.MiddleCenter,
+                UseCompatibleTextRendering = false,
+                // По вертикали — ровно по центру строки имени (она с 10-й
+                // точки, высотой 20), а не «примерно рядом».
                 // Со счётчиком непрочитанных плашка отступает влево: он сидит
                 // у правого края и перекрыл бы её.
-                Location = new Point(parentWidth - 12 - w - (hasBadge ? 30 : 0), 11),
+                Location = new Point(parentWidth - 12 - w - (hasBadge ? 30 : 0), 10 + (20 - h) / 2),
             };
             RoundCorners(chip, 8);
             return chip;
