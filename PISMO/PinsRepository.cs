@@ -113,11 +113,19 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
+                // CAST и Convert — не перестраховка, а исправление.
+                //
+                // SUM() от целой колонки MySQL возвращает DECIMAL, а не целое.
+                // Читать его как GetInt64 — исключение, которое ловит catch
+                // ниже: функция молча отдавала пустую строку, сверка никогда
+                // не срабатывала, и закрепы не обновлялись ВООБЩЕ. Снаружи
+                // это выглядело как «функция не работает», без единого следа.
                 using var cmd = new MySqlCommand(
-                    "SELECT COUNT(*), COALESCE(SUM(message_id),0) FROM pinned_messages", conn);
+                    "SELECT COUNT(*), CAST(COALESCE(SUM(message_id),0) AS SIGNED) " +
+                    "FROM pinned_messages", conn);
                 using var r = cmd.ExecuteReader();
                 if (!r.Read()) return "";
-                return r.GetInt64(0) + ":" + r.GetInt64(1);
+                return Convert.ToInt64(r.GetValue(0)) + ":" + Convert.ToInt64(r.GetValue(1));
             }
             catch { return ""; }
         }
