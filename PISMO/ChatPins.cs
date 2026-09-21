@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -92,7 +92,15 @@ namespace PISMO
             }
             // В базу пишем в фоне: нажатие не должно ждать сервер, а список
             // уже переставлен по кешу.
-            System.Threading.Tasks.Task.Run(() => WriteDb(me, uid, nowPinned));
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                WriteDb(me, uid, nowPinned);
+                // И сообщаем своим же другим устройствам. Закрепы чатов общие,
+                // и второй вход должен переставить список сразу, а не ждать,
+                // пока кто-нибудь напишет сообщение.
+                try { WebSocketSignalingClient.Instance.SendMessage("chatpin", 0, uid, ""); }
+                catch { }
+            });
             return nowPinned;
         }
 

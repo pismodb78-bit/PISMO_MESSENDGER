@@ -1245,6 +1245,13 @@ namespace PISMO
                             if (_currentGroupId > 0) LoadGroupMessages();
                             else if (_currentChatPartnerId > 0) LoadMessages();
                         }
+                        else if (type == "chatpin")
+                        {
+                            // Закрепили или открепили ЧАТ на другом устройстве.
+                            // force: обычная отсечка в пятнадцать секунд здесь
+                            // только мешала бы — событие и так приходит редко.
+                            try { ChatPins.EnsureFresh(force: true); } catch { }
+                        }
                         else if (type == "pin")
                         {
                             // Кто-то закрепил или открепил сообщение — открытый
@@ -1576,6 +1583,16 @@ namespace PISMO
             {
                 try
                 {
+                    // Закрепы ЧАТОВ сверяем на каждом тике (внутри своя
+                    // отсечка — не чаще раза в пятнадцать секунд).
+                    //
+                    // Раньше это делалось только при построении списка, а оно
+                    // идёт при новом сообщении. Поэтому открепление, сделанное
+                    // на телефоне, на компьютере не появлялось вовсе, пока
+                    // кто-нибудь не напишет или пока не нажмёшь «обновить».
+                    // Список переставит событие ChatPins.Changed.
+                    try { ChatPins.EnsureFresh(); } catch { }
+
                     var unread = ReadUnreadCounts();
                     var groupNew = ReadGroupNew();
                     var presence = ReadPresence(ids);
