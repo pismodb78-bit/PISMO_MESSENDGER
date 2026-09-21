@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  MainForm — MessageActions + CallSupport (partial)
 //  Добавьте этот файл в проект рядом с MainForm.cs
 //  Это partial class — расширяет MainForm без правки оригинала
@@ -654,7 +654,22 @@ namespace PISMO
                     {
                         try { PinsRepository.Toggle(msgId, pinScope, UserSession.EffectiveId); } catch { }
                         if (IsDisposed || !IsHandleCreated) return;
-                        try { BeginInvoke(new Action(() => { ForceMessageRerender(); if (_currentGroupId > 0) LoadGroupMessages(); else if (_currentChatPartnerId > 0) LoadMessages(); })); } catch { }
+                        string pinErr = PinsRepository.LastError;
+                        try { BeginInvoke(new Action(() =>
+                        {
+                            // Не получилось — говорим об этом. Раньше неудача
+                            // выглядела как «ничего не произошло», и отличить её
+                            // от обычного открепления было нельзя.
+                            if (!string.IsNullOrEmpty(pinErr))
+                            {
+                                MessageBox.Show("Не удалось изменить закрепление:\n" + pinErr,
+                                    "Закреплённые", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                return;
+                            }
+                            ForceMessageRerender();
+                            if (_currentGroupId > 0) LoadGroupMessages();
+                            else if (_currentChatPartnerId > 0) LoadMessages();
+                        })); } catch { }
                     });
                 };
                 menu.Items.Add(itemPin);

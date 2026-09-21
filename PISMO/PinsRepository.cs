@@ -17,6 +17,17 @@ namespace PISMO
             public string TextCipher;   // текст в БД (зашифрован) — расшифровывать через Crypto.Dec
         }
 
+        /// <summary>
+        /// Почему последняя операция не удалась, или null.
+        ///
+        /// Здесь всё завёрнуто в catch и возвращает false — закреп не то, ради
+        /// чего стоит ронять окно. Но «не удалось» и «открепил» выглядели
+        /// СНАРУЖИ одинаково: нажал «Закрепить», ничего не произошло, и
+        /// понять, в чём дело — нет прав на таблицу, нет самой таблицы, нет
+        /// связи, — было нельзя ни по чему. Отсюда и поиски вслепую.
+        /// </summary>
+        public static string LastError;
+
         public static bool IsPinned(int messageId, int scope)
         {
             if (messageId <= 0) return false;
@@ -35,6 +46,7 @@ namespace PISMO
         /// <summary>Закрепить/открепить (тумблер). Возвращает итоговое состояние.</summary>
         public static bool Toggle(int messageId, int scope, int byUserId)
         {
+            LastError = null;
             if (messageId <= 0) return false;
             try
             {
@@ -66,7 +78,7 @@ namespace PISMO
                 Announce(messageId);
                 return true;
             }
-            catch { return false; }
+            catch (Exception ex) { LastError = ex.Message; return false; }
         }
 
         /// <summary>
