@@ -19,6 +19,34 @@ namespace PISMO
     {
         // uid -> 0 не в сети, 1 бездействует, 2 в сети
         private readonly Dictionary<int, int> _presence = new();
+
+        /// <summary>Сколько секунд без heartbeat считаем «не в сети».
+        /// Сам heartbeat идёт раз в 6 секунд, запас на промах и задержку.</summary>
+        private const int SeenOfflineSec = 40;
+
+        /// <summary>Сколько секунд без ввода считаем «бездействует».</summary>
+        private const int ActiveIdleSec = 90;
+
+        /// <summary>Статус по двум «сколько секунд назад». Один расчёт на всех,
+        /// чтобы кружок в списке, подпись в шапке и то, что мы рассылаем по
+        /// сокету, не разошлись между собой.</summary>
+        private static int StatusFrom(int seenAgo, int activeAgo)
+        {
+            if (seenAgo > SeenOfflineSec) return 0;
+            if (activeAgo > ActiveIdleSec) return 1;
+            return 2;
+        }
+
+        // Свой статус, разосланный последним, и когда это было. Рассылаем по
+        // изменению — иначе каждые 6 секунд каждый клиент писал бы всем
+        // остальным одно и то же.
+        private int _myBroadcastStatus = -1;
+        private DateTime _myBroadcastAt = DateTime.MinValue;
+
+        /// <summary>Когда по сокету последний раз приходил статус этого
+        /// человека. По этой отметке снимок из базы не затирает то, что
+        /// пришло секунду назад.</summary>
+        private readonly Dictionary<int, DateTime> _presencePushedAt = new();
         private System.Windows.Forms.Timer _presenceTimer;
         private bool _presenceColumnsOk = true;
 
@@ -129,6 +157,8 @@ namespace PISMO
 
             int idleSec = SystemIdleSeconds();
 
+            AnnouncePresence(idleSec);
+
             _ = Task.Run(() =>
             {
                 WriteHeartbeat(idleSec);
@@ -141,17 +171,90 @@ namespace PISMO
                     if (IsDisposed || !IsHandleCreated) return;
                     BeginInvoke(() =>
                     {
-                        if (fresh != null)
-                        {
-                            _presence.Clear();
-                            foreach (var kv in fresh) _presence[kv.Key] = kv.Value;
-                            InvalidateCardAvatars();
-                        }
+                        // Тот же путь, что и у опроса в PollTick: и защита
+                        // свежего прихода по сокету, и перерисовка только при
+                        // изменении — в одном месте, а не в двух похожих.
+                        ApplyPresence(fresh);
                         ApplyCallBanner(bannerText, bannerCall);
                     });
                 }
                 catch { }
             });
+        }
+
+        /// <summary>
+        /// Рассылает СВОЙ статус по сокету, когда он изменился.
+        ///
+        /// Зачем, если есть heartbeat в базе. Оттуда статус доходит двумя
+        /// шагами: сначала я должен записать (до 6 секунд), потом собеседник
+        /// должен прочитать (ещё до 6 секунд). Каждый шаг — запрос к базе на
+        /// другом конце сети, и любой из них может не успеть или не дойти;
+        /// тогда «в сети» появлялось только со следующей сверкой. По сокету
+        /// то же изменение приходит сразу же и всем.
+        ///
+        /// База остаётся источником правды: тот, кто подключился позже, и тот,
+        /// до кого сообщение не дошло, всё равно всё узнают — просто через
+        /// секунды, а не мгновенно.
+        ///
+        /// Шлём по изменению плюс раз в 30 секунд. Без этого каждый клиент
+        /// каждые 6 секунд писал бы всем остальным одно и то же.
+        /// </summary>
+        private void AnnouncePresence(int idleSec)
+        {
+            try
+            {
+                // Сокета нет — и отмечать нечего: иначе мы бы «запомнили»
+                // разосланный статус, которого никто не получил, и следующая
+                // рассылка ушла бы только через полминуты после подключения.
+                if (!WebSocketSignalingClient.Instance.IsConnected) return;
+
+                int st = idleSec > ActiveIdleSec ? 1 : 2;
+                bool changed = st != _myBroadcastStatus;
+                bool stale = (DateTime.UtcNow - _myBroadcastAt).TotalSeconds >= 30;
+                if (!changed && !stale) return;
+
+                _myBroadcastStatus = st;
+                _myBroadcastAt = DateTime.UtcNow;
+                // sessionId — статус, payload — реальный простой в секундах:
+                // из него получатель сразу строит «бездействует 5 мин», не
+                // дожидаясь ответа базы.
+                WebSocketSignalingClient.Instance.SendMessage(
+                    "presence", 0, st, idleSec.ToString());
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Пришёл чужой статус по сокету. Применяем немедленно: кружок в
+        /// списке и подпись в шапке, если это открытый собеседник.
+        /// </summary>
+        public void ApplyPresencePush(int senderId, int status, string payload)
+        {
+            if (senderId <= 0) return;
+            if (status < 0 || status > 2) return;
+
+            _presence[senderId] = status;
+            _presencePushedAt[senderId] = DateTime.UtcNow;
+            InvalidateCardAvatars();
+
+            if (senderId == _currentChatPartnerId && !TypingActive)
+            {
+                int idle = 0;
+                int.TryParse(payload, out idle);
+                if (idle < 0) idle = 0;
+                try
+                {
+                    EnsureChatPresenceLabel();
+                    var (text, color) = PresenceText(status, 0, idle);
+                    _lblChatPresence.Text = text;
+                    _lblChatPresence.ForeColor = color;
+                    _presenceLabelPeer = senderId;
+                    PositionChatPresence();
+                    _lblChatPresence.Visible = true;
+                    _lblChatPresence.BringToFront();
+                }
+                catch { }
+            }
         }
 
         private void WriteHeartbeat(int idleSec = 0)
@@ -160,11 +263,26 @@ namespace PISMO
             try
             {
                 int myId = UserSession.EffectiveId;
-                bool active = idleSec < 60; // двигал мышь/печатал за последнюю минуту
                 using var conn = DBHelper.OpenConnection();
+                // Пишем НАСТОЯЩИЙ момент последнего ввода, а не «была ли
+                // активность за минуту».
+                //
+                // Раньше было last_active = IF(простой < 60, NOW(), как было).
+                // Из-за этого метка ещё целую минуту после последнего движения
+                // мышью подтягивалась к текущему времени, и порог «90 секунд без
+                // ввода» срабатывал не через 90 секунд, а через 150. Человек
+                // отошёл от компьютера — собеседник видел «в сети» ещё две с
+                // половиной минуты.
+                //
+                // GREATEST — чтобы метка не поехала назад: простой растёт, но
+                // NOW() - простой стоит на месте, а после первого же нажатия
+                // клавиши уходит вперёд.
                 using var cmd = new MySqlCommand(
-                    "UPDATE users SET last_seen=NOW(), last_active=IF(@act=1, NOW(), last_active) WHERE id=@id", conn);
-                cmd.Parameters.AddWithValue("@act", active ? 1 : 0);
+                    "UPDATE users SET last_seen=NOW(), " +
+                    "last_active = GREATEST(COALESCE(last_active, '1970-01-02'), " +
+                    "                       NOW() - INTERVAL @idle SECOND) " +
+                    "WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@idle", idleSec < 0 ? 0 : idleSec);
                 cmd.Parameters.AddWithValue("@id", myId);
                 cmd.ExecuteNonQuery();
             }
@@ -204,11 +322,7 @@ namespace PISMO
                     bool activeNull = r["active_ago"] == DBNull.Value;
                     int activeAgo = activeNull ? int.MaxValue : Convert.ToInt32(r["active_ago"]);
 
-                    int status;
-                    if (seenAgo > 40) status = 0;          // не в сети (heartbeat 15с, порог 40с)
-                    else if (activeAgo > 90) status = 1;    // бездействует (нет ввода >1.5 мин)
-                    else status = 2;                        // в сети
-                    result[id] = status;
+                    result[id] = StatusFrom(seenAgo, activeAgo);
                 }
                 return result;
             }
@@ -232,6 +346,11 @@ namespace PISMO
 
         // ── Статус собеседника в шапке чата (в сети / бездействует N / был в сети N) ──
         private Label _lblChatPresence;
+
+        /// <summary>Чей статус сейчас написан в шапке. Нужен, чтобы при
+        /// переключении чата не оставить на экране подпись от прошлого
+        /// собеседника.</summary>
+        private int _presenceLabelPeer = -1;
 
         private void EnsureChatPresenceLabel()
         {
@@ -278,11 +397,17 @@ namespace PISMO
                 if (!r.Read()) return null;
                 int seenAgo = r["seen_ago"] == DBNull.Value ? int.MaxValue : Convert.ToInt32(r["seen_ago"]);
                 int activeAgo = r["active_ago"] == DBNull.Value ? int.MaxValue : Convert.ToInt32(r["active_ago"]);
-                if (seenAgo > 40) return ($"был(а) в сети {HumanAgo(seenAgo)}", PresenceOffline);
-                if (activeAgo > 90) return ($"● бездействует {HumanDur(activeAgo)}", PresenceIdle);
-                return ("● в сети", PresenceOnline);
+                return PresenceText(StatusFrom(seenAgo, activeAgo), seenAgo, activeAgo);
             }
             catch (Exception ex) { if (IsSchemaMissing(ex)) _presenceColumnsOk = false; return null; }
+        }
+
+        /// <summary>Подпись и цвет для шапки чата по готовому статусу.</summary>
+        private static (string text, Color color) PresenceText(int status, int seenAgo, int activeAgo)
+        {
+            if (status == 0) return ($"был(а) в сети {HumanAgo(seenAgo)}", PresenceOffline);
+            if (status == 1) return ($"● бездействует {HumanDur(activeAgo)}", PresenceIdle);
+            return ("● в сети", PresenceOnline);
         }
 
         /// <summary>Позиционирует ярлык статуса сразу за текстом заголовка чата.</summary>
@@ -313,8 +438,19 @@ namespace PISMO
             if (peer <= 0 || !_presenceColumnsOk)
             {
                 if (_lblChatPresence != null) _lblChatPresence.Visible = false;
+                _presenceLabelPeer = -1;
                 return;
             }
+
+            // Сменили собеседника — старую подпись убираем сразу, не дожидаясь
+            // ответа базы: показывать «в сети» от предыдущего человека хуже,
+            // чем не показывать ничего.
+            if (_presenceLabelPeer != peer)
+            {
+                _lblChatPresence.Visible = false;
+                _presenceLabelPeer = peer;
+            }
+
             _ = Task.Run(() =>
             {
                 var info = ReadPeerPresenceText(peer);
@@ -328,7 +464,12 @@ namespace PISMO
                         // «печатает…» — не затираем её своим «в сети». Опрос идёт
                         // раз в несколько секунд и иначе гасил бы её на полпути.
                         if (TypingActive) return;
-                        if (info == null) { _lblChatPresence.Visible = false; return; }
+                        // Запрос не удался (оборвалась связь, не успел) — ОСТАВЛЯЕМ
+                        // то, что написано. Раньше подпись при этом пряталась, и
+                        // одного неудачного запроса хватало, чтобы статус исчез до
+                        // следующей удачной сверки. Со стороны это выглядело как
+                        // «статус пропал».
+                        if (info == null) return;
                         _lblChatPresence.Text = info.Value.text;
                         _lblChatPresence.ForeColor = info.Value.color;
                         PositionChatPresence();

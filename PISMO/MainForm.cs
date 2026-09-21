@@ -1291,6 +1291,14 @@ namespace PISMO
                             if (_currentGroupId > 0) LoadGroupMessages();
                             else if (_currentChatPartnerId > 0) LoadMessages();
                         }
+                        else if (type == "presence")
+                        {
+                            // Человек сменил статус (сел за компьютер / отошёл) —
+                            // применяем сразу, не дожидаясь очередной сверки с
+                            // базой. sessionId = статус, payload = простой в
+                            // секундах.
+                            ApplyPresencePush(senderId, sessionId, payload);
+                        }
                         else if (type == "typing")
                         {
                             // «печатает…»: для группы sessionId=groupId, для лички
@@ -1717,6 +1725,27 @@ namespace PISMO
         private void ApplyPresence(Dictionary<int, int> fresh)
         {
             if (fresh == null) return;
+
+            // Свежий приход по сокету старше того, что вернула база.
+            //
+            // Запрос к базе уходит раньше, чем приходит ответ, и за это время
+            // человек успевает отойти от компьютера. Тогда снимок из базы —
+            // уже устаревший — затирал только что полученный статус, и кружок
+            // на несколько секунд возвращался к прежнему цвету. Про себя
+            // клиент знает точнее любой строки в базе, поэтому недавний
+            // приход по сокету побеждает.
+            var pushNow = DateTime.UtcNow;
+            foreach (var kv in _presencePushedAt)
+            {
+                // Только те, кого база и так вернула: приход по сокету не
+                // должен дописывать в снимок людей, которых в списке нет, —
+                // иначе счётчик записей пляшет и карточки перерисовываются
+                // на пустом месте.
+                if (!fresh.ContainsKey(kv.Key)) continue;
+                if ((pushNow - kv.Value).TotalSeconds >= 10) continue;
+                if (_presence.TryGetValue(kv.Key, out int pushed)) fresh[kv.Key] = pushed;
+            }
+
             bool changed = fresh.Count != _presence.Count;
             if (!changed)
                 foreach (var kv in fresh)
@@ -7463,6 +7492,10 @@ namespace PISMO
         /// собеседники сразу увидели офлайн, не дожидаясь таймаута heartbeat.</summary>
         private void MarkSelfOffline()
         {
+            // Сначала по сокету — он дойдёт мгновенно, а запись в базу остаётся
+            // подстраховкой для тех, кто сейчас не на связи.
+            try { WebSocketSignalingClient.Instance.SendMessage("presence", 0, 0, "0"); } catch { }
+
             if (!_presenceColumnsOk) return;
             try
             {
