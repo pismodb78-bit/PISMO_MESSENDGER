@@ -1101,6 +1101,23 @@ namespace PISMO
                     if (ctrl is Panel pnl)
                     {
                         pnl.Width = avail - pnl.Margin.Horizontal;
+
+                        // Плашка «не в друзьях» держится правого края строки
+                        // имени, а имя отдаёт ей свою ширину — иначе при
+                        // сужении списка длинное имя заехало бы под неё.
+                        Control chip = null;
+                        bool hasBadge = false;
+                        foreach (Control c in pnl.Controls)
+                        {
+                            if (c.Name == "strangerChip") chip = c;
+                            else if (c is Label b && b.BackColor == Color.FromArgb(240, 71, 71))
+                                hasBadge = true;
+                        }
+                        if (chip != null)
+                            chip.Location = new Point(
+                                Math.Max(0, pnl.Width - 12 - chip.Width - (hasBadge ? 30 : 0)), 11);
+                        int nameCut = chip != null ? chip.Width + 8 : 0;
+
                         foreach (Control c in pnl.Controls)
                         {
                             // бейджи с красным фоном — корректируем позицию
@@ -1109,7 +1126,9 @@ namespace PISMO
 
                             // подписи и превью — корректируем ширину
                             if (c is Label lbl && lbl.AutoEllipsis)
-                                lbl.Size = new Size(Math.Max(40, pnl.Width - 90), lbl.Height);
+                                lbl.Size = new Size(
+                                    Math.Max(40, pnl.Width - 90 - (lbl.Name == "cardName" ? nameCut : 0)),
+                                    lbl.Height);
                         }
                     }
                 }
@@ -2230,9 +2249,36 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         //  ЗАГРУЗКА САЙДБАРА
         // ════════════════════════════════════════════════════════════════
+        /// <summary>
+        /// Где стоял ползунок списка чатов до пересборки.
+        ///
+        /// Список пересобирается целиком — и на новое сообщение, и на закреп,
+        /// сделанный на другом устройстве. Пересборка сбрасывает прокрутку в
+        /// начало, и человека, читавшего середину списка, каждый раз
+        /// выбрасывало наверх без всякого повода с его стороны.
+        /// </summary>
+        private int SidebarScroll
+        {
+            get { try { return -pnlUserList.AutoScrollPosition.Y; } catch { return 0; } }
+            set
+            {
+                if (value <= 0) return;
+                try
+                {
+                    // ПОСЛЕ пересчёта раскладки: до него диапазон прокрутки
+                    // ещё от прежнего, короткого содержимого, и значение
+                    // обрезалось бы по нему.
+                    pnlUserList.PerformLayout();
+                    pnlUserList.AutoScrollPosition = new Point(0, value);
+                }
+                catch { }
+            }
+        }
+
         private void LoadConversations()
         {
             try { ChatScroll.Attach(pnlUserList); ChatScroll.KillHorizontal(pnlSidebar); } catch { }   // тонкий верт. + без гор. в сайдбаре
+            int keepScroll = SidebarScroll;
             pnlUserList.Controls.Clear();
             _userPanels.Clear();
             _groupPanels.Clear();
@@ -2335,13 +2381,13 @@ namespace PISMO
                     string lastMsg = row["last_msg"] == DBNull.Value ? "" : Crypto.Dec(row["last_msg"].ToString());
                     int unread = row["unread"] == DBNull.Value ? 0 : Convert.ToInt32(row["unread"]);
 
-                    if (!friendIds.Contains(uid))
-                        lastMsg = "🚫 не в друзьях" + (string.IsNullOrEmpty(lastMsg) ? "" : " · " + lastMsg);
-
-                    AddUserCard(uid, name, lastMsg, unread, pinned: ChatPins.IsPinned(uid));
+                    AddUserCard(uid, name, lastMsg, unread,
+                                pinned: ChatPins.IsPinned(uid),
+                                stranger: !friendIds.Contains(uid));
                 }
                 if (_convSearch != null) FilterConversations(_convSearch.Text);
                 try { pnlUserList_Resize(null, null); } catch { }   // подогнать ширину карточек → без гор.скролла
+                SidebarScroll = keepScroll;                          // вернуть ползунок на место
                 try { ChatScroll.ApplyDarkScrollbar(pnlUserList); } catch { }   // тёмная полоса и в списке контактов
                 try { BeginInvoke(new Action(() => ChatScroll.ApplyDarkScrollbar(pnlUserList))); } catch { }
                 try { PresenceTick(); } catch { } // разово обновить статусы под список
@@ -2425,6 +2471,7 @@ namespace PISMO
 
         private void LoadAllUsersForAdmin()
         {
+            int keepScroll = SidebarScroll;
             pnlUserList.Controls.Clear();
             _userPanels.Clear();
             _groupPanels.Clear();
@@ -2529,6 +2576,7 @@ namespace PISMO
                         lastByPartner.TryGetValue(uid, out var lp) ? lp : "");
                 }
                 try { pnlUserList_Resize(null, null); } catch { }
+                SidebarScroll = keepScroll;                          // вернуть ползунок на место
                 try { ChatScroll.ApplyDarkScrollbar(pnlUserList); } catch { }   // тёмная полоса в списке пользователей
                 try { BeginInvoke(new Action(() => ChatScroll.ApplyDarkScrollbar(pnlUserList))); } catch { }
             }
@@ -2819,7 +2867,42 @@ namespace PISMO
             }
         }
 
-        private void AddUserCard(int uid, string name, string lastMsg, int unread, bool pinned = false)
+        /// <summary>
+        /// Тихая плашка «не в друзьях» — в строке имени, справа.
+        ///
+        /// Раньше пометка вклинивалась в строку ПОСЛЕДНЕГО СООБЩЕНИЯ:
+        /// «🚫 не в друзьях · …». Она съедала как раз то, ради чего эта
+        /// строка и нужна, — само сообщение обрезалось, а на виду оставалась
+        /// подпись, одинаковая у всех таких карточек. Плюс красный значок
+        /// кричал громче непрочитанных, хотя говорит вещь куда менее важную.
+        ///
+        /// Здесь она не спорит ни с чем: строка имени справа всё равно пуста,
+        /// цвет приглушённый, и сообщение остаётся целым.
+        /// </summary>
+        private Label MakeStrangerChip(int parentWidth, bool hasBadge)
+        {
+            const string text = "не в друзьях";
+            var font = new Font("Segoe UI", 7.5f);
+            int w = TextRenderer.MeasureText(text, font).Width + 12;
+            var chip = new Label
+            {
+                Text = text,
+                Font = font,
+                ForeColor = Color.FromArgb(142, 146, 153),
+                BackColor = Theme.Map(Color.FromArgb(54, 57, 63)),
+                Name = "strangerChip",
+                Size = new Size(w, 16),
+                TextAlign = ContentAlignment.MiddleCenter,
+                // Со счётчиком непрочитанных плашка отступает влево: он сидит
+                // у правого края и перекрыл бы её.
+                Location = new Point(parentWidth - 12 - w - (hasBadge ? 30 : 0), 11),
+            };
+            RoundCorners(chip, 8);
+            return chip;
+        }
+
+        private void AddUserCard(int uid, string name, string lastMsg, int unread,
+                                 bool pinned = false, bool stranger = false)
         {
             var pnl = new Panel
             {
@@ -2847,6 +2930,8 @@ namespace PISMO
                 DrawPresenceDot(e.Graphics, avatar.Width, avatar.Height, uid);
             };
 
+            var chip = stranger ? MakeStrangerChip(pnl.Width, unread > 0) : null;
+
             var lblName = new Label
             {
                 // 📌 — закреплённый чат, 🔕 — игнорируемый (уведомления выключены).
@@ -2856,7 +2941,9 @@ namespace PISMO
                     : new Font("Segoe UI", 10f),
                 ForeColor = Color.FromArgb(220, 221, 222),
                 Location = new Point(56, 10),
-                Size = new Size(pnl.Width - 90, 20),
+                Name = "cardName",
+                // Имя ужимаем ровно на плашку, чтобы длинное не заехало под неё.
+                Size = new Size(pnl.Width - 90 - (chip != null ? chip.Width + 8 : 0), 20),
                 AutoEllipsis = true
             };
 
@@ -2866,6 +2953,7 @@ namespace PISMO
             pnl.Controls.Add(avatar);
             pnl.Controls.Add(lblName);
             pnl.Controls.Add(lblLast);
+            if (chip != null) pnl.Controls.Add(chip);
 
             if (unread > 0)
                 pnl.Controls.Add(MakeBadge(unread, pnl.Width));
