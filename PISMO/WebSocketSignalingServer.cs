@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.WebSockets;
@@ -21,7 +21,31 @@ namespace PISMO
 
         private HttpListener _listener;
         private CancellationTokenSource _cts;
-        private readonly ConcurrentDictionary<int, WebSocket> _clients = new();
+        /// <summary>
+        /// Кто сейчас на связи: пользователь → ВСЕ его соединения.
+        ///
+        /// Раньше здесь лежало одно соединение на пользователя, и второй вход
+        /// того же человека — телефон рядом с компьютером — просто вытеснял
+        /// первый: сокет оставался открытым, но не получал уже ничего. То есть
+        /// между СВОИМИ устройствами мгновенной доставки не было вовсе, и
+        /// всякое общее состояние (прочитано, закрепления) доезжало только
+        /// сверкой, через секунды. Внешний ws-сервер (ws-server/server.js)
+        /// хранил набор с самого начала — теперь обе стороны ведут себя одинаково.
+        ///
+        /// ConcurrentDictionary вместо множества: готового потокобезопасного
+        /// набора в стандартной библиотеке нет, а значение здесь не нужно.
+        /// </summary>
+        private readonly ConcurrentDictionary<int, ConcurrentDictionary<WebSocket, byte>> _clients = new();
+
+        private void AddClient(int userId, WebSocket ws) =>
+            _clients.GetOrAdd(userId, _ => new ConcurrentDictionary<WebSocket, byte>())[ws] = 0;
+
+        private void RemoveClient(int userId, WebSocket ws)
+        {
+            if (!_clients.TryGetValue(userId, out var set)) return;
+            set.TryRemove(ws, out _);
+            if (set.IsEmpty) _clients.TryRemove(userId, out _);
+        }
         public bool IsRunning { get; private set; }
 
         public void Start(int port = 8080)
@@ -56,8 +80,9 @@ namespace PISMO
                 _cts?.Cancel();
                 _listener?.Stop();
                 foreach (var pair in _clients)
+                foreach (var sock in pair.Value.Keys)
                 {
-                    try { pair.Value.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server shutting down", CancellationToken.None); } catch { }
+                    try { sock.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server shutting down", CancellationToken.None); } catch { }
                 }
                 _clients.Clear();
                 IsRunning = false;
@@ -120,32 +145,49 @@ namespace PISMO
                             if (type == "register")
                             {
                                 registeredUserId = root.GetProperty("userId").GetInt32();
-                                _clients[registeredUserId] = ws;
+                                AddClient(registeredUserId, ws);
                                 System.Diagnostics.Debug.WriteLine($"[WS SERVER] Клиент зарегистрирован: userId={registeredUserId}");
                             }
                             else
                             {
                                 // Пересылка сообщения целевому пользователю или широковещательно
-                                int targetUserId = root.GetProperty("targetUserId").GetInt32();
+                                int targetUserId = root.TryGetProperty("targetUserId", out var tEl)
+                                                   && tEl.TryGetInt32(out int tVal) ? tVal : 0;
+                                var sendBytes = Encoding.UTF8.GetBytes(msgJson);
+
+                                // Отправителю самому не шлём — но отправитель это
+                                // СОЕДИНЕНИЕ, а не пользователь: остальные свои
+                                // устройства получить должны.
+                                async Task SendTo(ConcurrentDictionary<WebSocket, byte> set)
+                                {
+                                    if (set == null) return;
+                                    foreach (var sock in set.Keys)
+                                    {
+                                        if (ReferenceEquals(sock, ws) || sock.State != WebSocketState.Open) continue;
+                                        try
+                                        {
+                                            await sock.SendAsync(new ArraySegment<byte>(sendBytes),
+                                                WebSocketMessageType.Text, true, token);
+                                        }
+                                        catch { }
+                                    }
+                                }
+
                                 if (targetUserId > 0)
                                 {
-                                    if (_clients.TryGetValue(targetUserId, out var targetWs) && targetWs.State == WebSocketState.Open)
+                                    _clients.TryGetValue(targetUserId, out var targetSet);
+                                    await SendTo(targetSet);
+                                    // И своим же остальным устройствам.
+                                    if (targetUserId != registeredUserId && registeredUserId > 0)
                                     {
-                                        var sendBytes = Encoding.UTF8.GetBytes(msgJson);
-                                        await targetWs.SendAsync(new ArraySegment<byte>(sendBytes), WebSocketMessageType.Text, true, token);
+                                        _clients.TryGetValue(registeredUserId, out var mine);
+                                        await SendTo(mine);
                                     }
                                 }
                                 else
                                 {
-                                    // Широковещательная рассылка (например, для групп)
-                                    var sendBytes = Encoding.UTF8.GetBytes(msgJson);
-                                    foreach (var pair in _clients)
-                                    {
-                                        if (pair.Key != registeredUserId && pair.Value.State == WebSocketState.Open)
-                                        {
-                                            await pair.Value.SendAsync(new ArraySegment<byte>(sendBytes), WebSocketMessageType.Text, true, token);
-                                        }
-                                    }
+                                    // Широковещательная рассылка (например, для групп).
+                                    foreach (var pair in _clients) await SendTo(pair.Value);
                                 }
                             }
                         }
@@ -164,7 +206,7 @@ namespace PISMO
             {
                 if (registeredUserId > 0)
                 {
-                    _clients.TryRemove(registeredUserId, out _);
+                    RemoveClient(registeredUserId, ws);
                     System.Diagnostics.Debug.WriteLine($"[WS SERVER] Клиент отключен: userId={registeredUserId}");
                 }
                 try { if (ws.State != WebSocketState.Closed) await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed", CancellationToken.None); } catch { }

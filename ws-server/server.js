@@ -99,23 +99,51 @@ wss.on('connection', (ws, req) => {
             }
             ws.userId = uid;
             addClient(ws.userId, ws);
-            console.log(`[PISMO WS] register userId=${ws.userId} (онлайн: ${clients.size})`);
+            const own = clients.get(ws.userId).size;
+            console.log(`[PISMO WS] register userId=${ws.userId} ` +
+                        `(устройств у него: ${own}, пользователей онлайн: ${clients.size})`);
+            // Отвечаем, СКОЛЬКО устройств этого пользователя сейчас на связи.
+            //
+            // Без этого «доходит или нет» было невидимо снаружи: клиент знал
+            // только, что сокет открыт. Один раз это уже стоило перезагрузки
+            // сервера, который был ни при чём. Старые клиенты поле просто
+            // игнорируют — незнакомый тип у них проходит мимо.
+            try { ws.send(JSON.stringify({ type: 'registered', userId: uid, sessionId: own })); } catch {}
             return;
         }
 
         // До регистрации ничего не релеим.
         if (ws.userId == null) return;
 
+        const send = (c) => {
+            if (c !== ws && c.readyState === WebSocket.OPEN) { try { c.send(raw); } catch {} }
+        };
+
         const target = Number(msg.targetUserId || 0);
         if (target && target !== 0) {
             // Личная доставка адресату.
             const set = clients.get(target);
-            if (set) for (const c of set) if (c.readyState === WebSocket.OPEN) { try { c.send(raw); } catch {} }
+            if (set) for (const c of set) send(c);
+
+            // И СВОИМ ЖЕ остальным устройствам.
+            //
+            // Раньше адресное сообщение уходило только получателю, и второй
+            // вход того же человека — телефон рядом с компьютером — не узнавал
+            // о нём вовсе. Для звонков это было неважно, а для всего, что
+            // меняет общее состояние (прочитано, закрепления), — наоборот:
+            // изменение, сделанное на одном своём устройстве, на другом
+            // появлялось только следующей сверкой, через секунды.
+            //
+            // Себя-отправителя пропускаем в send(): c !== ws.
+            if (target !== ws.userId) {
+                const mine = clients.get(ws.userId);
+                if (mine) for (const c of mine) send(c);
+            }
         } else {
-            // Broadcast (группа/общее) — всем, кроме отправителя.
+            // Broadcast (группа/общее) — всем, кроме самого отправителя.
+            // Свои же другие устройства сюда входят и входили всегда.
             for (const set of clients.values())
-                for (const c of set)
-                    if (c !== ws && c.readyState === WebSocket.OPEN) { try { c.send(raw); } catch {} }
+                for (const c of set) send(c);
         }
     });
 
