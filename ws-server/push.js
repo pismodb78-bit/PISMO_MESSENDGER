@@ -87,6 +87,10 @@ async function nameOf(userId) {
  */
 async function send(userId, data) {
     if (!ready) return;
+    // ВНИМАНИЕ к именам полей в data. FCM резервирует "from",
+    // "message_type", "notification" и всё, что начинается на google/gcm, и
+    // отвергает ВСЁ сообщение с messaging/invalid-argument. Отправителя
+    // поэтому зовут sender, а не from.
     const tokens = await tokensFor(userId);
     if (!tokens.length) {
         console.log(`[PUSH] ${userId}: адресов нет — приложение не регистрировалось`);
@@ -113,8 +117,12 @@ async function send(userId, data) {
         res.responses.forEach((r, i) => {
             if (r.success) return;
             const code = r.error && r.error.code;
-            if (code === 'messaging/registration-token-not-registered' ||
-                code === 'messaging/invalid-argument') dead.push(tokens[i]);
+            // Удаляем ТОЛЬКО по «адрес больше не зарегистрирован». Раньше сюда
+            // же попадал invalid-argument — а он почти всегда про само
+            // сообщение, а не про адрес. Одна ошибка в полях, и сервер
+            // вычищал живые адреса всех подряд, после чего слать становилось
+            // некуда и причина выглядела уже совсем другой.
+            if (code === 'messaging/registration-token-not-registered') dead.push(tokens[i]);
         });
         if (dead.length) {
             await pool.query('DELETE FROM device_tokens WHERE token IN (?)', [dead]);
@@ -168,7 +176,7 @@ async function onEvent(msg, isOnline) {
                 [chat, from]);
             for (const r of rows) {
                 if (isOnline(r.user_id)) continue;
-                await send(r.user_id, { kind: 'group', group: chat, from, name });
+                await send(r.user_id, { kind: 'group', group: chat, sender: from, name });
             }
         } catch (e) { console.log('[PUSH] группа: ' + e.message); }
         return;
@@ -178,7 +186,7 @@ async function onEvent(msg, isOnline) {
     // устройство, ему релей и так всё отдал.
     if (chat === from) return;
     if (isOnline(chat)) return;
-    await send(chat, { kind: 'message', from, name });
+    await send(chat, { kind: 'message', sender: from, name });
 }
 
 module.exports = { init, onEvent };
