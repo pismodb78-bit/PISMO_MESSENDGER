@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Diagnostics;
@@ -3256,6 +3256,9 @@ namespace PISMO
             ShowExitImpersonateButton();
             ClearChat();
             LoadConversations();
+            // Сокет был зарегистрирован за админом. Пока он такой, всё, что
+            // уходит в релей, едет с его id, а не того, за кого пишем.
+            _ = WebSocketSignalingClient.Instance.ReconnectAsAsync(UserSession.EffectiveId);
         }
 
         private void ShowExitImpersonateButton()
@@ -3281,6 +3284,7 @@ namespace PISMO
                 RemoveExitImpersonateButton();
                 ClearChat();
                 LoadAllUsersForAdmin();
+                _ = WebSocketSignalingClient.Instance.ReconnectAsAsync(UserSession.EffectiveId);
             };
 
             pnlSidebar.Controls.Add(_btnExitImpersonate);

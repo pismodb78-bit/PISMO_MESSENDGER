@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
@@ -284,6 +284,30 @@ namespace PISMO
                     });
                 }
             }
+        }
+
+        /// <summary>
+        /// Переподключиться под другим id — вход «за пользователя» и выход из него.
+        /// </summary>
+        /// <remarks>
+        /// Простой ConnectAsync здесь не годится: на уже открытом сокете он
+        /// выходит первой же строкой, и соединение остаётся зарегистрированным
+        /// за прежним человеком. Всё, что уходит в релей, продолжало бы ехать с
+        /// чужим userId — например, событие о новом сообщении приходило от
+        /// админа, а не от того, за кого он пишет.
+        ///
+        /// Disconnect отменяет токен, поэтому автоматическое переподключение в
+        /// ReceiveLoop не сработает и не поднимет соединение обратно со старым id.
+        /// </remarks>
+        public async Task ReconnectAsAsync(int userId)
+        {
+            if (userId <= 0) return;
+            if (_myUserId == userId && IsConnected) return;
+
+            Disconnect();
+            _isConnecting = false;
+            _myUserId = userId;
+            await ConnectAsync(userId);
         }
 
         public void Disconnect()
