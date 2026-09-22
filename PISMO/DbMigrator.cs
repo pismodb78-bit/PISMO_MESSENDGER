@@ -355,6 +355,36 @@ namespace PISMO
                     AddIndex(conn, t, "idx_file_sha", "(sender_id, file_sha)");
                 }
             }),
+
+            (21, "call_participants: один человек — одна строка в звонке", conn =>
+            {
+                // ЧТО БЫЛО ВИДНО СНАРУЖИ: в окне звонка «Участники (7)», и
+                // седьмой в списке — это первый, тот же человек дважды.
+                //
+                // Причина: строку добавлял простой INSERT, а уникального ключа
+                // на (call_id, user_id) в таблице нет. Удаляет строку только
+                // штатный выход из звонка; после закрытия крестиком, падения
+                // или обрыва сети её удалять некому — и повторный вход в тот же
+                // звонок добавлял вторую. Второй вход того же человека с
+                // телефона рядом с компьютером давал то же самое.
+                //
+                // Клиенты теперь удаляют свою прежнюю строку перед вставкой, но
+                // на это нельзя опираться: в базе уже лежат дубликаты, и рядом
+                // работают старые сборки. Ключ ставит запрет на уровне базы —
+                // там, где его нельзя обойти.
+                if (!TableExists(conn, "call_participants")) return;
+
+                // Сначала чистим накопленное, иначе UNIQUE просто не встанет.
+                // Оставляем самую раннюю запись: она помнит, когда человек
+                // вошёл на самом деле.
+                Exec(conn,
+                    "DELETE cp FROM call_participants cp " +
+                    "JOIN call_participants keep " +
+                    "  ON keep.call_id = cp.call_id AND keep.user_id = cp.user_id " +
+                    " AND keep.id < cp.id");
+
+                AddUniqueIndex(conn, "call_participants", "uq_call_participant", "(call_id, user_id)");
+            }),
         };
 
         /// <summary>Чистит повторяющиеся пометки пересылки в одной таблице.</summary>
@@ -514,6 +544,24 @@ namespace PISMO
         /// миграция не отмечается применённой — повторится при следующем запуске,
         /// а до тех пор индексы можно положить руками скриптом из папки sql.
         /// </summary>
+        /// <summary>
+        /// То же, что AddIndex, но ключ уникальный. Отдельным методом, а не
+        /// флагом: уникальный ключ падает ещё и на 1062 — когда дубликаты
+        /// остались. Это НЕ «уже есть», и молчать об этом нельзя.
+        /// </summary>
+        private static void AddUniqueIndex(MySqlConnection conn, string table, string name, string columns)
+        {
+            if (!IsPlainIdentifier(table) || !IsPlainIdentifier(name)) return;
+            try
+            {
+                Exec(conn, $"ALTER TABLE `{table}` ADD UNIQUE INDEX `{name}` {columns}");
+            }
+            catch (MySqlException e) when (e.Number == 1061)
+            {
+                // уже есть — это успех
+            }
+        }
+
         private static void AddIndex(MySqlConnection conn, string table, string name, string columns)
         {
             if (!IsPlainIdentifier(table) || !IsPlainIdentifier(name)) return;

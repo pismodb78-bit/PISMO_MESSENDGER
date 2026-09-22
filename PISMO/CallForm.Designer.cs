@@ -318,8 +318,17 @@ namespace PISMO
                     {
                         using var conn = DBHelper.OpenConnection();
                         // Имена участников через JOIN с users (в call_participants только user_id).
+                        // GROUP BY по человеку, а не строка на каждую запись:
+                        // в таблице нет уникального ключа, и один и тот же
+                        // участник мог попасть туда несколько раз. Сверка по
+                        // left_at — на случай строк, помеченных как ушедшие.
                         using var cmd = new MySqlCommand(
-                            "SELECT TRIM(CONCAT(u.Name, ' ', u.Surname)) AS user_name, u.login FROM call_participants cp JOIN users u ON u.id = cp.user_id WHERE cp.call_id=@cid ORDER BY cp.joined_at ASC", conn);
+                            "SELECT TRIM(CONCAT(u.Name, ' ', u.Surname)) AS user_name, u.login, " +
+                            "       MIN(cp.joined_at) AS first_join " +
+                            "FROM call_participants cp JOIN users u ON u.id = cp.user_id " +
+                            "WHERE cp.call_id=@cid AND cp.left_at IS NULL " +
+                            "GROUP BY cp.user_id, u.Name, u.Surname, u.login " +
+                            "ORDER BY first_join ASC", conn);
                         cmd.Parameters.AddWithValue("@cid", sidParts);
                         using var r = cmd.ExecuteReader();
                         parts = new System.Collections.Generic.List<string>();

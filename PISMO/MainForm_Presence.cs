@@ -554,10 +554,14 @@ namespace PISMO
                 // обновляет, так что мёртвая запись отсеется за минуту.
                 var names = new List<string>();
                 using (var pc = new MySqlCommand(
-                    "SELECT TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login FROM call_participants cp " +
+                    "SELECT TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login, " +
+                    "       MIN(cp.joined_at) AS first_join FROM call_participants cp " +
                     "JOIN users u ON u.id = cp.user_id WHERE cp.call_id=@cid AND cp.left_at IS NULL " +
                     "AND u.last_seen IS NOT NULL AND TIMESTAMPDIFF(SECOND, u.last_seen, NOW()) <= 60 " +
-                    "ORDER BY cp.joined_at ASC", conn))
+                    // Тот же GROUP BY, что и в окне звонка: без него один
+                    // человек считался за двоих и в плашке «звонок идёт».
+                    "GROUP BY cp.user_id, u.Name, u.Surname, u.login " +
+                    "ORDER BY first_join ASC", conn))
                 {
                     pc.Parameters.AddWithValue("@cid", sid);
                     using var r = pc.ExecuteReader();

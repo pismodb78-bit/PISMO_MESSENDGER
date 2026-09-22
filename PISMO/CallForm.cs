@@ -123,12 +123,30 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand("INSERT INTO call_participants (call_id, user_id, joined_at) VALUES (@cid, @uid, NOW())", conn);
+
+                // Сначала убираем свою прежнюю строку, потом добавляем новую.
+                //
+                // Раньше здесь был простой INSERT, а уникального ключа на
+                // (call_id, user_id) в таблице нет — и один человек попадал в
+                // список звонка ДВАЖДЫ. Достаточно было войти в тот же звонок
+                // повторно: строку удаляет только штатный выход, а после
+                // закрытия крестиком, падения или обрыва сети её удалять
+                // некому. Второй вход с телефона рядом с компьютером давал то
+                // же самое. Отсюда «Участники (7)», где седьмой — это первый.
+                using (var del = new MySqlCommand(
+                    "DELETE FROM call_participants WHERE call_id=@cid AND user_id=@uid", conn))
+                {
+                    del.Parameters.AddWithValue("@cid", _sessionId);
+                    del.Parameters.AddWithValue("@uid", UserSession.EffectiveId);
+                    del.ExecuteNonQuery();
+                }
+                using var cmd = new MySqlCommand(
+                    "INSERT INTO call_participants (call_id, user_id, joined_at) VALUES (@cid, @uid, NOW())", conn);
                 cmd.Parameters.AddWithValue("@cid", _sessionId);
                 cmd.Parameters.AddWithValue("@uid", UserSession.EffectiveId);
                 cmd.ExecuteNonQuery();
             }
-            catch { /* Игнорируем возможные ошибки дублирования */ }
+            catch { /* не записались — список просто будет без нас */ }
 
             // ← Инициализируем таймер ДО BuildUi (т.к. BuildUi на него ссылается)
             _durationTimer = new System.Windows.Forms.Timer { Interval = 1000 };
