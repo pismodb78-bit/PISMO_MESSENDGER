@@ -385,6 +385,27 @@ namespace PISMO
 
                 AddUniqueIndex(conn, "call_participants", "uq_call_participant", "(call_id, user_id)");
             }),
+
+            (22, "device_tokens: адреса устройств для push", conn =>
+            {
+                // Телефон получает уведомления через push, и серверу нужно
+                // знать, куда слать. Ключ — сам токен, а НЕ пользователь: на
+                // одном телефоне могут по очереди войти двое, и строка обязана
+                // переехать к новому, а не размножиться.
+                //
+                // ПК этой таблицей не пользуется — у него нет push, — но
+                // миграция общая: журнал schema_migrations один на всех, и
+                // номер 22 обязан означать здесь и на телефоне одно и то же.
+                Exec(conn,
+                    "CREATE TABLE IF NOT EXISTS device_tokens (" +
+                    "token VARCHAR(255) NOT NULL, " +
+                    "user_id INT NOT NULL, " +
+                    "platform VARCHAR(16) NOT NULL DEFAULT 'android', " +
+                    "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP " +
+                    "ON UPDATE CURRENT_TIMESTAMP, " +
+                    "PRIMARY KEY (token), KEY idx_dt_user (user_id)" +
+                    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            }),
         };
 
         /// <summary>Чистит повторяющиеся пометки пересылки в одной таблице.</summary>

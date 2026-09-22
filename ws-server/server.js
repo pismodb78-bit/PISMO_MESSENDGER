@@ -18,6 +18,9 @@
 
 const WebSocket = require('ws');
 const crypto = require('crypto');
+// Push тем, кого нет на связи. Модуль сам решает, включаться ли: без
+// настроек и пакетов он молча спит, и релей работает как раньше.
+const push = require('./push');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const wss = new WebSocket.Server({ port: PORT });
@@ -58,6 +61,16 @@ function removeClient(userId, ws) {
     if (!set) return;
     set.delete(ws);
     if (set.size === 0) clients.delete(userId);
+}
+
+push.init();
+
+/** Есть ли у человека хоть одно живое соединение. */
+function isOnline(userId) {
+    const set = clients.get(Number(userId));
+    if (!set) return false;
+    for (const c of set) if (c.readyState === WebSocket.OPEN) return true;
+    return false;
 }
 
 console.log(`[PISMO WS] Слушаю ws://0.0.0.0:${PORT}`);
@@ -118,6 +131,10 @@ wss.on('connection', (ws, req) => {
         const send = (c) => {
             if (c !== ws && c.readyState === WebSocket.OPEN) { try { c.send(raw); } catch {} }
         };
+
+        // Пуш уходит тем, у кого нет живого сокета. Решение принимаем ДО
+        // рассылки: после неё состояние то же, но порядок читается хуже.
+        push.onEvent(msg, isOnline).catch(() => {});
 
         const target = Number(msg.targetUserId || 0);
         if (target && target !== 0) {
