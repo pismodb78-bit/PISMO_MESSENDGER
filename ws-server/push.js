@@ -88,7 +88,10 @@ async function nameOf(userId) {
 async function send(userId, data) {
     if (!ready) return;
     const tokens = await tokensFor(userId);
-    if (!tokens.length) return;
+    if (!tokens.length) {
+        console.log(`[PUSH] ${userId}: адресов нет — приложение не регистрировалось`);
+        return;
+    }
 
     const message = {
         data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
@@ -98,6 +101,12 @@ async function send(userId, data) {
 
     try {
         const res = await admin.messaging().sendEachForMulticast(message);
+        console.log(`[PUSH] ${userId}: доставлено ${res.successCount} из ${tokens.length}`);
+        // Причину отказа печатаем — без неё «не пришло» неотличимо от
+        // «отправили, но Google не взял».
+        res.responses.forEach((r) => {
+            if (!r.success && r.error) console.log('[PUSH] отказ: ' + r.error.code);
+        });
         // Протухшие адреса убираем сразу: иначе список растёт вечно, и
         // каждая отправка тратится на устройства, которых давно нет.
         const dead = [];
@@ -126,31 +135,50 @@ async function onEvent(msg, isOnline) {
 
     const from = Number(msg.userId || 0);
     if (!from) return;
+
+    // Адресат едет в sessionId, а НЕ в targetUserId.
+    //
+    // Клиенты шлют new_message широковещательно:
+    //
+    //   send("new_message", /*targetUserId*/ 0, /*sessionId*/ кому, payload)
+    //
+    // Релею так и надо — он рассылает всем, а каждый клиент сам решает, его
+    // ли это событие. Значит targetUserId здесь всегда ноль, и читать из
+    // него адресата бессмысленно: push не уходил вообще никогда.
+    const chat = Number(msg.sessionId || 0);
+    if (!chat) return;
+
+    // Разбираем только то, что клиенты действительно шлют: "direct",
+    // "group", "server" (см. вызовы SendMessage/send в обоих клиентах).
+    // Незнакомое молча пропускаем — гадать, кому это адресовано, нельзя:
+    // в chat лежит id канала, группы или человека, и перепутать их значит
+    // разбудить постороннего.
+    const payload = String(msg.payload || '');
+    if (payload !== 'direct' && payload !== 'group') return;
+
+    console.log(`[PUSH] событие: от ${from}, кому ${chat}, вид ${payload}`);
+
     const name = await nameOf(from);
 
-    const target = Number(msg.targetUserId || 0);
-    const payload = String(msg.payload || '');
-
     if (payload === 'group') {
-        // Группа: адресата в событии нет, состав знает база.
-        const gid = Number(msg.sessionId || 0);
-        if (!gid) return;
+        // Группа: состав знает база.
         try {
             const [rows] = await pool.query(
                 'SELECT user_id FROM group_members WHERE group_id = ? AND user_id <> ?',
-                [gid, from]);
+                [chat, from]);
             for (const r of rows) {
                 if (isOnline(r.user_id)) continue;
-                await send(r.user_id, { kind: 'group', group: gid, from, name });
+                await send(r.user_id, { kind: 'group', group: chat, from, name });
             }
         } catch (e) { console.log('[PUSH] группа: ' + e.message); }
         return;
     }
 
-    if (payload === 'channel') return;   // каналы серверов пока не шлём
-
-    if (!target || isOnline(target)) return;
-    await send(target, { kind: 'message', from, name });
+    // Личное сообщение. Сам себе push не шлём: это своё же второе
+    // устройство, ему релей и так всё отдал.
+    if (chat === from) return;
+    if (isOnline(chat)) return;
+    await send(chat, { kind: 'message', from, name });
 }
 
 module.exports = { init, onEvent };
