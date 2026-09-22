@@ -139,6 +139,11 @@ async function send(userId, data) {
  */
 async function onEvent(msg, isOnline) {
     if (!ready) return;
+
+    // Звонок — отдельный разбор: у него и поля другие, и адресат нередко
+    // известен только базе.
+    if (msg.type === 'incoming_call') return onCall(msg, isOnline);
+
     if (msg.type !== 'new_message') return;
 
     const from = Number(msg.userId || 0);
@@ -162,7 +167,7 @@ async function onEvent(msg, isOnline) {
     // в chat лежит id канала, группы или человека, и перепутать их значит
     // разбудить постороннего.
     const payload = String(msg.payload || '');
-    if (payload !== 'direct' && payload !== 'group') return;
+    if (payload !== 'direct' && payload !== 'group' && payload !== 'server') return;
 
     console.log(`[PUSH] событие: от ${from}, кому ${chat}, вид ${payload}`);
 
@@ -182,11 +187,73 @@ async function onEvent(msg, isOnline) {
         return;
     }
 
+    if (payload === 'server') {
+        // Канал сервера: кому он виден, знает состав сервера.
+        try {
+            const [rows] = await pool.query(
+                'SELECT c.name AS channel_name, m.user_id ' +
+                'FROM server_channels c ' +
+                'JOIN server_members m ON m.server_id = c.server_id ' +
+                'WHERE c.id = ? AND m.user_id <> ?',
+                [chat, from]);
+            // Заголовок уведомления о канале — имя КАНАЛА, а не отправителя:
+            // приёмник показывает его как «# название».
+            const title = rows.length ? String(rows[0].channel_name || '') : '';
+            for (const r of rows) {
+                if (isOnline(r.user_id)) continue;
+                await send(r.user_id, { kind: 'channel', channel: chat, sender: from, name: title });
+            }
+        } catch (e) { console.log('[PUSH] канал: ' + e.message); }
+        return;
+    }
+
     // Личное сообщение. Сам себе push не шлём: это своё же второе
     // устройство, ему релей и так всё отдал.
     if (chat === from) return;
     if (isOnline(chat)) return;
     await send(chat, { kind: 'message', sender: from, name });
+}
+
+/**
+ * Входящий звонок.
+ *
+ * Без этого закрытое приложение о звонке не узнавало вовсе: раньше его
+ * будила фоновая служба, а она держала постоянное уведомление в шторке.
+ *
+ * Адресата берём из базы, а не из события. У личного звонка он есть и в
+ * targetUserId, но у группового событие широковещательное — кому звонят,
+ * знает только строка вызова. Один запрос закрывает оба случая.
+ */
+async function onCall(msg, isOnline) {
+    const callId = Number(msg.sessionId || 0);
+    const from = Number(msg.userId || 0);
+    if (!callId || !from) return;
+
+    console.log(`[PUSH] звонок ${callId}: от ${from}`);
+
+    try {
+        const [rows] = await pool.query(
+            'SELECT callee_id, group_id FROM call_sessions WHERE id = ?', [callId]);
+        if (!rows.length) return;
+
+        const targets = [];
+        if (rows[0].callee_id) {
+            targets.push(Number(rows[0].callee_id));
+        } else if (rows[0].group_id) {
+            const [mem] = await pool.query(
+                'SELECT user_id FROM group_members WHERE group_id = ? AND user_id <> ?',
+                [Number(rows[0].group_id), from]);
+            for (const r of mem) targets.push(Number(r.user_id));
+        }
+
+        const name = await nameOf(from);
+        for (const uid of targets) {
+            if (!uid || uid === from || isOnline(uid)) continue;
+            await send(uid, { kind: 'call', call: callId, sender: from, name });
+        }
+    } catch (e) {
+        console.log('[PUSH] звонок: ' + e.message);
+    }
 }
 
 module.exports = { init, onEvent };
