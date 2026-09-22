@@ -74,6 +74,10 @@ DIR=/ваш/путь SERVICE=имя-службы sudo -E bash install-push.sh
 cd /opt/pismo-ws
 npm install firebase-admin mysql2
 cp ~/firebase-service-account.json /opt/pismo-ws/firebase.json
+
+# Владелец — тот, от кого работает служба. Без этого файл остаётся
+# за root, а node падает с «EACCES: permission denied».
+chown "$(systemctl show -p User --value pismo-ws)" /opt/pismo-ws/firebase.json
 chmod 600 /opt/pismo-ws/firebase.json
 ```
 

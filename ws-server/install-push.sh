@@ -46,8 +46,39 @@ if [ ! -s "$DIR/firebase.json" ]; then
   cp ваш-ключ.json $DIR/firebase.json
   bash $0"
 fi
+
+# Проверяем, что это ТОТ файл. Похожих два, и перепутать их легко:
+# google-services.json — настройки приложения, они идут в APK; ключ
+# сервисного аккаунта — для сервера. У второго есть "type":"service_account",
+# у первого нет. Без проверки ошибка вылезла бы потом и невнятно.
+grep -q '"type"[[:space:]]*:[[:space:]]*"service_account"' "$DIR/firebase.json" || die \
+"$DIR/firebase.json — не ключ сервисного аккаунта.
+
+Похоже, туда попал google-services.json (это настройки ПРИЛОЖЕНИЯ, их место
+в секрете GitHub, а не на сервере). Нужен второй файл: Настройки проекта →
+Сервисные аккаунты → Создать закрытый ключ. Внутри него есть строка
+\"type\": \"service_account\"."
+
+# Права. Служба работает не от root, а файл, положенный через sudo,
+# принадлежит root с правами 600 — и node его не открывает:
+#
+#   [PUSH] выключен: EACCES: permission denied, open '/opt/pismo-ws/firebase.json'
+#
+# Поэтому владельцем делаем того, от кого работает служба, и только потом
+# закрываем права. Пустой User= в юните означает root.
+SVC_USER=$(systemctl show -p User --value "$SERVICE" 2>/dev/null || true)
+SVC_USER=${SVC_USER:-root}
+chown "$SVC_USER" "$DIR/firebase.json"
 chmod 600 "$DIR/firebase.json"
-say "Ключ на месте: $DIR/firebase.json"
+
+# Проверяем, что служба и правда его прочтёт, а не узнаём об этом из лога
+# после перезапуска.
+if [ "$SVC_USER" != root ]; then
+    su -s /bin/sh -c "head -c1 '$DIR/firebase.json' >/dev/null" "$SVC_USER" 2>/dev/null \
+      || die "Пользователь $SVC_USER всё равно не читает $DIR/firebase.json.
+Проверьте права на сам каталог: ls -ld $DIR"
+fi
+say "Ключ на месте: $DIR/firebase.json (владелец $SVC_USER)"
 
 # ─── 2. Свежий код релея ─────────────────────────────────────────────
 say "Обновляю server.js и push.js"
@@ -93,5 +124,6 @@ echo
 if journalctl -u "$SERVICE" -n 50 --no-pager | grep -q "\[PUSH\] включён"; then
     printf '\033[32m%s\033[0m\n' "Готово: push включён."
 else
-    printf '\033[33m%s\033[0m\n' "Push НЕ включился — смотрите строку [PUSH] выше, там написано, чего не хватает."
+    printf '\033[33m%s\033[0m\n' "Push НЕ включился. Вот что сказал сам сервер:"
+    journalctl -u "$SERVICE" -n 50 --no-pager | grep "\[PUSH\]" | tail -3
 fi
