@@ -108,6 +108,41 @@ namespace PISMO
         ///
         /// Закрепов в переписке единицы, так что пересчёт по таблице дёшев.
         /// </summary>
+        /// <summary>
+        /// Отпечаток закрепов ОТКРЫТОГО чата: scope 0 — переписка с chatId,
+        /// scope 1 — группа chatId.
+        ///
+        /// Был общий на всю таблицу, без единого условия. То есть любой
+        /// закреп у любого человека в любом чате менял отпечаток у ВСЕХ, и
+        /// каждый, у кого открыт хоть какой-то чат, получал полную
+        /// перерисовку ленты с перезагрузкой страницы. Ради события, которое
+        /// его не касается.
+        /// </summary>
+        public static string Fingerprint(int scope, int myId, int chatId)
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                string sql = scope == 1
+                    ? "SELECT COUNT(*), CAST(COALESCE(SUM(p.message_id),0) AS SIGNED) " +
+                      "FROM pinned_messages p JOIN group_messages g ON g.id = p.message_id " +
+                      "WHERE p.scope=1 AND g.group_id=@chat"
+                    : "SELECT COUNT(*), CAST(COALESCE(SUM(p.message_id),0) AS SIGNED) " +
+                      "FROM pinned_messages p JOIN messages m ON m.id = p.message_id " +
+                      "WHERE p.scope=0 AND ((m.sender_id=@me AND m.receiver_id=@chat) " +
+                      "                  OR (m.sender_id=@chat AND m.receiver_id=@me))";
+                using var cmd = new MySqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("@me", myId);
+                cmd.Parameters.AddWithValue("@chat", chatId);
+                using var r = cmd.ExecuteReader();
+                if (!r.Read()) return "";
+                return Convert.ToInt64(r.GetValue(0)) + ":" + Convert.ToInt64(r.GetValue(1));
+            }
+            catch { return ""; }
+        }
+
+        /// <summary>Отпечаток всей таблицы. Остался для диалога «Закреплённые»,
+        /// который показывает закрепы независимо от открытого чата.</summary>
         public static string Fingerprint()
         {
             try

@@ -63,6 +63,7 @@ namespace PISMO
         private int _lastOpenSig = -1;   // число сообщений открытого чата на прошлом опросе (детект новых)
         private int _lastOpenMax = -1;   // максимальный id открытого чата (дешёвый детект нового)
         private string _lastPinsSig;     // отпечаток закрепов на прошлом опросе
+        private string _lastOpenKey;     // какой чат описывают отметки выше
         private int _lastOpenRead = -1;  // сколько МОИХ сообщений собеседник ещё не прочитал
         private int _openTick;           // счётчик тиков: счёт строк спрашиваем не каждый раз
         private readonly Dictionary<int, int> _prevUnread = new();
@@ -1631,6 +1632,22 @@ namespace PISMO
                     bool openChanged = false, pinsChanged = false;
                     try
                     {
+                        // Сменили чат — сбрасываем то, с чем сравниваем.
+                        //
+                        // Все отметки ниже описывают ОДИН чат: максимальный id,
+                        // число сообщений, отпечаток закрепов. После перехода в
+                        // другую переписку они относятся к прежней, и первое же
+                        // сравнение находит «изменение», которого не было:
+                        // лишняя перезагрузка только что открытого чата, а с
+                        // закрепами — ещё и полная пересборка ленты.
+                        string openKey = grp >= 0 ? "g" + grp : (dm >= 0 ? "d" + dm : "");
+                        if (openKey != _lastOpenKey)
+                        {
+                            _lastOpenKey = openKey;
+                            _lastOpenMax = -1; _lastOpenSig = -1; _lastOpenRead = -1;
+                            _lastPinsSig = null;
+                        }
+
                         // Дёшево — это МАКСИМАЛЬНЫЙ id: одно движение к концу индекса,
                         // сколько бы сообщений в переписке ни было. Счёт всех строк
                         // нужен только затем, чтобы заметить УДАЛЁННОЕ (при удалении
@@ -1643,13 +1660,16 @@ namespace PISMO
                         _openTick++;
                         bool countNow = _openTick % 8 == 0;
 
-                        // Закрепы. Событие по ws до своего же второго входа не
-                        // доходит (сервер держит одно соединение на пользователя),
-                        // а «открепил на телефоне — вижу на ПК» это именно тот
-                        // случай. Поэтому отпечаток сверяем и опросом.
+                        // Закрепы. Событие по ws может не дойти — клиент мог
+                        // быть не на связи в этот момент, — поэтому отпечаток
+                        // сверяем и опросом. Считаем его ТОЛЬКО по открытому
+                        // чату: общий по всей таблице срабатывал на чужие
+                        // закрепы в чужих переписках и гнал полную перерисовку
+                        // ленты у всех подряд.
                         if (grp >= 0 || dm >= 0)
                         {
-                            string pf = PinsRepository.Fingerprint();
+                            string pf = PinsRepository.Fingerprint(
+                                grp >= 0 ? 1 : 0, UserSession.EffectiveId, grp >= 0 ? grp : dm);
                             if (pf.Length > 0)
                             {
                                 if (_lastPinsSig != null && pf != _lastPinsSig) pinsChanged = true;
@@ -1746,13 +1766,21 @@ namespace PISMO
                 if (_presence.TryGetValue(kv.Key, out int pushed)) fresh[kv.Key] = pushed;
             }
 
-            bool changed = fresh.Count != _presence.Count;
-            if (!changed)
-                foreach (var kv in fresh)
-                    if (!_presence.TryGetValue(kv.Key, out int v) || v != kv.Value) { changed = true; break; }
+            // Сверяем и обновляем ПОКЛЮЧЕВО, без Clear и без сравнения длин.
+            //
+            // Раньше признаком изменения было в том числе несовпадение числа
+            // записей. Но приход по сокету добавляет сюда и тех, кого нет в
+            // списке (статусы приходят широковещательно), — длины расходились
+            // всегда, «изменение» находилось на каждом опросе, и карточки
+            // перерисовывались дважды в секунду на ровном месте.
+            bool changed = false;
+            foreach (var kv in fresh)
+                if (!_presence.TryGetValue(kv.Key, out int v) || v != kv.Value)
+                {
+                    _presence[kv.Key] = kv.Value;
+                    changed = true;
+                }
             if (!changed) return;
-            _presence.Clear();
-            foreach (var kv in fresh) _presence[kv.Key] = kv.Value;
             InvalidateCardAvatars();
         }
 
@@ -4185,10 +4213,34 @@ namespace PISMO
                     // ответит точно.
                     try
                     {
-                        var hit = MessageCache.Older(
-                            grp ? MessageCache.GroupKey(chatId) : MessageCache.DirectKey(myId, chatId),
-                            oldestId, OlderStep);
-                        if (hit != null && hit.Rows.Count > 0) { older = hit; more = true; }
+                        string ck = grp ? MessageCache.GroupKey(chatId)
+                                        : MessageCache.DirectKey(myId, chatId);
+                        var hit = MessageCache.Older(ck, oldestId, OlderStep);
+                        if (hit != null && hit.Rows.Count > 0)
+                        {
+                            older = hit; more = true;
+
+                            // Кеш быстрый, но он помнит текст ТАКИМ, каким тот
+                            // был при сохранении: правку или удаление, сделанные
+                            // позже, он не знает. Поэтому следом, уже не
+                            // задерживая вставку, перечитываем тот же отрезок с
+                            // сервера и вливаем в кеш — свежая строка вытесняет
+                            // старую по id. На экране правка появится с
+                            // ближайшей пересборкой ленты (а она идёт на каждое
+                            // новое сообщение в чате); в кеше — сразу же, и
+                            // следующий подъём по истории будет уже верным.
+                            int reval = oldestId;
+                            System.Threading.Tasks.Task.Run(() =>
+                            {
+                                try
+                                {
+                                    var (fresh, _) = FetchOlderPage(grp, chatId, myId, reval);
+                                    if (fresh != null && fresh.Rows.Count > 0)
+                                        MessageCache.Merge(ck, fresh);
+                                }
+                                catch { }
+                            });
+                        }
                     }
                     catch { }
                 }

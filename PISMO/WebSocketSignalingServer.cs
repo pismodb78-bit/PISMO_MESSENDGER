@@ -142,6 +142,29 @@ namespace PISMO
                             var root = doc.RootElement;
                             string type = root.GetProperty("type").GetString();
 
+                            // Проверка живости. Обрабатываем ДО пересылки и
+                            // отвечаем сразу, даже до register.
+                            //
+                            // Иначе ping уходил в общую ветку, а там нет
+                            // targetUserId — и «ноль» означает широковещательно.
+                            // То есть каждая проверка связи каждого клиента
+                            // рассылалась ВСЕМ подключённым, каждые семь секунд
+                            // от каждого. Node-сервер (ws-server/server.js) так
+                            // не делает — здесь была расходящаяся реализация
+                            // одного и того же протокола.
+                            if (type == "ping")
+                            {
+                                string t = root.TryGetProperty("t", out var tProp) ? tProp.GetRawText() : "0";
+                                var pong = Encoding.UTF8.GetBytes("{\"type\":\"pong\",\"t\":" + t + "}");
+                                try
+                                {
+                                    await ws.SendAsync(new ArraySegment<byte>(pong),
+                                        WebSocketMessageType.Text, true, token);
+                                }
+                                catch { }
+                                continue;
+                            }
+
                             if (type == "register")
                             {
                                 registeredUserId = root.GetProperty("userId").GetInt32();

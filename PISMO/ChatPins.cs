@@ -33,6 +33,22 @@ namespace PISMO
         private static DateTime _lastFetch = DateTime.MinValue;
         private static bool _fetching;
 
+        /// <summary>
+        /// Только что переключённые здесь закрепы: uid -> (каким стал, когда).
+        ///
+        /// Нажатие меняет кеш сразу, а в базу пишет в фоне. Между этими двумя
+        /// моментами сверка с базой успевала прочитать ещё СТАРОЕ состояние и
+        /// «исправляла» список обратно: чат отскакивал с верха и возвращался
+        /// только через следующую сверку, до пятнадцати секунд спустя. Пока
+        /// запись едет, своё решение важнее того, что отвечает база.
+        /// </summary>
+        private static readonly Dictionary<int, (bool pinned, DateTime at)> _pending = new();
+
+        /// <summary>Сколько своё решение перевешивает ответ базы. С запасом на
+        /// медленную запись; дальше база снова главная — если запись не дошла,
+        /// список честно вернётся к тому, что в ней есть.</summary>
+        private static readonly TimeSpan PendingWins = TimeSpan.FromSeconds(20);
+
         /// <summary>Набор изменился — список чатов пора пересобрать.</summary>
         public static event Action Changed;
 
@@ -90,15 +106,23 @@ namespace PISMO
                 if (!nowPinned) set.Remove(uid);
                 SaveCache(me, set);
             }
+            lock (_lock) _pending[uid] = (nowPinned, DateTime.UtcNow);
+
             // В базу пишем в фоне: нажатие не должно ждать сервер, а список
             // уже переставлен по кешу.
             System.Threading.Tasks.Task.Run(() =>
             {
                 WriteDb(me, uid, nowPinned);
-                // И сообщаем своим же другим устройствам. Закрепы чатов общие,
-                // и второй вход должен переставить список сразу, а не ждать,
-                // пока кто-нибудь напишет сообщение.
-                try { WebSocketSignalingClient.Instance.SendMessage("chatpin", 0, uid, ""); }
+                // И сообщаем СВОИМ ЖЕ другим устройствам — отсюда адресат
+                // «me», а не 0.
+                //
+                // С нулём это была рассылка ВСЕМ подключённым: каждый получал
+                // чужое событие и лез в базу за своими закрепами, да ещё в
+                // обход пятнадцатисекундной отсечки. Закрепы чатов — вещь
+                // личная, посторонним она не нужна вовсе. Релей на адресное
+                // сообщение самому себе отдаёт его остальным своим
+                // устройствам, минуя отправителя, — ровно то, что нужно.
+                try { WebSocketSignalingClient.Instance.SendMessage("chatpin", me, uid, ""); }
                 catch { }
             });
             return nowPinned;
@@ -173,6 +197,13 @@ namespace PISMO
                     bool changed;
                     lock (_lock)
                     {
+                        // Своё, ещё не доехавшее до базы, поверх ответа базы.
+                        foreach (var kv in _pending.ToArray())
+                        {
+                            if (DateTime.UtcNow - kv.Value.at > PendingWins) { _pending.Remove(kv.Key); continue; }
+                            if (kv.Value.pinned) fromDb.Add(kv.Key); else fromDb.Remove(kv.Key);
+                        }
+
                         var cur = Load();
                         changed = !cur.SetEquals(fromDb);
                         if (changed)

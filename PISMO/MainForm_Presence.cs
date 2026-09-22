@@ -233,11 +233,24 @@ namespace PISMO
             if (senderId <= 0) return;
             if (status < 0 || status > 2) return;
 
+            // Перерисовываем, только если статус ДЕЙСТВИТЕЛЬНО изменился и
+            // этот человек вообще есть в списке. Статусы рассылаются всем
+            // подряд, а карточки перерисовывать из-за незнакомца, которого
+            // на экране нет, незачем.
+            bool shown = false;
+            foreach (var pnl in _userPanels)
+                if (pnl.Tag is int u && u == senderId) { shown = true; break; }
+            bool differs = !_presence.TryGetValue(senderId, out int prev) || prev != status;
+
             _presence[senderId] = status;
             _presencePushedAt[senderId] = DateTime.UtcNow;
-            InvalidateCardAvatars();
+            if (shown && differs) InvalidateCardAvatars();
 
-            if (senderId == _currentChatPartnerId && !TypingActive)
+            // _searchRowOpen — то же условие, что и в UpdateChatHeaderPresence:
+            // строка поиска делит место в шапке с подписью статуса, и в
+            // оконном режиме они накладываются друг на друга. Без этой
+            // проверки приход по сокету возвращал подпись поверх поиска.
+            if (senderId == _currentChatPartnerId && !TypingActive && !_searchRowOpen)
             {
                 int idle = 0;
                 int.TryParse(payload, out idle);

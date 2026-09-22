@@ -60,6 +60,81 @@ namespace PISMO
         /// <summary>Сколько сообщений держим на чат. Дальше — отрезаем самые старые.</summary>
         private const int HistoryCap = 4000;
 
+        // ── Где в переписке кеш СПЛОШНОЙ ────────────────────────────────
+        //
+        // Кеш — объединение страниц, а страницы могут не примыкать друг к
+        // другу. Пример, до которого дойти проще простого: открыли чат,
+        // легло последних сорок сообщений (id 960…1000). Отложили телефон,
+        // пришло полторы сотни новых, открыли снова — легли 1161…1200. В
+        // кеше теперь ДВА КУСКА с дырой между ними.
+        //
+        // Прокрутка вверх от 1161 брала из кеша «самые старые, что есть» —
+        // то есть 961…1000 — и показывала их так, будто они идут сразу перед
+        // 1161. Полторы сотни сообщений пропадали молча и навсегда: нижняя
+        // граница страницы уезжала за них, и с сервера их больше никто не
+        // запрашивал.
+        //
+        // Поэтому рядом с кешем лежит окно [низ, верх] — отрезок, внутри
+        // которого кеш заведомо сплошной. Отдаём из кеша только его.
+
+        private static string WindowPathFor(string key) => PathFor(key) + ".win";
+
+        private static (int low, int high) ReadWindow(string key)
+        {
+            try
+            {
+                string p = WindowPathFor(key);
+                if (!File.Exists(p)) return (0, 0);
+                var parts = File.ReadAllText(p).Split(':');
+                if (parts.Length != 2) return (0, 0);
+                if (!int.TryParse(parts[0], out int lo) || !int.TryParse(parts[1], out int hi)) return (0, 0);
+                return (lo, hi);
+            }
+            catch { return (0, 0); }
+        }
+
+        private static void WriteWindow(string key, int low, int high)
+        {
+            try
+            {
+                Directory.CreateDirectory(Dir);
+                File.WriteAllText(WindowPathFor(key), low + ":" + high);
+            }
+            catch { }
+        }
+
+        /// <summary>Границы страницы по id. (0,0) — страница пуста.</summary>
+        private static (int low, int high) RangeOf(DataTable dt)
+        {
+            int lo = int.MaxValue, hi = 0;
+            if (dt != null && dt.Columns.Contains("id"))
+                foreach (DataRow r in dt.Rows)
+                {
+                    if (r["id"] == DBNull.Value) continue;
+                    int id = Convert.ToInt32(r["id"]);
+                    if (id < lo) lo = id;
+                    if (id > hi) hi = id;
+                }
+            return hi == 0 ? (0, 0) : (lo, hi);
+        }
+
+        /// <summary>
+        /// Расширяет окно свежей страницей — или начинает окно заново, если
+        /// страница с ним не пересекается (значит, между ними дыра).
+        /// </summary>
+        private static void ExtendWindow(string key, DataTable fresh)
+        {
+            var (fLow, fHigh) = RangeOf(fresh);
+            if (fHigh == 0) return;
+
+            var (wLow, wHigh) = ReadWindow(key);
+            if (wHigh == 0) { WriteWindow(key, fLow, fHigh); return; }
+
+            bool overlaps = fLow <= wHigh && fHigh >= wLow;
+            if (overlaps) WriteWindow(key, Math.Min(fLow, wLow), Math.Max(fHigh, wHigh));
+            else WriteWindow(key, fLow, fHigh);   // дыра — доверяем только новой части
+        }
+
         /// <summary>
         /// Вливает свежую страницу в кеш, не теряя того, что там уже лежало.
         /// Возвращает получившуюся историю целиком.
@@ -69,6 +144,8 @@ namespace PISMO
             if (fresh == null) return null;
             try
             {
+                ExtendWindow(key, fresh);
+
                 var old = History(key);
                 if (old == null || old.Rows.Count == 0) { Save(key, fresh); Remember(key, fresh); return fresh; }
 
@@ -86,6 +163,12 @@ namespace PISMO
                 merged.TableName = "msgs";
                 foreach (var kv in byId) CopyByName(merged, kv.Value);
                 while (merged.Rows.Count > HistoryCap) merged.Rows.RemoveAt(0);
+
+                // Обрезали самое старое — поднимаем и нижнюю границу окна:
+                // иначе оно обещало бы сплошную историю там, где строк уже нет.
+                var (mLow, _) = RangeOf(merged);
+                var (wLow, wHigh) = ReadWindow(key);
+                if (mLow > 0 && wHigh > 0 && mLow > wLow) WriteWindow(key, mLow, wHigh);
 
                 Save(key, merged);
                 Remember(key, merged);
@@ -106,11 +189,19 @@ namespace PISMO
                 var hist = History(key);
                 if (hist == null || hist.Rows.Count == 0) return null;
 
+                // Только из сплошной части — см. пояснение к окну выше.
+                // Если спрашивают за её пределами, отвечаем «нет»: пусть
+                // сходят на сервер, чем молча пропустить кусок переписки.
+                var (wLow, wHigh) = ReadWindow(key);
+                if (wHigh == 0) return null;
+                if (beforeId <= wLow || beforeId > wHigh + 1) return null;
+
                 var take = new System.Collections.Generic.List<DataRow>();
                 foreach (DataRow r in hist.Rows)
                 {
                     if (r["id"] == DBNull.Value) continue;
-                    if (Convert.ToInt32(r["id"]) < beforeId) take.Add(r);
+                    int id = Convert.ToInt32(r["id"]);
+                    if (id < beforeId && id >= wLow) take.Add(r);
                 }
                 if (take.Count == 0) return null;
                 take.Sort((a, b) => Convert.ToInt32(a["id"]).CompareTo(Convert.ToInt32(b["id"])));
