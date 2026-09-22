@@ -45,6 +45,29 @@ push**. Чтобы push попал в релиз, файл нужно класт
 
 ## 3. Сервер
 
+**Коротко: одной командой.** Положите ключ сервисного аккаунта в
+`/opt/pismo-ws/firebase.json` и запустите:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pismodb78-bit/pismo_messendger/claude/pismo-android-version-qd5fxr/ws-server/install-push.sh | sudo bash
+```
+
+Скрипт обновит `server.js` и `push.js`, поставит пакеты, пропишет настройки в
+systemd, перезапустит службу и сам скажет, включился push или нет. Запускать
+повторно безопасно.
+
+Если сервер лежит не в `/opt/pismo-ws` или служба называется иначе:
+
+```bash
+curl -fsSL …/install-push.sh -o install-push.sh
+DIR=/ваш/путь SERVICE=имя-службы sudo -E bash install-push.sh
+```
+
+Доступ к базе в скрипте подставлен из `ip.txt`. Если на сервере пароль
+другой — поправьте переменные `DB_*` в начале файла.
+
+### То же самое руками
+
 На VPS, рядом с `server.js`:
 
 ```bash
