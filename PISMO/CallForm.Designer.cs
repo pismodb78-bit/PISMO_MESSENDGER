@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -327,6 +327,14 @@ namespace PISMO
                             "       MIN(cp.joined_at) AS first_join " +
                             "FROM call_participants cp JOIN users u ON u.id = cp.user_id " +
                             "WHERE cp.call_id=@cid AND cp.left_at IS NULL " +
+                            // Участник должен быть ЖИВ. left_at проставляется
+                            // только при штатном выходе: упало приложение,
+                            // пропала сеть, закрыли через диспетчер — строка
+                            // остаётся навсегда, и человек «сидит» в звонке
+                            // вечно. Тот же last_seen, что и в плашке «звонок
+                            // идёт», где эта проверка уже была.
+                            "AND u.last_seen IS NOT NULL " +
+                            "AND TIMESTAMPDIFF(SECOND, u.last_seen, NOW()) <= 60 " +
                             "GROUP BY cp.user_id, u.Name, u.Surname, u.login " +
                             "ORDER BY first_join ASC", conn);
                         cmd.Parameters.AddWithValue("@cid", sidParts);

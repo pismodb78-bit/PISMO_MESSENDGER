@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -2136,7 +2136,18 @@ namespace PISMO
                 }
 
                 // Проверяем, остались ли в звонке другие участники
-                using (var cnt = new MySqlCommand("SELECT COUNT(*) FROM call_participants WHERE call_id=@cid", conn))
+                //
+                // Считаем только ЖИВЫХ. Раньше считались все строки подряд, а
+                // строка исчезает лишь при штатном выходе: упало приложение,
+                // пропала сеть, закрыли через диспетчер — она остаётся
+                // навсегда. Тогда в звонке вечно «кто-то есть», сессия никогда
+                // не завершается и висит в статусе active до скончания века.
+                using (var cnt = new MySqlCommand(
+                    "SELECT COUNT(*) FROM call_participants cp " +
+                    "JOIN users u ON u.id = cp.user_id " +
+                    "WHERE cp.call_id=@cid AND cp.left_at IS NULL " +
+                    "AND u.last_seen IS NOT NULL " +
+                    "AND TIMESTAMPDIFF(SECOND, u.last_seen, NOW()) <= 60", conn))
                 {
                     cnt.Parameters.AddWithValue("@cid", _sessionId);
                     int activeCount = Convert.ToInt32(cnt.ExecuteScalar());
