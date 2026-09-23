@@ -1833,6 +1833,16 @@ namespace PISMO
                             WHERE (cs.callee_id = @me OR gm.user_id = @me)
                               AND cs.status = 'ringing'
                               AND cs.caller_id != @me
+                              -- Звонящий должен быть ЖИВ. Статус 'ringing' снимает
+                              -- только ответ, отказ или штатное завершение: если у
+                              -- звонящего упало приложение или пропала сеть, строка
+                              -- остаётся в базе навсегда, и здесь звонил бы вызов,
+                              -- которого давно нет. Подключаться в нём не к кому —
+                              -- окно открывается и висит с «ожиданием собеседника».
+                              -- Живость по тому же last_seen, по которому считается
+                              -- «в сети»; на телефоне эта проверка была изначально.
+                              AND u.last_seen IS NOT NULL
+                              AND TIMESTAMPDIFF(SECOND, u.last_seen, NOW()) <= 60
                             ORDER BY cs.id ASC";
                         using var cmd = new MySqlCommand(sql, conn);
                         cmd.Parameters.AddWithValue("@me", myId);
