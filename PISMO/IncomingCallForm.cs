@@ -139,6 +139,42 @@ namespace PISMO
                 Close();
             };
 
+            // Ширина — по содержимому, а не по фиксированным 340 точкам.
+            //
+            // В группе подпись длиннее («хуй на руль зовёт в групповой
+            // звонок»), и она просто упиралась в край окна и обрезалась на
+            // полуслове. Считаем, сколько места нужно на самом деле, и
+            // раздвигаем окно; кнопки при этом растягиваются вместе с ним,
+            // иначе они прижались бы к левому краю.
+            const int textLeft = 92;      // после значка
+            const int margin = 20;
+            int textWidth = Math.Max(
+                TextRenderer.MeasureText(lblName.Text, lblName.Font).Width,
+                TextRenderer.MeasureText(lblSub.Text, lblSub.Font).Width);
+
+            // Верхнюю границу ставим намеренно: название группы может быть
+            // сколь угодно длинным, и без неё окно расползлось бы на весь
+            // экран. Что не влезло — обрезаем многоточием, а не краем окна.
+            int width = Math.Min(560, Math.Max(340, textLeft + textWidth + margin));
+            ClientSize = new Size(width, 160);
+
+            int available = width - textLeft - margin;
+            if (textWidth > available)
+            {
+                foreach (var lbl in new[] { lblName, lblSub })
+                {
+                    lbl.AutoSize = false;
+                    lbl.AutoEllipsis = true;
+                    lbl.Size = new Size(available, lbl.PreferredHeight);
+                }
+            }
+
+            int btnWidth = (width - margin * 3) / 2;
+            btnAccept.Location = new Point(margin, 100);
+            btnAccept.Size = new Size(btnWidth, 42);
+            btnDecline.Location = new Point(margin * 2 + btnWidth, 100);
+            btnDecline.Size = new Size(btnWidth, 42);
+
             Controls.AddRange(new Control[] { lblIcon, lblName, lblSub, btnAccept, btnDecline });
 
             // Мигание иконки для привлечения внимания
