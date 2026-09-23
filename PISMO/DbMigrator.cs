@@ -438,17 +438,13 @@ namespace PISMO
                     // Живого звонящего не трогаем: у вызова, который прямо
                     // сейчас звонит, участников ещё нет, и по одному их
                     // отсутствию его легко было бы убить на полузвонке.
-                    //
-                    // Подзапрос обёрнут в SELECT * FROM (...): MySQL не
-                    // разрешает читать ту же таблицу, которую меняет, напрямую.
                     Exec(conn,
                         "UPDATE call_sessions cs JOIN users u ON u.id = cs.caller_id " +
                         "SET cs.status = 'ended', cs.ended_at = NOW() " +
                         "WHERE cs.status IN ('ringing','active') " +
                         "AND (u.last_seen IS NULL " +
                         "     OR TIMESTAMPDIFF(SECOND, u.last_seen, NOW()) > 300) " +
-                        "AND NOT EXISTS (SELECT 1 FROM (SELECT call_id, left_at " +
-                        "                FROM call_participants) p " +
+                        "AND NOT EXISTS (SELECT 1 FROM call_participants p " +
                         "                WHERE p.call_id = cs.id AND p.left_at IS NULL)");
                 }
             }),
