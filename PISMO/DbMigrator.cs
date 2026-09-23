@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using MySqlConnector;
 
@@ -405,6 +405,52 @@ namespace PISMO
                     "ON UPDATE CURRENT_TIMESTAMP, " +
                     "PRIMARY KEY (token), KEY idx_dt_user (user_id)" +
                     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            }),
+
+            (23, "закрыть зависшие звонки и выгнать из них мёртвых", conn =>
+            {
+                // Разовая уборка накопленного. Клиенты теперь считают живых, но
+                // в базе уже лежит мусор, и сам он не рассосётся.
+                //
+                // Откуда он. Строка участника исчезает только при штатном
+                // выходе; после падения, обрыва сети или закрытия через
+                // диспетчер она остаётся навсегда. А решение «в звонке никого
+                // не осталось, закрываем сессию» считало все строки подряд —
+                // значит не срабатывало никогда, и вызов висел в статусе
+                // active вечно.
+                //
+                // Дальше хуже: звонок тому же человеку не создаёт новый вызов,
+                // а присоединяется к существующему 'ringing'/'active'. То есть
+                // следующие разговоры попадали в один и тот же зомби-вызов
+                // вместе с его былыми участниками — люди «сидели» в звонке, в
+                // котором никогда не были.
+                if (TableExists(conn, "call_participants"))
+                {
+                    Exec(conn,
+                        "UPDATE call_participants cp JOIN users u ON u.id = cp.user_id " +
+                        "SET cp.left_at = NOW() " +
+                        "WHERE cp.left_at IS NULL AND (u.last_seen IS NULL " +
+                        " OR TIMESTAMPDIFF(SECOND, u.last_seen, NOW()) > 300)");
+                }
+
+                if (TableExists(conn, "call_sessions") && TableExists(conn, "call_participants"))
+                {
+                    // Живого звонящего не трогаем: у вызова, который прямо
+                    // сейчас звонит, участников ещё нет, и по одному их
+                    // отсутствию его легко было бы убить на полузвонке.
+                    //
+                    // Подзапрос обёрнут в SELECT * FROM (...): MySQL не
+                    // разрешает читать ту же таблицу, которую меняет, напрямую.
+                    Exec(conn,
+                        "UPDATE call_sessions cs JOIN users u ON u.id = cs.caller_id " +
+                        "SET cs.status = 'ended', cs.ended_at = NOW() " +
+                        "WHERE cs.status IN ('ringing','active') " +
+                        "AND (u.last_seen IS NULL " +
+                        "     OR TIMESTAMPDIFF(SECOND, u.last_seen, NOW()) > 300) " +
+                        "AND NOT EXISTS (SELECT 1 FROM (SELECT call_id, left_at " +
+                        "                FROM call_participants) p " +
+                        "                WHERE p.call_id = cs.id AND p.left_at IS NULL)");
+                }
             }),
         };
 
