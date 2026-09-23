@@ -22,10 +22,14 @@ namespace PISMO
         /// окно было одинаковым: понять, зовут ли тебя лично или всю группу,
         /// можно было только приняв вызов.
         /// </param>
-        public IncomingCallForm(int sessionId, string callerName, int callerId, string groupName = "")
+        public IncomingCallForm(int sessionId, string callerName, int callerId,
+                               string groupName = "", int groupId = -1)
         {
             _sessionId = sessionId;
-            bool inGroup = !string.IsNullOrWhiteSpace(groupName);
+            // Групповой вызов определяем по номеру группы, а не по названию:
+            // название может оказаться пустым, а решения ниже от этого
+            // зависят всерьёз — вплоть до того, вешать ли трубку за всех.
+            bool inGroup = groupId >= 0;
             Text            = inGroup ? "PISMO — Звонок в группе" : "PISMO — Входящий звонок";
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             ClientSize      = new Size(340, 160);
@@ -49,7 +53,8 @@ namespace PISMO
 
             var lblName = new Label
             {
-                Text = inGroup ? groupName : callerName,
+                Text = inGroup ? (string.IsNullOrWhiteSpace(groupName) ? "Группа" : groupName)
+                               : callerName,
                 Font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold),
                 ForeColor = Color.White,
                 AutoSize = true,
@@ -104,13 +109,28 @@ namespace PISMO
 
                 try
                 {
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlCommand(
-                        "UPDATE call_sessions SET status='rejected', ended_at=NOW() WHERE id=@id", conn);
-                    cmd.Parameters.AddWithValue("@id", sessionId);
-                    cmd.ExecuteNonQuery();
-                    WebSocketSignalingClient.Instance.SendMessage("call_status", callerId, sessionId, "rejected");
-                    // И своим остальным устройствам — там звонит такой же входящий.
+                    // В ГРУППЕ отказ касается только меня.
+                    //
+                    // Раньше он ставил всей сессии статус 'rejected', и звонок
+                    // обрывался у всех разом: опрос входящих ищет только
+                    // 'ringing', значит остальные переставали звонить. Один
+                    // человек, не желавший разговаривать, вешал трубку за всю
+                    // группу.
+                    //
+                    // Поэтому в группе не трогаем ни статус, ни звонящего:
+                    // гасим звонок только на своих устройствах. Повторно он
+                    // здесь не всплывёт — номер уже в списке показанных.
+                    if (!inGroup)
+                    {
+                        using var conn = DBHelper.OpenConnection();
+                        using var cmd = new MySqlCommand(
+                            "UPDATE call_sessions SET status='rejected', ended_at=NOW() WHERE id=@id", conn);
+                        cmd.Parameters.AddWithValue("@id", sessionId);
+                        cmd.ExecuteNonQuery();
+                        WebSocketSignalingClient.Instance.SendMessage("call_status", callerId, sessionId, "rejected");
+                    }
+
+                    // Своим остальным устройствам — там звонит такой же входящий.
                     WebSocketSignalingClient.Instance.SendMessage(
                         "call_status", UserSession.EffectiveId, sessionId, "rejected");
                 }

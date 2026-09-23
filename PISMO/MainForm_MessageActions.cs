@@ -1896,7 +1896,7 @@ namespace PISMO
                     // Показываем входящий звонок
                     string gname = row.Table.Columns.Contains("group_name")
                         ? (row["group_name"]?.ToString() ?? "") : "";
-                    var incoming = new IncomingCallForm(sid, cname, callerId, gname);
+                    var incoming = new IncomingCallForm(sid, cname, callerId, gname, groupId);
                     incoming.FormClosed += (s, e) =>
                     {
                         if (incoming.Accepted)
