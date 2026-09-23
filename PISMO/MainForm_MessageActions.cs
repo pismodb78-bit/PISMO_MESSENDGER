@@ -1879,13 +1879,17 @@ namespace PISMO
                     // Игнорируемый собеседник: звонок не показываем и не звеним.
                     // Сессию не отклоняем — у звонящего просто идут гудки, как
                     // если бы нас не было на месте.
-                    if (ChatMutes.IsMuted(callerId)) return;
+                    //
+                    // continue, а не return: в пачке может оказаться и второй
+                    // звонок, от кого мы слушать готовы, и выход из метода
+                    // прятал бы его заодно с первым.
+                    if (ChatMutes.IsMuted(callerId)) continue;
 
                     // Отдельный запрет «не принимать звонки»: сообщения от человека
                     // приходят как обычно, а вызов не показываем и не звеним. Для
                     // группового звонка запрет ставится на саму группу.
-                    if (CallBlocks.IsBlocked(callerId)) return;
-                    if (groupId > 0 && CallBlocks.IsBlocked(CallBlocks.GroupKey(groupId))) return;
+                    if (CallBlocks.IsBlocked(callerId)) continue;
+                    if (groupId > 0 && CallBlocks.IsBlocked(CallBlocks.GroupKey(groupId))) continue;
 
                     // Показываем входящий звонок
                     var incoming = new IncomingCallForm(sid, cname, callerId);
