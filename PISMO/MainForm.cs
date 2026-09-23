@@ -1250,6 +1250,12 @@ namespace PISMO
                             }
                             PollTick(null, null); // непрочитанные/бейджи
                         }
+                        else if (type == "friend")
+                        {
+                            // Заявка или ответ на неё. Пересчитываем сразу, а не
+                            // ждём своей очереди в десятисекундном опросе.
+                            CheckFriendRequests();
+                        }
                         else if (type == "auth_error")
                         {
                             System.Diagnostics.Debug.WriteLine("[WS] register отклонён сервером (auth_error)");
@@ -1548,20 +1554,12 @@ namespace PISMO
             _pollTimer.Tick += PollTick;
             _pollTimer.Start();
 
-            // Заявки в друзья не приходят по WS — проверяем отдельным лёгким
-            // таймером (один COUNT раз в 10 с) независимо от состояния WS.
+            // Заявка теперь приходит СОБЫТИЕМ — см. обработку "friend" в
+            // OnMessageReceived. Таймер остался страховкой на случай, когда WS
+            // оборван: тогда событие не дойдёт, и опрос — единственный способ
+            // узнать о заявке. Интервал поэтому можно оставить редким.
             var reqTimer = new System.Windows.Forms.Timer { Interval = 10000 };
-            reqTimer.Tick += (s, e) =>
-            {
-                System.Threading.Tasks.Task.Run(() =>
-                {
-                    int cnt;
-                    try { cnt = FriendsRepository.CountIncoming(UserSession.EffectiveId); }
-                    catch { return; }
-                    if (IsDisposed || !IsHandleCreated) return;
-                    try { BeginInvoke(new Action(() => ApplyFriendRequests(cnt))); } catch { }
-                });
-            };
+            reqTimer.Tick += (s, e) => CheckFriendRequests();
             reqTimer.Start();
             FormClosed += (s, e) => { try { reqTimer.Stop(); reqTimer.Dispose(); } catch { } };
         }
@@ -1986,6 +1984,22 @@ namespace PISMO
                 this.Text = title;
                 _trayIcon.Text = title.Length > 63 ? title[..63] : title;
             }
+        }
+
+        /// <summary>
+        /// Пересчитать входящие заявки и обновить бейдж с уведомлением.
+        /// Зовётся и по событию с релея, и таймером-страховкой.
+        /// </summary>
+        private void CheckFriendRequests()
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                int cnt;
+                try { cnt = FriendsRepository.CountIncoming(UserSession.EffectiveId); }
+                catch { return; }
+                if (IsDisposed || !IsHandleCreated) return;
+                try { BeginInvoke(new Action(() => ApplyFriendRequests(cnt))); } catch { }
+            });
         }
 
         /// <summary>Бейдж на кнопке «Друзья» + уведомление при НОВОЙ входящей

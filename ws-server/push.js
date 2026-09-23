@@ -144,6 +144,10 @@ async function onEvent(msg, isOnline) {
     // известен только базе.
     if (msg.type === 'incoming_call') return onCall(msg, isOnline);
 
+    // Заявка в друзья. Раньше её находил опрос базы на телефоне, а опроса
+    // больше нет — он ушёл вместе с фоновой службой.
+    if (msg.type === 'friend') return onFriend(msg, isOnline);
+
     if (msg.type !== 'new_message') return;
 
     const from = Number(msg.userId || 0);
@@ -254,6 +258,25 @@ async function onCall(msg, isOnline) {
     } catch (e) {
         console.log('[PUSH] звонок: ' + e.message);
     }
+}
+
+/**
+ * Заявка в друзья — и ответ на неё.
+ *
+ * Адресат здесь известен прямо из события: клиент знает, кому пишет.
+ */
+async function onFriend(msg, isOnline) {
+    const to = Number(msg.targetUserId || 0);
+    const from = Number(msg.sessionId || 0);
+    if (!to || !from || to === from) return;
+    if (isOnline(to)) return;
+
+    const payload = String(msg.payload || '');
+    if (payload !== 'request' && payload !== 'accepted') return;
+
+    const name = await nameOf(from);
+    console.log(`[PUSH] друзья: от ${from}, кому ${to}, ${payload}`);
+    await send(to, { kind: 'friend', sender: from, name, state: payload });
 }
 
 module.exports = { init, onEvent };

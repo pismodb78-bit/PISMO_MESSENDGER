@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using MySqlConnector;
@@ -171,6 +171,17 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@me", me);
                 cmd.Parameters.AddWithValue("@them", them);
                 cmd.ExecuteNonQuery();
+
+                // Говорим адресату сами. Раньше заявку находил только опрос
+                // базы; на телефоне его больше нет — он ушёл вместе с фоновой
+                // службой, — и заявка всплывала лишь при открытии приложения.
+                // Релей вдобавок превратит событие в push, если человека нет
+                // на связи.
+                try
+                {
+                    WebSocketSignalingClient.Instance.SendMessage("friend", them, me, "request");
+                }
+                catch { }
                 return true;
             }
             catch { return false; }
@@ -188,6 +199,14 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@req", requester);
                 cmd.Parameters.AddWithValue("@me", me);
                 cmd.ExecuteNonQuery();
+
+                // Тому, кто звал: заявка принята. Без этого он узнавал бы об
+                // этом, только открыв список друзей.
+                try
+                {
+                    WebSocketSignalingClient.Instance.SendMessage("friend", requester, me, "accepted");
+                }
+                catch { }
             }
             catch { }
         }
