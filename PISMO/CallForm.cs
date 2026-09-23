@@ -145,6 +145,19 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@cid", _sessionId);
                 cmd.Parameters.AddWithValue("@uid", UserSession.EffectiveId);
                 cmd.ExecuteNonQuery();
+
+                // Своим остальным устройствам: разговор теперь здесь.
+                //
+                // Полагаться на то, что LiveKit сам выбьет прежнее соединение
+                // с тем же именем, нельзя — в одну сторону срабатывало, в
+                // другую нет, и человек оказывался в звонке с двух устройств
+                // сразу, слыша себя дважды. Говорим об этом явно.
+                try
+                {
+                    WebSocketSignalingClient.Instance.SendMessage(
+                        "call_status", UserSession.EffectiveId, _sessionId, "taken");
+                }
+                catch { }
             }
             catch { /* не записались — список просто будет без нас */ }
 
@@ -476,6 +489,19 @@ namespace PISMO
             if (sessionId != _sessionId || IsDisposed) return;
             UiInvoke(() =>
             {
+                // Разговор перехвачен другим МОИМ устройством.
+                //
+                // Уходим тихо: _ended выставляем сами, чтобы закрытие формы не
+                // полезло прибираться в базе. Строка участника у нас с тем
+                // устройством ОБЩАЯ — одна на человека, — и, удалив её «за
+                // собой», мы выкинули бы из звонка того, кто только что вошёл.
+                if (type == "call_status" && payload == "taken")
+                {
+                    _ended = true;
+                    Close();
+                    return;
+                }
+
                 if (type == "call_status" || type == "incoming_call")
                     PollCallStatus();
             });
