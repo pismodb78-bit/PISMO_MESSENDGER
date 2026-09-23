@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Windows.Forms;
 using MySqlConnector;
@@ -16,10 +16,17 @@ namespace PISMO
         private bool _checkBusy;   // фоновая проверка статуса уже идёт
         private readonly int _sessionId;
 
-        public IncomingCallForm(int sessionId, string callerName, int callerId)
+        /// <param name="groupName">
+        /// Название группы для группового вызова; пусто — значит личный.
+        /// Групповой вызов — это сбор, а не звонок одного человека, и раньше
+        /// окно было одинаковым: понять, зовут ли тебя лично или всю группу,
+        /// можно было только приняв вызов.
+        /// </param>
+        public IncomingCallForm(int sessionId, string callerName, int callerId, string groupName = "")
         {
             _sessionId = sessionId;
-            Text            = "PISMO — Входящий звонок";
+            bool inGroup = !string.IsNullOrWhiteSpace(groupName);
+            Text            = inGroup ? "PISMO — Звонок в группе" : "PISMO — Входящий звонок";
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             ClientSize      = new Size(340, 160);
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -32,7 +39,7 @@ namespace PISMO
 
             var lblIcon = new Label
             {
-                Text = "📞",
+                Text = inGroup ? "👥" : "📞",
                 Font = new Font("Segoe UI", 28f),
                 AutoSize = false,
                 TextAlign = ContentAlignment.MiddleCenter,
@@ -42,7 +49,7 @@ namespace PISMO
 
             var lblName = new Label
             {
-                Text = callerName,
+                Text = inGroup ? groupName : callerName,
                 Font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold),
                 ForeColor = Color.White,
                 AutoSize = true,
@@ -51,7 +58,10 @@ namespace PISMO
 
             var lblSub = new Label
             {
-                Text = "Входящий звонок…",
+                // В группе главное — сама группа, а кто позвал, идёт вторым
+                // планом. В личном звонке имя уже в заголовке, и повторять
+                // его незачем.
+                Text = inGroup ? callerName + " зовёт в групповой звонок" : "Входящий звонок…",
                 Font = new Font("Segoe UI", 9.5f),
                 ForeColor = Color.FromArgb(185, 187, 190),
                 AutoSize = true,

@@ -1826,9 +1826,11 @@ namespace PISMO
                         // Фильтрация «уже показанных» — на клиенте через _shownCallIds.
                         const string sql = @"
                             SELECT cs.id, cs.caller_id, cs.has_video, cs.group_id,
-                                   TRIM(CONCAT(u.Name,' ',u.Surname)) AS caller_name, u.login
+                                   TRIM(CONCAT(u.Name,' ',u.Surname)) AS caller_name, u.login,
+                                   COALESCE(gc.name, '') AS group_name
                             FROM call_sessions cs
                             JOIN users u ON u.id = cs.caller_id
+                            LEFT JOIN group_chats gc ON gc.id = cs.group_id
                             LEFT JOIN group_members gm ON gm.group_id = cs.group_id AND gm.user_id = @me
                             WHERE (cs.callee_id = @me OR gm.user_id = @me)
                               AND cs.status = 'ringing'
@@ -1892,7 +1894,9 @@ namespace PISMO
                     if (groupId > 0 && CallBlocks.IsBlocked(CallBlocks.GroupKey(groupId))) continue;
 
                     // Показываем входящий звонок
-                    var incoming = new IncomingCallForm(sid, cname, callerId);
+                    string gname = row.Table.Columns.Contains("group_name")
+                        ? (row["group_name"]?.ToString() ?? "") : "";
+                    var incoming = new IncomingCallForm(sid, cname, callerId, gname);
                     incoming.FormClosed += (s, e) =>
                     {
                         if (incoming.Accepted)
