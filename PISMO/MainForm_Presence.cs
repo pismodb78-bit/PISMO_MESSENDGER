@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Drawing;
@@ -388,12 +388,45 @@ namespace PISMO
             int d = h / 24; return $"{d} дн";
         }
 
+        /// <summary>
+        /// Дальше этого порога «сколько прошло» перестаёт что-либо значить:
+        /// важно не «14 ч назад», а когда именно человек был.
+        /// </summary>
+        private const int SeenStampAfterSec = 12 * 60 * 60;
+
+        /// <summary>Заведомо бессмысленный разрыв: last_seen пуст, человек не
+        /// был в сети никогда. Без этой отсечки получалась дата из прошлого
+        /// века.</summary>
+        private const int SeenNeverSec = 10 * 365 * 24 * 60 * 60;
+
         private static string HumanAgo(int s)
         {
+            if (s >= SeenNeverSec) return "давно";
+            if (s >= SeenStampAfterSec) return SeenStamp(s);
             if (s < 60) return "только что";
             int m = s / 60; if (m < 60) return $"{m} мин назад";
-            int h = m / 60; if (h < 24) return $"{h} ч назад";
-            int d = h / 24; return $"{d} дн назад";
+            int h = m / 60; return $"{h} ч назад";
+        }
+
+        /// <summary>
+        /// Когда человек был в сети — датой и временем.
+        /// </summary>
+        /// <remarks>
+        /// Самой метки у нас нет, есть только «сколько секунд назад», и она
+        /// посчитана по часам БАЗЫ. Восстанавливаем метку из неё: ошибка равна
+        /// расхождению часов компьютера и сервера, а это секунды — для подписи
+        /// вида «23.09 в 15:07» незаметно. Зато не нужно тащить timestamp через
+        /// все запросы присутствия.
+        /// </remarks>
+        private static string SeenStamp(int secondsAgo)
+        {
+            var at = DateTime.Now.AddSeconds(-secondsAgo);
+            // Год дописываем, только если он не нынешний: обычно он лишний шум,
+            // а на переходе через новый год без него не понять, о чём речь.
+            string pattern = at.Year == DateTime.Now.Year
+                ? "dd.MM' в 'HH:mm"
+                : "dd.MM.yyyy' в 'HH:mm";
+            return at.ToString(pattern, System.Globalization.CultureInfo.InvariantCulture);
         }
 
         private (string text, Color color)? ReadPeerPresenceText(int uid)
