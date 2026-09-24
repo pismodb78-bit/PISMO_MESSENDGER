@@ -451,22 +451,15 @@ namespace PISMO
         /// <summary>Подпись и цвет для шапки чата по готовому статусу.</summary>
         private static (string text, Color color) PresenceText(int status, int seenAgo, int activeAgo)
         {
-            // «Был в сети» считаем по последней НАСТОЯЩЕЙ активности, а не по
-            // heartbeat.
+            // Каждая метка отвечает за своё, и смешивать их нельзя:
+            //   last_seen   — приложение на связи, отсюда «в сети» и «был в сети»;
+            //   last_active — человек что-то делал, отсюда жёлтое «бездействует».
             //
-            // Разница не косметическая. Приложение шлёт heartbeat, пока живо, и
-            // last_seen обновляется всю ночь, пока владелец спит. Когда процесс
-            // наконец умирает, человек показывается как «был в сети 4 минуты
-            // назад» — ровно на столько приложение пережило хозяина. А в базе
-            // при этом видно правду: last_active шестнадцатичасовой давности.
-            //
-            // last_active всегда не свежее last_seen, так что хуже не станет; а
-            // если его нет вовсе, возвращаемся к heartbeat.
-            if (status == 0)
-            {
-                int ago = (activeAgo > seenAgo && activeAgo < SeenNeverSec) ? activeAgo : seenAgo;
-                return ($"был(а) в сети {HumanAgo(ago)}", PresenceOffline);
-            }
+            // Поэтому спящий с живой программой висит жёлтым «бездействует 16 ч»,
+            // а когда процесс наконец умирает — «был в сети» отсчитывается от
+            // heartbeat, а не от последнего нажатия. Это не оплошность, а
+            // разделение смыслов.
+            if (status == 0) return ($"был(а) в сети {HumanAgo(seenAgo)}", PresenceOffline);
             if (status == 1) return ($"● бездействует {HumanDur(activeAgo)}", PresenceIdle);
             return ("● в сети", PresenceOnline);
         }
