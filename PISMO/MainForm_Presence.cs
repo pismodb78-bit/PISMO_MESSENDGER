@@ -451,7 +451,22 @@ namespace PISMO
         /// <summary>Подпись и цвет для шапки чата по готовому статусу.</summary>
         private static (string text, Color color) PresenceText(int status, int seenAgo, int activeAgo)
         {
-            if (status == 0) return ($"был(а) в сети {HumanAgo(seenAgo)}", PresenceOffline);
+            // «Был в сети» считаем по последней НАСТОЯЩЕЙ активности, а не по
+            // heartbeat.
+            //
+            // Разница не косметическая. Приложение шлёт heartbeat, пока живо, и
+            // last_seen обновляется всю ночь, пока владелец спит. Когда процесс
+            // наконец умирает, человек показывается как «был в сети 4 минуты
+            // назад» — ровно на столько приложение пережило хозяина. А в базе
+            // при этом видно правду: last_active шестнадцатичасовой давности.
+            //
+            // last_active всегда не свежее last_seen, так что хуже не станет; а
+            // если его нет вовсе, возвращаемся к heartbeat.
+            if (status == 0)
+            {
+                int ago = (activeAgo > seenAgo && activeAgo < SeenNeverSec) ? activeAgo : seenAgo;
+                return ($"был(а) в сети {HumanAgo(ago)}", PresenceOffline);
+            }
             if (status == 1) return ($"● бездействует {HumanDur(activeAgo)}", PresenceIdle);
             return ("● в сети", PresenceOnline);
         }
