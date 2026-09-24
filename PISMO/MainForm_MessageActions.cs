@@ -1237,7 +1237,16 @@ namespace PISMO
                 using var r = cmd.ExecuteReader();
                 while (r.Read())
                 {
-                    string when = r["edited_at"] == DBNull.Value ? "" : Convert.ToDateTime(r["edited_at"]).ToString("dd.MM.yyyy HH:mm");
+                    // ToViewerLocal обязателен: в колонке лежит время СЕРВЕРА,
+                    // без пояса. Без сдвига история правок показывала серверное
+                    // время, а сами сообщения рядом — местное, и одно и то же
+                    // событие выглядело разошедшимся на несколько часов.
+                    // Единственное место, где этот сдвиг был забыт; на телефоне
+                    // та же история берётся через UNIX_TIMESTAMP и потому верна.
+                    string when = r["edited_at"] == DBNull.Value
+                        ? ""
+                        : ToViewerLocal(Convert.ToDateTime(r["edited_at"]))
+                            .ToString("dd.MM.yyyy HH:mm");
                     string txt;
                     try { txt = Crypto.Dec(r["old_text"]?.ToString() ?? ""); } catch { txt = ""; }
                     rows.Add((when, txt));
