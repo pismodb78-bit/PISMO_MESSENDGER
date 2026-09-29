@@ -6602,10 +6602,18 @@ namespace PISMO
             else if (isImg) kind = AttachKind.Image;
             else kind = AttachKind.File;
 
+            string outName = Path.GetFileName(path);
+
+            // Картинку приводим к формату, который прочтут все. Собеседник без
+            // системного расширения WebP увидел бы вместо неё подпись об
+            // ошибке — ровно то же, что до недавнего приходило к нам с
+            // телефона, только в обратную сторону.
+            if (isImg) bytes = ToPortableImage(bytes, ref outName);
+
             if (isImg && bytes.Length > 2 * 1024 * 1024)
                 bytes = CompressImageIfNeeded(bytes);
 
-            _pendingAttach.Add(new PendingAttachment(bytes, Path.GetFileName(path), kind));
+            _pendingAttach.Add(new PendingAttachment(bytes, outName, kind));
             ShowPreview();
         }
 
@@ -6762,6 +6770,80 @@ namespace PISMO
         }
 
         /// <summary>Сжимает изображение в JPEG (качество 78), если оно больше 2 МБ.</summary>
+        /// <summary>
+        /// Приводит картинку к формату, который прочтут все клиенты.
+        /// </summary>
+        /// <remarks>
+        /// Зеркало того, что делает телефон перед отправкой. WebP, HEIC и AVIF
+        /// открываются здесь только при наличии системного расширения, а у
+        /// собеседника его может не быть — и он увидит подпись об ошибке
+        /// вместо картинки.
+        ///
+        /// Уже универсальное не трогаем: перекодирование стоит качества, а не
+        /// даёт ничего. GIF сюда не попадает — от анимации остался бы один
+        /// кадр. Формат определяем по сигнатуре файла, а не по расширению:
+        /// расширение врёт, «.jpg» с WebP внутри — обычное дело.
+        ///
+        /// Пересобираем в PNG при прозрачности (JPEG её потеряет и зальёт
+        /// чёрным), иначе в JPEG. Не смогли разобрать — отдаём как было: пусть
+        /// лучше не покажется у части людей, чем не отправится совсем.
+        /// </remarks>
+        internal static byte[] ToPortableImage(byte[] data, ref string fileName)
+        {
+            if (IsPortableImage(data)) return data;
+
+            Image? img = null;
+            try
+            {
+                try
+                {
+                    using var ms = new MemoryStream(data);
+                    img = Image.FromStream(ms);
+                }
+                catch { img = TryDecodeWithWic(data); }
+                if (img == null) return data;
+
+                bool alpha = (img.PixelFormat & System.Drawing.Imaging.PixelFormat.Alpha) != 0
+                             || img.PixelFormat == System.Drawing.Imaging.PixelFormat.Format32bppArgb;
+
+                using var outMs = new MemoryStream();
+                if (alpha)
+                {
+                    img.Save(outMs, ImageFormat.Png);
+                    fileName = Path.ChangeExtension(fileName, ".png");
+                }
+                else
+                {
+                    ImageCodecInfo? jpeg = null;
+                    foreach (var c in ImageCodecInfo.GetImageEncoders())
+                        if (c.FormatID == ImageFormat.Jpeg.Guid) { jpeg = c; break; }
+                    if (jpeg == null) return data;
+
+                    var enc = new EncoderParameters(1);
+                    enc.Param[0] = new EncoderParameter(
+                        System.Drawing.Imaging.Encoder.Quality, 92L);
+                    img.Save(outMs, jpeg, enc);
+                    fileName = Path.ChangeExtension(fileName, ".jpg");
+                }
+
+                var converted = outMs.ToArray();
+                return converted.Length > 0 ? converted : data;
+            }
+            catch { return data; }
+            finally { img?.Dispose(); }
+        }
+
+        /// <summary>Картинка в формате, который прочтут все клиенты, — по сигнатуре файла.</summary>
+        private static bool IsPortableImage(byte[] d)
+        {
+            if (d == null || d.Length < 4) return false;
+            if (d[0] == 0x89 && d[1] == 0x50 && d[2] == 0x4E && d[3] == 0x47) return true; // PNG
+            if (d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF) return true;                 // JPEG
+            if (d[0] == 0x47 && d[1] == 0x49 && d[2] == 0x46) return true;                 // GIF
+            if (d[0] == 0x42 && d[1] == 0x4D) return true;                                 // BMP
+            return false;
+        }
+
         private static byte[] CompressImageIfNeeded(byte[] data)
         {
             const int threshold = 2 * 1024 * 1024;

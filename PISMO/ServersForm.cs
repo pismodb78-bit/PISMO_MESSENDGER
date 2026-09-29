@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Drawing;
@@ -3546,7 +3546,14 @@ namespace PISMO
                 }
                 string ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
                 bool isImg = ext is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp";
-                StageChannelAttachment(bytes, Path.GetFileName(path), isImg);
+
+                // Тот же перевод в универсальный формат, что и в переписке:
+                // WebP откроется не у каждого, а GIF трогать нельзя — от
+                // анимации остался бы один кадр.
+                string outName = Path.GetFileName(path);
+                if (isImg && ext != "gif") bytes = MainForm.ToPortableImage(bytes, ref outName);
+
+                StageChannelAttachment(bytes, outName, isImg);
             }
             catch (Exception ex) { MessageBox.Show("Не удалось прикрепить файл: " + ex.Message, "PISMO"); }
         }
