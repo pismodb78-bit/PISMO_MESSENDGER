@@ -5386,7 +5386,7 @@ namespace PISMO
                 }
                 catch
                 {
-                    bubble.Controls.Add(ErrLabel("⚠ Не удалось загрузить изображение", PAD, innerY));
+                    bubble.Controls.Add(ErrLabel("⚠ " + ImageErrorText(imgBytes), PAD, innerY));
                     innerY += 20 + 6;
                 }
             }
@@ -6776,6 +6776,49 @@ namespace PISMO
         }
 
         /// <summary>Проверяет magic bytes GIF-файла.</summary>
+        /// <summary>
+        /// Почему картинка не открылась.
+        /// </summary>
+        /// <remarks>
+        /// GDI+ знает только BMP, GIF, JPEG, PNG и TIFF. WebP, HEIC и AVIF он
+        /// не декодирует вовсе, а телефон показывает их штатно — одно и то же
+        /// сообщение выглядело на двух клиентах по-разному, и надпись «не
+        /// удалось» не подсказывала, почему.
+        ///
+        /// Новые картинки телефон теперь переводит в универсальный формат сам,
+        /// но уже отправленные так и остались в базе, и для них эта подпись —
+        /// единственное объяснение.
+        /// </remarks>
+        private static string ImageErrorText(byte[] data)
+        {
+            string fmt = SniffUnsupportedImage(data);
+            return fmt == null
+                ? "Не удалось загрузить изображение"
+                : $"Формат {fmt} здесь не открывается — картинка видна на телефоне";
+        }
+
+        /// <summary>Формат по сигнатуре файла, если он из тех, что GDI+ не берёт.</summary>
+        private static string SniffUnsupportedImage(byte[] d)
+        {
+            if (d == null || d.Length < 12) return null;
+
+            // WebP: байты 0-3 «RIFF», байты 8-11 «WEBP».
+            if (d[0] == (byte)'R' && d[1] == (byte)'I' && d[2] == (byte)'F' && d[3] == (byte)'F' &&
+                d[8] == (byte)'W' && d[9] == (byte)'E' && d[10] == (byte)'B' && d[11] == (byte)'P')
+                return "WebP";
+
+            // HEIC/AVIF: байты 4-7 «ftyp», дальше марка формата.
+            if (d[4] == (byte)'f' && d[5] == (byte)'t' && d[6] == (byte)'y' && d[7] == (byte)'p')
+            {
+                string brand = System.Text.Encoding.ASCII.GetString(d, 8, 4);
+                if (brand.StartsWith("hei") || brand.StartsWith("mif") || brand.StartsWith("msf"))
+                    return "HEIC";
+                if (brand.StartsWith("avi")) return "AVIF";
+            }
+
+            return null;
+        }
+
         private static bool IsGif(byte[] data)
             => data != null && data.Length >= 3
                && data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46; // "GIF"
