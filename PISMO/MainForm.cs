@@ -5273,10 +5273,20 @@ namespace PISMO
                 try
                 {
                     // Копируем байты чтобы ms жил независимо
-                    var ms = new MemoryStream(imgBytes.ToArray());
+                    MemoryStream? ms = new MemoryStream(imgBytes.ToArray());
                     Image img;
                     try { img = Image.FromStream(ms); }
-                    catch { ms.Dispose(); throw; }
+                    catch
+                    {
+                        // GDI+ не осилил — пробуем системным декодером.
+                        // Он умеет WebP и HEIC, если в Windows стоят их
+                        // расширения, и это единственный способ показать уже
+                        // отправленные картинки: они лежат в базе как есть.
+                        ms.Dispose();
+                        ms = null;
+                        img = TryDecodeWithWic(imgBytes);
+                        if (img == null) throw;
+                    }
 
                     // Рамка вывода больше — фото/GIF читабельнее. Крупные вписываем
                     // в рамку, мелкие увеличиваем до читаемого размера (но не более 2x,
@@ -5376,7 +5386,7 @@ namespace PISMO
                     else
                     {
                         pb.Image = img;
-                        pb.Disposed += (s, e) => { img.Dispose(); ms.Dispose(); };
+                        pb.Disposed += (s, e) => { img.Dispose(); ms?.Dispose(); };
                     }
 
                     var cap = imgBytes;
@@ -6777,6 +6787,64 @@ namespace PISMO
 
         /// <summary>Проверяет magic bytes GIF-файла.</summary>
         /// <summary>
+        /// Раскодировать картинку системным декодером, когда GDI+ не смог.
+        /// </summary>
+        /// <remarks>
+        /// GDI+ знает только BMP, GIF, JPEG, PNG и TIFF. WIC — механизм самой
+        /// Windows — умеет и WebP с HEIC, если в системе стоят их расширения
+        /// (в Windows 10 1809+ и 11 они есть из коробки). Добираемся до него
+        /// через WPF, который в проекте и так подключён ради цветных эмодзи, —
+        /// то есть без единой сторонней библиотеки.
+        ///
+        /// Это важно для УЖЕ отправленных картинок: в базе они лежат в
+        /// исходном формате, и переделать их задним числом нечем.
+        ///
+        /// Нет кодека — возвращаем null, и выше покажется подпись с названием
+        /// формата.
+        /// </remarks>
+        private static Image? TryDecodeWithWic(byte[] data)
+        {
+            try
+            {
+                using var src = new MemoryStream(data);
+                var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(
+                    src,
+                    System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
+                    System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+                if (decoder.Frames.Count == 0) return null;
+
+                var frame = new System.Windows.Media.Imaging.FormatConvertedBitmap(
+                    decoder.Frames[0], System.Windows.Media.PixelFormats.Bgra32, null, 0);
+
+                int w = frame.PixelWidth, h = frame.PixelHeight;
+                if (w <= 0 || h <= 0) return null;
+
+                int stride = w * 4;
+                var buf = new byte[checked(stride * h)];
+                frame.CopyPixels(buf, stride, 0);
+
+                var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                var bits = bmp.LockBits(new Rectangle(0, 0, w, h),
+                    System.Drawing.Imaging.ImageLockMode.WriteOnly,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                try
+                {
+                    // Построчно: у Bitmap строка может быть длиннее ширины на
+                    // выравнивание, и копирование одним куском тогда сдвигает
+                    // картинку по диагонали.
+                    for (int y = 0; y < h; y++)
+                        System.Runtime.InteropServices.Marshal.Copy(
+                            buf, y * stride,
+                            IntPtr.Add(bits.Scan0, y * bits.Stride), stride);
+                }
+                finally { bmp.UnlockBits(bits); }
+
+                return bmp;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
         /// Почему картинка не открылась.
         /// </summary>
         /// <remarks>
@@ -6791,14 +6859,14 @@ namespace PISMO
         /// </remarks>
         private static string ImageErrorText(byte[] data)
         {
-            string fmt = SniffUnsupportedImage(data);
+            string? fmt = SniffUnsupportedImage(data);
             return fmt == null
                 ? "Не удалось загрузить изображение"
-                : $"Формат {fmt} здесь не открывается — картинка видна на телефоне";
+                : $"{fmt} не открывается — смотрите на телефоне";
         }
 
         /// <summary>Формат по сигнатуре файла, если он из тех, что GDI+ не берёт.</summary>
-        private static string SniffUnsupportedImage(byte[] d)
+        private static string? SniffUnsupportedImage(byte[] d)
         {
             if (d == null || d.Length < 12) return null;
 
