@@ -187,7 +187,15 @@ namespace PISMO
                     }
                     else ServerLook.Remember(sid, null);
 
-                    var back = ServerLook.ParseColor(colorHex) ?? ServerColor(sid);
+                    // Под картинкой — выбранный цвет сервера, а если его нет,
+                    // фон самого рейла: картинка с прозрачностью должна сидеть
+                    // на фоне приложения, а не на цветном пятне. Буквенному
+                    // значку цвет по id по-прежнему нужен — иначе серверы в
+                    // рейле не отличить друг от друга.
+                    var back = ServerLook.ParseColor(colorHex)
+                               ?? (hasAvatar
+                                   ? (_serverRail?.BackColor ?? Color.FromArgb(30, 31, 34))
+                                   : ServerColor(sid));
                     var c = MakeRailCircle(ServerInitials(name), back, Color.White, icon: icon);
                     c.Tag = sid;
                     // ТОЛЬКО левый клик заходит на сервер. Раньше был Click (срабатывал
