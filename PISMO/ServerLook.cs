@@ -51,6 +51,20 @@ namespace PISMO
             }
         }
 
+        /// <summary>
+        /// Есть ли среди этих серверов значок, который пора перечитать.
+        /// </summary>
+        /// <remarks>
+        /// Нужно рейлу: сменённую картинку не видно в сводке «есть картинка
+        /// или нет», и если событие по сокету не дошло, узнать о замене можно
+        /// только перечитав её по сроку годности.
+        /// </remarks>
+        public static bool AnyStale(IEnumerable<int> serverIds)
+        {
+            foreach (int id in serverIds) if (!Fresh(id)) return true;
+            return false;
+        }
+
         /// <summary>Забыть сервер — например, после смены его номера.</summary>
         public static void Forget(int serverId)
         {

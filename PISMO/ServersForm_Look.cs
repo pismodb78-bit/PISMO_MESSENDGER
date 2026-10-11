@@ -285,6 +285,7 @@ namespace PISMO
             }
             if (!renamed && !recolored && !repictured) return;
 
+            AnnounceLook(sid);
             LoadServers();
             SelectServer(sid, renamed ? nameNow : nameWas, _isOwner);
             RefreshServerLookEverywhere();
@@ -463,6 +464,27 @@ namespace PISMO
                       "под учётной записью с правами ALTER — у приложения их нет."
                     : "Не удалось сохранить: " + ex.Message,
                 "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        /// <summary>
+        /// Говорит остальным, что сервер сменил вид: название, цвет или картинку.
+        /// </summary>
+        /// <remarks>
+        /// Шлём широковещательно (кому = 0), как new_message: участников
+        /// сервера клиент не знает, а релей и так разносит это всем, кто в
+        /// сети. Лишним адресатам событие ничего не стоит — чужой сервер они
+        /// просто не найдут у себя в списке.
+        ///
+        /// Без этого новый значок доезжал до остальных только когда у них
+        /// протухнет картинка в памяти или перезапустится программа.
+        /// </remarks>
+        private static void AnnounceLook(int serverId)
+        {
+            try
+            {
+                WebSocketSignalingClient.Instance.SendMessage("server_look", 0, serverId, "look");
+            }
+            catch { }
         }
 
         /// <summary>Перерисовать значки там, где они видны, — в рейле главного окна.</summary>

@@ -266,6 +266,13 @@ namespace PISMO
                         }
                         catch { _railMyLogin = ""; }
                     }
+                    // Заодно сверяем сам рейл с базой: состав серверов, их
+                    // названия, цвета и наличие картинок. Событие по сокету
+                    // могло не дойти — скажем, его послали, пока мы были без
+                    // связи, — и тогда это единственный способ узнать, что нас
+                    // забанили или что у сервера новый значок.
+                    try { CheckRailSignature(); } catch { }
+
                     var badges = ServerReads.GetBadges(me, _railMyLogin);
                     var agg = new System.Collections.Generic.Dictionary<int, (int unread, int mentions)>();
                     var muted = new System.Collections.Generic.HashSet<int>();
@@ -304,6 +311,65 @@ namespace PISMO
                 }
                 catch { }
             });
+        }
+
+        private DateTime _railSigAt = DateTime.MinValue;
+        private string _railSig;
+
+        /// <summary>
+        /// Сверяет рейл с базой и пересобирает его при расхождении.
+        /// </summary>
+        /// <remarks>
+        /// Зовётся из фонового потока вместе с бейджами, но работает не чаще
+        /// раза в полминуты: это лишний запрос к удалённой базе, а меняется
+        /// рейл редко.
+        ///
+        /// Картинку в подпись не берём — её пришлось бы читать целиком. Зато
+        /// пересобираем рейл и тогда, когда у какого-то значка истёк срок
+        /// годности в памяти: пересборка сама перечитает именно такие.
+        /// </remarks>
+        private void CheckRailSignature()
+        {
+            if ((DateTime.UtcNow - _railSigAt).TotalSeconds < 30) return;
+            _railSigAt = DateTime.UtcNow;
+
+            var sb = new System.Text.StringBuilder();
+            var ids = new System.Collections.Generic.List<int>();
+            using (var conn = DBHelper.OpenConnection())
+            {
+                string sql = _railLookColumns
+                    ? "SELECT s.id, s.name, COALESCE(s.avatar_color,'') AS c, " +
+                      "(s.avatar_data IS NOT NULL) AS a FROM servers s " +
+                      "JOIN server_members m ON m.server_id = s.id " +
+                      "WHERE m.user_id=@me ORDER BY s.id"
+                    : "SELECT s.id, s.name FROM servers s " +
+                      "JOIN server_members m ON m.server_id = s.id " +
+                      "WHERE m.user_id=@me ORDER BY s.id";
+                using var cmd = new MySqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    int id = Convert.ToInt32(r["id"]);
+                    ids.Add(id);
+                    sb.Append(id).Append('|').Append(r["name"]);
+                    if (_railLookColumns)
+                        sb.Append('|').Append(r["c"]).Append('|').Append(r["a"]);
+                    sb.Append(';');
+                }
+            }
+
+            string sig = sb.ToString();
+            bool changed = sig != _railSig;
+            _railSig = sig;
+            if (!changed && !ServerLook.AnyStale(ids)) return;
+
+            try
+            {
+                if (IsDisposed || !IsHandleCreated) return;
+                BeginInvoke(new Action(LoadServerRailItems));
+            }
+            catch { }
         }
 
         private Panel MakeRailCircle(string text, Color back, Color fore,

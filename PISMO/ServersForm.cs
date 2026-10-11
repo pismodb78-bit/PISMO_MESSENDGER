@@ -469,6 +469,18 @@ namespace PISMO
                 }
                 catch { }
             }
+            else if (type == "server_look")
+            {
+                // Сервер сменил вид. Картинку из памяти забываем здесь же, в
+                // потоке сокета: иначе рейл перерисуется прежней.
+                ServerLook.Forget(sessionId);
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke(new Action(() => OnServerLookChanged(sessionId)));
+                }
+                catch { }
+            }
             else if (type == "server_kick")
             {
                 // Меня выгнали. Релей шлёт это адресно, так что дошло — значит
@@ -650,6 +662,7 @@ namespace PISMO
                         // и участники оставались, и по ним можно было ходить.
                         if (_serverId == sid) ClearServerView();
                         LoadServers();
+                        RefreshServerRail();
                         return;
                     }
                 }
@@ -662,6 +675,7 @@ namespace PISMO
                 using (var cmd = new MySqlCommand("INSERT IGNORE INTO server_members (server_id,user_id) VALUES (@s,@u)", conn))
                 { cmd.Parameters.AddWithValue("@s", sid); cmd.Parameters.AddWithValue("@u", _me); cmd.ExecuteNonQuery(); }
                 LoadServers();
+                RefreshServerRail();
             }
             catch (Exception ex) { ShowDbError(ex); }
         }
@@ -681,6 +695,17 @@ namespace PISMO
         /// <summary>Подтянуть имя/владельца сервера и выбрать его.</summary>
         private void SelectServerById(int sid)
         {
+            // Иконка в рейле могла устареть: бан мог случиться, пока окно
+            // закрыто, или событие о нём не дошло. Спрашиваем базу — иначе
+            // по старой иконке человек заходит туда, откуда его выгнали.
+            if (!IsMemberOf(sid))
+            {
+                if (_serverId == sid) ClearServerView();
+                LoadServers();
+                RefreshServerRail();
+                MessageBox.Show("Вас больше нет на этом сервере.", "PISMO");
+                return;
+            }
             try
             {
                 using var conn = DBHelper.OpenConnection();
@@ -720,12 +745,46 @@ namespace PISMO
             try { _textChannelIds.Clear(); _channelBadgeLabels.Clear(); _channelPreviewCtl.Clear(); } catch { }
         }
 
+        /// <summary>
+        /// Пересобрать левый рейл серверов в главном окне.
+        /// </summary>
+        /// <remarks>
+        /// Колонка серверов внутри этого окна при встраивании спрятана — её
+        /// роль играет рейл, и обновлять нужно именно его. Без этого после
+        /// бана сообщение показывалось, список перечитывался, а иконка в
+        /// рейле оставалась — и по ней человек заходил обратно.
+        /// </remarks>
+        private static void RefreshServerRail()
+        {
+            try { MainForm.Current?.LoadServerRailItems(); } catch { }
+        }
+
+        /// <summary>Сервер сменил название, цвет или картинку — показываем новое.</summary>
+        private void OnServerLookChanged(int serverId)
+        {
+            LoadServers();
+            RefreshServerRail();
+            if (_serverId != serverId) return;
+
+            // Название висит в заголовке открытого сервера — его тоже обновим.
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT name FROM servers WHERE id=@s", conn);
+                cmd.Parameters.AddWithValue("@s", serverId);
+                string nm = cmd.ExecuteScalar()?.ToString() ?? "";
+                if (nm.Length > 0) { _serverName = nm; _lblTitle.Text = nm; }
+            }
+            catch { }
+        }
+
         /// <summary>Меня выгнали с сервера — убираем его с глаз и из списка.</summary>
         private void OnKickedFromServer(int serverId, bool banned)
         {
             // Список перечитываем всегда: сервер мог быть и не открыт.
             if (_serverId == serverId) ClearServerView();
             LoadServers();
+            RefreshServerRail();
             MessageBox.Show(
                 banned ? "Вас забанили на этом сервере." : "Вас исключили с этого сервера.",
                 "PISMO");
@@ -1802,22 +1861,26 @@ namespace PISMO
         /// спросить — считаем, что состою: нет связи не повод выгонять
         /// человека из его же сервера.
         /// </remarks>
-        private bool StillMember()
+        private bool StillMember() => _serverId > 0 && IsMemberOf(_serverId);
+
+        /// <summary>То же про любой сервер — например, про тот, по которому
+        /// только что кликнули в рейле.</summary>
+        private bool IsMemberOf(int serverId)
         {
-            if (_serverId <= 0) return false;
+            if (serverId <= 0) return false;
             try
             {
                 using var conn = DBHelper.OpenConnection();
                 using (var b = new MySqlCommand(
                     "SELECT 1 FROM server_bans WHERE server_id=@s AND user_id=@u", conn))
                 {
-                    b.Parameters.AddWithValue("@s", _serverId);
+                    b.Parameters.AddWithValue("@s", serverId);
                     b.Parameters.AddWithValue("@u", _me);
                     if (b.ExecuteScalar() != null) return false;
                 }
                 using var m = new MySqlCommand(
                     "SELECT 1 FROM server_members WHERE server_id=@s AND user_id=@u", conn);
-                m.Parameters.AddWithValue("@s", _serverId);
+                m.Parameters.AddWithValue("@s", serverId);
                 m.Parameters.AddWithValue("@u", _me);
                 return m.ExecuteScalar() != null;
             }
@@ -1831,6 +1894,7 @@ namespace PISMO
             MessageBox.Show(this, "Вас больше нет на этом сервере.", "PISMO");
             ClearServerView();
             LoadServers();
+            RefreshServerRail();
             return false;
         }
 
