@@ -48,13 +48,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ steps.ver.outputs.tag }}"
-          gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" *> $null
-          if ($LASTEXITCODE -eq 0) {
+          # Спрашиваем сами, а не через gh: в pwsh на раннере ненулевой код
+          # возврата внешней команды — обрыв шага, а 404 здесь это нормальный
+          # ответ «релиза ещё нет», а не ошибка.
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept        = "application/vnd.github+json"
+            "User-Agent"  = "pismo-ci"
+          }
+          $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/$tag"
+          $resp = Invoke-WebRequest -Uri $url -Headers $headers -SkipHttpErrorCheck
+          if ($resp.StatusCode -eq 200) {
             Write-Host "Релиз $tag уже опубликован — ничего не делаем."
             "skip=true" >> $env:GITHUB_OUTPUT
-          } else {
+          } elseif ($resp.StatusCode -eq 404) {
             Write-Host "Релиза $tag нет — выпускаем."
             "skip=false" >> $env:GITHUB_OUTPUT
+          } else {
+            throw "Непонятный ответ GitHub: $($resp.StatusCode)"
           }
 
       - name: Setup .NET 8
