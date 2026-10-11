@@ -30,6 +30,12 @@ namespace PISMO
             bool hasPicture = ServerHasAvatar(_serverId);
             int sid = _serverId;
 
+            // Колонок оформления может не быть: у учётной записи приложения на
+            // этом хостинге нет прав ALTER, и схему кладёт администратор из
+            // sql/. Раньше окно в таком случае выглядело рабочим, но ни цвет,
+            // ни картинка не сохранялись и ничего об этом не говорили.
+            bool lookOk = LookColumnsExist();
+
             using var f = new Form
             {
                 Text = "Настройки сервера",
@@ -97,10 +103,15 @@ namespace PISMO
 
             var lblHint = new Label
             {
-                Text = "Значок видят все участники сервера.",
-                ForeColor = Color.FromArgb(160, 164, 170),
-                Location = new Point(88, 108), AutoSize = true
+                Text = lookOk
+                    ? "Значок видят все участники сервера."
+                    : "Значку нужна миграция: sql/2026-10-11_servers_avatar.sql",
+                ForeColor = lookOk ? Color.FromArgb(160, 164, 170) : Color.FromArgb(230, 160, 120),
+                Location = new Point(88, 108), AutoSize = true,
+                MaximumSize = new Size(330, 0)
             };
+            btnPick.Enabled = lookOk;
+            if (!lookOk) btnDrop.Visible = false;
 
             btnPick.Click += (s, e) =>
             {
@@ -139,6 +150,7 @@ namespace PISMO
                 BorderStyle = BorderStyle.FixedSingle
             };
             txtC.TextChanged += (s, e) => { color = txtC.Text.Trim(); preview.Invalidate(); };
+            txtC.Enabled = lookOk;
 
             // Та же палитра, что у цветов ролей: оба цвета лежат в базе строкой
             // и рисуются двумя клиентами — наборы должны совпадать.
@@ -158,6 +170,7 @@ namespace PISMO
                     Cursor = Cursors.Hand, BorderStyle = BorderStyle.FixedSingle
                 };
                 string hexCap = hex;
+                sw.Enabled = lookOk;
                 sw.Click += (s, e) => { txtC.Text = hexCap; };
                 swatches.Add(sw);
                 px += 32;
@@ -174,6 +187,8 @@ namespace PISMO
             };
             var btnPlain = MakeDialogButton("Цвет по умолчанию", new Point(120, py + 36), new Size(160, 26));
             btnPlain.Click += (s, e) => { txtC.Text = ""; };
+            btnMore.Enabled = lookOk;
+            btnPlain.Enabled = lookOk;
 
             // ── Номер сервера ─────────────────────────────────────────────
             int idTop = py + 76;
@@ -245,7 +260,7 @@ namespace PISMO
             bool recolored = _canManage && colorNow != colorWas;
 
             if (renamed) SaveServerName(sid, nameNow);
-            if (recolored) SaveServerColor(sid, colorNow);
+            if (recolored && !SaveServerColor(sid, colorNow)) return;
             if (!renamed && !recolored) return;
 
             LoadServers();
@@ -355,10 +370,10 @@ namespace PISMO
                 cmd.ExecuteNonQuery();
                 return true;
             }
-            catch (Exception ex) { ShowDbError(ex); return false; }
+            catch (Exception ex) { ReportLookFailure(ex); return false; }
         }
 
-        private void SaveServerColor(int serverId, string hex)
+        private bool SaveServerColor(int serverId, string hex)
         {
             try
             {
@@ -367,8 +382,9 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@c", hex);
                 cmd.Parameters.AddWithValue("@s", serverId);
                 cmd.ExecuteNonQuery();
+                return true;
             }
-            catch (Exception ex) { ShowDbError(ex); }
+            catch (Exception ex) { ReportLookFailure(ex); return false; }
         }
 
         private void SaveServerName(int serverId, string name)
@@ -384,9 +400,56 @@ namespace PISMO
             catch (Exception ex) { ShowDbError(ex); }
         }
 
+        private static bool _lookColumnsKnown;
+
+        /// <summary>
+        /// Есть ли в servers колонки оформления (миграция 24).
+        /// </summary>
+        /// <remarks>
+        /// Запоминаем только утвердительный ответ: отрицательный лечится
+        /// запуском файла из sql/ прямо во время работы программы, и
+        /// перезапускать её ради этого незачем. Запрос дешёвый и делается
+        /// только при открытии окна настроек.
+        /// </remarks>
+        private static bool LookColumnsExist()
+        {
+            if (_lookColumnsKnown) return true;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT avatar_data, avatar_color FROM servers LIMIT 0", conn);
+                cmd.ExecuteScalar();
+                _lookColumnsKnown = true;
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Говорит, почему оформление не сохранилось. Молчать здесь нельзя:
+        /// именно так выглядела «кнопка ничего не делает».
+        /// </summary>
+        private static void ReportLookFailure(Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("[SERVERS] " + ex.Message);
+            bool noColumn = ex is MySqlException m && m.Number == 1054;
+            MessageBox.Show(
+                noColumn
+                    ? "В таблице servers нет колонок значка.\n\n" +
+                      "Выполните sql/2026-10-11_servers_avatar.sql (или pismo-all.sql) " +
+                      "под учётной записью с правами ALTER — у приложения их нет."
+                    : "Не удалось сохранить: " + ex.Message,
+                "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
         /// <summary>Перерисовать значки там, где они видны, — в рейле главного окна.</summary>
         private static void RefreshServerLookEverywhere()
         {
+            // Запись удалась — значит, колонки на месте. Рейл мог решить
+            // обратное при запуске (до того, как администратор прогнал sql/),
+            // и без этого остался бы с буквенными значками до перезапуска.
+            try { MainForm.NoteServerLookColumnsExist(); } catch { }
             try { MainForm.Current?.LoadServerRailItems(); } catch { }
         }
 

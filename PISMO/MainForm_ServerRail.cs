@@ -37,6 +37,9 @@ namespace PISMO
         // спрашиваем их один раз и дальше читаем список по-старому.
         private static bool _railLookColumns = true;
 
+        /// <summary>Колонки оформления есть — их только что успешно записали.</summary>
+        internal static void NoteServerLookColumnsExist() => _railLookColumns = true;
+
         /// <summary>Создаёт левый рейл и встраивает его левее списка диалогов.</summary>
         private void BuildServerRail()
         {

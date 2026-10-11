@@ -20,6 +20,26 @@ namespace PISMO
         private bool _dragging;
 
         private readonly Panel _area;
+
+        /// <summary>
+        /// Область предпросмотра с двойной буферизацией.
+        /// </summary>
+        /// <remarks>
+        /// Обычная Panel на каждую перерисовку сначала заливает себя фоном и
+        /// только потом получает Paint — при перетаскивании картинки это видно
+        /// как мерцание. Двойная буферизация собирает кадр в памяти и выводит
+        /// готовым, одним движением.
+        /// </remarks>
+        private sealed class BufferedPanel : Panel
+        {
+            public BufferedPanel()
+            {
+                SetStyle(ControlStyles.AllPaintingInWmPaint |
+                         ControlStyles.UserPaint |
+                         ControlStyles.OptimizedDoubleBuffer, true);
+                UpdateStyles();
+            }
+        }
         private readonly TrackBar _zoom;
 
         public byte[] ResultPng { get; private set; }
@@ -35,7 +55,7 @@ namespace PISMO
             // Высота: превью (CROP) + ползунок (30) + кнопки (40) + отступы.
             ClientSize = new Size(CROP + 40, CROP + 148);
 
-            _area = new Panel { Location = new Point(20, 20), Size = new Size(CROP, CROP), BackColor = Color.FromArgb(20, 21, 24) };
+            _area = new BufferedPanel { Location = new Point(20, 20), Size = new Size(CROP, CROP), BackColor = Color.FromArgb(20, 21, 24) };
             _area.Paint += AreaPaint;
             _area.MouseDown += (s, e) => { _dragging = true; _dragStart = e.Location; };
             _area.MouseUp += (s, e) => _dragging = false;

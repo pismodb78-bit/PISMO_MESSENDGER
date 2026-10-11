@@ -224,6 +224,56 @@ ALTER TABLE group_messages  ADD INDEX IF NOT EXISTS idx_file_sha (sender_id, fil
 ALTER TABLE server_messages ADD INDEX IF NOT EXISTS idx_file_sha (sender_id, file_sha);
 
 
+-- ── 21. Один человек — одна строка в звонке ────────────────────────────────
+--
+-- В окне звонка было видно «Участники (7)», и седьмой в списке — тот же
+-- человек, что и первый. Строку участника добавлял простой INSERT, а
+-- уникального ключа на пару (звонок, человек) не было: после выхода крестиком,
+-- падения или обрыва сети строку удалять некому, и повторный вход добавлял
+-- вторую. Клиенты теперь удаляют свою прежнюю строку сами, но запрет нужен
+-- там, где его нельзя обойти, — в базе.
+--
+-- Сначала чистим накопленное, иначе ключ просто не встанет. Оставляем самую
+-- раннюю запись: она помнит, когда человек вошёл на самом деле.
+DELETE cp FROM call_participants cp
+  JOIN call_participants keep
+    ON keep.call_id = cp.call_id AND keep.user_id = cp.user_id
+   AND keep.id < cp.id;
+ALTER TABLE call_participants
+  ADD UNIQUE INDEX IF NOT EXISTS uq_call_participant (call_id, user_id);
+
+
+-- ── 22. Адреса устройств для push ──────────────────────────────────────────
+--
+-- Телефон получает уведомления через Firebase, и серверу нужно знать, куда
+-- слать. Ключ — сам токен, а НЕ пользователь: на одном телефоне могут по
+-- очереди войти двое, и строка обязана переехать к новому, а не размножиться.
+-- ПК этой таблицей не пользуется — у него нет push, — но журнал миграций
+-- общий, и номер 22 обязан означать везде одно и то же.
+CREATE TABLE IF NOT EXISTS device_tokens (
+  token      VARCHAR(255) NOT NULL,
+  user_id    INT          NOT NULL,
+  platform   VARCHAR(16)  NOT NULL DEFAULT 'android',
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (token),
+  KEY idx_dt_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+-- ── 24. Значок сервера: картинка и цвет ────────────────────────────────────
+--
+-- Без этих двух колонок окно «Настройки сервера» выглядит рабочим, но ни
+-- цвет, ни картинка не сохраняются: запрос падает на неизвестной колонке.
+--
+-- Картинка лежит в самой таблице, как аватары пользователей: отдельного
+-- хранилища у проекта нет. В списке серверов её не читают — там нужен только
+-- факт наличия, — поэтому на выдачу списка её вес не влияет.
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS avatar_data  LONGBLOB    NULL;
+-- Цвет пригодится и без картинки: буквенный значок перестаёт быть одинаковым
+-- у всех серверов. Хранится как «#RRGGBB».
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS avatar_color VARCHAR(16) NULL;
+
+
 -- ── Отметки в журнале ───────────────────────────────────────────────────────
 --
 -- Только то, что действительно сделано ВЫШЕ.
@@ -236,6 +286,9 @@ ALTER TABLE server_messages ADD INDEX IF NOT EXISTS idx_file_sha (sender_id, fil
 --   18     — разовая чистка двойных пометок пересылки. SQL-ом она невозможна:
 --            текст в базе зашифрован, ни LIKE, ни REPLACE до пометки не
 --            доберутся. Строки читает, расшифровывает и чинит само приложение.
+--   23     — закрытие зависших звонков. Это не схема, а данные: обычные
+--            UPDATE и DELETE, на которые прав приложению хватает, и делает
+--            это оно само при запуске.
 INSERT IGNORE INTO schema_migrations (id, name) VALUES
   (1,  'friends: заявки + status'),
   (2,  'user_prefs: приватность ЛС'),
@@ -253,11 +306,15 @@ INSERT IGNORE INTO schema_migrations (id, name) VALUES
   (16, 'server_roles.can_channels: отдельное право на каналы'),
   (17, 'messages: индекс под запросы «от получателя»'),
   (19, 'chat_pins: закреплённые ЧАТЫ (общие для ПК и телефона)'),
-  (20, 'file_sha: отпечаток вложения, чтобы не заливать одно и то же дважды');
+  (20, 'file_sha: отпечаток вложения, чтобы не заливать одно и то же дважды'),
+  (21, 'call_participants: один человек — одна строка в звонке'),
+  (22, 'device_tokens: адреса устройств для push'),
+  (24, 'servers: аватар и цвет — кастомизация серверов');
 
 
 -- ── Проверка ────────────────────────────────────────────────────────────────
--- В журнале должны появиться отмеченные номера, а file_sha — в трёх таблицах.
+-- В журнале должны появиться отмеченные номера, file_sha — в трёх таблицах,
+-- а avatar_data и avatar_color — в servers.
 --
 -- Проверка нарочно сделана через SHOW, а не через information_schema: доступ к
 -- ней на части установок урезан, и проверочный запрос обрывал бы весь файл на
@@ -267,3 +324,5 @@ SELECT id, name, applied_at FROM schema_migrations ORDER BY id;
 SHOW COLUMNS FROM messages        LIKE 'file_sha';
 SHOW COLUMNS FROM group_messages  LIKE 'file_sha';
 SHOW COLUMNS FROM server_messages LIKE 'file_sha';
+
+SHOW COLUMNS FROM servers LIKE 'avatar%';
