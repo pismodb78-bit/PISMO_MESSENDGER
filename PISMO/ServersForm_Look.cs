@@ -36,6 +36,14 @@ namespace PISMO
             // ни картинка не сохранялись и ничего об этом не говорили.
             bool lookOk = LookColumnsExist();
 
+            // Картинку НЕ пишем сразу после выбора: у окна есть «Сохранить» и
+            // «Отмена», и если часть правок применяется мимо них, кнопки
+            // обманывают — «Отмена» уже ничего не отменяет. Поэтому выбранное
+            // держим здесь и пишем всё разом по «Сохранить».
+            byte[]? pendingPng = null;    // выбранная картинка
+            Image? pendingImage = null;   // она же для предпросмотра
+            bool dropPicture = false;     // «убрать» — тоже до «Сохранить»
+
             using var f = new Form
             {
                 Text = "Настройки сервера",
@@ -75,7 +83,8 @@ namespace PISMO
                 using var path = RoundedSquare(rect, 18);
                 using (var br = new SolidBrush(back)) g.FillPath(br, path);
 
-                var img = hasPicture ? ServerLook.Cached(sid) : null;
+                Image? img = pendingImage;
+                if (img == null && hasPicture && !dropPicture) img = ServerLook.Cached(sid);
                 if (img != null)
                 {
                     var st = g.Save();
@@ -117,24 +126,22 @@ namespace PISMO
             {
                 var png = PickServerIcon(f);
                 if (png == null) return;
-                if (!SaveServerAvatar(sid, png)) return;
-                hasPicture = true;
-                ServerLook.Remember(sid, ServerLook.Decode(png));
+                pendingPng = png;
+                pendingImage = ServerLook.Decode(png);
+                dropPicture = false;
                 btnPick.Text = "🖼 Сменить картинку";
                 btnDrop.Visible = true;
                 preview.Invalidate();
-                RefreshServerLookEverywhere();
             };
 
             btnDrop.Click += (s, e) =>
             {
-                if (!SaveServerAvatar(sid, null)) return;
-                hasPicture = false;
-                ServerLook.Remember(sid, null);
+                pendingPng = null;
+                pendingImage = null;
+                dropPicture = true;
                 btnPick.Text = "🖼 Загрузить картинку";
                 btnDrop.Visible = false;
                 preview.Invalidate();
-                RefreshServerLookEverywhere();
             };
 
             // ── Цвет значка ───────────────────────────────────────────────
@@ -207,10 +214,16 @@ namespace PISMO
             btnNewId.Visible = _isOwner;
             btnNewId.Click += (s, e) =>
             {
+                // Смена номера закрывает окно, а правки в нём ещё не записаны.
+                bool dirty = pendingPng != null || dropPicture
+                             || (txtC.Text ?? "").Trim() != colorWas
+                             || (txtN.Text ?? "").Trim() != nameWas;
+
                 if (MessageBox.Show(
                         $"Сервер получит новый случайный номер. По старому ({sid}) войти " +
                         "больше не получится — разошлите новый тем, кого ждёте.\n\n" +
-                        "Участники, каналы и переписка останутся на месте.",
+                        "Участники, каналы и переписка останутся на месте." +
+                        (dirty ? "\n\nНесохранённые правки в этом окне будут потеряны." : ""),
                         "Сменить ID сервера?", MessageBoxButtons.YesNo,
                         MessageBoxIcon.Question) != DialogResult.Yes) return;
 
@@ -258,10 +271,19 @@ namespace PISMO
             string colorNow = (txtC.Text ?? "").Trim();
             bool renamed = _canManage && nameNow.Length > 0 && nameNow != nameWas;
             bool recolored = _canManage && colorNow != colorWas;
+            bool repictured = pendingPng != null || dropPicture;
 
             if (renamed) SaveServerName(sid, nameNow);
             if (recolored && !SaveServerColor(sid, colorNow)) return;
-            if (!renamed && !recolored) return;
+            if (repictured)
+            {
+                // null здесь — «убрать картинку», это та же запись.
+                if (!SaveServerAvatar(sid, pendingPng)) return;
+                // Картинку уже разобрали для предпросмотра — второй раз незачем.
+                ServerLook.Remember(sid,
+                    pendingPng == null ? null : (pendingImage ?? ServerLook.Decode(pendingPng)));
+            }
+            if (!renamed && !recolored && !repictured) return;
 
             LoadServers();
             SelectServer(sid, renamed ? nameNow : nameWas, _isOwner);
