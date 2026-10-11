@@ -469,6 +469,17 @@ namespace PISMO
                 }
                 catch { }
             }
+            else if (type == "server_kick")
+            {
+                // Меня выгнали. Релей шлёт это адресно, так что дошло — значит
+                // про меня.
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke(new Action(() => OnKickedFromServer(sessionId, payload == "ban")));
+                }
+                catch { }
+            }
         }
 
 
@@ -571,7 +582,20 @@ namespace PISMO
             {
                 using var conn = DBHelper.OpenConnection();
                 using (var ban = new MySqlCommand("SELECT 1 FROM server_bans WHERE server_id=@s AND user_id=@u", conn))
-                { ban.Parameters.AddWithValue("@s", sid); ban.Parameters.AddWithValue("@u", _me); if (ban.ExecuteScalar() != null) { MessageBox.Show("Вы забанены на этом сервере.", "PISMO"); return; } }
+                {
+                    ban.Parameters.AddWithValue("@s", sid);
+                    ban.Parameters.AddWithValue("@u", _me);
+                    if (ban.ExecuteScalar() != null)
+                    {
+                        MessageBox.Show("Вы забанены на этом сервере.", "PISMO");
+                        // Если этот сервер сейчас открыт — убрать его с экрана.
+                        // Раньше он пропадал только из списка, а каналы, лента
+                        // и участники оставались, и по ним можно было ходить.
+                        if (_serverId == sid) ClearServerView();
+                        LoadServers();
+                        return;
+                    }
+                }
                 using (var chk = new MySqlCommand("SELECT name, owner_id FROM servers WHERE id=@s", conn))
                 {
                     chk.Parameters.AddWithValue("@s", sid);
@@ -615,6 +639,39 @@ namespace PISMO
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Убрать с экрана всё, что относится к серверу.
+        /// </summary>
+        /// <remarks>
+        /// Нужно в двух местах, и в обоих этого не делалось. После «Вы забанены
+        /// на этом сервере» сервер пропадал из списка, а его каналы, лента и
+        /// участники оставались на экране — по ним можно было ходить и писать.
+        /// То же при исключении, пока окно открыто.
+        /// </remarks>
+        private void ClearServerView()
+        {
+            _serverId = -1; _channelId = -1; _serverName = ""; _isOwner = false;
+            _lastMsgCount = -1;
+            _renderedKey = null; _renderedSig = null;
+            try { _lblTitle.Text = ""; } catch { }
+            try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
+            try { _pnlInput.Visible = false; } catch { }
+            try { _pnlChannels.Controls.Clear(); } catch { }
+            try { _pnlMembers.Controls.Clear(); } catch { }
+            try { _textChannelIds.Clear(); _channelBadgeLabels.Clear(); _channelPreviewCtl.Clear(); } catch { }
+        }
+
+        /// <summary>Меня выгнали с сервера — убираем его с глаз и из списка.</summary>
+        private void OnKickedFromServer(int serverId, bool banned)
+        {
+            // Список перечитываем всегда: сервер мог быть и не открыт.
+            if (_serverId == serverId) ClearServerView();
+            LoadServers();
+            MessageBox.Show(
+                banned ? "Вас забанили на этом сервере." : "Вас исключили с этого сервера.",
+                "PISMO");
         }
 
         private void SelectServer(int sid, string name, bool owner)
@@ -1676,6 +1733,47 @@ namespace PISMO
 
         /// <summary>Проверяет вместимость канала перед входом. Возвращает false и
         /// показывает сообщение, если мест нет.</summary>
+        /// <summary>
+        /// Состою ли я ещё на открытом сервере — и не забанен ли.
+        /// </summary>
+        /// <remarks>
+        /// Спрашиваем базу, а не память: состав мог измениться, пока окно
+        /// открыто, и единственный надёжный ответ лежит там. Не смогли
+        /// спросить — считаем, что состою: нет связи не повод выгонять
+        /// человека из его же сервера.
+        /// </remarks>
+        private bool StillMember()
+        {
+            if (_serverId <= 0) return false;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using (var b = new MySqlCommand(
+                    "SELECT 1 FROM server_bans WHERE server_id=@s AND user_id=@u", conn))
+                {
+                    b.Parameters.AddWithValue("@s", _serverId);
+                    b.Parameters.AddWithValue("@u", _me);
+                    if (b.ExecuteScalar() != null) return false;
+                }
+                using var m = new MySqlCommand(
+                    "SELECT 1 FROM server_members WHERE server_id=@s AND user_id=@u", conn);
+                m.Parameters.AddWithValue("@s", _serverId);
+                m.Parameters.AddWithValue("@u", _me);
+                return m.ExecuteScalar() != null;
+            }
+            catch { return true; }
+        }
+
+        /// <summary>Проверка перед действием на сервере: ещё свой или уже нет.</summary>
+        private bool EnsureStillMember()
+        {
+            if (StillMember()) return true;
+            MessageBox.Show(this, "Вас больше нет на этом сервере.", "PISMO");
+            ClearServerView();
+            LoadServers();
+            return false;
+        }
+
         private bool CanEnterVoice(int cid, string name)
         {
             if (!_channelLimits.TryGetValue(cid, out int limit) || limit <= 0) return true;   // без ограничения
@@ -1697,6 +1795,10 @@ namespace PISMO
         private void JoinVoiceChannel(int cid, string name)
         {
             if (_joinedVoice.Contains(cid)) return;
+            // Перед самым входом, а не в heartbeat'е: тот бьётся каждые
+            // несколько секунд, и запрос к базе на каждый удар стоил бы
+            // дороже, чем даёт.
+            if (!EnsureStillMember()) return;
             if (!CanEnterVoice(cid, name)) return;
             // Нельзя быть в двух голосовых каналах разом: выходим из текущего
             // голоса (личного/серверного) перед входом в новый — иначе две комнаты
@@ -3280,6 +3382,9 @@ namespace PISMO
         private void SendChannelRaw(string rawText)
         {
             if (string.IsNullOrEmpty(rawText) || _channelId <= 0) return;
+            // Заслон стоит в двух НИЖНИХ отправителях, а не в кнопке: писать
+            // можно текстом, медиа и пересылкой, и все пути сходятся здесь.
+            if (!EnsureStillMember()) return;
             int replyId = _replyToId;
             try
             {
@@ -3342,6 +3447,7 @@ namespace PISMO
         private void SendChannelMedia(byte[] image, byte[] audio, byte[] video, byte[] file, string fileName, string caption = "")
         {
             if (_channelId <= 0) return;
+            if (!EnsureStillMember()) return;
             if (!MediaColumnsExist())
             {
                 MessageBox.Show("Медиа в каналах недоступно: на сервере не выполнена миграция\n(scripts/server_media_migration.sql).", "PISMO");
@@ -4240,6 +4346,18 @@ namespace PISMO
                     using var b = new MySqlCommand("INSERT IGNORE INTO server_bans (server_id,user_id) VALUES (@s,@u)", conn);
                     b.Parameters.AddWithValue("@s", _serverId); b.Parameters.AddWithValue("@u", uid); b.ExecuteNonQuery();
                 }
+
+                // Говорим изгнанному сразу. Из базы он бы узнал об этом только
+                // при следующей загрузке списка серверов — то есть у открытого
+                // приложения никогда, и продолжал бы читать и писать там,
+                // откуда его выгнали.
+                try
+                {
+                    WebSocketSignalingClient.Instance.SendMessage(
+                        "server_kick", uid, _serverId, ban ? "ban" : "kick");
+                }
+                catch { }
+
                 LoadMembers();
             }
             catch (Exception ex) { ShowDbError(ex); }
