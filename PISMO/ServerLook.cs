@@ -7,98 +7,93 @@ using MySqlConnector;
 namespace PISMO
 {
     /// <summary>
-    /// Оформление серверов: картинка значка и его цвет.
+    /// Картинки значков — серверов и групп.
     /// </summary>
     /// <remarks>
-    /// Картинка лежит в servers.avatar_data и нужна рейлу при каждой
-    /// перерисовке, поэтому держим её в памяти. Срок годности — три минуты,
-    /// как у аватаров пользователей: значок меняет владелец, а видят его все
-    /// участники, и без протухания они остались бы со старой картинкой до
-    /// перезапуска программы.
+    /// Картинка лежит в самой таблице (servers.avatar_data,
+    /// group_chats.avatar_data) и нужна при каждой перерисовке списка,
+    /// поэтому держим её в памяти. Срок годности — три минуты, как у
+    /// аватаров: значок меняет владелец, а видят его все, и без протухания
+    /// они остались бы со старой картинкой до перезапуска программы.
     ///
     /// Старые картинки не освобождаем намеренно: ссылка на них остаётся в
-    /// обработчике Paint у кружка рейла, и Dispose в момент перерисовки роняет
-    /// GDI+. Значки — 256×256, серверов у человека единицы: держать их все
+    /// обработчике Paint, и Dispose в момент перерисовки роняет GDI+.
+    /// Значки — 256×256, серверов и групп у человека единицы: держать их все
     /// дешевле, чем ловить эту гонку.
     /// </remarks>
-    internal static class ServerLook
+    internal sealed class LookCache
     {
         private const int TtlSeconds = 180;
 
-        private static readonly Dictionary<int, Image?> _icons = new();
-        private static readonly Dictionary<int, DateTime> _readAt = new();
+        private readonly string _table;
+        private readonly Dictionary<int, Image?> _icons = new();
+        private readonly Dictionary<int, DateTime> _readAt = new();
+
+        public LookCache(string table) { _table = table; }
 
         /// <summary>Картинка из памяти — возможно, устаревшая. null = буквенный значок.</summary>
-        public static Image? Cached(int serverId)
+        public Image? Cached(int id)
         {
-            lock (_icons) return _icons.TryGetValue(serverId, out var img) ? img : null;
+            lock (_icons) return _icons.TryGetValue(id, out var img) ? img : null;
         }
 
         /// <summary>Свежая ли запись в памяти — иначе стоит перечитать.</summary>
-        public static bool Fresh(int serverId)
+        public bool Fresh(int id)
         {
             lock (_icons)
-                return _readAt.TryGetValue(serverId, out var at)
+                return _readAt.TryGetValue(id, out var at)
                        && (DateTime.UtcNow - at).TotalSeconds < TtlSeconds;
         }
 
-        public static void Remember(int serverId, Image? img)
+        /// <summary>Есть ли среди этих значков тот, который пора перечитать.</summary>
+        public bool AnyStale(IEnumerable<int> ids)
         {
-            lock (_icons)
-            {
-                _icons[serverId] = img;
-                _readAt[serverId] = DateTime.UtcNow;
-            }
-        }
-
-        /// <summary>
-        /// Есть ли среди этих серверов значок, который пора перечитать.
-        /// </summary>
-        /// <remarks>
-        /// Нужно рейлу: сменённую картинку не видно в сводке «есть картинка
-        /// или нет», и если событие по сокету не дошло, узнать о замене можно
-        /// только перечитав её по сроку годности.
-        /// </remarks>
-        public static bool AnyStale(IEnumerable<int> serverIds)
-        {
-            foreach (int id in serverIds) if (!Fresh(id)) return true;
+            foreach (int id in ids) if (!Fresh(id)) return true;
             return false;
         }
 
-        /// <summary>Забыть сервер — например, после смены его номера.</summary>
-        public static void Forget(int serverId)
+        public void Remember(int id, Image? img)
         {
-            lock (_icons) { _icons.Remove(serverId); _readAt.Remove(serverId); }
+            lock (_icons) { _icons[id] = img; _readAt[id] = DateTime.UtcNow; }
+        }
+
+        public void Forget(int id)
+        {
+            lock (_icons) { _icons.Remove(id); _readAt.Remove(id); }
         }
 
         /// <summary>
-        /// Читает картинку из базы и запоминает её. Зовётся из фонового потока:
-        /// блоб тяжёлый, а рейл перерисовывается в потоке интерфейса.
+        /// Читает картинку из базы и запоминает её. Зовётся из фонового
+        /// потока: блоб тяжёлый, а списки рисуются в потоке интерфейса.
         /// </summary>
-        public static Image? Load(int serverId)
+        public Image? Load(int id)
         {
             Image? img = null;
             try
             {
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
-                    "SELECT avatar_data FROM servers WHERE id=@s", conn);
-                cmd.Parameters.AddWithValue("@s", serverId);
+                    $"SELECT avatar_data FROM {_table} WHERE id=@s", conn);
+                cmd.Parameters.AddWithValue("@s", id);
                 var o = cmd.ExecuteScalar();
-                if (o is byte[] data && data.Length > 0) img = Decode(data);
+                if (o is byte[] data && data.Length > 0) img = Look.Decode(data);
             }
             catch
             {
                 // Нет связи или колонки — значок останется буквенным, но
-                // «прочитано» отмечаем: иначе рейл перезапрашивал бы без конца.
+                // «прочитано» отмечаем: иначе список перезапрашивал бы без конца.
             }
-            Remember(serverId, img);
+            Remember(id, img);
             return img;
         }
+    }
 
+    /// <summary>Общее для значков: разбор картинки и цвета.</summary>
+    internal static class Look
+    {
         /// <summary>
-        /// Картинка из байтов. Через WIC, если GDI+ формат не знает: значок мог
-        /// быть залит с телефона, а там это мог быть и WebP.
+        /// Картинка из байтов. Через WIC, если GDI+ формат не знает: значок
+        /// мог быть залит с телефона, а там это мог быть и WebP.
         /// </summary>
         public static Image? Decode(byte[]? data)
         {
@@ -112,12 +107,42 @@ namespace PISMO
             catch { return MainForm.DecodeWithWic(data); }
         }
 
-        /// <summary>Цвет значка из «#RRGGBB». null — цвет по умолчанию (по id).</summary>
+        /// <summary>Цвет значка из «#RRGGBB». null — цвет по умолчанию.</summary>
         public static Color? ParseColor(string? hex)
         {
             if (string.IsNullOrWhiteSpace(hex)) return null;
             try { return ColorTranslator.FromHtml(hex.Trim()); }
             catch { return null; }
         }
+    }
+
+    /// <summary>Значки серверов.</summary>
+    internal static class ServerLook
+    {
+        private static readonly LookCache C = new("servers");
+
+        public static Image? Cached(int serverId) => C.Cached(serverId);
+        public static bool Fresh(int serverId) => C.Fresh(serverId);
+        public static bool AnyStale(IEnumerable<int> ids) => C.AnyStale(ids);
+        public static void Remember(int serverId, Image? img) => C.Remember(serverId, img);
+        public static void Forget(int serverId) => C.Forget(serverId);
+        public static Image? Load(int serverId) => C.Load(serverId);
+        public static Image? Decode(byte[]? data) => Look.Decode(data);
+        public static Color? ParseColor(string? hex) => Look.ParseColor(hex);
+    }
+
+    /// <summary>Значки групп — устроены так же, как у серверов.</summary>
+    internal static class GroupLook
+    {
+        private static readonly LookCache C = new("group_chats");
+
+        public static Image? Cached(int groupId) => C.Cached(groupId);
+        public static bool Fresh(int groupId) => C.Fresh(groupId);
+        public static bool AnyStale(IEnumerable<int> ids) => C.AnyStale(ids);
+        public static void Remember(int groupId, Image? img) => C.Remember(groupId, img);
+        public static void Forget(int groupId) => C.Forget(groupId);
+        public static Image? Load(int groupId) => C.Load(groupId);
+        public static Image? Decode(byte[]? data) => Look.Decode(data);
+        public static Color? ParseColor(string? hex) => Look.ParseColor(hex);
     }
 }

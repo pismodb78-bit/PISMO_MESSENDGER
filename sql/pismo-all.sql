@@ -274,6 +274,22 @@ ALTER TABLE servers ADD COLUMN IF NOT EXISTS avatar_data  LONGBLOB    NULL;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS avatar_color VARCHAR(16) NULL;
 
 
+-- ── 25. Картинка группы и баны в группах ───────────────────────────────────
+--
+-- У группы был только цвет значка и буква. Картинка лежит в самой таблице,
+-- как аватар человека и значок сервера.
+ALTER TABLE group_chats ADD COLUMN IF NOT EXISTS avatar_data LONGBLOB NULL;
+
+-- Выгнать из группы было можно, а не пустить обратно — нет: исключённого тут
+-- же добавляли снова. Таблица устроена как server_bans.
+CREATE TABLE IF NOT EXISTS group_bans (
+  group_id  INT       NOT NULL,
+  user_id   INT       NOT NULL,
+  banned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (group_id, user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
 -- ── Отметки в журнале ───────────────────────────────────────────────────────
 --
 -- Только то, что действительно сделано ВЫШЕ.
@@ -309,7 +325,8 @@ INSERT IGNORE INTO schema_migrations (id, name) VALUES
   (20, 'file_sha: отпечаток вложения, чтобы не заливать одно и то же дважды'),
   (21, 'call_participants: один человек — одна строка в звонке'),
   (22, 'device_tokens: адреса устройств для push'),
-  (24, 'servers: аватар и цвет — кастомизация серверов');
+  (24, 'servers: аватар и цвет — кастомизация серверов'),
+  (25, 'группы: картинка и баны — как у серверов');
 
 
 -- ── Проверка ────────────────────────────────────────────────────────────────
@@ -326,3 +343,5 @@ SHOW COLUMNS FROM group_messages  LIKE 'file_sha';
 SHOW COLUMNS FROM server_messages LIKE 'file_sha';
 
 SHOW COLUMNS FROM servers LIKE 'avatar%';
+
+SHOW COLUMNS FROM group_chats LIKE 'avatar%';

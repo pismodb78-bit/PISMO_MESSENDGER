@@ -466,6 +466,27 @@ namespace PISMO
                 if (!ColumnExists(conn, "servers", "avatar_color"))
                     Exec(conn, "ALTER TABLE servers ADD COLUMN avatar_color VARCHAR(16) NULL");
             }),
+
+            (25, "группы: картинка и баны — как у серверов", conn =>
+            {
+                // У группы был только цвет значка и буква. Картинка лежит в
+                // самой таблице, как у серверов и у людей: отдельного
+                // хранилища в проекте нет.
+                if (TableExists(conn, "group_chats") &&
+                    !ColumnExists(conn, "group_chats", "avatar_data"))
+                {
+                    Exec(conn, "ALTER TABLE group_chats ADD COLUMN avatar_data LONGBLOB NULL");
+                }
+
+                // Выгнать из группы было можно, а не пустить обратно — нет:
+                // исключённого тут же добавляли снова. Бан — та же защита,
+                // что у серверов, и устроен так же.
+                Exec(conn,
+                    "CREATE TABLE IF NOT EXISTS group_bans (" +
+                    "group_id INT NOT NULL, user_id INT NOT NULL, " +
+                    "banned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
+                    "PRIMARY KEY (group_id, user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            }),
         };
 
         /// <summary>Чистит повторяющиеся пометки пересылки в одной таблице.</summary>

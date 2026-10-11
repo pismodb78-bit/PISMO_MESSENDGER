@@ -17,7 +17,7 @@ namespace PISMO
         private void BuildUi()
         {
             Text            = "PISMO — Участники группы";
-            ClientSize      = new Size(400, 500);
+            ClientSize      = new Size(400, 560);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox     = false;
             MinimizeBox     = false;
@@ -54,6 +54,41 @@ namespace PISMO
                 Padding       = new Padding(4)
             };
 
+            // Оформление и баны — то же, что у серверов. Видны только тем,
+            // кто распоряжается группой: остальным нажимать там нечего.
+            var btnLook = new Button
+            {
+                Text      = "⚙ Оформление",
+                BackColor = Color.FromArgb(64, 68, 75),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font      = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                Location  = new Point(20, 436),
+                Size      = new Size(176, 34),
+                Cursor    = Cursors.Hand,
+                Visible   = false
+            };
+            btnLook.FlatAppearance.BorderSize = 0;
+            btnLook.Click += (s, e) => EditLook();
+
+            var btnBans = new Button
+            {
+                Text      = "🚫 Забаненные",
+                BackColor = Color.FromArgb(64, 68, 75),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font      = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                Location  = new Point(204, 436),
+                Size      = new Size(176, 34),
+                Cursor    = Cursors.Hand,
+                Visible   = false
+            };
+            btnBans.FlatAppearance.BorderSize = 0;
+            btnBans.Click += (s, e) => ManageBans();
+
+            _btnLook = btnLook;
+            _btnBans = btnBans;
+
             _btnAddMembers = new Button
             {
                 Text      = "➕ Добавить участников",
@@ -61,7 +96,7 @@ namespace PISMO
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Font      = new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold),
-                Location  = new Point(20, 440),
+                Location  = new Point(20, 482),
                 Size      = new Size(360, 42),
                 Cursor    = Cursors.Hand
             };
@@ -70,7 +105,10 @@ namespace PISMO
             _btnAddMembers.MouseEnter += (s, e) => _btnAddMembers.BackColor = Color.FromArgb(71, 82, 196);
             _btnAddMembers.MouseLeave += (s, e) => _btnAddMembers.BackColor = Color.FromArgb(88, 101, 242);
 
-            Controls.AddRange(new Control[] { _lblTitle, lblHint, _pnlMembers, _btnAddMembers });
+            Controls.AddRange(new Control[]
+            {
+                _lblTitle, lblHint, _pnlMembers, btnLook, btnBans, _btnAddMembers
+            });
         }
     }
 

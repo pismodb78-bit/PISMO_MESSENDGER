@@ -1256,6 +1256,20 @@ namespace PISMO
                             // ждём своей очереди в десятисекундном опросе.
                             CheckFriendRequests();
                         }
+                        else if (type == "group_look")
+                        {
+                            // Группа сменила имя, цвет или картинку — всё это
+                            // видно в списке чатов.
+                            GroupLook.Forget(sessionId);
+                            LoadConversations();
+                        }
+                        else if (type == "group_kick")
+                        {
+                            // Меня выгнали из группы. Релей шлёт это адресно,
+                            // так что дошло — значит про меня. Без сообщения
+                            // человек гадал бы, почему группа исчезла.
+                            OnKickedFromGroup(sessionId, payload == "ban");
+                        }
                         else if (type == "auth_error")
                         {
                             System.Diagnostics.Debug.WriteLine("[WS] register отклонён сервером (auth_error)");
@@ -2347,6 +2361,59 @@ namespace PISMO
             }
         }
 
+        /// <summary>
+        /// Меня выгнали из группы: закрываем её, если открыта, и убираем из
+        /// списка. Сообщение показываем всегда — иначе группа просто молча
+        /// пропадает.
+        /// </summary>
+        private void OnKickedFromGroup(int groupId, bool banned)
+        {
+            try
+            {
+                string name = "";
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand("SELECT name FROM group_chats WHERE id=@g", conn);
+                    cmd.Parameters.AddWithValue("@g", groupId);
+                    name = cmd.ExecuteScalar()?.ToString() ?? "";
+                }
+                catch { }
+
+                if (_currentGroupId == groupId)
+                {
+                    _currentGroupId = -1;
+                    try { MainForm.DisposeAndClear(pnlMessages); } catch { }
+                    try { pnlInputBar.Visible = false; } catch { }
+                    try { lblChatTitle.Text = ""; } catch { }
+                }
+                GroupLook.Forget(groupId);
+                LoadConversations();
+
+                string where = name.Length > 0 ? $"«{name}»" : "группы";
+                MessageBox.Show(
+                    banned
+                        ? $"Вас забанили в группе {where}. Обратно не добавят, пока бан не снимут."
+                        : $"Вас исключили из группы {where}.",
+                    "PISMO");
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Перечитать список чатов снаружи — например, после смены оформления
+        /// группы: её имя, цвет и значок видны именно здесь.
+        /// </summary>
+        public void ReloadChatList()
+        {
+            try
+            {
+                if (InvokeRequired) { BeginInvoke(new Action(ReloadChatList)); return; }
+                LoadConversations();
+            }
+            catch { }
+        }
+
         private void LoadConversations()
         {
             try { ChatScroll.Attach(pnlUserList); ChatScroll.KillHorizontal(pnlSidebar); } catch { }   // тонкий верт. + без гор. в сайдбаре
@@ -2664,12 +2731,20 @@ namespace PISMO
         private void LoadGroups()
         {
             int myId = UserSession.EffectiveId;
+            var needGroupIcons = new System.Collections.Generic.List<int>();
 
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                const string sql = @"
-                    SELECT gc.id, gc.name, gc.avatar_color,
+
+                // Саму картинку НЕ тянем вместе со списком: в карточке нужен
+                // только факт её наличия, а блоб за каждой группой — это
+                // мегабайты по сети на ровном месте. Колонки может не быть
+                // (миграцию 25 кладёт администратор), поэтому второй заход
+                // без неё: иначе список групп пропал бы целиком.
+                string Sql(bool withAvatar) => @"
+                    SELECT gc.id, gc.name, gc.avatar_color, " +
+                    (withAvatar ? "(gc.avatar_data IS NOT NULL)" : "0") + @" AS has_avatar,
                            (SELECT gm2.text FROM group_messages gm2
                             WHERE gm2.group_id = gc.id
                             ORDER BY gm2.created_at DESC LIMIT 1) AS last_msg,
@@ -2680,11 +2755,27 @@ namespace PISMO
                     JOIN group_members gmem ON gmem.group_id = gc.id AND gmem.user_id = @me
                     ORDER BY last_time DESC, gc.name ASC";
 
-                using var cmd = new MySqlCommand(sql, conn);
-                cmd.Parameters.AddWithValue("@me", myId);
-
                 var dt = new DataTable();
-                new MySqlDataAdapter(cmd).Fill(dt);
+                if (_groupAvatarColumn)
+                {
+                    try
+                    {
+                        using var cmd = new MySqlCommand(Sql(true), conn);
+                        cmd.Parameters.AddWithValue("@me", myId);
+                        new MySqlDataAdapter(cmd).Fill(dt);
+                    }
+                    catch (MySqlException mex) when (mex.Number == 1054)
+                    {
+                        _groupAvatarColumn = false;
+                        dt = new DataTable();
+                    }
+                }
+                if (!_groupAvatarColumn)
+                {
+                    using var cmd = new MySqlCommand(Sql(false), conn);
+                    cmd.Parameters.AddWithValue("@me", myId);
+                    new MySqlDataAdapter(cmd).Fill(dt);
+                }
 
                 if (dt.Rows.Count == 0) return;
 
@@ -2707,17 +2798,50 @@ namespace PISMO
                     string lastMsg = row["last_msg"] == DBNull.Value ? "" : Crypto.Dec(row["last_msg"].ToString());
                     int members = Convert.ToInt32(row["member_count"]);
                     string colorHex = row["avatar_color"] == DBNull.Value ? "#5865F2" : row["avatar_color"].ToString();
+                    bool hasAvatar = dt.Columns.Contains("has_avatar")
+                                     && row["has_avatar"] != DBNull.Value
+                                     && Convert.ToInt32(row["has_avatar"]) != 0;
 
-                    AddGroupCard(gid, name, lastMsg, members, colorHex);
+                    // Картинку берём из памяти; если её там нет или она
+                    // протухла — дочитаем в фоне и перерисуем карточку.
+                    if (hasAvatar && !GroupLook.Fresh(gid)) needGroupIcons.Add(gid);
+                    else if (!hasAvatar) GroupLook.Remember(gid, null);
+
+                    AddGroupCard(gid, name, lastMsg, members, colorHex, hasAvatar);
                 }
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Ошибка загрузки групп: " + ex.Message);
             }
+
+            // Картинки читаем в фоне и перерисовываем список один раз, когда
+            // все они прочитаны. Повтора не будет: Load помечает запись
+            // прочитанной, даже если картинки нет.
+            if (needGroupIcons.Count > 0)
+            {
+                var ids = needGroupIcons.ToArray();
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    foreach (int id in ids) GroupLook.Load(id);
+                    try
+                    {
+                        if (IsDisposed || !IsHandleCreated) return;
+                        BeginInvoke(new Action(() =>
+                        {
+                            foreach (Control c in pnlUserList.Controls) c.Invalidate(true);
+                        }));
+                    }
+                    catch { }
+                });
+            }
         }
 
-        private void AddGroupCard(int gid, string name, string lastMsg, int memberCount, string colorHex)
+        /// <summary>Есть ли в group_chats колонка картинки (миграция 25).</summary>
+        private static bool _groupAvatarColumn = true;
+
+        private void AddGroupCard(int gid, string name, string lastMsg, int memberCount,
+            string colorHex, bool hasAvatar = false)
         {
             Color avatarColor;
             try { avatarColor = ColorTranslator.FromHtml(colorHex); }
@@ -2735,13 +2859,31 @@ namespace PISMO
             var avatar = new Panel { Size = new Size(38, 38), Location = new Point(10, 12) };
             avatar.Paint += (s, e) =>
             {
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                e.Graphics.FillEllipse(new SolidBrush(avatarColor),
-                    0, 0, avatar.Width - 1, avatar.Height - 1);
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                var rect = new Rectangle(0, 0, avatar.Width - 1, avatar.Height - 1);
+                using (var br = new SolidBrush(avatarColor)) g.FillEllipse(br, rect);
+
+                // Картинка группы, если она есть и уже прочитана.
+                var img = hasAvatar ? GroupLook.Cached(gid) : null;
+                if (img != null)
+                {
+                    var st = g.Save();
+                    using (var clip = new System.Drawing.Drawing2D.GraphicsPath())
+                    {
+                        clip.AddEllipse(rect);
+                        g.SetClip(clip);
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(img, rect);
+                    }
+                    g.Restore(st);
+                    return;
+                }
+
                 string letter = name.Length > 0 ? name[0].ToString().ToUpper() : "#";
                 using var f = new Font("Segoe UI Black", 14f, FontStyle.Bold);
-                var sz = e.Graphics.MeasureString(letter, f);
-                e.Graphics.DrawString(letter, f, Brushes.White,
+                var sz = g.MeasureString(letter, f);
+                g.DrawString(letter, f, Brushes.White,
                     (avatar.Width - sz.Width) / 2, (avatar.Height - sz.Height) / 2);
             };
 

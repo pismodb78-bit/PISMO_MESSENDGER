@@ -15,10 +15,12 @@ namespace PISMO
     public partial class GroupMembersForm : Form
     {
         private readonly int _groupId;
-        private readonly string _groupName;
+        private string _groupName;   // меняется при переименовании группы
 
         private FlowLayoutPanel _pnlMembers;
         private Button _btnAddMembers;
+        private Button _btnLook;
+        private Button _btnBans;
         private Label _lblTitle;
 
         /// <summary>true, если состав группы изменился (нужно перезагрузить сайдбар).</summary>
@@ -42,7 +44,16 @@ namespace PISMO
         {
             _pnlMembers.Controls.Clear();
 
-            bool canKick = UserSession.Role == "admin"; // только системный администратор PISMO
+            // Распоряжается группой её создатель, админ группы и системный
+            // администратор — как на сервере. Раньше только последний.
+            bool canKick = CanManageGroup();
+            if (_btnLook != null) _btnLook.Visible = canKick;
+            if (_btnBans != null)
+            {
+                int bans = canKick ? BannedCount() : 0;
+                _btnBans.Visible = canKick;
+                _btnBans.Text = bans > 0 ? $"🚫 Забаненные ({bans})" : "🚫 Забаненные";
+            }
 
             try
             {
@@ -107,7 +118,7 @@ namespace PISMO
                 ForeColor = Color.FromArgb(220, 221, 222),
                 AutoSize = false,
                 Location = new Point(48, 0),
-                Size = new Size(row.Width - 48 - (canKick ? 90 : 12), row.Height),
+                Size = new Size(row.Width - 48 - (canKick ? 178 : 12), row.Height),
                 TextAlign = ContentAlignment.MiddleLeft,
                 AutoEllipsis = true
             };
@@ -120,6 +131,22 @@ namespace PISMO
                 var btnKick = new Button
                 {
                     Text = "Исключить",
+                    BackColor = Color.FromArgb(250, 166, 26),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+                    Size = new Size(84, 30),
+                    Location = new Point(row.Width - 180, 7),
+                    Cursor = Cursors.Hand
+                };
+                btnKick.FlatAppearance.BorderSize = 0;
+                btnKick.Click += (s, e) => KickMember(uid, name);
+                row.Controls.Add(btnKick);
+
+                // Бан — чтобы выгнанного не добавили обратно той же секундой.
+                var btnBan = new Button
+                {
+                    Text = "Забанить",
                     BackColor = Color.FromArgb(240, 71, 71),
                     ForeColor = Color.White,
                     FlatStyle = FlatStyle.Flat,
@@ -128,9 +155,9 @@ namespace PISMO
                     Location = new Point(row.Width - 92, 7),
                     Cursor = Cursors.Hand
                 };
-                btnKick.FlatAppearance.BorderSize = 0;
-                btnKick.Click += (s, e) => KickMember(uid, name);
-                row.Controls.Add(btnKick);
+                btnBan.FlatAppearance.BorderSize = 0;
+                btnBan.Click += (s, e) => BanMember(uid, name);
+                row.Controls.Add(btnBan);
             }
 
             return row;
@@ -177,6 +204,7 @@ namespace PISMO
                 cmd.Parameters.AddWithValue("@u", uid);
                 cmd.ExecuteNonQuery();
 
+                AnnounceKick(uid, false);
                 Changed = true;
                 LoadMembers();
             }
@@ -225,17 +253,36 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                const string sql = @"
+
+                // Забаненных в списке нет: добавить их всё равно нельзя, и
+                // показывать их значило бы врать. Таблицы банов может ещё не
+                // быть — тогда читаем по-старому, без неё.
+                const string sqlWithBans = @"
+                    SELECT u.id, TRIM(CONCAT(u.Name,' ',u.Surname)) AS full_name, u.login
+                    FROM users u
+                    WHERE u.id NOT IN (SELECT user_id FROM group_members WHERE group_id=@g)
+                      AND u.id NOT IN (SELECT user_id FROM group_bans WHERE group_id=@g)
+                    ORDER BY full_name, u.login";
+                const string sqlPlain = @"
                     SELECT u.id, TRIM(CONCAT(u.Name,' ',u.Surname)) AS full_name, u.login
                     FROM users u
                     WHERE u.id NOT IN (SELECT user_id FROM group_members WHERE group_id=@g)
                     ORDER BY full_name, u.login";
 
-                using var cmd = new MySqlCommand(sql, conn);
-                cmd.Parameters.AddWithValue("@g", _groupId);
-
                 var dt = new DataTable();
-                new MySqlDataAdapter(cmd).Fill(dt);
+                try
+                {
+                    using var cmd = new MySqlCommand(sqlWithBans, conn);
+                    cmd.Parameters.AddWithValue("@g", _groupId);
+                    new MySqlDataAdapter(cmd).Fill(dt);
+                }
+                catch (MySqlException)
+                {
+                    dt = new DataTable();
+                    using var cmd = new MySqlCommand(sqlPlain, conn);
+                    cmd.Parameters.AddWithValue("@g", _groupId);
+                    new MySqlDataAdapter(cmd).Fill(dt);
+                }
 
                 if (dt.Rows.Count == 0)
                 {
