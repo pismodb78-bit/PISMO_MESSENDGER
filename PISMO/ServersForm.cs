@@ -4101,6 +4101,20 @@ namespace PISMO
             _pnlMembers.Controls.Clear();
             _memberButtons.Clear();
             _pnlMembers.Controls.Add(MakeHeader("Участники"));
+
+            // Забаненные — отдельным окном, как на телефоне. Без него снять
+            // бан с ПК было нечем вовсе: человек пропадал из списка
+            // участников, и добраться до него становилось негде.
+            if (_canBan)
+            {
+                int bans = BannedCount();
+                var bansBtn = MakeSideButton(
+                    bans > 0 ? $"🚫 Забаненные ({bans})" : "🚫 Забаненные",
+                    Color.FromArgb(47, 49, 54));
+                bansBtn.Click += (s, e) => ManageBans();
+                _pnlMembers.Controls.Add(bansBtn);
+            }
+
             try
             {
                 var roles = GetRoles(); // (id, name) для подменю «Выдать роль»
@@ -4207,6 +4221,112 @@ namespace PISMO
                 RefreshMemberPresence();
             }
             catch (Exception ex) { ShowDbError(ex); }
+        }
+
+        /// <summary>Сколько человек забанено на открытом сервере.</summary>
+        private int BannedCount()
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT COUNT(*) FROM server_bans WHERE server_id=@s", conn);
+                cmd.Parameters.AddWithValue("@s", _serverId);
+                return Convert.ToInt32(cmd.ExecuteScalar() ?? 0);
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>
+        /// Окно забаненных: кто забанен и кнопка снять бан.
+        /// </summary>
+        /// <remarks>
+        /// На телефоне это вкладка в списке участников; на ПК снять бан было
+        /// нельзя ничем — только руками в базе. Забаненный исчезает из
+        /// участников, поэтому и контекстного меню у него нет.
+        /// </remarks>
+        private void ManageBans()
+        {
+            if (_serverId <= 0 || !_canBan) return;
+
+            using var f = new Form
+            {
+                Text = "Забаненные",
+                ClientSize = new Size(420, 400),
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                BackColor = Color.FromArgb(47, 49, 54),
+                MaximizeBox = false,
+                MinimizeBox = false
+            };
+
+            var list = new ListBox
+            {
+                Location = new Point(12, 12),
+                Size = new Size(396, 300),
+                BackColor = Color.FromArgb(40, 42, 46),
+                ForeColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            var ids = new List<int>();
+
+            void Reload()
+            {
+                list.Items.Clear();
+                ids.Clear();
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "SELECT b.user_id, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login " +
+                        "FROM server_bans b JOIN users u ON u.id=b.user_id " +
+                        "WHERE b.server_id=@s ORDER BY u.login", conn);
+                    cmd.Parameters.AddWithValue("@s", _serverId);
+                    using var r = cmd.ExecuteReader();
+                    while (r.Read())
+                    {
+                        string nm = r["nm"].ToString()?.Trim() ?? "";
+                        string login = r["login"].ToString() ?? "";
+                        if (nm.Length == 0) nm = login;
+                        ids.Add(Convert.ToInt32(r["user_id"]));
+                        list.Items.Add($"{nm}  @{login}");
+                    }
+                }
+                catch (Exception ex) { ShowDbError(ex); }
+
+                if (list.Items.Count == 0) list.Items.Add("— забаненных нет —");
+            }
+            Reload();
+
+            var btnUnban = MakeDialogButton("Разбанить", new Point(12, 324), new Size(140, 30));
+            btnUnban.Click += (s, e) =>
+            {
+                int i = list.SelectedIndex;
+                if (i < 0 || i >= ids.Count) return;
+                int uid = ids[i];
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        "DELETE FROM server_bans WHERE server_id=@s AND user_id=@u", conn);
+                    cmd.Parameters.AddWithValue("@s", _serverId);
+                    cmd.Parameters.AddWithValue("@u", uid);
+                    cmd.ExecuteNonQuery();
+                }
+                catch (Exception ex) { ShowDbError(ex); return; }
+
+                // Обратно на сервер человек заходит сам, по ID: бан снят —
+                // значит, вход больше не отбивается.
+                Reload();
+                LoadMembers();
+            };
+
+            var btnClose = MakeDialogButton("Закрыть", new Point(326, 324), new Size(82, 30));
+            btnClose.DialogResult = DialogResult.Cancel;
+
+            f.Controls.AddRange(new Control[] { list, btnUnban, btnClose });
+            f.CancelButton = btnClose;
+            f.ShowDialog(this);
         }
 
         private List<(int id, string name)> GetRoles()
