@@ -448,6 +448,24 @@ namespace PISMO
                         "                WHERE p.call_id = cs.id AND p.left_at IS NULL)");
                 }
             }),
+
+            (24, "servers: аватар и цвет — кастомизация серверов", conn =>
+            {
+                // Своё лицо у сервера. До этого в списке были только буква и
+                // одинаковый для всех цвет, и отличать их приходилось по
+                // названию.
+                //
+                // Картинка лежит в самой таблице, как аватары пользователей:
+                // отдельного хранилища у проекта нет, а заводить его ради
+                // одного поля — отдельная история со своими бедами.
+                if (!TableExists(conn, "servers")) return;
+                if (!ColumnExists(conn, "servers", "avatar_data"))
+                    Exec(conn, "ALTER TABLE servers ADD COLUMN avatar_data LONGBLOB NULL");
+                // Цвет пригодится и без картинки: буквенный значок перестаёт
+                // быть одинаковым у всех серверов.
+                if (!ColumnExists(conn, "servers", "avatar_color"))
+                    Exec(conn, "ALTER TABLE servers ADD COLUMN avatar_color VARCHAR(16) NULL");
+            }),
         };
 
         /// <summary>Чистит повторяющиеся пометки пересылки в одной таблице.</summary>

@@ -6884,6 +6884,9 @@ namespace PISMO
         /// Нет кодека — возвращаем null, и выше покажется подпись с названием
         /// формата.
         /// </remarks>
+        /// <summary>То же для внешних вызовов — например, для значка сервера.</summary>
+        internal static Image? DecodeWithWic(byte[] data) => TryDecodeWithWic(data);
+
         private static Image? TryDecodeWithWic(byte[] data)
         {
             try

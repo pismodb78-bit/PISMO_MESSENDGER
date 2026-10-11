@@ -33,6 +33,9 @@ namespace PISMO
         private readonly System.Collections.Generic.Dictionary<int, string> _railServerNames = new();
         private string _railMyLogin;
         private bool _railBadgesInit;   // первый проход — без пушей (только заполнить базу)
+        // Есть ли в таблице servers колонки оформления (миграция 24). Если нет —
+        // спрашиваем их один раз и дальше читаем список по-старому.
+        private static bool _railLookColumns = true;
 
         /// <summary>Создаёт левый рейл и встраивает его левее списка диалогов.</summary>
         private void BuildServerRail()
@@ -123,21 +126,66 @@ namespace PISMO
             });
 
             // 3) Серверы, где я состою.
+            var needIcons = new System.Collections.Generic.List<int>();
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand(
-                    "SELECT s.id, s.name FROM servers s " +
-                    "JOIN server_members m ON m.server_id = s.id " +
-                    "WHERE m.user_id=@me ORDER BY s.id", conn);
-                cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
-                var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
+                var dt = new DataTable();
+                // Саму картинку не тянем: в рейле нужен только факт её наличия,
+                // а блоб за каждым сервером при каждой пересборке — это мегабайты
+                // по сети на ровном месте.
+                if (_railLookColumns)
+                {
+                    try
+                    {
+                        using var cmd = new MySqlCommand(
+                            "SELECT s.id, s.name, COALESCE(s.avatar_color,'') AS avatar_color, " +
+                            "(s.avatar_data IS NOT NULL) AS has_avatar FROM servers s " +
+                            "JOIN server_members m ON m.server_id = s.id " +
+                            "WHERE m.user_id=@me ORDER BY s.id", conn);
+                        cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
+                        new MySqlDataAdapter(cmd).Fill(dt);
+                    }
+                    catch (MySqlException mex) when (mex.Number == 1054)
+                    {
+                        // Миграция 24 ещё не прошла — значки будут буквенными,
+                        // но список серверов в рейле обязан остаться.
+                        _railLookColumns = false;
+                        dt = new DataTable();
+                    }
+                }
+                if (!_railLookColumns)
+                {
+                    using var cmd = new MySqlCommand(
+                        "SELECT s.id, s.name FROM servers s " +
+                        "JOIN server_members m ON m.server_id = s.id " +
+                        "WHERE m.user_id=@me ORDER BY s.id", conn);
+                    cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
+                    new MySqlDataAdapter(cmd).Fill(dt);
+                }
+                bool hasLook = dt.Columns.Contains("avatar_color");
                 foreach (DataRow r in dt.Rows)
                 {
                     int sid = Convert.ToInt32(r["id"]);
                     string name = r["name"].ToString();
                     _railServerNames[sid] = name;
-                    var c = MakeRailCircle(ServerInitials(name), ServerColor(sid), Color.White);
+
+                    string colorHex = hasLook ? (r["avatar_color"]?.ToString() ?? "") : "";
+                    bool hasAvatar = hasLook && r["has_avatar"] != DBNull.Value
+                                     && Convert.ToInt32(r["has_avatar"]) != 0;
+
+                    Image? icon = null;
+                    if (hasAvatar)
+                    {
+                        // Пока картинка не прочитана — рисуем буквы, чтобы не
+                        // держать поток интерфейса на запросе к базе.
+                        icon = ServerLook.Cached(sid);
+                        if (!ServerLook.Fresh(sid)) needIcons.Add(sid);
+                    }
+                    else ServerLook.Remember(sid, null);
+
+                    var back = ServerLook.ParseColor(colorHex) ?? ServerColor(sid);
+                    var c = MakeRailCircle(ServerInitials(name), back, Color.White, icon: icon);
                     c.Tag = sid;
                     // ТОЛЬКО левый клик заходит на сервер. Раньше был Click (срабатывал
                     // и на ПКМ) → правый клик и меню открывал, и заходил в каналы.
@@ -171,6 +219,24 @@ namespace PISMO
 
             _serverRail.ResumeLayout();
             FitRailItems();
+
+            // Картинки значков читаем в фоне и пересобираем рейл один раз —
+            // когда все они прочитаны. Повтора не будет: Load помечает запись
+            // прочитанной даже когда картинки нет.
+            if (needIcons.Count > 0)
+            {
+                var ids = needIcons.ToArray();
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    foreach (int sid in ids) ServerLook.Load(sid);
+                    try
+                    {
+                        if (IsDisposed || !IsHandleCreated) return;
+                        BeginInvoke(new Action(LoadServerRailItems));
+                    }
+                    catch { }
+                });
+            }
         }
 
         private readonly ToolTip _tooltip = new ToolTip();

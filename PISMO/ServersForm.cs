@@ -546,6 +546,39 @@ namespace PISMO
             catch (Exception ex) { ShowDbError(ex); }
         }
 
+        /// <summary>
+        /// Случайный шестизначный номер для сервера.
+        /// </summary>
+        /// <remarks>
+        /// Номер — это и приглашение: к серверу присоединяются, введя его.
+        /// Пока номера шли подряд (1, 2, 3…), в любой чужой сервер можно было
+        /// войти простым перебором. Случайный шестизначный так не перебрать, а
+        /// продиктовать его по-прежнему легко.
+        /// </remarks>
+        private static readonly Random _idRand = new();
+
+        private static int RandomServerId()
+        {
+            lock (_idRand) return 100000 + _idRand.Next(900000);
+        }
+
+        /// <summary>Случайный номер, которого ещё нет в базе. 0 — не нашли.</summary>
+        private static int FreeServerId(MySqlConnection conn)
+        {
+            for (int i = 0; i < 12; i++)
+            {
+                int candidate = RandomServerId();
+                try
+                {
+                    using var cmd = new MySqlCommand("SELECT 1 FROM servers WHERE id=@s", conn);
+                    cmd.Parameters.AddWithValue("@s", candidate);
+                    if (cmd.ExecuteScalar() == null) return candidate;
+                }
+                catch { return 0; }
+            }
+            return 0;
+        }
+
         private void CreateServer()
         {
             string name = Prompt("Название сервера");
@@ -553,9 +586,33 @@ namespace PISMO
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                long sid;
-                using (var cmd = new MySqlCommand("INSERT INTO servers (name, owner_id) VALUES (@n,@o)", conn))
+                long sid = 0;
+
+                // Сначала пробуем занять случайный номер. Гонка возможна: пока
+                // мы проверяли, его мог занять другой — тогда вставка упадёт на
+                // уникальности ключа, и мы берём следующий случайный.
+                for (int attempt = 0; attempt < 4 && sid == 0; attempt++)
                 {
+                    int candidate = FreeServerId(conn);
+                    if (candidate == 0) break;
+                    try
+                    {
+                        using var ins = new MySqlCommand(
+                            "INSERT INTO servers (id, name, owner_id) VALUES (@i,@n,@o)", conn);
+                        ins.Parameters.AddWithValue("@i", candidate);
+                        ins.Parameters.AddWithValue("@n", name);
+                        ins.Parameters.AddWithValue("@o", _me);
+                        ins.ExecuteNonQuery();
+                        sid = candidate;
+                    }
+                    catch (MySqlException) { /* номер заняли — пробуем другой */ }
+                }
+
+                // Не вышло — отдаём номер на откуп базе, как было раньше:
+                // создание сервера не должно срываться из-за красивого номера.
+                if (sid == 0)
+                {
+                    using var cmd = new MySqlCommand("INSERT INTO servers (name, owner_id) VALUES (@n,@o)", conn);
                     cmd.Parameters.AddWithValue("@n", name);
                     cmd.Parameters.AddWithValue("@o", _me);
                     cmd.ExecuteNonQuery();
@@ -851,7 +908,10 @@ namespace PISMO
                 var roles = MakeSideButton("⚙ Роли", Color.FromArgb(88, 101, 242));
                 roles.Click += (s, e) => ManageRoles();
                 _pnlChannels.Controls.Add(roles);
-                var inv = MakeSideButton("ℹ ID сервера: " + _serverId, Color.FromArgb(47, 49, 54));
+                // Раньше это была просто надпись с номером. Теперь — вход в
+                // настройки сервера: название, значок, цвет и смена номера.
+                var inv = MakeSideButton("⚙ Сервер (ID " + _serverId + ")", Color.FromArgb(47, 49, 54));
+                inv.Click += (s, e) => ServerSettings();
                 _pnlChannels.Controls.Add(inv);
             }
             try
