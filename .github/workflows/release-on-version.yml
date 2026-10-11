@@ -78,24 +78,48 @@ jobs:
         if: steps.have.outputs.skip == 'false'
         run: dotnet restore PISMO.sln
 
-      - name: Publish
+      - name: Build (Release)
         if: steps.have.outputs.skip == 'false'
-        run: dotnet publish PISMO/PISMO.csproj -c Release --no-restore
+        run: dotnet build PISMO.sln -c Release --no-restore
 
       - name: Запаковать PISMO.zip
         if: steps.have.outputs.skip == 'false'
         shell: pwsh
         run: |
-          # Папку ищем по самому exe: её имя зависит от TargetFramework и
-          # менялось уже дважды.
+          # Папка выпуска — та, где PISMO.exe лежит РЯДОМ с рантайм-файлами.
+          #
+          # Раньше здесь брали папку с exe «по времени записи», а внутри неё
+          # dotnet publish создаёт свою подпапку publish. Выбор был монеткой, и
+          # обе стороны плохи: подпапка publish НЕ годится для выпуска (в ней
+          # нет зависимостей MySqlConnector — System.IO.Pipelines, ZstdSharp,
+          # K4os.*, BouncyCastle, — с такой сборкой приложение не подключится к
+          # базе), а если выбиралась папка сборки, то publish попадал в архив
+          # второй копией программы: так вышло с 2.9.3, архив стал вдвое
+          # тяжелее, и после обновления рядом с exe появлялась эта папка.
+          #
+          # Поэтому собираем тем же dotnet build, что и build.yml (его состав
+          # проверен), и папку publish в архив не кладём.
           $exe = Get-ChildItem -Recurse -Filter PISMO.exe -Path PISMO\bin\Release |
+                 Where-Object { $_.Directory.Name -ne 'publish' } |
                  Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $exe) { throw "PISMO.exe не найден" }
           $dir = $exe.Directory.FullName
           Write-Host "Пакуем: $dir"
+
+          # Пусть выпуск упадёт здесь, а не у человека при запуске.
+          $need = @('PISMO.exe','MySqlConnector.dll','System.IO.Pipelines.dll',
+                    'ZstdSharp.dll','BouncyCastle.Cryptography.dll',
+                    'livekit_ffi.dll','NAudio.dll','ip.txt')
+          $missing = $need | Where-Object { -not (Test-Path (Join-Path $dir $_)) }
+          if ($missing) { throw ("В сборке нет файлов: " + ($missing -join ', ')) }
+
+          $staging = Join-Path $env:RUNNER_TEMP 'pismo-zip'
+          if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
+          Copy-Item $dir $staging -Recurse
+          Remove-Item (Join-Path $staging 'publish') -Recurse -Force -ErrorAction Ignore
           # Содержимое папки в КОРЕНЬ архива: обновлялка распаковывает его
           # поверх установленной версии, вложенная папка сломала бы обновление.
-          Compress-Archive -Path (Join-Path $dir '*') -DestinationPath PISMO.zip -Force
+          Compress-Archive -Path (Join-Path $staging '*') -DestinationPath PISMO.zip -Force
           "{0:N1} МБ" -f ((Get-Item PISMO.zip).Length / 1MB)
 
       - name: Опубликовать релиз
