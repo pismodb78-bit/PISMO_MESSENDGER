@@ -1,0 +1,99 @@
+name: Релиз по версии
+
+# Выпуск релиза из ветки разработки.
+#
+# Зачем отдельно от release.yml: тот запускается ТОЛЬКО кнопкой, а кнопку
+# GitHub показывает лишь для файлов из основной ветки. Пока release.yml нет в
+# master, выпустить версию из ветки нечем, и релизы ПК приходилось собирать
+# руками на своей машине.
+#
+# Срабатывает сам при пуше, но публикует релиз ТОЛЬКО если релиза с такой
+# версией ещё нет. Это важно: release.yml намеренно сделан ручным, чтобы
+# автовыпуск не перезаписал архив, приложенный к тегу вручную. Здесь то же
+# правило соблюдено — существующий релиз не трогается вообще. Чтобы выпустить
+# новую версию, достаточно поднять <Version> в PISMO/PISMO.csproj.
+
+on:
+  push:
+    branches: ["claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Версия из csproj
+        id: ver
+        shell: pwsh
+        run: |
+          $xml = [xml](Get-Content PISMO\PISMO.csproj)
+          $ver = (($xml.Project.PropertyGroup.Version | Where-Object { $_ }) -as [string]).Trim()
+          if (-not $ver) { throw "В PISMO.csproj нет <Version>" }
+          # Тег трёхчастный, как у прошлых релизов: 2.9.3.0 → 2.9.3.
+          # Обновлялка сравнивает тег с версией сборки, см. PISMO/Updater.cs.
+          $tag = $ver -replace '\.0$', ''
+          Write-Host "csproj: $ver   тег: $tag"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Релиз с такой версией уже есть?
+        id: have
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Релиз $tag уже опубликован — ничего не делаем."
+            "skip=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Релиза $tag нет — выпускаем."
+            "skip=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Setup .NET 8
+        if: steps.have.outputs.skip == 'false'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        if: steps.have.outputs.skip == 'false'
+        run: dotnet restore PISMO.sln
+
+      - name: Publish
+        if: steps.have.outputs.skip == 'false'
+        run: dotnet publish PISMO/PISMO.csproj -c Release --no-restore
+
+      - name: Запаковать PISMO.zip
+        if: steps.have.outputs.skip == 'false'
+        shell: pwsh
+        run: |
+          # Папку ищем по самому exe: её имя зависит от TargetFramework и
+          # менялось уже дважды.
+          $exe = Get-ChildItem -Recurse -Filter PISMO.exe -Path PISMO\bin\Release |
+                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $exe) { throw "PISMO.exe не найден" }
+          $dir = $exe.Directory.FullName
+          Write-Host "Пакуем: $dir"
+          # Содержимое папки в КОРЕНЬ архива: обновлялка распаковывает его
+          # поверх установленной версии, вложенная папка сломала бы обновление.
+          Compress-Archive -Path (Join-Path $dir '*') -DestinationPath PISMO.zip -Force
+          "{0:N1} МБ" -f ((Get-Item PISMO.zip).Length / 1MB)
+
+      - name: Опубликовать релиз
+        if: steps.have.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          body: ${{ github.event.head_commit.message }}
+          files: PISMO.zip
+          fail_on_unmatched_files: true
