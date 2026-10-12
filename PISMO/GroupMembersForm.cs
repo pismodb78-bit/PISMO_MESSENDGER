@@ -21,6 +21,7 @@ namespace PISMO
         private Button _btnAddMembers;
         private Button _btnLook;
         private Button _btnBans;
+        private Button _btnDelete;
         private Label _lblTitle;
 
         /// <summary>true, если состав группы изменился (нужно перезагрузить сайдбар).</summary>
@@ -49,6 +50,7 @@ namespace PISMO
             // администратор — как на сервере. Раньше только последний.
             bool canKick = CanManageGroup();
             if (_btnLook != null) _btnLook.Visible = canKick;
+            if (_btnDelete != null) _btnDelete.Visible = MainForm.IsGroupOwner(_groupId);
             if (_btnBans != null)
             {
                 int bans = canKick ? BannedCount() : 0;

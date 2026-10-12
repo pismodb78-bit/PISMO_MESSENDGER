@@ -1468,6 +1468,12 @@ namespace PISMO
                     .ExecuteNonQuery();
                 new MySqlCommand($"DELETE FROM group_members WHERE group_id={groupId}", conn)
                     .ExecuteNonQuery();
+                try
+                {
+                    new MySqlCommand($"DELETE FROM group_bans WHERE group_id={groupId}", conn)
+                        .ExecuteNonQuery();
+                }
+                catch { /* таблицы банов может ещё не быть */ }
                 new MySqlCommand($"DELETE FROM group_chats WHERE id={groupId}", conn)
                     .ExecuteNonQuery();
             }
@@ -1477,8 +1483,17 @@ namespace PISMO
                 return;
             }
 
+            // Остальные участники должны увидеть, что группы больше нет, —
+            // иначе она висит в списке до перезапуска.
+            try
+            {
+                WebSocketSignalingClient.Instance.SendMessage(
+                    "group_members", 0, groupId, "deleted");
+            }
+            catch { }
+
             ClearChat();
-            LoadGroups();
+            LoadConversations();
             MessageBox.Show($"Группа «{groupName}» удалена.", "PISMO",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -2182,13 +2197,44 @@ namespace PISMO
                 menu.BackColor = Color.FromArgb(24, 25, 28);
                 menu.ForeColor = Color.FromArgb(220, 221, 222);
 
-                var itemDel = new ToolStripMenuItem("🗑 Удалить группу")
-                { ForeColor = Color.FromArgb(240, 71, 71) };
-                itemDel.Click += (s2, e2) => DeleteGroup(groupId, groupName);
-                menu.Items.Add(itemDel);
+                menu.Items.Add("👥 Участники и оформление", null,
+                    (s2, e2) => ShowGroupMembers(groupId, groupName));
+
+                // Удаление показываем ТОЛЬКО владельцу группы (и системному
+                // администратору). Раньше пункт висел у всех, а отказ
+                // «удалять может только создатель» приходил уже после
+                // нажатия — выглядело так, будто удалить может кто угодно.
+                if (IsGroupOwner(groupId))
+                {
+                    var itemDel = new ToolStripMenuItem("🗑 Удалить группу")
+                    { ForeColor = Color.FromArgb(240, 71, 71) };
+                    itemDel.Click += (s2, e2) => DeleteGroup(groupId, groupName);
+                    menu.Items.Add(itemDel);
+                }
 
                 menu.Show(Cursor.Position);
             };
+        }
+
+        /// <summary>
+        /// Владелец группы — тот, кто её создал. Системному администратору
+        /// PISMO тоже позволено: без него нечем убрать группу, чей создатель
+        /// давно ушёл.
+        /// </summary>
+        internal static bool IsGroupOwner(int groupId)
+        {
+            if (UserSession.Role == "admin") return true;
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT created_by FROM group_chats WHERE id=@g", conn);
+                cmd.Parameters.AddWithValue("@g", groupId);
+                var o = cmd.ExecuteScalar();
+                return o != null && o != DBNull.Value
+                       && Convert.ToInt32(o) == UserSession.EffectiveId;
+            }
+            catch { return false; }
         }
 
         // ════════════════════════════════════════════════════════════════

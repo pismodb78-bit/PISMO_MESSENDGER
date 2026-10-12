@@ -176,6 +176,24 @@ namespace PISMO
             catch { }
         }
 
+        /// <summary>
+        /// Удалить группу из этого окна — руками владельца.
+        /// </summary>
+        /// <remarks>
+        /// Саму проверку прав и подтверждение делает MainForm.DeleteGroup:
+        /// второй такой же код разошёлся бы с ним при первой же правке.
+        /// </remarks>
+        private void DeleteGroupFromHere()
+        {
+            var main = MainForm.Current;
+            if (main == null) return;
+
+            int gid = _groupId;
+            string name = _groupName;
+            Close();                       // окно участников удалённой группы ни к чему
+            main.DeleteGroup(gid, name);
+        }
+
         /// <summary>Окно забаненных: кто забанен и снятие бана.</summary>
         private void ManageBans()
         {

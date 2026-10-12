@@ -17,7 +17,7 @@ namespace PISMO
         private void BuildUi()
         {
             Text            = "PISMO — Участники группы";
-            ClientSize      = new Size(400, 560);
+            ClientSize      = new Size(400, 600);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox     = false;
             MinimizeBox     = false;
@@ -86,8 +86,27 @@ namespace PISMO
             btnBans.FlatAppearance.BorderSize = 0;
             btnBans.Click += (s, e) => ManageBans();
 
+            // Удаление группы — только её владельцу. Раньше с ПК удалить
+            // можно было лишь из контекстного меню карточки в списке слева,
+            // и пункт висел там у всех подряд.
+            var btnDelete = new Button
+            {
+                Text      = "🗑 Удалить группу",
+                BackColor = Color.FromArgb(240, 71, 71),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font      = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                Location  = new Point(20, 526),
+                Size      = new Size(360, 30),
+                Cursor    = Cursors.Hand,
+                Visible   = false
+            };
+            btnDelete.FlatAppearance.BorderSize = 0;
+            btnDelete.Click += (s, e) => DeleteGroupFromHere();
+
             _btnLook = btnLook;
             _btnBans = btnBans;
+            _btnDelete = btnDelete;
 
             _btnAddMembers = new Button
             {
@@ -107,7 +126,7 @@ namespace PISMO
 
             Controls.AddRange(new Control[]
             {
-                _lblTitle, lblHint, _pnlMembers, btnLook, btnBans, _btnAddMembers
+                _lblTitle, lblHint, _pnlMembers, btnLook, btnBans, _btnAddMembers, btnDelete
             });
         }
     }

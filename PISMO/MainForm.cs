@@ -1269,6 +1269,21 @@ namespace PISMO
                             GroupLook.Forget(sessionId);
                             LoadConversations();
                         }
+                        else if (type == "group_members" && payload == "deleted")
+                        {
+                            // Владелец удалил группу. Остальные иначе видели
+                            // бы её в списке до перезапуска, а открытую
+                            // переписку — до выхода из неё.
+                            GroupLook.Forget(sessionId);
+                            if (_currentGroupId == sessionId)
+                            {
+                                _currentGroupId = -1;
+                                try { MainForm.DisposeAndClear(pnlMessages); } catch { }
+                                try { pnlInputBar.Visible = false; } catch { }
+                                try { lblChatTitle.Text = "# Выберите диалог"; } catch { }
+                            }
+                            LoadConversations();
+                        }
                         else if (type == "group_kick")
                         {
                             // Меня выгнали из группы. Релей шлёт это адресно,
