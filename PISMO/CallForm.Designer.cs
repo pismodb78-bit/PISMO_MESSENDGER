@@ -365,7 +365,12 @@ namespace PISMO
                                 {
                                     if (parts.Count == 1)
                                     {
-                                        if (_threeMinStartTime == DateTime.MinValue) _threeMinStartTime = DateTime.Now;
+                                        // Отсчёт идёт от НАЧАЛА вызова, а не от
+                                        // открытия окна: иначе выйти из звонка и
+                                        // зайти снова значило получить ещё три
+                                        // минуты, и так сколько угодно.
+                                        if (_threeMinStartTime == DateTime.MinValue)
+                                            _threeMinStartTime = DateTime.Now.AddSeconds(-CallSessionAgeSec());
                                         var elapsed = DateTime.Now - _threeMinStartTime;
                                         var remaining = TimeSpan.FromSeconds(180) - elapsed;
                                         if (remaining.TotalSeconds <= 0)

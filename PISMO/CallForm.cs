@@ -93,6 +93,36 @@ namespace PISMO
         private Panel _pnlParticipants;
         private Label _lblParticipants;
         private DateTime _threeMinStartTime = DateTime.MinValue;
+
+        /// <summary>
+        /// Сколько секунд назад начался вызов. 0 — узнать не удалось.
+        /// </summary>
+        /// <remarks>
+        /// От этого числа отсчитываются три минуты ожидания собеседника.
+        /// Считаем разницу средствами базы: её часовой пояс может не совпадать
+        /// с компьютерным, а разница от этого не зависит. Имя колонки у разных
+        /// установок разное — пробуем оба, оба из списка в коде.
+        /// </remarks>
+        private int CallSessionAgeSec()
+        {
+            if (_sessionId <= 0) return 0;
+            foreach (var col in new[] { "started_at", "created_at" })
+            {
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var cmd = new MySqlCommand(
+                        $"SELECT TIMESTAMPDIFF(SECOND, {col}, NOW()) FROM call_sessions WHERE id=@c", conn);
+                    cmd.Parameters.AddWithValue("@c", _sessionId);
+                    var o = cmd.ExecuteScalar();
+                    if (o == null || o == DBNull.Value) continue;
+                    int age = Convert.ToInt32(o);
+                    if (age >= 0) return age;
+                }
+                catch { }
+            }
+            return 0;
+        }
         private bool _threeMinTimerExpired = false;
 
         [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
