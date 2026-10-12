@@ -4120,6 +4120,22 @@ namespace PISMO
 
         private void OnChatScrolled()
         {
+            // Проверка раскладки на каждой остановке прокрутки.
+            //
+            // Пузырь растёт уже после сборки — доезжает картинка, поднимается
+            // проигрыватель, приходит карточка ссылки, — и об этом сообщает
+            // SizeChanged. Но ровно в момент прокрутки до начала переписки и
+            // обратно таких событий приходит пачками, и любое пропущенное
+            // оставляло пузыри наехавшими друг на друга до следующей
+            // перерисовки: человек видел «слипшиеся» сообщения именно после
+            // «вверх до упора — и вниз».
+            //
+            // Пересчёт стоит копейки (это присвоение Top полусотне панелей) и
+            // ничего не перерисовывает, а отсрочка в ArmRestackSoon сводит
+            // пачку событий к одному проходу. Прокрутку он не трогает:
+            // сдвигает её, только если мы и так стояли внизу.
+            ArmRestackSoon();
+
             int top = -pnlMessages.AutoScrollPosition.Y;
             // Событие Scroll приходит не только от пользователя: панель сама
             // прокручивается при смене фокуса, изменении раскладки и пересборке
@@ -5114,12 +5130,33 @@ namespace PISMO
                     y += h + (c.Tag is bool ? 8 : 4);
                 }
 
+                // Кружки выделения живут рядом с пузырями, а не внутри них, —
+                // значит, переехать должны вместе с ними.
+                if (moved) RepositionSelectMarks();
+
                 // Прокрутку трогаем ТОЛЬКО если что-то сдвинулось и мы стояли
                 // внизу: иначе перечитывание старого сообщения дёргало бы ленту.
                 if (moved && atBottom && _pendingJumpMsgId <= 0 && _pendingJumpDate == null)
                 {
                     pnlMessages.PerformLayout();
                     pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Возвращает кружки выделения к своим пузырям после пересчёта.</summary>
+        private void RepositionSelectMarks()
+        {
+            try
+            {
+                if (_selMark == null || _selMark.Count == 0) return;
+                foreach (var mark in _selMark.Values)
+                {
+                    if (mark == null || mark.IsDisposed) continue;
+                    if (mark.Tag is not Control b || b.IsDisposed) continue;
+                    int want = b.Top + Math.Max(0, (b.Height - mark.Height) / 2);
+                    if (mark.Top != want) mark.Top = want;
                 }
             }
             catch { }

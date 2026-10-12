@@ -759,6 +759,10 @@ namespace PISMO
                 Location = new Point(Math.Max(0, pnlMessages.ClientSize.Width - 46),
                     bubble.Top + Math.Max(0, (bubble.Height - 30) / 2))
             };
+            // Кружок — сосед пузыря, а не его часть: общий пересчёт ленты
+            // двигает пузыри, и без ссылки на свой пузырь кружок оставался бы
+            // на прежнем месте, рядом с чужим сообщением.
+            mark.Tag = bubble;
             int mid = msgId;
             mark.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ToggleSelect(mid); };
             pnlMessages.Controls.Add(mark);
