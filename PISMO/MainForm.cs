@@ -42,6 +42,7 @@ namespace PISMO
         // Групповые чаты
         private int _currentGroupId = -1;
         private string _currentGroupName = "";
+        private readonly ToolTip _tipChatTitle = new ToolTip();
         private readonly List<Panel> _groupPanels = new();
 
         private int _lastGroupMsgCount = 0;
@@ -1220,6 +1221,11 @@ namespace PISMO
 
             InitMessageActions();
             StartPresence();
+
+            lblChatTitle.Click += (s, e) =>
+            {
+                if (_currentGroupId > 0) ShowGroupMembers(_currentGroupId, _currentGroupName);
+            };
 
             if (UserSession.Role == "admin" && !UserSession.IsImpersonating)
                 LoadAllUsersForAdmin();
@@ -3475,6 +3481,8 @@ namespace PISMO
             EnsureDmScrollHook();
 
             lblChatTitle.Text = "@ " + partnerName;
+            lblChatTitle.Cursor = Cursors.Default;
+            _tipChatTitle.SetToolTip(lblChatTitle, "");
             UpdateChatHeaderPresence();   // статус собеседника (в сети / бездействует / был в сети)
 
             foreach (var p in _userPanels)
@@ -3513,6 +3521,11 @@ namespace PISMO
             EnsureDmScrollHook();
 
             lblChatTitle.Text = "👥 " + groupName;
+            // По шапке открытой группы — её участники и оформление. Раньше
+            // попасть туда можно было только из списка слева, то есть выйдя
+            // из переписки.
+            lblChatTitle.Cursor = Cursors.Hand;
+            _tipChatTitle.SetToolTip(lblChatTitle, "Участники и оформление группы");
             UpdateChatHeaderPresence();   // группа — статус собеседника прячется
 
             foreach (var p in _groupPanels)
