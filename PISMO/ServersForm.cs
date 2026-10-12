@@ -469,6 +469,23 @@ namespace PISMO
                 }
                 catch { }
             }
+            else if (type == "server_members" && payload == "deleted")
+            {
+                // Владелец удалил сервер. Иначе он висел бы в рейле до
+                // перезапуска, а его каналы — до перезахода.
+                ServerLook.Forget(sessionId);
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke(new Action(() =>
+                        {
+                            if (_serverId == sessionId) ClearServerView();
+                            LoadServers();
+                            RefreshServerRail();
+                        }));
+                }
+                catch { }
+            }
             else if (type == "server_members" && sessionId == _serverId)
             {
                 // Состав сервера изменился у кого-то другого.

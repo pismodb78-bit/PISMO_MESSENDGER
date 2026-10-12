@@ -239,6 +239,28 @@ namespace PISMO
                 f.Close();
             };
 
+            // Удаление — владельцу сервера (и системному администратору:
+            // иначе нечем убрать сервер, чей владелец давно ушёл). На ПК
+            // удалить сервер было нельзя вовсе, только на телефоне.
+            var btnDelete = MakeDialogButton("🗑 Удалить сервер",
+                new Point(12, idTop + 44), new Size(160, 30));
+            btnDelete.ForeColor = Color.FromArgb(240, 71, 71);
+            btnDelete.Visible = _isOwner || UserSession.Role == "admin";
+            btnDelete.Click += (s, e) =>
+            {
+                if (MessageBox.Show(
+                        $"Удалить сервер «{nameWas}»?\n\n" +
+                        "Вместе с ним исчезнут все каналы и переписка в них. " +
+                        "Отменить это будет нельзя.",
+                        "PISMO", MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning) != DialogResult.Yes) return;
+
+                if (!DeleteServer(sid)) return;
+                f.Tag = "deleted";
+                f.DialogResult = DialogResult.Cancel;
+                f.Close();
+            };
+
             var ok = MakeDialogButton("Сохранить", new Point(236, idTop + 44), new Size(94, 30));
             ok.DialogResult = DialogResult.OK;
             var cancel = MakeDialogButton("Отмена", new Point(336, idTop + 44), new Size(82, 30));
@@ -247,13 +269,24 @@ namespace PISMO
             f.Controls.AddRange(new Control[]
             {
                 lblN, txtN, preview, btnPick, btnDrop, lblHint,
-                lblC, txtC, btnMore, btnPlain, lblId, btnCopy, btnNewId, ok, cancel
+                lblC, txtC, btnMore, btnPlain, lblId, btnCopy, btnNewId,
+                btnDelete, ok, cancel
             });
             foreach (var sw in swatches) f.Controls.Add(sw);
             f.AcceptButton = ok;
             f.CancelButton = cancel;
 
             var result = f.ShowDialog(this);
+
+            // Сервер удалён — уходить больше некуда.
+            if (f.Tag is string tag && tag == "deleted")
+            {
+                ServerLook.Forget(sid);
+                ClearServerView();
+                LoadServers();
+                RefreshServerRail();
+                return;
+            }
 
             // Номер сменили — уходим на сервер под новым номером.
             if (f.Tag is int newId && newId > 0)
@@ -564,6 +597,69 @@ namespace PISMO
                 }
             }
             catch (Exception ex) { ShowDbError(ex); return 0; }
+        }
+
+        /// <summary>
+        /// Удаляет сервер со всем его содержимым. Возвращает false, если
+        /// база не дала этого сделать.
+        /// </summary>
+        /// <remarks>
+        /// Порядок тот же, что на телефоне: сначала переписка каналов, потом
+        /// сами каналы, участники, роли и баны, и только в конце сервер.
+        /// Каждый шаг — отдельно: на части установок часть таблиц может
+        /// отсутствовать, и спотыкаться об это ради чистки незачем.
+        /// </remarks>
+        private bool DeleteServer(int serverId)
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+
+                void Try(string sql)
+                {
+                    try
+                    {
+                        using var c = new MySqlCommand(sql, conn);
+                        c.Parameters.AddWithValue("@s", serverId);
+                        c.ExecuteNonQuery();
+                    }
+                    catch { }
+                }
+
+                Try("DELETE FROM server_messages WHERE channel_id IN " +
+                    "(SELECT id FROM server_channels WHERE server_id=@s)");
+                Try("DELETE FROM server_mentions WHERE channel_id IN " +
+                    "(SELECT id FROM server_channels WHERE server_id=@s)");
+                Try("DELETE FROM server_reads WHERE channel_id IN " +
+                    "(SELECT id FROM server_channels WHERE server_id=@s)");
+                Try("DELETE FROM voice_presence WHERE channel_id IN " +
+                    "(SELECT id FROM server_channels WHERE server_id=@s)");
+                Try("DELETE FROM server_channels WHERE server_id=@s");
+                Try("DELETE FROM server_members WHERE server_id=@s");
+                Try("DELETE FROM server_roles WHERE server_id=@s");
+                Try("DELETE FROM server_bans WHERE server_id=@s");
+
+                using (var del = new MySqlCommand("DELETE FROM servers WHERE id=@s", conn))
+                {
+                    del.Parameters.AddWithValue("@s", serverId);
+                    del.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Не удалось удалить сервер: " + ex.Message, "PISMO");
+                return false;
+            }
+
+            // Остальные участники должны увидеть, что сервера больше нет:
+            // иначе он висит у них в рейле до перезапуска.
+            try
+            {
+                WebSocketSignalingClient.Instance.SendMessage(
+                    "server_members", 0, serverId, "deleted");
+            }
+            catch { }
+            return true;
         }
 
         /// <summary>Имя таблицы без кавычек — его подставляем в запрос напрямую.</summary>
