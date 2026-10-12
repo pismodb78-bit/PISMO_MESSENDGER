@@ -101,6 +101,7 @@ namespace PISMO
             }
 
             AnnounceKick(uid, true);
+            AnnounceMembers();
             Changed = true;
             LoadMembers();
         }
@@ -119,6 +120,51 @@ namespace PISMO
             }
             catch { }
         }
+
+        /// <summary>
+        /// Говорит остальным, что состав группы изменился.
+        /// </summary>
+        /// <remarks>
+        /// Широковещательно: кто сейчас смотрит участников, клиент не знает.
+        /// Адресное group_kick доходит только до выгнанного, а окно
+        /// участников открыто у других — и до этого события оно обновлялось
+        /// лишь при повторном открытии.
+        /// </remarks>
+        private void AnnounceMembers()
+        {
+            try
+            {
+                WebSocketSignalingClient.Instance.SendMessage(
+                    "group_members", 0, _groupId, "members");
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Подписка на события о группе: состав и вид меняются у других, и
+        /// окно обязано это показать, а не висеть со старым списком.
+        /// </summary>
+        private void HookGroupEvents()
+        {
+            _onWs = (type, senderId, sessionId, payload) =>
+            {
+                if (sessionId != _groupId) return;
+                if (type != "group_members" && type != "group_look") return;
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(LoadMembers));
+                }
+                catch { }
+            };
+            WebSocketSignalingClient.Instance.OnMessageReceived += _onWs;
+            FormClosed += (s, e) =>
+            {
+                try { WebSocketSignalingClient.Instance.OnMessageReceived -= _onWs; } catch { }
+            };
+        }
+
+        private Action<string, int, int, string> _onWs;
 
         /// <summary>Говорит остальным, что группа сменила вид.</summary>
         private void AnnounceLook()
@@ -200,6 +246,7 @@ namespace PISMO
 
                 // Вернуть человека в группу всё равно придётся вручную —
                 // бан снят, значит, добавить его снова теперь можно.
+                AnnounceMembers();
                 Reload();
                 LoadMembers();
             };

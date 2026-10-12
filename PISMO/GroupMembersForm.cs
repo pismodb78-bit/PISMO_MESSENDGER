@@ -33,6 +33,7 @@ namespace PISMO
             _groupName = groupName;
 
             BuildUi();
+            HookGroupEvents();
             LoadMembers();
         }
 
@@ -205,6 +206,7 @@ namespace PISMO
                 cmd.ExecuteNonQuery();
 
                 AnnounceKick(uid, false);
+                AnnounceMembers();
                 Changed = true;
                 LoadMembers();
             }
@@ -222,6 +224,7 @@ namespace PISMO
             using var dlg = new AddGroupMembersForm(_groupId);
             if (dlg.ShowDialog(this) == DialogResult.OK && dlg.AddedCount > 0)
             {
+                AnnounceMembers();
                 Changed = true;
                 LoadMembers();
             }

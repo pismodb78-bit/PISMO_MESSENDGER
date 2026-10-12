@@ -469,6 +469,16 @@ namespace PISMO
                 }
                 catch { }
             }
+            else if (type == "server_members" && sessionId == _serverId)
+            {
+                // Состав сервера изменился у кого-то другого.
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke(new Action(LoadMembers));
+                }
+                catch { }
+            }
             else if (type == "server_look")
             {
                 // Сервер сменил вид. Картинку из памяти забываем здесь же, в
@@ -674,6 +684,7 @@ namespace PISMO
                 }
                 using (var cmd = new MySqlCommand("INSERT IGNORE INTO server_members (server_id,user_id) VALUES (@s,@u)", conn))
                 { cmd.Parameters.AddWithValue("@s", sid); cmd.Parameters.AddWithValue("@u", _me); cmd.ExecuteNonQuery(); }
+                AnnounceMembers(sid);
                 LoadServers();
                 RefreshServerRail();
             }
@@ -743,6 +754,25 @@ namespace PISMO
             try { _pnlChannels.Controls.Clear(); } catch { }
             try { _pnlMembers.Controls.Clear(); } catch { }
             try { _textChannelIds.Clear(); _channelBadgeLabels.Clear(); _channelPreviewCtl.Clear(); } catch { }
+        }
+
+        /// <summary>
+        /// Говорит остальным, что состав сервера изменился.
+        /// </summary>
+        /// <remarks>
+        /// Широковещательно (кому = 0): кто сейчас смотрит список участников,
+        /// клиент не знает. Адресное server_kick доходит только до
+        /// выгнанного, а колонка участников открыта у других — и до этого
+        /// события она обновлялась лишь при повторном заходе на сервер.
+        /// </remarks>
+        private static void AnnounceMembers(int serverId)
+        {
+            try
+            {
+                WebSocketSignalingClient.Instance.SendMessage(
+                    "server_members", 0, serverId, "members");
+            }
+            catch { }
         }
 
         /// <summary>
@@ -4317,6 +4347,7 @@ namespace PISMO
 
                 // Обратно на сервер человек заходит сам, по ID: бан снят —
                 // значит, вход больше не отбивается.
+                AnnounceMembers(_serverId);
                 Reload();
                 LoadMembers();
             };
@@ -4356,6 +4387,8 @@ namespace PISMO
                 cmd.ExecuteNonQuery();
                 // Роль могли выдать самому себе — тогда меняются и наши права.
                 if (uid == _me && ApplyPerms(ReadPerms(_serverId, _me, _isOwner))) LoadChannels();
+                // Роль видна прямо в списке участников — это тоже смена состава.
+                AnnounceMembers(_serverId);
                 LoadMembers();
             }
             catch (Exception ex) { ShowDbError(ex); }
@@ -4602,6 +4635,7 @@ namespace PISMO
                 }
                 catch { }
 
+                AnnounceMembers(_serverId);
                 LoadMembers();
             }
             catch (Exception ex) { ShowDbError(ex); }
