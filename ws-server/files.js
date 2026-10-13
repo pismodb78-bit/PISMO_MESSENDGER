@@ -241,6 +241,9 @@ function patchUpload(req, res, id) {
         }
     });
     req.on('error', () => { failed = true; });
+    // Обрыв видно в журнале: «докуда дошли» — первое, что нужно знать, когда
+    // отправка ходит по кругу.
+    req.on('aborted', () => log('обрыв', id, sizeOf(file) + '/' + total));
 
     req.pipe(out);
 

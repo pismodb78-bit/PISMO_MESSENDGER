@@ -37,6 +37,18 @@ namespace PISMO
         /// <summary>Сколько раз пробуем дослать файл, прежде чем сдаться.</summary>
         private const int MaxAttempts = 6;
 
+        /// <summary>
+        /// Порция одной дозаписи.
+        /// </summary>
+        /// <remarks>
+        /// Одним запросом на весь файл заливать нельзя: чем дольше идёт
+        /// запрос, тем вернее он где-нибудь оборвётся — у оператора, в NAT,
+        /// на смене сети, — и обрыв стоит всего, что ушло сверх
+        /// подтверждённого. Порция в несколько мегабайт — это запрос на
+        /// секунды: обрыв стоит одной порции, остальное сервер уже принял.
+        /// </remarks>
+        private const int Chunk = 4 * 1024 * 1024;
+
         private static readonly HttpClient Http = new HttpClient
         {
             // Заливка крупного файла идёт сколько нужно; потолок снимаем, его
@@ -200,21 +212,22 @@ namespace PISMO
                 if (offset < 0 || offset > data.Length) offset = 0;
                 if (offset > 0) onProgress?.Invoke((double)offset / data.Length);
 
-                // 2. Досылаем остаток. Обрыв на плохой связи — обычное дело,
-                //    поэтому пробуем несколько раз и каждый раз продолжаем
-                //    ровно с того места, которое назвал сервер.
-                for (int attempt = 0; attempt <= MaxAttempts; )
+                // 2. Досылаем остаток ПОРЦИЯМИ: каждая подтверждается
+                //    сервером, и обрыв стоит только её одной.
+                int attempt = 0;
+                while (offset < data.Length)
                 {
                     ct.ThrowIfCancellationRequested();
+                    long till = Math.Min(offset + Chunk, data.Length);
                     try
                     {
-                        string key = Patch(id, data, offset, onProgress, ct);
+                        string key = Patch(id, data, offset, till, onProgress, ct);
                         if (key != null) return UrlOf(key, name);
-                        // Приняли, но файл ещё не целый — спросим, сколько есть.
-                        if (++attempt > MaxAttempts) return null;
-                        long? have = ResolveOffset(id, ct);
-                        if (have == null) return null;
-                        offset = have.Value;
+                        offset = till;
+                        onProgress?.Invoke((double)offset / data.Length);
+                        // Порция дошла — счётчик неудач обнуляем: лимит
+                        // попыток про «не движется», а не про длину файла.
+                        attempt = 0;
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (OffsetMismatch mm)
@@ -237,20 +250,39 @@ namespace PISMO
                         onProgress?.Invoke((double)offset / data.Length);
                     }
                 }
+
+                // Всё ушло, а ключа не было: ответ на последнюю порцию мог
+                // потеряться. Пустая дозапись в конец заставит сервер
+                // досчитать отпечаток и отдать ключ.
+                try
+                {
+                    long? have = HeadOffset(id);
+                    if (have != null)
+                    {
+                        string key = Patch(id, data, have.Value, have.Value, null, ct);
+                        if (key != null) return UrlOf(key, name);
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch { }
+                return null;
                 return null;
             }
             catch (OperationCanceledException) { throw; }
             catch { return null; }
         }
 
-        /// <summary>Одна попытка дозаписи. Возвращает ключ, когда дошли до конца.</summary>
-        private static string Patch(string id, byte[] data, long from,
+        /// <summary>
+        /// Одна порция дозаписи: байты [from, till). Возвращает ключ, если
+        /// этой порцией файл закончился.
+        /// </summary>
+        private static string Patch(string id, byte[] data, long from, long till,
                                     Action<double> onProgress, CancellationToken ct)
         {
             using var req = new HttpRequestMessage(new HttpMethod("PATCH"), Base + "/files/" + id);
             req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Token());
             req.Headers.TryAddWithoutValidation("Upload-Offset", from.ToString());
-            req.Content = new ProgressContent(data, from, onProgress, ct);
+            req.Content = new ProgressContent(data, from, till, onProgress, ct);
             req.Content.Headers.ContentType =
                 new MediaTypeHeaderValue("application/offset+octet-stream");
 
@@ -361,22 +393,24 @@ namespace PISMO
         {
             private readonly byte[] _data;
             private readonly long _from;
+            private readonly long _till;
             private readonly Action<double> _onProgress;
             private readonly CancellationToken _ct;
 
-            public ProgressContent(byte[] data, long from, Action<double> onProgress, CancellationToken ct)
+            public ProgressContent(byte[] data, long from, long till,
+                                   Action<double> onProgress, CancellationToken ct)
             {
-                _data = data; _from = from; _onProgress = onProgress; _ct = ct;
+                _data = data; _from = from; _till = till; _onProgress = onProgress; _ct = ct;
             }
 
             protected override async Task SerializeToStreamAsync(Stream stream, TransportContext context)
             {
                 const int Step = 64 * 1024;
                 long off = _from;
-                while (off < _data.Length)
+                while (off < _till)
                 {
                     _ct.ThrowIfCancellationRequested();
-                    int len = (int)Math.Min(Step, _data.Length - off);
+                    int len = (int)Math.Min(Step, _till - off);
                     await stream.WriteAsync(_data, (int)off, len, _ct).ConfigureAwait(false);
                     off += len;
                     _onProgress?.Invoke((double)off / _data.Length);
@@ -386,7 +420,7 @@ namespace PISMO
 
             protected override bool TryComputeLength(out long length)
             {
-                length = _data.Length - _from;
+                length = _till - _from;
                 return true;
             }
         }
