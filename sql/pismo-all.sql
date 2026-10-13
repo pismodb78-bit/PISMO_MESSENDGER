@@ -290,6 +290,22 @@ CREATE TABLE IF NOT EXISTS group_bans (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 
+-- ── 26. Вложения на файловом сервисе ───────────────────────────────────────
+--
+-- Файл лежит на диске сервера (ws-server/files.js), а в сообщении остаётся
+-- ссылка на него и размер. Раньше вложение дописывалось в LONGBLOB порциями
+-- через CONCAT: сервер переписывал весь накопленный блоб на каждую порцию.
+--
+-- Старые сообщения с блобами продолжают открываться: пустая ссылка означает
+-- ровно это.
+ALTER TABLE messages        ADD COLUMN IF NOT EXISTS file_url  VARCHAR(512) NULL;
+ALTER TABLE messages        ADD COLUMN IF NOT EXISTS file_size BIGINT       NULL;
+ALTER TABLE group_messages  ADD COLUMN IF NOT EXISTS file_url  VARCHAR(512) NULL;
+ALTER TABLE group_messages  ADD COLUMN IF NOT EXISTS file_size BIGINT       NULL;
+ALTER TABLE server_messages ADD COLUMN IF NOT EXISTS file_url  VARCHAR(512) NULL;
+ALTER TABLE server_messages ADD COLUMN IF NOT EXISTS file_size BIGINT       NULL;
+
+
 -- ── Отметки в журнале ───────────────────────────────────────────────────────
 --
 -- Только то, что действительно сделано ВЫШЕ.
@@ -326,7 +342,8 @@ INSERT IGNORE INTO schema_migrations (id, name) VALUES
   (21, 'call_participants: один человек — одна строка в звонке'),
   (22, 'device_tokens: адреса устройств для push'),
   (24, 'servers: аватар и цвет — кастомизация серверов'),
-  (25, 'группы: картинка и баны — как у серверов');
+  (25, 'группы: картинка и баны — как у серверов'),
+  (26, 'вложения на файловом сервисе: ссылка вместо блоба');
 
 
 -- ── Проверка ────────────────────────────────────────────────────────────────
@@ -345,3 +362,5 @@ SHOW COLUMNS FROM server_messages LIKE 'file_sha';
 SHOW COLUMNS FROM servers LIKE 'avatar%';
 
 SHOW COLUMNS FROM group_chats LIKE 'avatar%';
+
+SHOW COLUMNS FROM messages LIKE 'file_url';

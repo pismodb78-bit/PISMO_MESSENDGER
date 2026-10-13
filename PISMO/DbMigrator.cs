@@ -487,6 +487,24 @@ namespace PISMO
                     "banned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, " +
                     "PRIMARY KEY (group_id, user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
             }),
+
+            (26, "вложения на файловом сервисе: ссылка вместо блоба", conn =>
+            {
+                // Файл теперь лежит на диске сервера, а в сообщении остаётся
+                // ссылка. Старые сообщения с блобами читаются по-старому —
+                // пустая колонка означает ровно это.
+                foreach (var t in new[] { "messages", "group_messages", "server_messages" })
+                {
+                    if (!TableExists(conn, t)) continue;
+                    if (!ColumnExists(conn, t, "file_url"))
+                        Exec(conn, $"ALTER TABLE {t} ADD COLUMN file_url VARCHAR(512) NULL");
+                    // Размер вложения раньше считали по самому блобу
+                    // (OCTET_LENGTH). Файла в базе больше нет — размер надо
+                    // хранить рядом со ссылкой.
+                    if (!ColumnExists(conn, t, "file_size"))
+                        Exec(conn, $"ALTER TABLE {t} ADD COLUMN file_size BIGINT NULL");
+                }
+            }),
         };
 
         /// <summary>Чистит повторяющиеся пометки пересылки в одной таблице.</summary>

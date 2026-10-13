@@ -190,7 +190,8 @@ namespace PISMO
                        (m.image_data IS NOT NULL) AS has_img,
                        (m.audio_data IS NOT NULL) AS has_audio,
                        (m.video_data IS NOT NULL) AS has_video,
-                       (m.file_data  IS NOT NULL) AS has_file";
+                       " + FileService.HasFileSql("m", conn) + @" AS has_file,
+                       " + FileService.FileColsSql("m", conn) + @"";
 
             string tail = limit > 0 ? " ORDER BY m.id DESC LIMIT " + limit : "";
             string inner =
@@ -247,7 +248,8 @@ namespace PISMO
                        (m.image_data IS NOT NULL) AS has_img,
                        (m.audio_data IS NOT NULL) AS has_audio,
                        (m.video_data IS NOT NULL) AS has_video,
-                       (m.file_data  IS NOT NULL) AS has_file";
+                       " + FileService.HasFileSql("m", conn) + @" AS has_file,
+                       " + FileService.FileColsSql("m", conn) + @"";
 
             string tail = " AND m.id<@before ORDER BY m.id DESC LIMIT " + limit;
             string inner =
@@ -295,7 +297,8 @@ namespace PISMO
                        (gm.image_data IS NOT NULL) AS has_img,
                        (gm.audio_data IS NOT NULL) AS has_audio,
                        (gm.video_data IS NOT NULL) AS has_video,
-                       (gm.file_data  IS NOT NULL) AS has_file
+                       " + FileService.HasFileSql("gm", conn) + @" AS has_file,
+                       " + FileService.FileColsSql("gm", conn) + @"
                 FROM group_messages gm
                 LEFT JOIN users u ON u.id = gm.sender_id
                 WHERE gm.group_id=@g AND gm.id<@before
@@ -329,7 +332,8 @@ namespace PISMO
                        (gm.image_data IS NOT NULL) AS has_img,
                        (gm.audio_data IS NOT NULL) AS has_audio,
                        (gm.video_data IS NOT NULL) AS has_video,
-                       (gm.file_data  IS NOT NULL) AS has_file
+                       " + FileService.HasFileSql("gm", conn) + @" AS has_file,
+                       " + FileService.FileColsSql("gm", conn) + @"
                 FROM group_messages gm
                 LEFT JOIN users u ON u.id = gm.sender_id
                 WHERE gm.group_id=@g
@@ -423,6 +427,16 @@ namespace PISMO
 
                 string table = isGroup ? "group_messages" : "messages";
                 using var conn = DBHelper.OpenConnection();
+
+                // Сначала файловый сервис: там вложение лежит отдельным файлом,
+                // и читать его из базы (где его просто нет) нечего.
+                var viaUrl = FileService.TryFetch(conn, table, msgId);
+                if (viaUrl is { Length: > 0 })
+                {
+                    MediaCache.Put(msgId, "file", viaUrl, fileName);
+                    return viaUrl;
+                }
+
                 using var cmd = new MySqlCommand($"SELECT file_data FROM {table} WHERE id=@id", conn);
                 cmd.Parameters.AddWithValue("@id", msgId);
                 cmd.CommandTimeout = 600;

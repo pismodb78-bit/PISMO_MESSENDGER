@@ -67,9 +67,14 @@ namespace PISMO
                 try
                 {
                     string src = TableOf(srcScope);
+                    // Вложение могло уйти на файловый сервис — тогда копировать
+                    // нужно ссылку, а не пустой file_data. Ссылка указывает на
+                    // один и тот же файл на диске: пересылка снова ничего не
+                    // передаёт по сети, как и копирование блоба внутри базы.
+                    string fileCols = FileService.ColumnsExist(conn) ? ", file_url, file_size" : "";
                     using var cmd = new MySqlCommand(
-                        $"INSERT INTO {TableOf(dstScope)} ({dstCols}, text, image_data, audio_data, video_data, file_data, file_name) " +
-                        $"SELECT {dstVals}, @txt, image_data, audio_data, video_data, file_data, file_name " +
+                        $"INSERT INTO {TableOf(dstScope)} ({dstCols}, text, image_data, audio_data, video_data, file_data, file_name{fileCols}) " +
+                        $"SELECT {dstVals}, @txt, image_data, audio_data, video_data, file_data, file_name{fileCols} " +
                         $"FROM {src} WHERE id=@id", conn);
                     cmd.Parameters.AddWithValue("@sid", senderId);
                     cmd.Parameters.AddWithValue("@tid", targetId);

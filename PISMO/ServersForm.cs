@@ -2154,8 +2154,13 @@ namespace PISMO
                 bool media = MediaColumnsExist();
                 // Тянем только лёгкие метаданные (наличие медиа), а сами байты —
                 // из локального кеша; из БД догружаем ТОЛЬКО то, чего нет в кеше.
+                // Строку подключения открываем раньше запроса: список колонок
+                // зависит от того, накатана ли миграция с file_url.
+                using var conn = DBHelper.OpenConnection();
                 string mediaCols = media
-                    ? ", sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video, (sm.file_data IS NOT NULL) AS has_file"
+                    ? ", sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video, "
+                      + FileService.HasFileSql("sm", conn) + " AS has_file, "
+                      + FileService.FileColsSql("sm", conn)
                     : "";
 
                 // Постранично: последние `limit` (по id DESC), затем вернуть ASC.
@@ -2166,7 +2171,6 @@ namespace PISMO
                     (limit > 0 ? "DESC LIMIT " + limit : "ASC");
                 string finalSql = limit > 0 ? "SELECT * FROM (" + baseSql + ") sub ORDER BY id ASC" : baseSql;
 
-                using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(finalSql, conn);
                 cmd.Parameters.AddWithValue("@c", channel);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
@@ -2199,6 +2203,16 @@ namespace PISMO
                 if (cached is { Length: > 0 }) return cached;
 
                 using var conn = DBHelper.OpenConnection();
+
+                // Вложение могло уйти на файловый сервис — тогда в строке стоит
+                // ссылка, а в file_data ничего нет.
+                var viaUrl = FileService.TryFetch(conn, "server_messages", msgId);
+                if (viaUrl is { Length: > 0 })
+                {
+                    MediaCache.Put(msgId, "sfile", viaUrl, fileName);
+                    return viaUrl;
+                }
+
                 using var cmd = new MySqlCommand("SELECT file_data FROM server_messages WHERE id=@id", conn);
                 cmd.Parameters.AddWithValue("@id", msgId);
                 cmd.CommandTimeout = 600;
@@ -2523,8 +2537,14 @@ namespace PISMO
                             }
                             else
                             {
+                                // Размер знаем заранее, если вложение лежит на
+                                // файловом сервисе: он записан в строке. Для
+                                // блоба в базе его по-прежнему не спрашиваем —
+                                // OCTET_LENGTH поднимает всё вложение с диска.
+                                long srvSize = dt.Columns.Contains("file_size") && r["file_size"] != DBNull.Value
+                                    ? Convert.ToInt64(r["file_size"]) : -1;
                                 var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false,
-                                                                  loader: lazySrv);
+                                                                  srvSize, loader: lazySrv);
                                 card.Location = new Point(LEFT, y);
                                 holder.Controls.Add(card); y += card.Height + 6;
                             }
@@ -3638,6 +3658,9 @@ namespace PISMO
             };
             double angle = 0; bool ok = false; bool cancelled = false; bool retryNoReply = false;
             string err = null; MySqlCommand activeCmd = null; MySqlConnection activeConn = null;
+            // Заливку на файловый сервис обрывает токен: там нет ни команды,
+            // ни соединения с базой, которые можно было бы закрыть.
+            var httpCts = new System.Threading.CancellationTokenSource();
             var pic = new Panel { Size = new Size(72, 72), Location = new Point(114, 14), BackColor = Color.Transparent };
             pic.Paint += (s, e) =>
             {
@@ -3669,6 +3692,7 @@ namespace PISMO
                 // проверяет признак отмены и удаляет строку.
                 cancelled = true;
                 btnCancel.Enabled = false;
+                try { httpCts.Cancel(); } catch { }
                 var cmd0 = activeCmd; var conn0 = activeConn;
                 System.Threading.Tasks.Task.Run(() =>
                 {
@@ -3690,8 +3714,30 @@ namespace PISMO
                     using var conn = DBHelper.OpenConnection();
                     activeConn = conn;
                     try { using var to = new MySqlCommand("SET SESSION net_read_timeout=600, net_write_timeout=600, wait_timeout=600", conn); to.ExecuteNonQuery(); } catch { }
+
+                    // ФАЙЛОВЫЙ СЕРВИС. Крупный документ уходит на диск сервера
+                    // по HTTP, а в сообщении остаётся ссылка: дозапись в
+                    // LONGBLOB кусками заставляет сервер переписывать весь
+                    // накопленный блоб на каждый кусок. Сервиса или колонок
+                    // может не быть — тогда всё идёт кусками, как раньше.
+                    string svcUrl = null;
+                    long svcSize = 0;
+                    if (file is { LongLength: >= FileService.MinSize }
+                        && FileService.ColumnsExist(conn) && FileService.Available())
+                    {
+                        try
+                        {
+                            svcUrl = FileService.Upload(file, fileName, null, httpCts.Token);
+                            svcSize = file.LongLength;
+                        }
+                        catch (OperationCanceledException) { }
+                        catch { }
+                        if (cancelled) return;
+                    }
+
                     string cols = "channel_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name";
                     string vals = "@c,@s,@t,@img,@aud,@vid,@fd,@fn";
+                    if (svcUrl != null) { cols += ", file_url, file_size"; vals += ",@url,@sz"; }
                     bool withReply = _replyColOk && replyId > 0;
                     if (withReply) { cols += ", reply_to_id"; vals += ",@r"; }
                     using var cmd = new MySqlCommand($"INSERT INTO server_messages ({cols}) VALUES ({vals})", conn);
@@ -3704,14 +3750,21 @@ namespace PISMO
                     // кусками по 4 МБ.
                     byte[] bigData = null; string bigCol = null;
                     foreach (var (col, data) in new[] { ("image_data", image), ("audio_data", audio),
-                                                        ("video_data", video), ("file_data", file) })
+                                                        ("video_data", video),
+                                                        ("file_data", svcUrl != null ? null : file) })
                         if (data != null && data.LongLength > ChunkThresholdFor(conn)) { bigCol = col; bigData = data; break; }
 
                     AddBlobParam(cmd, "@img", bigCol == "image_data" ? null : image);
                     AddBlobParam(cmd, "@aud", bigCol == "audio_data" ? null : audio);
                     AddBlobParam(cmd, "@vid", bigCol == "video_data" ? null : video);
-                    AddBlobParam(cmd, "@fd",  bigCol == "file_data"  ? null : file);
+                    // Ушёл на сервис — в базе тела файла нет вовсе, только ссылка.
+                    AddBlobParam(cmd, "@fd",  (svcUrl != null || bigCol == "file_data") ? null : file);
                     cmd.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
+                    if (svcUrl != null)
+                    {
+                        cmd.Parameters.AddWithValue("@url", svcUrl);
+                        cmd.Parameters.AddWithValue("@sz", svcSize);
+                    }
                     if (withReply) cmd.Parameters.AddWithValue("@r", replyId);
                     cmd.CommandTimeout = 600;
                     activeCmd = cmd;

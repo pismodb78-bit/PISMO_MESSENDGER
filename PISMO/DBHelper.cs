@@ -161,6 +161,7 @@ namespace PISMO
                 if (key == "livekit" || key == "lk") continue;
                 if (key == "lkkey" || key == "livekitkey") continue;
                 if (key == "lksecret" || key == "livekitsecret") continue;
+                if (key == "files") continue;   // адрес файлового сервиса, читает FileService
                 keep.Add(seg);
             }
             return string.Join(";", keep);

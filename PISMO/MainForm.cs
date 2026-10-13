@@ -2158,7 +2158,7 @@ namespace PISMO
                 using var conn = DBHelper.OpenConnection();
                 using var cmd = new MySqlCommand(
                     "SELECT text, (audio_data IS NOT NULL) AS a, (video_data IS NOT NULL) AS v, " +
-                    "(image_data IS NOT NULL) AS i, (file_data IS NOT NULL) AS f, file_name " +
+                    "(image_data IS NOT NULL) AS i, " + FileService.HasFileSql("", conn) + " AS f, file_name " +
                     "FROM messages WHERE sender_id=@s AND receiver_id=@me AND is_read=0 " +
                     "ORDER BY id DESC LIMIT 1", conn);
                 cmd.Parameters.AddWithValue("@s", sid);
@@ -6430,6 +6430,9 @@ namespace PISMO
             bool cancelled = false;
             MySqlCommand activeCmd = null;      // текущая команда (для отмены)
             MySqlConnection activeConn = null;  // текущее соединение (жёсткий обрыв записи)
+            // Отмена заливки на файловый сервис: HTTP-передачу обрывают токеном,
+            // а не закрытием соединения с базой.
+            var httpCts = new System.Threading.CancellationTokenSource();
 
             var item = Transfers.Begin(
                 string.IsNullOrWhiteSpace(fileName) ? "файл" : fileName,
@@ -6442,6 +6445,7 @@ namespace PISMO
                     // обрывается сразу, а строку удалит обработчик catch.
                     try { activeCmd?.Cancel(); } catch { }
                     try { var c = activeConn; c?.Close(); } catch { }
+                    try { httpCts.Cancel(); } catch { }
                 });
 
             string err = null;
@@ -6512,6 +6516,73 @@ namespace PISMO
                                 catch { }
                                 return;   // finally уберёт передачу из списка и обновит переписку
                             }
+                        }
+                    }
+
+                    // 0.5) ФАЙЛОВЫЙ СЕРВИС. Крупное вложение уходит на диск
+                    //      сервера по HTTP, а в сообщении остаётся ссылка.
+                    //
+                    //      Зачем. Дозапись в LONGBLOB порциями заставляла сервер
+                    //      переписывать весь накопленный блоб на каждую порцию:
+                    //      работа росла квадратом, и видео на 30 МБ могло не
+                    //      доехать вовсе. Здесь байты идут ровным потоком, после
+                    //      обрыва продолжаются с того места, где встали, а у
+                    //      получателя файл можно перематывать, не скачивая целиком.
+                    //
+                    //      Сервиса может не быть и колонок в базе может не быть —
+                    //      тогда ниже всё идёт по-старому.
+                    if (!cancelled && total >= FileService.MinSize
+                        && FileService.ColumnsExist(conn) && FileService.Available())
+                    {
+                        string url = null;
+                        try
+                        {
+                            url = FileService.Upload(fileData, fileName,
+                                frac => Transfers.Progress(item, (long)(frac * total)),
+                                httpCts.Token);
+                        }
+                        catch (OperationCanceledException) { }
+                        catch { }
+
+                        // Отменили во время заливки — строки ещё нет, удалять нечего;
+                        // передачу из списка уберёт finally.
+                        if (cancelled) return;
+
+                        if (!string.IsNullOrEmpty(url))
+                        {
+                            string insUrl = isGroup
+                                ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name, file_url, file_size) VALUES (@g,@s,@t,@img,@aud,@vid,NULL,@fn,@url,@sz)"
+                                : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name, file_url, file_size) VALUES (@s,@r,@t,@img,@aud,@vid,NULL,@fn,@url,@sz)";
+                            long urlId;
+                            using (var ins = new MySqlCommand(insUrl, conn))
+                            {
+                                if (isGroup) { ins.Parameters.AddWithValue("@g", target); ins.Parameters.AddWithValue("@s", myId); }
+                                else { ins.Parameters.AddWithValue("@s", myId); ins.Parameters.AddWithValue("@r", target); }
+                                ins.Parameters.AddWithValue("@t", Crypto.Enc(text ?? ""));
+                                AddBlob(ins, "@img", imageData);
+                                AddBlob(ins, "@aud", audioData);
+                                AddBlob(ins, "@vid", videoData);
+                                ins.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
+                                ins.Parameters.AddWithValue("@url", url);
+                                ins.Parameters.AddWithValue("@sz", total);
+                                ins.ExecuteNonQuery();
+                                urlId = ins.LastInsertedId;
+                                rowId = urlId;
+                            }
+
+                            FileDedup.StampSha(conn, table, urlId, sha);
+                            CacheOwnAttachment((int)urlId, imageData, audioData,
+                                videoData, fileData, fileName, sha);
+                            sent = true;
+                            // Уведомление одно: файл уже на месте, второй раз
+                            // обновлять карточку нечем.
+                            try
+                            {
+                                if (isGroup) WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "group");
+                                else WebSocketSignalingClient.Instance.SendMessage("new_message", 0, target, "direct");
+                            }
+                            catch { }
+                            return;
                         }
                     }
 
@@ -7224,6 +7295,8 @@ namespace PISMO
             bool downloading = false;
             bool dlCancelled = false;
             MySqlCommand activeDlCmd = null; // текущая команда скачивания (для отмены)
+            // Загрузку с файлового сервиса обрывает токен: там нет команды БД.
+            System.Threading.CancellationTokenSource dlCts = null;
 
             Color iconBg = ext switch
             {
@@ -7347,8 +7420,10 @@ namespace PISMO
                     {
                         dlCancelled = true;
                         try { activeDlCmd?.Cancel(); } catch { }
+                        try { dlCts?.Cancel(); } catch { }
                     },
                     indeterminate: true);
+                dlCts = new System.Threading.CancellationTokenSource();
 
                 var dlAnim = new System.Windows.Forms.Timer { Interval = 60 };
                 dlAnim.Tick += (ts, te) =>
@@ -7426,12 +7501,34 @@ namespace PISMO
                             }
                         }
 
+                        // Вложение может лежать не в базе, а на файловом
+                        // сервисе — тогда в строке стоит ссылка. Качаем по ней:
+                        // прогресс идёт побайтово, а не рывками по порциям.
+                        if (result == null)
+                        {
+                            try
+                            {
+                                var viaUrl = FileService.TryFetch(conn, table, msgId,
+                                    frac => Transfers.Progress(tr,
+                                        (long)(frac * (knownSize > 0 ? knownSize : 0))),
+                                    dlCts.Token);
+                                if (viaUrl is { Length: > 0 }) result = viaUrl;
+                            }
+                            catch { }
+                        }
+
                         if (result == null)
                         {
                             long total = knownSize;
                             if (total <= 0)
                             {
-                                using var szCmd = new MySqlCommand($"SELECT OCTET_LENGTH(file_data) FROM {table} WHERE id=@id", conn);
+                                // Размер берём из file_size, если он есть: длину
+                                // LONGBLOB нельзя узнать, не подняв вложение с
+                                // диска целиком.
+                                using var szCmd = new MySqlCommand(
+                                    FileService.ColumnsExist(conn)
+                                        ? $"SELECT COALESCE(file_size, OCTET_LENGTH(file_data)) FROM {table} WHERE id=@id"
+                                        : $"SELECT OCTET_LENGTH(file_data) FROM {table} WHERE id=@id", conn);
                                 szCmd.Parameters.AddWithValue("@id", msgId);
                                 var o = szCmd.ExecuteScalar();
                                 total = (o != null && o != DBNull.Value) ? Convert.ToInt64(o) : 0;
