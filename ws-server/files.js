@@ -124,6 +124,31 @@ function hashFile(p) {
     });
 }
 
+/**
+ * Незавершённая загрузка того же файла, если она есть.
+ *
+ * Ищем перебором по каталогу незавершённых: их единицы (готовое сразу
+ * уезжает в хранилище, брошенное чистится через сутки), а отдельный индекс
+ * пришлось бы чинить после каждого падения.
+ */
+function findUnfinished(sha, total) {
+    try {
+        for (const f of fs.readdirSync(TMP)) {
+            if (!f.endsWith('.json')) continue;
+            const id = f.slice(0, -5);
+            if (!isId(id)) continue;
+            let meta;
+            try { meta = JSON.parse(fs.readFileSync(path.join(TMP, f), 'utf8')); }
+            catch { continue; }
+            if (meta.sha !== sha || meta.total !== total) continue;
+            const have = sizeOf(tmpPath(id));
+            if (have < 0 || have >= total) continue;   // файла нет или он уже целый
+            return id;
+        }
+    } catch {}
+    return null;
+}
+
 // ── POST /files — создать загрузку ──────────────────────────────────
 function createUpload(req, res) {
     const total = parseInt(req.headers['upload-length'] || '0', 10);
@@ -141,6 +166,27 @@ function createUpload(req, res) {
             'Upload-Length': String(total),
             'File-Key': sha,
         });
+    }
+
+    // Эту отправку уже начинали, и она оборвалась — продолжаем её, а не
+    // заводим новую.
+    //
+    // Без этого повтор после обрыва начинался с нуля: клиент спрашивал новую
+    // загрузку, получал новый id, и уже принятые мегабайты оставались лежать
+    // мусором. На мобильной связи, где обрыв — обычное дело, большой файл так
+    // мог не доехать вовсе: каждая попытка начиналась заново.
+    if (isSha(sha)) {
+        const found = findUnfinished(sha, total);
+        if (found) {
+            const have = sizeOf(tmpPath(found));
+            log('продолжаем загрузку', found, name, have + '/' + total);
+            return send(res, 200, {
+                'Upload-Id': found,
+                'Upload-Offset': String(have),
+                'Upload-Length': String(total),
+                'Location': '/files/' + found,
+            });
+        }
     }
 
     const id = crypto.randomBytes(16).toString('hex');

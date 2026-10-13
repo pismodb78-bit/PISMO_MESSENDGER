@@ -34,6 +34,9 @@ namespace PISMO
         /// <summary>Мельче этого шлём по-старому: ради мелочи ходить некуда.</summary>
         public const int MinSize = 1024 * 1024;
 
+        /// <summary>Сколько раз пробуем дослать файл, прежде чем сдаться.</summary>
+        private const int MaxAttempts = 6;
+
         private static readonly HttpClient Http = new HttpClient
         {
             // Заливка крупного файла идёт сколько нужно; потолок снимаем, его
@@ -168,8 +171,12 @@ namespace PISMO
                 string nameB64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(name));
 
                 // 1. Создаём загрузку. Такой файл уже лежит — ответ придёт
-                //    сразу с ключом, и по сети не уйдёт ни байта.
+                //    сразу с ключом, и по сети не уйдёт ни байта. А если эту
+                //    отправку уже начинали и она оборвалась, сервер вернёт ту
+                //    же загрузку и скажет, сколько у него есть: повтор
+                //    продолжает с места обрыва, а не гонит файл заново.
                 string id = null;
+                long offset = 0;
                 using (var req = new HttpRequestMessage(HttpMethod.Post, Base + "/files"))
                 {
                     req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Token());
@@ -186,28 +193,48 @@ namespace PISMO
                     }
                     if (res.Headers.TryGetValues("Upload-Id", out var ids))
                         foreach (var v in ids) { id = v; break; }
+                    if (res.Headers.TryGetValues("Upload-Offset", out var offs))
+                        foreach (var v in offs) { long.TryParse(v, out offset); break; }
                 }
                 if (id == null) return null;
+                if (offset < 0 || offset > data.Length) offset = 0;
+                if (offset > 0) onProgress?.Invoke((double)offset / data.Length);
 
-                // 2. Досылаем остаток. После обрыва спрашиваем, сколько
-                //    принято, и продолжаем ровно с этого места.
-                long offset = 0;
-                for (int attempt = 0; attempt < 5; attempt++)
+                // 2. Досылаем остаток. Обрыв на плохой связи — обычное дело,
+                //    поэтому пробуем несколько раз и каждый раз продолжаем
+                //    ровно с того места, которое назвал сервер.
+                for (int attempt = 0; attempt <= MaxAttempts; )
                 {
                     ct.ThrowIfCancellationRequested();
                     try
                     {
                         string key = Patch(id, data, offset, onProgress, ct);
                         if (key != null) return UrlOf(key, name);
-                        return null;                      // сервис отказал окончательно
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch
-                    {
-                        Thread.Sleep(1500 * (attempt + 1));
-                        long? have = HeadOffset(id);
+                        // Приняли, но файл ещё не целый — спросим, сколько есть.
+                        if (++attempt > MaxAttempts) return null;
+                        long? have = ResolveOffset(id, ct);
                         if (have == null) return null;
                         offset = have.Value;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (OffsetMismatch mm)
+                    {
+                        // Сервер назвал своё смещение. Это сверка, а не сбой:
+                        // попытку не тратим, но и крутиться на месте не даём.
+                        if (mm.Offset == offset && ++attempt > MaxAttempts) return null;
+                        offset = Math.Max(0, Math.Min(mm.Offset, data.Length));
+                        onProgress?.Invoke((double)offset / data.Length);
+                    }
+                    catch
+                    {
+                        if (++attempt > MaxAttempts) return null;
+                        // Связь не возвращается мгновенно: ждём дольше с
+                        // каждым разом, а не долбимся в один и тот же обрыв.
+                        Thread.Sleep(2000 * attempt);
+                        long? have = ResolveOffset(id, ct);
+                        if (have == null) return null;
+                        offset = have.Value;
+                        onProgress?.Invoke((double)offset / data.Length);
                     }
                 }
                 return null;
@@ -229,10 +256,42 @@ namespace PISMO
 
             using var res = Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct)
                                 .GetAwaiter().GetResult();
+            // 409 — разошлись в том, с какого места продолжать. Сервер
+            // присылает своё смещение: с него и пойдём.
+            if (res.StatusCode == HttpStatusCode.Conflict)
+            {
+                long at = 0;
+                if (res.Headers.TryGetValues("Upload-Offset", out var o))
+                    foreach (var v in o) { long.TryParse(v, out at); break; }
+                throw new OffsetMismatch(at);
+            }
             if (!res.IsSuccessStatusCode) throw new IOException("patch " + (int)res.StatusCode);
             if (res.Headers.TryGetValues("File-Key", out var keys))
                 foreach (var k in keys) return k;
             return null;
+        }
+
+        /// <summary>Сервер назвал своё смещение (409) — продолжаем с него.</summary>
+        private sealed class OffsetMismatch : IOException
+        {
+            public readonly long Offset;
+            public OffsetMismatch(long offset) : base("offset mismatch") { Offset = offset; }
+        }
+
+        /// <summary>
+        /// Сколько байт у сервера. Спрашиваем с повторами: один неудачный
+        /// вопрос — не повод бросать отправку, на которую уже ушли минуты.
+        /// </summary>
+        private static long? ResolveOffset(string id, CancellationToken ct)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var have = HeadOffset(id);
+                if (have != null) return have;
+                Thread.Sleep(1500 * (i + 1));
+            }
+            return HeadOffset(id);
         }
 
         private static long? HeadOffset(string id)
