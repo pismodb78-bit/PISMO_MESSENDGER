@@ -482,9 +482,19 @@ namespace PISMO
             byte[] img      = hasImg   ? MediaCache.Get(msgId, "img",   fileName) : null;
             byte[] audio    = hasAudio ? MediaCache.Get(msgId, "audio", null)     : null;
             byte[] video    = hasVideo ? MediaCache.Get(msgId, "video", null)     : null;
-            // Если файл уже лежит в локальном кеше — показываем сразу, это бесплатно.
-            byte[] fileData = hasFile && MediaCache.Has(msgId, "file", fileName)
-                              ? MediaCache.Get(msgId, "file", fileName) : null;
+            // ВЛОЖЕНИЕ-ФАЙЛ В ПАМЯТЬ ПРИ ОТРИСОВКЕ НЕ ПОДНИМАЕМ — даже из кеша.
+            //
+            // Считалось, что взять его из локального кеша «бесплатно»: файл
+            // ведь уже на диске. На деле это чтение в память целиком, на
+            // каждое сообщение и на каждую перерисовку ленты. В переписке с
+            // десятком видео по полсотни мегабайт открытие чата поднимало
+            // полгигабайта — и ровно это выглядело как память, растущая
+            // ступеньками при переходах между чатами.
+            //
+            // Байты нужны не раньше нажатия: видео открывает проигрыватель,
+            // карточка файла — загрузку, и оба читают тот же кеш сами (см.
+            // LoadFileBytes). Размер для карточки берётся из file_size.
+            byte[] fileData = null;
 
             // Если всё уже в кеше — не идём в БД вообще
             if (!needImg && !needAudio && !needVideo && !needFile)

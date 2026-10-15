@@ -3548,8 +3548,32 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         //  ОТКРЫТИЕ ЧАТА
         // ════════════════════════════════════════════════════════════════
+        /// <summary>
+        /// Отпустить память после ухода из переписки.
+        /// </summary>
+        /// <remarks>
+        /// Пузыри прошлой страницы уничтожены, но их картинки и буферы ещё
+        /// числятся за сборщиком: он работает по своему расписанию, а у
+        /// оконного приложения расписание простое — человек смотрит на
+        /// диспетчер задач. Сборка фоновая и не блокирующая, так что на
+        /// отзывчивости это не сказывается, зато освободившееся
+        /// действительно уходит, а не копится ступеньками до следующего
+        /// удобного сборщику момента.
+        /// </remarks>
+        private static void ReleaseChatMemory()
+        {
+            try
+            {
+                GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: false);
+            }
+            catch { }
+        }
+
         private void OpenChat(int partnerId, string partnerName)
         {
+            // Уходим из прошлой переписки — её страница больше не нужна.
+            if (_currentChatPartnerId != partnerId || _currentGroupId > 0) ReleaseChatMemory();
+
             _currentChatPartnerId = partnerId;
             _currentChatPartnerName = partnerName;
             _currentGroupId = -1;
@@ -3591,6 +3615,8 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         private void OpenGroup(int groupId, string groupName)
         {
+            // Та же уборка, что и при переходе в личную переписку.
+            if (_currentGroupId != groupId || _currentChatPartnerId > 0) ReleaseChatMemory();
             _currentGroupId = groupId;
             _currentGroupName = groupName;
             _currentChatPartnerId = -1;
