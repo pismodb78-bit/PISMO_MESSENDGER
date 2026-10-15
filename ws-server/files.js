@@ -252,6 +252,10 @@ function patchUpload(req, res, id) {
         if (failed) { try { res.destroy(); } catch {} return; }
         const now = sizeOf(file);
         if (now < total) {
+            // Каждая принятая порция — строка в журнале. Когда отправка
+            // «не идёт», первый вопрос всегда один: растёт принятое или
+            // стоит на месте. Порции крупные, так что болтовни немного.
+            log('порция', id, now + '/' + total);
             return send(res, 204, { 'Upload-Offset': String(now) });
         }
 
