@@ -38,8 +38,20 @@ namespace PISMO
 
         private static Form _owner;
         private static System.Threading.SynchronizationContext _ui;
-        private static System.Windows.Forms.Timer _retryTimer;
-        private static System.Windows.Forms.Timer _graceTimer;
+
+        // ТАЙМЕРЫ — НЕ ОКОННЫЕ, И ЭТО ВАЖНО.
+        //
+        // Раньше здесь стояли System.Windows.Forms.Timer, которые заводились
+        // в Init из главного окна. До входа в приложение главного окна ещё
+        // нет: на форме входа таймеры оставались пустыми, переподключение не
+        // начиналось, а запрет «связи нет» снять было уже некому — обращения
+        // к базе он отклоняет сам. Получался замкнутый круг: сеть вернулась,
+        // а войти нельзя, пока не перезапустишь программу.
+        //
+        // Эти работают всегда и без окна, а в интерфейс уходит только
+        // уведомление — и то лишь когда окно появилось.
+        private static System.Threading.Timer _retryTimer;
+        private static System.Threading.Timer _graceTimer;
         private static volatile bool _lost;
         private static int _syncing;
 
@@ -73,21 +85,31 @@ namespace PISMO
             _ => null,
         };
 
-        /// <summary>Вызвать один раз из главной формы (на UI-потоке).</summary>
+        /// <summary>
+        /// Привязать к главному окну: через него уходят уведомления в
+        /// интерфейс. Необязательно — сторож работает и до появления окна.
+        /// </summary>
         public static void Init(Form owner)
         {
             _owner = owner;
             _ui = System.Threading.SynchronizationContext.Current;
+        }
 
-            _retryTimer = new System.Windows.Forms.Timer { Interval = RetryMs };
-            _retryTimer.Tick += (s, e) => PingOnce();
+        private static readonly object TimerLock = new();
 
-            _graceTimer = new System.Windows.Forms.Timer { Interval = GraceMs };
-            _graceTimer.Tick += (s, e) =>
+        /// <summary>Таймеры заводим по первой надобности, а не из окна.</summary>
+        private static void EnsureTimers()
+        {
+            lock (TimerLock)
             {
-                _graceTimer.Stop();
-                if (_lost) Set(Status.Connecting);
-            };
+                _retryTimer ??= new System.Threading.Timer(
+                    _ => { if (_lost) PingOnce(); }, null,
+                    System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+
+                _graceTimer ??= new System.Threading.Timer(
+                    _ => { if (_lost) Post(() => Set(Status.Connecting)); }, null,
+                    System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+            }
         }
 
         /// <summary>Соединение успешно.</summary>
@@ -95,10 +117,12 @@ namespace PISMO
         {
             if (!_lost) return;
             _lost = false;
+            // Таймеры гасим СРАЗУ, а не через интерфейс: он может ещё не
+            // существовать, а пинговать уже незачем.
+            try { _retryTimer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite); } catch { }
+            try { _graceTimer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite); } catch { }
             Post(() =>
             {
-                try { _retryTimer?.Stop(); } catch { }
-                try { _graceTimer?.Stop(); } catch { }
                 Set(_syncing > 0 ? Status.Updating : Status.Ready);
                 try { Restored?.Invoke(); } catch { }
             });
@@ -109,14 +133,14 @@ namespace PISMO
         {
             if (_lost) return;
             _lost = true;
-            Post(() =>
-            {
-                // Переподключение — сразу, надпись — через паузу: мигать
-                // шапкой из-за одного мёртвого соединения из пула незачем.
-                try { _retryTimer?.Start(); } catch { }
-                try { _graceTimer?.Stop(); _graceTimer?.Start(); } catch { }
-                PingOnce();
-            });
+            // Переподключение — сразу и НЕ через интерфейс: на форме входа
+            // окна ещё нет, а пробовать надо всё равно. Надпись появится
+            // позже, через паузу: мигать шапкой из-за одного мёртвого
+            // соединения из пула незачем.
+            EnsureTimers();
+            try { _retryTimer.Change(RetryMs, RetryMs); } catch { }
+            try { _graceTimer.Change(GraceMs, System.Threading.Timeout.Infinite); } catch { }
+            PingOnce();
         }
 
         /// <summary>
@@ -162,6 +186,22 @@ namespace PISMO
         /// Пробуем открыть соединение в фоне; успех сам позовёт
         /// <see cref="NotifyOk"/> изнутри OpenConnection.
         /// </summary>
+        /// <summary>
+        /// Проверить связь ПРЯМО СЕЙЧАС и дождаться ответа.
+        /// </summary>
+        /// <remarks>
+        /// Для действий, которые человек начал сам: вход, кнопка «обновить».
+        /// Быстрый отказ бережёт интерфейс от ожидания в фоновых запросах, но
+        /// на нажатие кнопки он выглядит издевательством — «нет связи» в
+        /// ответ на попытку, которой не было. Здесь попытка настоящая.
+        /// </remarks>
+        public static bool TryNow()
+        {
+            if (!_lost) return true;
+            try { using var c = DBHelper.OpenProbe(); return true; }
+            catch { return false; }
+        }
+
         private static void PingOnce()
         {
             System.Threading.Tasks.Task.Run(() =>

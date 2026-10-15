@@ -154,6 +154,12 @@ namespace PISMO
                 return;
             }
 
+            // Человек нажал «Войти» — значит пробуем по-настоящему, даже если
+            // последняя попытка была неудачной. Отказ без попытки на нажатие
+            // кнопки выглядит издевательством, а связь к этому моменту уже
+            // могла вернуться.
+            try { ConnectionGuard.TryNow(); } catch { }
+
             try
             {
                 using (var conn = DBHelper.OpenConnection())
@@ -210,7 +216,9 @@ namespace PISMO
             }
             catch (Exception ex)
             {
-                ShowError("Ошибка БД: " + ex.Message);
+                ShowError(ConnectionGuard.Offline
+                    ? "Нет связи с сервером. Проверьте интернет и попробуйте ещё раз."
+                    : "Ошибка БД: " + ex.Message);
                 return;
             }
 
