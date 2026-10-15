@@ -184,14 +184,32 @@ namespace PISMO
                 {
                     // Читаем через поток и копируем: PictureBox из Image.FromFile
                     // держит файл открытым, и кеш потом не почистить.
+                    //
+                    // Копию делаем СРАЗУ под размер показа. Картинка превью с
+                    // сайта — это обычно 1200 точек по ширине, и в памяти она
+                    // стоит ширину на высоту на четыре байта независимо от
+                    // того, что показываем мы её полоской в триста точек.
                     Image img;
+                    int w, h;
                     using (var fs = File.OpenRead(ready.ImagePath))
                     using (var src2 = Image.FromStream(fs))
-                        img = new Bitmap(src2);
+                    {
+                        w = textW;
+                        h = Math.Max(1, (int)(src2.Height * (w / (double)src2.Width)));
+                        if (h > 220) { h = 220; w = Math.Max(1, (int)(src2.Width * (h / (double)src2.Height))); }
 
-                    int w = textW;
-                    int h = Math.Max(1, (int)(img.Height * (w / (double)img.Width)));
-                    if (h > 220) { h = 220; w = Math.Max(1, (int)(img.Width * (h / (double)img.Height))); }
+                        int tw = Math.Min(w * 2, src2.Width);
+                        int th = Math.Max(1, (int)(src2.Height * (tw / (double)src2.Width)));
+                        var small = new Bitmap(tw, th,
+                            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                        using (var g = Graphics.FromImage(small))
+                        {
+                            g.InterpolationMode =
+                                System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                            g.DrawImage(src2, 0, 0, tw, th);
+                        }
+                        img = small;
+                    }
                     var pic = new PictureBox
                     {
                         Image = img,
