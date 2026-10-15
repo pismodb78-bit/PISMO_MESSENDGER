@@ -134,6 +134,13 @@ namespace PISMO
         public static bool HasOlderThan(int myId, int themId, int oldestId)
         {
             if (oldestId <= 0) return false;
+
+            // Без связи спрашиваем кеш. Иначе прокрутка вверх не начиналась
+            // вовсе: «есть ли что-то старше» выясняли у базы, та молчала, и
+            // лента считала, что история кончилась — хотя она лежит на диске.
+            if (ConnectionGuard.Offline)
+                return HasOlderInCache(MessageCache.DirectKey(myId, themId), oldestId);
+
             try
             {
                 using var conn = DBHelper.OpenConnection();
@@ -150,9 +157,24 @@ namespace PISMO
             catch { return false; }
         }
 
+        /// <summary>Есть ли в кеше что-то старше показанного.</summary>
+        private static bool HasOlderInCache(string cacheKey, int oldestId)
+        {
+            var all = MessageCache.Load(cacheKey);
+            if (all == null || all.Rows.Count == 0) return false;
+            foreach (DataRow r in all.Rows)
+            {
+                try { if (Convert.ToInt32(r["id"]) < oldestId) return true; } catch { }
+            }
+            return false;
+        }
+
         /// <summary>То же для группы.</summary>
         public static bool HasOlderInGroup(int groupId, int oldestId)
         {
+            if (oldestId > 0 && ConnectionGuard.Offline)
+                return HasOlderInCache(MessageCache.GroupKey(groupId), oldestId);
+
             if (oldestId <= 0) return false;
             try
             {
@@ -504,6 +526,15 @@ namespace PISMO
         /// </remarks>
         private static DataTable OlderFromCache(string cacheKey, int beforeId, int limit)
         {
+            // Сначала штатный постраничный доступ кеша: он отдаёт страницу
+            // только из сплошной, без дыр, части истории.
+            var page = MessageCache.Older(cacheKey, beforeId, limit);
+            if (page != null && page.Rows.Count > 0) return page;
+
+            // Он же отказывается отвечать за пределами этой части — правильно,
+            // когда можно сходить на сервер. Без связи ходить некуда, и
+            // показать соседний кусок лучше, чем ничего: это та же переписка,
+            // просто с возможным пропуском посередине.
             var all = MessageCache.Load(cacheKey);
             if (all == null || all.Rows.Count == 0) return new DataTable();
 
