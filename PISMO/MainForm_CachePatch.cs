@@ -169,6 +169,12 @@ namespace PISMO
 
         public static DataTable LoadMessagesMetaOnly(int myId, int themId, int limit = 0)
         {
+            // Без связи отдаём последнее, что видели. Вложения к этим
+            // сообщениям и так лежат локально — раньше до них просто нельзя
+            // было добраться, потому что сама лента бралась только из базы.
+            if (ConnectionGuard.Offline)
+                return OfflineStore.Load(OfflineStore.DmKey(themId)) ?? new DataTable();
+
             using var conn = DBHelper.OpenConnection();
             // Постранично: берём ПОСЛЕДНИЕ `limit` сообщений (по id DESC), затем
             // возвращаем в хронологическом порядке (ASC). limit<=0 — без лимита.
@@ -219,6 +225,7 @@ namespace PISMO
             cmd.Parameters.AddWithValue("@them", themId);
             var dt = new DataTable();
             new MySqlDataAdapter(cmd).Fill(dt);
+            OfflineStore.Save(OfflineStore.DmKey(themId), dt);
             return dt;
         }
 
@@ -318,6 +325,9 @@ namespace PISMO
         /// </summary>
         public static DataTable LoadGroupMessagesMetaOnly(int groupId, int limit = 0)
         {
+            if (ConnectionGuard.Offline)
+                return OfflineStore.Load(OfflineStore.GroupKey(groupId)) ?? new DataTable();
+
             using var conn = DBHelper.OpenConnection();
             // Постранично: последние `limit` (по id DESC), затем в хронологическом (ASC).
             string inner = @"
@@ -344,6 +354,7 @@ namespace PISMO
             cmd.Parameters.AddWithValue("@g", groupId);
             var dt = new DataTable();
             new MySqlDataAdapter(cmd).Fill(dt);
+            OfflineStore.Save(OfflineStore.GroupKey(groupId), dt);
             return dt;
         }
 

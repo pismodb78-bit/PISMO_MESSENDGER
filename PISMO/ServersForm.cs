@@ -1022,8 +1022,20 @@ namespace PISMO
             }
             try
             {
-                using var conn = DBHelper.OpenConnection();
                 var dt = new DataTable();
+
+                // БЕЗ СВЯЗИ — список каналов с диска. Иначе сервер выглядит
+                // пустым: ни одного канала, нечего и открыть, хотя сообщения
+                // этих каналов лежат рядом, в таком же снимке.
+                if (ConnectionGuard.Offline)
+                {
+                    dt = OfflineStore.Load(OfflineStore.ServerChannelsKey(_serverId)) ?? new DataTable();
+                    if (dt.Rows.Count == 0) return;
+                    BuildChannelList(dt);
+                    return;
+                }
+
+                using var conn = DBHelper.OpenConnection();
                 // user_limit появился миграцией 14. Если она ещё не прошла (старая
                 // база, не было связи при запуске) — MySQL ответит 1054, и мы честно
                 // читаем без этой колонки: каналы просто будут без ограничения.
@@ -1042,6 +1054,8 @@ namespace PISMO
                     cmd2.Parameters.AddWithValue("@s", _serverId);
                     new MySqlDataAdapter(cmd2).Fill(dt);
                 }
+                OfflineStore.Save(OfflineStore.ServerChannelsKey(_serverId), dt);
+
                 // Последние сообщения каналов — ОДНИМ запросом на весь список.
                 // В личных чатах превью есть давно, у каналов его не было вовсе,
                 // и понять, где что-то новое, можно было только зайдя в каждый.
@@ -1070,6 +1084,24 @@ namespace PISMO
                 }
                 catch { }
 
+                BuildChannelList(dt);
+            }
+            catch (Exception ex)
+            {
+                // Без связи ругаться нечем и незачем: о ней говорит шапка, а
+                // список уже показан из сохранённого.
+                if (!ConnectionGuard.Offline) ShowDbError(ex);
+            }
+
+            RefreshVoicePresence();
+        }
+
+        /// <summary>
+        /// Раскладывает каналы по заголовкам — одинаково и для выборки из
+        /// базы, и для сохранённого списка (работа без связи).
+        /// </summary>
+        private void BuildChannelList(DataTable dt)
+        {
                 _voiceContainers.Clear();
                 _voiceSig.Clear();
                 _channelLimits.Clear();
@@ -1097,10 +1129,6 @@ namespace PISMO
                     AddChannelButton(cid, r["name"].ToString(), "voice");
                 }
                 FilterChannels(_channelSearch?.Text);
-            }
-            catch (Exception ex) { ShowDbError(ex); }
-
-            RefreshVoicePresence();
         }
 
         /// <summary>Рисует кнопку канала (+ контейнер «в эфире» для голосовых).</summary>
@@ -2143,6 +2171,10 @@ namespace PISMO
             Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut,
             int limit = 0)
         {
+            // Без связи — последнее, что видели в этом канале.
+            if (ConnectionGuard.Offline)
+                return OfflineStore.Load(OfflineStore.ChannelKey(channel)) ?? new DataTable();
+
             try
             {
                 string replyCols = _replyColOk
@@ -2174,6 +2206,7 @@ namespace PISMO
                 using var cmd = new MySqlCommand(finalSql, conn);
                 cmd.Parameters.AddWithValue("@c", channel);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
+                OfflineStore.Save(OfflineStore.ChannelKey(channel), dt);
 
                 if (media && mediaOut != null)
                     LoadChannelMedia(conn, dt, mediaOut);

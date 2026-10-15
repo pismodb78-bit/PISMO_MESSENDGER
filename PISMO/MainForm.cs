@@ -2582,7 +2582,37 @@ namespace PISMO
 
                 var dt = new DataTable();
                 new MySqlDataAdapter(cmd).Fill(dt);
+                OfflineStore.Save(OfflineStore.ChatsKey, dt);
 
+                BuildConversationCards(dt, myId, keepScroll);
+            }
+            catch (Exception ex)
+            {
+                // БЕЗ СВЯЗИ ПОКАЗЫВАЕМ ПОСЛЕДНЕЕ, ЧТО ВИДЕЛИ.
+                //
+                // Пустой список выглядит так, будто переписок нет вовсе, и
+                // открыть по нему нечего — хотя сообщения и вложения лежат
+                // на диске. Снимок списка чатов сохраняется при каждой
+                // удачной загрузке, этого довольно, чтобы зайти в переписку
+                // и читать её дальше.
+                var cached = OfflineStore.Load(OfflineStore.ChatsKey);
+                if (cached != null && cached.Rows.Count > 0)
+                {
+                    try { BuildConversationCards(cached, myId, keepScroll); }
+                    catch { }
+                    return;
+                }
+                MessageBox.Show("Ошибка загрузки диалогов: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Карточки списка чатов по готовой выборке. Отдельно от загрузки,
+        /// потому что рисовать приходится и то, что пришло из базы, и то, что
+        /// сохранено на диске для работы без связи.
+        /// </summary>
+        private void BuildConversationCards(System.Data.DataTable dt, int myId, int keepScroll)
+        {
                 // Пометка «не в друзьях» на карточках написавших не-друзей.
                 var friendIds = FriendsRepository.AcceptedIds(myId);
 
@@ -2594,7 +2624,7 @@ namespace PISMO
                 // его из памяти, а сверку с базой заводим в фоне — она сама
                 // придерживает себя, чтобы не ходить на сервер каждые две с
                 // половиной секунды.
-                ChatPins.EnsureFresh();
+                try { ChatPins.EnsureFresh(); } catch { }
                 var ordered = new List<DataRow>();
                 foreach (DataRow row in dt.Rows)
                     if (ChatPins.IsPinned(Convert.ToInt32(row["id"]))) ordered.Add(row);
@@ -2618,11 +2648,6 @@ namespace PISMO
                 try { ChatScroll.ApplyDarkScrollbar(pnlUserList); } catch { }   // тёмная полоса и в списке контактов
                 try { BeginInvoke(new Action(() => ChatScroll.ApplyDarkScrollbar(pnlUserList))); } catch { }
                 try { PresenceTick(); } catch { } // разово обновить статусы под список
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Ошибка загрузки диалогов: " + ex.Message);
-            }
         }
 
         /// <summary>Окно поиска и добавления друзей; после изменений — перезагрузка списка.</summary>
@@ -2816,6 +2841,46 @@ namespace PISMO
         // ════════════════════════════════════════════════════════════════
         //  ГРУППОВЫЕ ЧАТЫ — ЗАГРУЗКА СПИСКА
         // ════════════════════════════════════════════════════════════════
+        /// <summary>
+        /// Карточки групп по готовой выборке — та же отрисовка и для данных
+        /// из базы, и для сохранённых на диске (работа без связи).
+        /// </summary>
+        private void BuildGroupCards(System.Data.DataTable dt,
+                                     System.Collections.Generic.List<int> needGroupIcons)
+        {
+            if (dt.Rows.Count == 0) return;
+                var lblHeader = new Label
+                {
+                    Text = "ГРУППЫ",
+                    Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
+                    ForeColor = Color.FromArgb(114, 118, 125),
+                    AutoSize = false,
+                    Width = CardWidth,
+                    Height = 24,
+                    Padding = new Padding(10, 8, 0, 0)
+                };
+                pnlUserList.Controls.Add(lblHeader);
+
+                foreach (DataRow row in dt.Rows)
+                {
+                    int gid = Convert.ToInt32(row["id"]);
+                    string name = row["name"].ToString();
+                    string lastMsg = row["last_msg"] == DBNull.Value ? "" : Crypto.Dec(row["last_msg"].ToString());
+                    int members = Convert.ToInt32(row["member_count"]);
+                    string colorHex = row["avatar_color"] == DBNull.Value ? "#5865F2" : row["avatar_color"].ToString();
+                    bool hasAvatar = dt.Columns.Contains("has_avatar")
+                                     && row["has_avatar"] != DBNull.Value
+                                     && Convert.ToInt32(row["has_avatar"]) != 0;
+
+                    // Картинку берём из памяти; если её там нет или она
+                    // протухла — дочитаем в фоне и перерисуем карточку.
+                    if (hasAvatar && !GroupLook.Fresh(gid)) needGroupIcons.Add(gid);
+                    else if (!hasAvatar) GroupLook.Remember(gid, null);
+
+                    AddGroupCard(gid, name, lastMsg, members, colorHex, hasAvatar);
+                }
+        }
+
         private void LoadGroups()
         {
             int myId = UserSession.EffectiveId;
@@ -2865,42 +2930,22 @@ namespace PISMO
                     new MySqlDataAdapter(cmd).Fill(dt);
                 }
 
+                OfflineStore.Save(OfflineStore.GroupsKey, dt);
                 if (dt.Rows.Count == 0) return;
 
-                var lblHeader = new Label
-                {
-                    Text = "ГРУППЫ",
-                    Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
-                    ForeColor = Color.FromArgb(114, 118, 125),
-                    AutoSize = false,
-                    Width = CardWidth,
-                    Height = 24,
-                    Padding = new Padding(10, 8, 0, 0)
-                };
-                pnlUserList.Controls.Add(lblHeader);
-
-                foreach (DataRow row in dt.Rows)
-                {
-                    int gid = Convert.ToInt32(row["id"]);
-                    string name = row["name"].ToString();
-                    string lastMsg = row["last_msg"] == DBNull.Value ? "" : Crypto.Dec(row["last_msg"].ToString());
-                    int members = Convert.ToInt32(row["member_count"]);
-                    string colorHex = row["avatar_color"] == DBNull.Value ? "#5865F2" : row["avatar_color"].ToString();
-                    bool hasAvatar = dt.Columns.Contains("has_avatar")
-                                     && row["has_avatar"] != DBNull.Value
-                                     && Convert.ToInt32(row["has_avatar"]) != 0;
-
-                    // Картинку берём из памяти; если её там нет или она
-                    // протухла — дочитаем в фоне и перерисуем карточку.
-                    if (hasAvatar && !GroupLook.Fresh(gid)) needGroupIcons.Add(gid);
-                    else if (!hasAvatar) GroupLook.Remember(gid, null);
-
-                    AddGroupCard(gid, name, lastMsg, members, colorHex, hasAvatar);
-                }
+                BuildGroupCards(dt, needGroupIcons);
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Ошибка загрузки групп: " + ex.Message);
+                // Как и со списком чатов: без связи показываем последнее
+                // виденное, иначе группы просто исчезают с экрана.
+                var cached = OfflineStore.Load(OfflineStore.GroupsKey);
+                if (cached != null && cached.Rows.Count > 0)
+                {
+                    try { BuildGroupCards(cached, needGroupIcons); } catch { }
+                }
+                else if (!ConnectionGuard.Offline)
+                    MessageBox.Show("Ошибка загрузки групп: " + ex.Message);
             }
 
             // Картинки читаем в фоне и перерисовываем список один раз, когда
