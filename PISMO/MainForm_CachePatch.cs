@@ -180,6 +180,14 @@ namespace PISMO
             // уже нарисовано.
             if (ConnectionGuard.Offline)
             {
+                // Сначала постоянный кеш переписки: в нём лежит ВСЯ долистанная
+                // история, а не последняя страница. Благодаря этому прокрутка
+                // вверх работает и без связи — ровно до того места, докуда
+                // дочитали при ней.
+                var all = MessageCache.Load(MessageCache.DirectKey(myId, themId));
+                if (all != null && all.Rows.Count > 0)
+                    return limit > 0 ? MainForm.TakeLastRows(all, limit) : all;
+
                 var saved = OfflineStore.Load(OfflineStore.DmKey(themId));
                 if (saved != null && saved.Rows.Count > 0) return saved;
                 throw new TimeoutException("Нет связи с сервером");
@@ -254,6 +262,9 @@ namespace PISMO
         /// </summary>
         public static DataTable LoadMessagesOlderThan(int myId, int themId, int beforeId, int limit)
         {
+            if (ConnectionGuard.Offline)
+                return OlderFromCache(MessageCache.DirectKey(myId, themId), beforeId, limit);
+
             if (beforeId <= 0 || limit <= 0) return new DataTable();
             using var conn = DBHelper.OpenConnection();
 
@@ -300,6 +311,9 @@ namespace PISMO
         /// <summary>То же для группы.</summary>
         public static DataTable LoadGroupMessagesOlderThan(int groupId, int beforeId, int limit)
         {
+            if (ConnectionGuard.Offline)
+                return OlderFromCache(MessageCache.GroupKey(groupId), beforeId, limit);
+
             if (beforeId <= 0 || limit <= 0) return new DataTable();
             using var conn = DBHelper.OpenConnection();
             string inner = @"
@@ -337,6 +351,10 @@ namespace PISMO
         {
             if (ConnectionGuard.Offline)
             {
+                var all = MessageCache.Load(MessageCache.GroupKey(groupId));
+                if (all != null && all.Rows.Count > 0)
+                    return limit > 0 ? MainForm.TakeLastRows(all, limit) : all;
+
                 var saved = OfflineStore.Load(OfflineStore.GroupKey(groupId));
                 if (saved != null && saved.Rows.Count > 0) return saved;
                 throw new TimeoutException("Нет связи с сервером");
@@ -472,6 +490,31 @@ namespace PISMO
                 return data;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Страница истории ИЗ КЕША — для прокрутки вверх без связи.
+        /// </summary>
+        /// <remarks>
+        /// Постоянный кеш переписки хранит всю долистанную историю, но лента
+        /// просит её постранично и у базы. Без связи такой запрос падал, и
+        /// прокрутка упиралась в последние сорок сообщений — хотя остальные
+        /// лежали на диске. Здесь та же страница собирается из кеша: берём
+        /// всё, что старше указанного сообщения, и отдаём хвост нужной длины.
+        /// </remarks>
+        private static DataTable OlderFromCache(string cacheKey, int beforeId, int limit)
+        {
+            var all = MessageCache.Load(cacheKey);
+            if (all == null || all.Rows.Count == 0) return new DataTable();
+
+            var older = all.Clone();
+            foreach (DataRow r in all.Rows)
+            {
+                int id;
+                try { id = Convert.ToInt32(r["id"]); } catch { continue; }
+                if (id < beforeId) older.ImportRow(r);
+            }
+            return limit > 0 ? MainForm.TakeLastRows(older, limit) : older;
         }
 
         /// <summary>

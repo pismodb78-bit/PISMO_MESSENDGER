@@ -2205,6 +2205,12 @@ namespace PISMO
             // уже показанного.
             if (ConnectionGuard.Offline)
             {
+                // Как и в переписке: сначала постоянный кеш канала — в нём
+                // лежит вся долистанная история, а не последняя страница.
+                var all = MessageCache.Load(MessageCache.ChannelKey(channel));
+                if (all != null && all.Rows.Count > 0)
+                    return limit > 0 ? MainForm.TakeLastRows(all, limit) : all;
+
                 var saved = OfflineStore.Load(OfflineStore.ChannelKey(channel));
                 return saved != null && saved.Rows.Count > 0 ? saved : null;
             }

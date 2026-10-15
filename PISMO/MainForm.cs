@@ -2542,6 +2542,19 @@ namespace PISMO
 
         private void LoadConversations()
         {
+            // БЕЗ СВЯЗИ И БЕЗ СНИМКА — НЕ ТРОГАЕМ ТО, ЧТО УЖЕ ПОКАЗАНО.
+            //
+            // Загрузка начинается с очистки списка, и это правильно, пока
+            // следом его есть чем заполнить. Без связи заполнять нечем, и
+            // нажатие «обновить» стирало с экрана все переписки — хуже, чем
+            // если бы оно вообще ничего не делало. Снимок есть — покажем его,
+            // как и раньше; снимка нет — просто оставляем экран в покое.
+            if (ConnectionGuard.Offline)
+            {
+                var snapshot = OfflineStore.Load(OfflineStore.ChatsKey);
+                if ((snapshot == null || snapshot.Rows.Count == 0) && _userPanels.Count > 0) return;
+            }
+
             try { ChatScroll.Attach(pnlUserList); ChatScroll.KillHorizontal(pnlSidebar); } catch { }   // тонкий верт. + без гор. в сайдбаре
             int keepScroll = SidebarScroll;
             pnlUserList.Controls.Clear();
@@ -2940,6 +2953,14 @@ namespace PISMO
         {
             int myId = UserSession.EffectiveId;
             var needGroupIcons = new System.Collections.Generic.List<int>();
+
+            // Без связи и без снимка группы тоже не стираем — см. пояснение
+            // в LoadConversations.
+            if (ConnectionGuard.Offline)
+            {
+                var snapshot = OfflineStore.Load(OfflineStore.GroupsKey);
+                if ((snapshot == null || snapshot.Rows.Count == 0) && _groupPanels.Count > 0) return;
+            }
 
             try
             {
