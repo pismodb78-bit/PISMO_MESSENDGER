@@ -5602,12 +5602,10 @@ namespace PISMO
                 {
                     const int circleD = 220;
                     int circleId = msgId; bool circleGroup = isGroup;
-                    var player = (videoBytes is { Length: > 0 }
-                            ? new VideoCirclePlayer(videoBytes, circleD)
-                            : new VideoCirclePlayer(() => LoadVideoBytes(circleId, circleGroup), circleD))
-                    {
-                        Location = new Point(PAD, innerY)
-                    };
+                    var player = videoBytes is { Length: > 0 }
+                        ? new VideoCirclePlayer(videoBytes, circleD)
+                        : new VideoCirclePlayer(() => LoadVideoBytes(circleId, circleGroup), circleD);
+                    player.Location = new Point(PAD, innerY);
                     bubble.Controls.Add(player);
                     innerY += circleD + 6;
                 }
