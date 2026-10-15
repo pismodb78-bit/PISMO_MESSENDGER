@@ -38,16 +38,22 @@ namespace PISMO
         private const int MaxAttempts = 6;
 
         /// <summary>
-        /// Порция одной дозаписи.
+        /// Порция дозаписи — величина подстраивающаяся.
         /// </summary>
         /// <remarks>
         /// Одним запросом на весь файл заливать нельзя: чем дольше идёт
         /// запрос, тем вернее он где-нибудь оборвётся — у оператора, в NAT,
         /// на смене сети, — и обрыв стоит всего, что ушло сверх
-        /// подтверждённого. Порция в несколько мегабайт — это запрос на
-        /// секунды: обрыв стоит одной порции, остальное сервер уже принял.
+        /// подтверждённого.
+        ///
+        /// Но и постоянный размер не годится. Бывает связь, которая рвёт
+        /// соединение каждые сто килобайт: крупная порция там не доезжает
+        /// никогда. Поэтому порция ужимается вдвое на каждом обрыве и растёт
+        /// вдвое на каждой дошедшей — связь сама выбирает размер, при
+        /// котором её хватает.
         /// </remarks>
-        private const int Chunk = 4 * 1024 * 1024;
+        private const int ChunkMax = 4 * 1024 * 1024;
+        private const int ChunkMin = 64 * 1024;
 
         private static readonly HttpClient Http = new HttpClient
         {
@@ -215,18 +221,20 @@ namespace PISMO
                 // 2. Досылаем остаток ПОРЦИЯМИ: каждая подтверждается
                 //    сервером, и обрыв стоит только её одной.
                 int attempt = 0;
+                long chunk = ChunkMax;
                 while (offset < data.Length)
                 {
                     ct.ThrowIfCancellationRequested();
-                    long till = Math.Min(offset + Chunk, data.Length);
+                    long before = offset;
+                    long till = Math.Min(offset + chunk, data.Length);
                     try
                     {
                         string key = Patch(id, data, offset, till, onProgress, ct);
                         if (key != null) return UrlOf(key, name);
                         offset = till;
                         onProgress?.Invoke((double)offset / data.Length);
-                        // Порция дошла — счётчик неудач обнуляем: лимит
-                        // попыток про «не движется», а не про длину файла.
+                        // Порция дошла целиком — можно осмелеть.
+                        chunk = Math.Min(ChunkMax, chunk * 2);
                         attempt = 0;
                     }
                     catch (OperationCanceledException) { throw; }
@@ -240,13 +248,28 @@ namespace PISMO
                     }
                     catch
                     {
-                        if (++attempt > MaxAttempts) return null;
-                        // Связь не возвращается мгновенно: ждём дольше с
-                        // каждым разом, а не долбимся в один и тот же обрыв.
-                        Thread.Sleep(2000 * attempt);
+                        // ОБРЫВ ПОСРЕДИ ПОРЦИИ — ещё не беда. Сервер оставляет
+                        // у себя всё, что успел принять, и спрашиваем мы
+                        // именно его. Принятое выросло — отправка ИДЁТ, просто
+                        // связь рваная: такой обрыв не тратит попытку, иначе
+                        // на сети, рвущейся каждые пару мегабайт, большой файл
+                        // сдавался бы, проехав едва десятую часть.
                         long? have = ResolveOffset(id, ct);
                         if (have == null) return null;
-                        offset = have.Value;
+                        if (have.Value > before)
+                        {
+                            offset = Math.Max(0, Math.Min(have.Value, data.Length));
+                            attempt = 0;
+                        }
+                        else
+                        {
+                            if (++attempt > MaxAttempts) return null;
+                            // Стоим на месте — ждём дольше с каждым разом.
+                            Thread.Sleep(2000 * attempt);
+                            offset = Math.Max(0, Math.Min(have.Value, data.Length));
+                        }
+                        // На рвущейся связи короткий запрос доезжает вернее.
+                        chunk = Math.Max(ChunkMin, chunk / 2);
                         onProgress?.Invoke((double)offset / data.Length);
                     }
                 }
