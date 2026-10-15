@@ -2623,6 +2623,18 @@ namespace PISMO
                 OfflineStore.Save(OfflineStore.ChatsKey, dt);
 
                 BuildConversationCards(dt, myId, keepScroll);
+
+                // Готовим переписки к работе без связи: пока связь есть,
+                // последние сообщения всех чатов из списка тихо оседают на
+                // диске. Иначе в офлайне открывались бы только те, куда
+                // человек успел заглянуть сам.
+                try
+                {
+                    var dmIds = new List<int>();
+                    foreach (DataRow r in dt.Rows) dmIds.Add(Convert.ToInt32(r["id"]));
+                    OfflinePrefetch.Schedule(myId, dmIds, _prefetchGroupIds);
+                }
+                catch { }
             }
             catch (Exception ex)
             {
@@ -2883,10 +2895,14 @@ namespace PISMO
         /// Карточки групп по готовой выборке — та же отрисовка и для данных
         /// из базы, и для сохранённых на диске (работа без связи).
         /// </summary>
+        /// <summary>Группы из последнего списка — для подготовки к офлайну.</summary>
+        private readonly List<int> _prefetchGroupIds = new();
+
         private void BuildGroupCards(System.Data.DataTable dt,
                                      System.Collections.Generic.List<int> needGroupIcons)
         {
             if (dt.Rows.Count == 0) return;
+            _prefetchGroupIds.Clear();
                 var lblHeader = new Label
                 {
                     Text = "ГРУППЫ",
@@ -2915,6 +2931,7 @@ namespace PISMO
                     if (hasAvatar && !GroupLook.Fresh(gid)) needGroupIcons.Add(gid);
                     else if (!hasAvatar) GroupLook.Remember(gid, null);
 
+                    _prefetchGroupIds.Add(gid);
                     AddGroupCard(gid, name, lastMsg, members, colorHex, hasAvatar);
                 }
         }

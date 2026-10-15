@@ -132,8 +132,18 @@ namespace PISMO
             var needIcons = new System.Collections.Generic.List<int>();
             try
             {
-                using var conn = DBHelper.OpenConnection();
                 var dt = new DataTable();
+
+                // Без связи рельс берём из сохранённого: иначе серверы
+                // исчезают с экрана целиком, хотя их каналы и переписки лежат
+                // на диске и открылись бы.
+                if (ConnectionGuard.Offline)
+                {
+                    dt = OfflineStore.Load(OfflineStore.ServersKey) ?? new DataTable();
+                }
+                else
+                {
+                using var conn = DBHelper.OpenConnection();
                 // Саму картинку не тянем: в рейле нужен только факт её наличия,
                 // а блоб за каждым сервером при каждой пересборке — это мегабайты
                 // по сети на ровном месте.
@@ -166,6 +176,10 @@ namespace PISMO
                     cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
                     new MySqlDataAdapter(cmd).Fill(dt);
                 }
+                OfflineStore.Save(OfflineStore.ServersKey, dt);
+                OfflinePrefetch.ScheduleServers(dt);
+                }
+
                 bool hasLook = dt.Columns.Contains("avatar_color");
                 foreach (DataRow r in dt.Rows)
                 {
