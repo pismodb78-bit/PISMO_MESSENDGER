@@ -138,6 +138,12 @@ namespace PISMO
         {
             b.ConnectionReset = false;
             b.ConnectionIdlePingTime = 30;
+            // Ждать подключения пятнадцать секунд (значение по умолчанию) —
+            // слишком долго для программы, которая ходит в базу прямо из
+            // потока интерфейса: один выдернутый кабель, и окно стоит.
+            // Пяти секунд с запасом хватает любому живому серверу, а мёртвый
+            // распознаётся втрое быстрее.
+            b.ConnectionTimeout = 5;
         }
 
         /// <summary>Удаляет из строки ip.txt ключи, которые не относятся к
@@ -309,8 +315,29 @@ namespace PISMO
             catch { return OpenConnection(); }
         }
 
+        /// <summary>
+        /// Соединение с базой.
+        /// </summary>
+        /// <remarks>
+        /// БЫСТРЫЙ ОТКАЗ, ПОКА СВЯЗИ ЗАВЕДОМО НЕТ. Выдернутый кабель — это не
+        /// мгновенная ошибка: попытка подключиться висит до таймаута, и всё
+        /// это время интерфейс стоит, потому что запросы идут прямо из него.
+        /// Таймеры опроса подкидывают новые попытки каждые пару секунд, и
+        /// окно перестаёт отзываться совсем — ровно то, что выглядит как
+        /// «приложение зависло».
+        ///
+        /// Поэтому, пока сторож знает, что связи нет, в сеть мы не лезем:
+        /// отказ приходит сразу. Единственный, кто продолжает пробовать, —
+        /// сам сторож, раз в 2,5 секунды и в фоне (см. <see cref="OpenProbe"/>).
+        /// Он же и снимет запрет, как только база ответит.
+        /// </remarks>
         public static MySqlConnection OpenConnection()
         {
+            // Своё исключение, а не драйверное: конструкторы MySqlException
+            // закрыты, да и смысл здесь другой — мы не пробовали и не ждали.
+            if (ConnectionGuard.Offline)
+                throw new TimeoutException("Нет связи с сервером");
+
             var conn = new MySqlConnection(_connectionString);
             var sw = Perf.Enabled ? System.Diagnostics.Stopwatch.StartNew() : null;
             try
@@ -323,7 +350,28 @@ namespace PISMO
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[DBHelper] ✗ ОШИБКА ПОДКЛЮЧЕНИЯ: {ex.Message}");
-                ConnectionGuard.NotifyLost();  // нет связи — показать окно + начать переподключение
+                ConnectionGuard.NotifyLost();  // нет связи — надпись в шапке + переподключение
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Настоящая попытка подключиться — в обход быстрого отказа. Только
+        /// для сторожа: иначе запрет, который он должен снять, не дал бы ему
+        /// и попробовать.
+        /// </summary>
+        internal static MySqlConnection OpenProbe()
+        {
+            var conn = new MySqlConnection(_connectionString);
+            try
+            {
+                conn.Open();
+                ConnectionGuard.NotifyOk();
+                return conn;
+            }
+            catch
+            {
+                try { conn.Dispose(); } catch { }
                 throw;
             }
         }

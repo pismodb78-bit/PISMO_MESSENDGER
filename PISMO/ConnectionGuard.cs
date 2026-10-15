@@ -48,6 +48,13 @@ namespace PISMO
         /// <summary>Текущее состояние связи.</summary>
         public static Status Current => _status;
 
+        /// <summary>
+        /// Связь заведомо потеряна. По этому признаку обращения к базе
+        /// отказываются сразу, не дожидаясь таймаута: именно ожидание
+        /// таймаутов в потоке интерфейса и выглядит как зависшее окно.
+        /// </summary>
+        public static bool Offline => _lost;
+
         /// <summary>Состояние изменилось — шапке пора обновиться.</summary>
         public static event Action<Status> Changed;
 
@@ -151,7 +158,9 @@ namespace PISMO
         {
             System.Threading.Tasks.Task.Run(() =>
             {
-                try { using var c = DBHelper.OpenConnection(); }
+                // Проба идёт в обход быстрого отказа — иначе запрет, который
+                // она должна снять, не дал бы ей и попробовать.
+                try { using var c = DBHelper.OpenProbe(); }
                 catch { /* ещё нет связи — ждём следующего тика */ }
             });
         }

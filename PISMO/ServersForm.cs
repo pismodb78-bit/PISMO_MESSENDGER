@@ -2480,10 +2480,46 @@ namespace PISMO
                                 int mw = 420, mh = 360;
                                 double rr = Math.Min(2.0, Math.Min((double)mw / img.Width, (double)mh / img.Height));
                                 int dw = Math.Max(1, (int)(img.Width * rr)), dh = Math.Max(1, (int)(img.Height * rr));
-                                var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(LEFT, y), Cursor = Cursors.Hand, Image = img };
-                                var cap = sm.img;
-                                pb.Click += (s, e) => MainForm.ShowImageFullscreen(cap);
-                                pb.Disposed += (s, e) => { try { img.Dispose(); ms.Dispose(); } catch { } };
+
+                                // В ленте держим уменьшенную копию, как и в
+                                // переписке: в памяти картинка стоит не свой
+                                // вес в файле, а ширину на высоту на четыре
+                                // байта — снимок с телефона тянет на полсотни
+                                // мегабайт, показываясь в рамке 420×360.
+                                Image shown = img;
+                                try
+                                {
+                                    int tw = Math.Min(dw * 2, img.Width);
+                                    int th = Math.Max(1, (int)(img.Height * (tw / (double)img.Width)));
+                                    if (tw < img.Width)
+                                    {
+                                        var small = new Bitmap(tw, th,
+                                            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                                        using (var g = Graphics.FromImage(small))
+                                        {
+                                            g.InterpolationMode =
+                                                System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                                            g.DrawImage(img, 0, 0, tw, th);
+                                        }
+                                        shown = small;
+                                        img.Dispose();
+                                        ms.Dispose();
+                                    }
+                                }
+                                catch { shown = img; }
+
+                                var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(LEFT, y), Cursor = Cursors.Hand, Image = shown };
+                                int capId = id;
+                                pb.Click += (s, e) =>
+                                {
+                                    // Байты — в момент нажатия, а не в
+                                    // обработчике на всё время жизни ленты.
+                                    var full = MediaCache.Get(capId, "simg", null);
+                                    if ((full == null || full.Length == 0)
+                                        && _serverMedia.TryGetValue(capId, out var cur)) full = cur.img;
+                                    if (full is { Length: > 0 }) MainForm.ShowImageFullscreen(full);
+                                };
+                                pb.Disposed += (s, e) => { try { shown.Dispose(); } catch { } try { ms.Dispose(); } catch { } };
                                 holder.Controls.Add(pb); y += dh + 6;
                             }
                             catch { }

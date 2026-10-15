@@ -5607,13 +5607,23 @@ namespace PISMO
                         var frames = new Bitmap[frameCount];
                         try
                         {
+                            // Кадры тоже держим под размер показа. Полный
+                            // размер здесь умножается на их количество: гифка
+                            // 800×800 на полсотни кадров — это сто с лишним
+                            // мегабайт в памяти на одно сообщение.
+                            int fw = Math.Min(dw, gifBmp.Width);
+                            int fh = Math.Max(1, (int)(gifBmp.Height * (fw / (double)gifBmp.Width)));
                             for (int i = 0; i < frameCount; i++)
                             {
                                 gifBmp.SelectActiveFrame(dimension, i);
-                                var f = new Bitmap(gifBmp.Width, gifBmp.Height,
+                                var f = new Bitmap(fw, fh,
                                     System.Drawing.Imaging.PixelFormat.Format32bppArgb);
                                 using (var g = Graphics.FromImage(f))
-                                    g.DrawImage(gifBmp, 0, 0, gifBmp.Width, gifBmp.Height);
+                                {
+                                    g.InterpolationMode =
+                                        System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                                    g.DrawImage(gifBmp, 0, 0, fw, fh);
+                                }
                                 frames[i] = f;
                             }
                         }
@@ -5659,12 +5669,71 @@ namespace PISMO
                     }
                     else
                     {
-                        pb.Image = img;
-                        pb.Disposed += (s, e) => { img.Dispose(); ms?.Dispose(); };
+                        // В ленте держим УМЕНЬШЕННУЮ копию, а не оригинал.
+                        //
+                        // Снимок с телефона — это 12 мегапикселей, и в памяти
+                        // он занимает не те три мегабайта, что весит файл, а
+                        // ширину на высоту на четыре байта: под пятьдесят.
+                        // Тридцать таких в одной переписке — полтора гигабайта,
+                        // причём показываются они в рамке 420×360. Копия под
+                        // размер показа (с запасом на экраны высокой чёткости)
+                        // стоит пару мегабайт и выглядит так же.
+                        Image shown = img;
+                        try
+                        {
+                            int tw = Math.Min(dw * 2, img.Width);
+                            int th = Math.Max(1, (int)(img.Height * (tw / (double)img.Width)));
+                            if (tw < img.Width)
+                            {
+                                var small = new Bitmap(tw, th,
+                                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                                using (var g = Graphics.FromImage(small))
+                                {
+                                    g.InterpolationMode =
+                                        System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                                    g.DrawImage(img, 0, 0, tw, th);
+                                }
+                                shown = small;
+                                img.Dispose();
+                                ms?.Dispose();
+                                ms = null;
+                            }
+                        }
+                        catch { shown = img; }
+
+                        pb.Image = shown;
+                        var keepMs = ms;
+                        pb.Disposed += (s, e) =>
+                        {
+                            try { shown.Dispose(); } catch { }
+                            try { keepMs?.Dispose(); } catch { }
+                        };
                     }
 
-                    var cap = imgBytes;
-                    pb.Click += (s, e) => ShowImageFullscreen(cap);
+                    // Исходные байты в обработчике НЕ держим: пока пузырь жив,
+                    // вместе с ним в памяти жила бы и вся страница картинок в
+                    // их полном весе. Для показа во весь экран они нужны ровно
+                    // в момент нажатия — тогда и возьмём, из кеша или из базы.
+                    int capId = msgId;
+                    bool capGroup = isGroup;
+                    string capName = fileName;
+                    pb.Click += (s, e) =>
+                    {
+                        var cached = MediaCache.Get(capId, "img", capName);
+                        if (cached is { Length: > 0 }) { ShowImageFullscreen(cached); return; }
+                        System.Threading.Tasks.Task.Run(() =>
+                        {
+                            byte[] got = null;
+                            try
+                            {
+                                got = LoadMediaForMessage(capId, capName, true, false, false, false,
+                                                          capGroup).img;
+                            }
+                            catch { }
+                            if (got is { Length: > 0 } && !IsDisposed && IsHandleCreated)
+                                try { BeginInvoke(new Action(() => ShowImageFullscreen(got))); } catch { }
+                        });
+                    };
                     bubble.Controls.Add(pb);
                     innerY += dh + 6;
                 }
