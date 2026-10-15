@@ -449,6 +449,38 @@ namespace PISMO
             catch { return null; }
         }
 
+        /// <summary>
+        /// Голосовое по требованию: сначала кеш, потом база. Тот же путь, что
+        /// и у вложений-файлов, — лента ничего не поднимает в память заранее.
+        /// </summary>
+        public static byte[] LoadAudioBytes(int msgId, bool isGroup) =>
+            LoadBlobOnDemand(msgId, isGroup, "audio_data", "audio");
+
+        /// <summary>Кружок по требованию — так же, как голосовое.</summary>
+        public static byte[] LoadVideoBytes(int msgId, bool isGroup) =>
+            LoadBlobOnDemand(msgId, isGroup, "video_data", "video");
+
+        private static byte[] LoadBlobOnDemand(int msgId, bool isGroup, string column, string kind)
+        {
+            try
+            {
+                var cached = MediaCache.Get(msgId, kind, null);
+                if (cached is { Length: > 0 }) return cached;
+
+                string table = isGroup ? "group_messages" : "messages";
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand($"SELECT {column} FROM {table} WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", msgId);
+                cmd.CommandTimeout = 600;
+                using var rd = cmd.ExecuteReader();
+                if (!rd.Read() || rd.IsDBNull(0)) return null;
+                var data = (byte[])rd[0];
+                if (data is { Length: > 0 }) MediaCache.Put(msgId, kind, data);
+                return data;
+            }
+            catch { return null; }
+        }
+
         /// <param name="cacheOnly">
         /// true — брать ТОЛЬКО из кеша, в базу не ходить.
         ///
@@ -479,9 +511,14 @@ namespace PISMO
             bool needVideo = hasVideo && !MediaCache.Has(msgId, "video", null);
             bool needFile  = false;   // из БД файл тянем только по клику
 
+            // Картинку поднимаем — её видно сразу, и она тут же ужимается до
+            // размера показа. Голосовое и кружок — нет: их слушают и смотрят
+            // по одному, а в памяти они стоят целиком, и кружок вдобавок
+            // раскладывается на кадры. Берут их теперь сами плееры, по
+            // нажатию (см. LoadAudioBytes/LoadVideoBytes).
             byte[] img      = hasImg   ? MediaCache.Get(msgId, "img",   fileName) : null;
-            byte[] audio    = hasAudio ? MediaCache.Get(msgId, "audio", null)     : null;
-            byte[] video    = hasVideo ? MediaCache.Get(msgId, "video", null)     : null;
+            byte[] audio    = null;
+            byte[] video    = null;
             // ВЛОЖЕНИЕ-ФАЙЛ В ПАМЯТЬ ПРИ ОТРИСОВКЕ НЕ ПОДНИМАЕМ — даже из кеша.
             //
             // Считалось, что взять его из локального кеша «бесплатно»: файл

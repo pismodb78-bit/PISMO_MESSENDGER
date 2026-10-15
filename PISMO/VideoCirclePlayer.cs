@@ -13,18 +13,107 @@ namespace PISMO
     /// </summary>
     public class VideoCirclePlayer : Panel
     {
-        private readonly VideoCircleCodec.DecodedVideo _video;
+        private VideoCircleCodec.DecodedVideo _video;
         private int _frameIndex = 0;
-        private readonly System.Windows.Forms.Timer _playTimer;
+        private System.Windows.Forms.Timer _playTimer;
         private bool _isPlaying = false;
+
+        /// <summary>Откуда взять байты, если кружок ещё не раскрыт.</summary>
+        private Func<byte[]> _loader;
+        private bool _loading;
+        private readonly int _diameter;
 
         private WaveOutEvent _waveOut;
         private MemoryStream _audioMs;
 
-        private readonly Label _playIcon;
-        private readonly Label _durationLabel;
+        private Label _playIcon;
+        private Label _durationLabel;
+
+        /// <summary>
+        /// Ленивый кружок: в ленте — только круг с кнопкой, байты и кадры
+        /// появляются по нажатию.
+        /// </summary>
+        /// <remarks>
+        /// Раскрытый кружок — это ВСЕ его кадры картинками в памяти. Десяток
+        /// кружков в переписке — сотни мегабайт, и набирались они при каждом
+        /// открытии чата, хотя смотрят обычно один. Поэтому в ленте висит
+        /// заглушка, а раскрывается кружок там же, где и нажимается.
+        /// </remarks>
+        public VideoCirclePlayer(Func<byte[]> loader, int diameter = 180)
+        {
+            _loader = loader;
+            _diameter = diameter;
+
+            Size = new Size(diameter, diameter);
+            BackColor = Color.FromArgb(32, 34, 37);
+            Cursor = Cursors.Hand;
+            Region = new Region(GetCirclePath(diameter));
+
+            _playIcon = new Label
+            {
+                Text = "▶",
+                Font = new Font("Segoe UI", 20f, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                AutoSize = false,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Size = new Size(diameter, diameter),
+                Location = new Point(0, 0)
+            };
+            _durationLabel = new Label
+            {
+                Text = "кружок",
+                Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(120, 0, 0, 0),
+                AutoSize = false,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Size = new Size(54, 20),
+                Location = new Point((diameter - 54) / 2, diameter - 26)
+            };
+            Controls.Add(_playIcon);
+            Controls.Add(_durationLabel);
+
+            _playIcon.Click += (s, e) => Unfold();
+            Click += (s, e) => Unfold();
+        }
+
+        /// <summary>Достаёт байты и собирает настоящий плеер поверх заглушки.</summary>
+        private async void Unfold()
+        {
+            if (_loading || _loader == null) return;
+            _loading = true;
+            _playIcon.Text = "…";
+
+            var loader = _loader;
+            byte[] data = null;
+            await System.Threading.Tasks.Task.Run(() =>
+            {
+                try { data = loader(); } catch { }
+            });
+            if (IsDisposed) return;
+
+            if (data == null || data.Length == 0)
+            {
+                _playIcon.Text = "▶";
+                _durationLabel.Text = "нет";
+                _loading = false;
+                return;
+            }
+
+            _loader = null;
+            try { Controls.Clear(); } catch { }
+            try { _playIcon.Dispose(); _durationLabel.Dispose(); } catch { }
+            Build(data, _diameter);
+            TogglePlay();
+        }
 
         public VideoCirclePlayer(byte[] videoData, int diameter = 180)
+        {
+            Build(videoData, diameter);
+        }
+
+        private void Build(byte[] videoData, int diameter)
         {
             _video = VideoCircleCodec.Decode(videoData);
 

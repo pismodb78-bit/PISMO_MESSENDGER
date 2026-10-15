@@ -4312,7 +4312,7 @@ namespace PISMO
 
                 var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
                     fileData, fileName, msgId, isGroup, replyToId, isDeleted, isEdited,
-                    fileSize, readState);
+                    fileSize, readState, hasAudio, hasVideo);
                 bubble.Top = yOffset;
                 PositionBubble(bubble, isMine);
                 bubble.Tag = isMine;
@@ -5465,7 +5465,10 @@ namespace PISMO
                                    int msgId = -1, bool isGroup = false,
                                    int replyToId = 0, bool isDeleted = false,
                                    bool isEdited = false, long fileSize = -1,
-                                   int readState = -1)
+                                   int readState = -1,
+                                   // Байтов у голосового и кружка в ленте теперь нет —
+                                   // есть только признак, что они в сообщении есть.
+                                   bool hasAudio = false, bool hasVideo = false)
         {
             const int MAX_W = 480;
             const int PAD = 12;
@@ -5548,12 +5551,15 @@ namespace PISMO
             }
 
             // Видео-кружочек (приоритет над картинкой/аудио — самодостаточный элемент)
-            if (videoBytes is { Length: > 0 })
+            if (videoBytes is { Length: > 0 } || (hasVideo && msgId > 0))
             {
                 try
                 {
                     const int circleD = 220;
-                    var player = new VideoCirclePlayer(videoBytes, circleD)
+                    int circleId = msgId; bool circleGroup = isGroup;
+                    var player = (videoBytes is { Length: > 0 }
+                            ? new VideoCirclePlayer(videoBytes, circleD)
+                            : new VideoCirclePlayer(() => LoadVideoBytes(circleId, circleGroup), circleD))
                     {
                         Location = new Point(PAD, innerY)
                     };
@@ -5772,10 +5778,15 @@ namespace PISMO
 
             // Голосовое сообщение — тем же плеером, что и музыка: с полосой
             // перемотки, временем и громкостью вместо одной кнопки «играть».
-            if (audioBytes is { Length: > 0 })
+            if (audioBytes is { Length: > 0 } || (hasAudio && msgId > 0))
             {
-                var voice = new InlineAudioPlayer(audioBytes, null, "Голосовое", Math.Min(innerW, 340),
-                                                  key: (isGroup ? "gv" : "dv") + msgId)
+                int voiceId = msgId; bool voiceGroup = isGroup;
+                var voice = new InlineAudioPlayer(
+                                  audioBytes is { Length: > 0 } ? audioBytes : null,
+                                  audioBytes is { Length: > 0 } ? null
+                                      : () => LoadAudioBytes(voiceId, voiceGroup),
+                                  "Голосовое", Math.Min(innerW, 340),
+                                  key: (isGroup ? "gv" : "dv") + msgId)
                 {
                     Location = new Point(PAD, innerY),
                     BackColor = isMine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(47, 49, 54)
