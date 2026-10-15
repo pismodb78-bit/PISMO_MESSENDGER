@@ -58,6 +58,13 @@ namespace PISMO
         /// <summary>Состояние изменилось — шапке пора обновиться.</summary>
         public static event Action<Status> Changed;
 
+        /// <summary>
+        /// Связь ВЕРНУЛАСЬ после обрыва. Отдельно от <see cref="Changed"/>:
+        /// то событие приходит и на обычное «обновление закончилось», а
+        /// догонять пропущенное нужно ровно один раз — после обрыва.
+        /// </summary>
+        public static event Action Restored;
+
         /// <summary>Надпись для шапки или null, если всё в порядке.</summary>
         public static string Label => _status switch
         {
@@ -93,6 +100,7 @@ namespace PISMO
                 try { _retryTimer?.Stop(); } catch { }
                 try { _graceTimer?.Stop(); } catch { }
                 Set(_syncing > 0 ? Status.Updating : Status.Ready);
+                try { Restored?.Invoke(); } catch { }
             });
         }
 

@@ -239,8 +239,21 @@ namespace PISMO
             AvatarStore.AvatarLoaded += OnAvatarLoadedForVoice;
 
             WebSocketSignalingClient.Instance.OnMessageReceived += OnWs;
+
+            // Связь вернулась — догоняем пропущенное: без связи окно жило из
+            // сохранённого, а своего круга опроса ждать незачем.
+            void OnRestored()
+            {
+                if (IsDisposed) return;
+                if (InvokeRequired) { try { BeginInvoke(new Action(OnRestored)); } catch { } return; }
+                try { LoadChannels(); } catch { }
+                try { if (_channelId > 0) LoadMessages(); } catch { }
+            }
+            ConnectionGuard.Restored += OnRestored;
+
             FormClosed += (s, e) =>
             {
+                try { ConnectionGuard.Restored -= OnRestored; } catch { }
                 try { WebSocketSignalingClient.Instance.OnMessageReceived -= OnWs; } catch { }
                 try { _refresh.Stop(); _refresh.Dispose(); } catch { }
                 try { AvatarStore.AvatarLoaded -= OnAvatarLoadedForVoice; } catch { }

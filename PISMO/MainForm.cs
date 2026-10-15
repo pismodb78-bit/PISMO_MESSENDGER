@@ -242,6 +242,7 @@ namespace PISMO
             // Заставки во весь экран здесь больше нет: обрыв не повод
             // запирать уже загруженную переписку.
             ConnectionGuard.Changed += _ => ApplyConnectionStatus();
+            ConnectionGuard.Restored += OnConnectionRestored;
             SetupPolling();
             BuildSidebarSearch();
             BuildVoiceDock();           // «Голосовая связь подключена» над профилем (как в Discord)
@@ -2019,6 +2020,43 @@ namespace PISMO
             int totalUnread = current.Values.Sum();
             _titleBase = totalUnread > 0 ? $"● PISMO ({totalUnread} новых)" : "PISMO — Мессенджер";
             ApplyConnectionStatus();
+        }
+
+        /// <summary>
+        /// Связь вернулась — догоняем всё, что пропустили.
+        /// </summary>
+        /// <remarks>
+        /// Пока связи не было, экраны жили из кеша, а сокет событий лежал.
+        /// Сам по себе никто бы не обновился: список чатов ждёт своего круга
+        /// опроса, лента — своего, а события из релея не приходят вовсе, пока
+        /// сокет не поднят. Поэтому поднимаем сокет и перечитываем открытое
+        /// сразу же, как только база снова ответила.
+        /// </remarks>
+        private void OnConnectionRestored()
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action(OnConnectionRestored)); } catch { }
+                return;
+            }
+
+            // Сокет — первым делом: пока он лежит, не приходит ничего, в том
+            // числе чужие сообщения и звонки.
+            try
+            {
+                if (!WebSocketSignalingClient.Instance.IsConnected)
+                    _ = WebSocketSignalingClient.Instance.ConnectAsync(UserSession.EffectiveId);
+            }
+            catch { }
+
+            try { ReloadChatList(); } catch { }
+            try
+            {
+                if (_currentGroupId > 0) LoadGroupMessages();
+                else if (_currentChatPartnerId > 0) LoadMessages();
+            }
+            catch { }
         }
 
         /// <summary>Заголовок окна без пометки о связи.</summary>
