@@ -237,7 +237,11 @@ namespace PISMO
             MediaCache.Init();
             EnableFileDrop(pnlMessages);   // перетаскивание файлов из проводника → прикрепить
             EnableFileDrop(txtMessage);
-            ConnectionGuard.Init(this);   // окно «нет связи с БД» + авто-переподключение
+            ConnectionGuard.Init(this);   // состояние связи с БД + авто-переподключение
+            // Связь — строкой в шапке списка чатов и в заголовке окна.
+            // Заставки во весь экран здесь больше нет: обрыв не повод
+            // запирать уже загруженную переписку.
+            ConnectionGuard.Changed += _ => ApplyConnectionStatus();
             SetupPolling();
             BuildSidebarSearch();
             BuildVoiceDock();           // «Голосовая связь подключена» над профилем (как в Discord)
@@ -2013,12 +2017,70 @@ namespace PISMO
             RefreshListPreviews();
 
             int totalUnread = current.Values.Sum();
-            string title = totalUnread > 0 ? $"● PISMO ({totalUnread} новых)" : "PISMO — Мессенджер";
-            if (this.Text != title)
+            _titleBase = totalUnread > 0 ? $"● PISMO ({totalUnread} новых)" : "PISMO — Мессенджер";
+            ApplyConnectionStatus();
+        }
+
+        /// <summary>Заголовок окна без пометки о связи.</summary>
+        private string _titleBase = "PISMO — Мессенджер";
+
+        /// <summary>Что написано в шапке сайдбара, когда со связью всё хорошо.</summary>
+        private string _sidebarTitleBase = "Личные сообщения";
+
+        /// <summary>
+        /// Заголовок сайдбара меняем только так: иначе надпись о связи,
+        /// занявшая то же место, была бы затёрта очередной перезагрузкой
+        /// списка — или, наоборот, затёрла бы новый заголовок собой.
+        /// </summary>
+        private void SetSidebarTitle(string text)
+        {
+            _sidebarTitleBase = text;
+            ApplyConnectionStatus();
+        }
+
+        /// <summary>
+        /// Показывает состояние связи там, где его видно, и не мешает: в
+        /// шапке списка чатов и в заголовке окна.
+        ///
+        /// Раньше о потере связи сообщала панель поверх всего окна — она же
+        /// и блокировала работу. Надпись говорит ровно то же самое, но
+        /// переписку читать не мешает.
+        /// </summary>
+        private void ApplyConnectionStatus()
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
             {
-                this.Text = title;
-                _trayIcon.Text = title.Length > 63 ? title[..63] : title;
+                try { BeginInvoke(new Action(ApplyConnectionStatus)); } catch { }
+                return;
             }
+
+            string label = ConnectionGuard.Label;
+
+            try
+            {
+                if (lblSidebarTitle != null && !lblSidebarTitle.IsDisposed)
+                {
+                    string want = label ?? _sidebarTitleBase;
+                    if (lblSidebarTitle.Text != want) lblSidebarTitle.Text = want;
+                    lblSidebarTitle.ForeColor = label != null
+                        ? System.Drawing.Color.FromArgb(145, 147, 152)
+                        : System.Drawing.Color.FromArgb(185, 187, 190);
+                }
+            }
+            catch { }
+
+            try
+            {
+                string title = label != null ? $"PISMO — {label}" : _titleBase;
+                if (this.Text != title)
+                {
+                    this.Text = title;
+                    if (_trayIcon != null)
+                        _trayIcon.Text = title.Length > 63 ? title[..63] : title;
+                }
+            }
+            catch { }
         }
 
         /// <summary>
@@ -2430,7 +2492,12 @@ namespace PISMO
             try
             {
                 if (InvokeRequired) { BeginInvoke(new Action(ReloadChatList)); return; }
-                LoadConversations();
+                // Пока список перечитывается, в шапке — «Обновление…»: на
+                // медленной связи это единственный признак, что приложение
+                // занято делом, а не показывает старое.
+                ConnectionGuard.BeginSync();
+                try { LoadConversations(); }
+                finally { ConnectionGuard.EndSync(); }
             }
             catch { }
         }
@@ -2444,9 +2511,9 @@ namespace PISMO
             _groupPanels.Clear();
 
             int myId = UserSession.EffectiveId;
-            lblSidebarTitle.Text = UserSession.IsImpersonating
+            SetSidebarTitle(UserSession.IsImpersonating
                 ? $"💬 За: {UserSession.EffectiveName}"
-                : "Личные сообщения";
+                : "Личные сообщения");
 
             FriendsRepository.EnsureTable();
 
@@ -2635,7 +2702,7 @@ namespace PISMO
             pnlUserList.Controls.Clear();
             _userPanels.Clear();
             _groupPanels.Clear();
-            lblSidebarTitle.Text = "Все пользователи";
+            SetSidebarTitle("Все пользователи");
 
             AddFriendsHeaderButton(UserSession.UserId);   // окно «Друзья» есть и у админа
 

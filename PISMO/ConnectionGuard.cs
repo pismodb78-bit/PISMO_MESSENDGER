@@ -1,50 +1,132 @@
 using System;
-using System.Drawing;
 using System.Windows.Forms;
 
 namespace PISMO
 {
     /// <summary>
-    /// Сторож соединения с БД. Когда любое DBHelper.OpenConnection падает с сетевой
-    /// ошибкой — поверх содержимого главного окна показывается «заставка»
-    /// «Нет связи с сервером…», а сам сторож пингует БД, пока связь не восстановится.
-    ///
-    /// ВАЖНО: это НЕ отдельное окно и НЕ TopMost — это панель внутри самого MainForm
-    /// (перекрывает весь клиентский прямоугольник). Поэтому окно остаётся обычным:
-    /// его можно свернуть/подвинуть, размер не меняется, а взаимодействие с
-    /// интерфейсом под панелью заблокировано тем, что панель его перекрывает.
+    /// Состояние связи с базой — СТРОКОЙ В ШАПКЕ, а не заставкой во весь экран.
     /// </summary>
+    /// <remarks>
+    /// Раньше здесь была панель на весь клиентский прямоугольник окна: «Нет
+    /// связи с сервером», спиннер, и под ней ничего не нажималось. Связь
+    /// пропадает не только насовсем — сервер перезапустили, провайдер моргнул,
+    /// ноутбук вышел из сна, — и каждый такой пустяк запирал приложение
+    /// целиком: нельзя было ни перечитать уже загруженную переписку, ни
+    /// перейти в другой чат, ни открыть настройки.
+    ///
+    /// Мессенджеры делают иначе: заголовок меняется, остальное работает.
+    /// Здесь так же:
+    ///
+    ///     Соединение…   связи с базой нет, идут попытки
+    ///     Обновление…   связь есть, список перечитывается
+    ///     (обычный вид) всё в порядке
+    ///
+    /// ЗАДЕРЖКА. Мелькнувший обрыв — не новость: одно упавшее соединение из
+    /// пула тут же сменяется живым. Поэтому «Соединение…» показывается,
+    /// только если связь не вернулась за <see cref="GraceMs"/>; переподключение
+    /// при этом начинается сразу, не дожидаясь надписи.
+    /// </remarks>
     public static class ConnectionGuard
     {
+        public enum Status { Ready, Connecting, Updating }
+
+        /// <summary>Сколько терпим обрыв, прежде чем сказать о нём человеку.</summary>
+        private const int GraceMs = 1200;
+
+        /// <summary>Период проб при обрыве — как и было.</summary>
+        private const int RetryMs = 2500;
+
         private static Form _owner;
         private static System.Threading.SynchronizationContext _ui;
-        private static Panel _panel;
-        private static double _angle;
-        private static System.Windows.Forms.Timer _spinTimer;
         private static System.Windows.Forms.Timer _retryTimer;
+        private static System.Windows.Forms.Timer _graceTimer;
         private static volatile bool _lost;
+        private static int _syncing;
+
+        private static Status _status = Status.Ready;
+
+        /// <summary>Текущее состояние связи.</summary>
+        public static Status Current => _status;
+
+        /// <summary>Состояние изменилось — шапке пора обновиться.</summary>
+        public static event Action<Status> Changed;
+
+        /// <summary>Надпись для шапки или null, если всё в порядке.</summary>
+        public static string Label => _status switch
+        {
+            Status.Connecting => "Соединение…",
+            Status.Updating => "Обновление…",
+            _ => null,
+        };
 
         /// <summary>Вызвать один раз из главной формы (на UI-потоке).</summary>
         public static void Init(Form owner)
         {
             _owner = owner;
             _ui = System.Threading.SynchronizationContext.Current;
+
+            _retryTimer = new System.Windows.Forms.Timer { Interval = RetryMs };
+            _retryTimer.Tick += (s, e) => PingOnce();
+
+            _graceTimer = new System.Windows.Forms.Timer { Interval = GraceMs };
+            _graceTimer.Tick += (s, e) =>
+            {
+                _graceTimer.Stop();
+                if (_lost) Set(Status.Connecting);
+            };
         }
 
-        /// <summary>Соединение успешно — спрятать заставку (если была показана).</summary>
+        /// <summary>Соединение успешно.</summary>
         public static void NotifyOk()
         {
             if (!_lost) return;
             _lost = false;
-            Post(HideOverlay);
+            Post(() =>
+            {
+                try { _retryTimer?.Stop(); } catch { }
+                try { _graceTimer?.Stop(); } catch { }
+                Set(_syncing > 0 ? Status.Updating : Status.Ready);
+            });
         }
 
-        /// <summary>Соединение потеряно — показать заставку и запустить переподключение.</summary>
+        /// <summary>Соединение потеряно — начать переподключение.</summary>
         public static void NotifyLost()
         {
             if (_lost) return;
             _lost = true;
-            Post(ShowOverlay);
+            Post(() =>
+            {
+                // Переподключение — сразу, надпись — через паузу: мигать
+                // шапкой из-за одного мёртвого соединения из пула незачем.
+                try { _retryTimer?.Start(); } catch { }
+                try { _graceTimer?.Stop(); _graceTimer?.Start(); } catch { }
+                PingOnce();
+            });
+        }
+
+        /// <summary>
+        /// Список перечитывается. Считаем счётчиком, а не флагом: загрузок
+        /// бывает несколько разом, и первая закончившаяся не должна гасить
+        /// надпись, пока идут остальные.
+        /// </summary>
+        public static void BeginSync()
+        {
+            System.Threading.Interlocked.Increment(ref _syncing);
+            Post(() => { if (!_lost) Set(Status.Updating); });
+        }
+
+        public static void EndSync()
+        {
+            if (System.Threading.Interlocked.Decrement(ref _syncing) < 0)
+                System.Threading.Interlocked.Exchange(ref _syncing, 0);
+            Post(() => { if (!_lost && _syncing <= 0) Set(Status.Ready); });
+        }
+
+        private static void Set(Status s)
+        {
+            if (_status == s) return;
+            _status = s;
+            try { Changed?.Invoke(s); } catch { }
         }
 
         private static void Post(Action a)
@@ -61,82 +143,10 @@ namespace PISMO
             catch { }
         }
 
-        private static void BuildPanel()
-        {
-            _panel = new Panel
-            {
-                BackColor = Color.FromArgb(30, 31, 34),
-                Visible = false
-            };
-            _panel.Paint += (s, e) =>
-            {
-                var g = e.Graphics;
-                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-
-                int cx = _panel.ClientSize.Width / 2;
-                int cy = _panel.ClientSize.Height / 2;
-
-                // Спиннер.
-                var rect = new Rectangle(cx - 22, cy - 46, 44, 44);
-                using (var track = new Pen(Color.FromArgb(80, 255, 255, 255), 5))
-                using (var arc = new Pen(Color.FromArgb(88, 101, 242), 5))
-                {
-                    g.DrawEllipse(track, rect);
-                    g.DrawArc(arc, rect, (float)_angle, 110);
-                }
-
-                // Текст.
-                using var font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold);
-                using var sub = new Font("Segoe UI", 9f);
-                TextRenderer.DrawText(g, "Нет связи с сервером", font,
-                    new Rectangle(0, cy + 8, _panel.ClientSize.Width, 24),
-                    Color.FromArgb(230, 231, 232),
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.Top);
-                TextRenderer.DrawText(g, "Переподключение…", sub,
-                    new Rectangle(0, cy + 34, _panel.ClientSize.Width, 20),
-                    Color.FromArgb(150, 152, 158),
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.Top);
-            };
-
-            _spinTimer = new System.Windows.Forms.Timer { Interval = 60 };
-            _spinTimer.Tick += (s, e) => { _angle = (_angle + 24) % 360; try { _panel.Invalidate(); } catch { } };
-
-            _retryTimer = new System.Windows.Forms.Timer { Interval = 2500 };
-            _retryTimer.Tick += (s, e) => PingOnce();
-        }
-
-        private static void ShowOverlay()
-        {
-            if (_owner == null || _owner.IsDisposed) return;
-            if (_panel == null || _panel.IsDisposed) BuildPanel();
-
-            if (_panel.Parent != _owner)
-            {
-                try { _owner.Controls.Add(_panel); } catch { }
-            }
-            // Перекрываем весь клиентский прямоугольник и держим сверху.
-            try
-            {
-                _panel.Bounds = _owner.ClientRectangle;
-                _panel.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-                _panel.Visible = true;
-                _panel.BringToFront();
-            }
-            catch { }
-
-            _spinTimer.Start();
-            _retryTimer.Start();
-            PingOnce();
-        }
-
-        private static void HideOverlay()
-        {
-            try { _retryTimer?.Stop(); } catch { }
-            try { _spinTimer?.Stop(); } catch { }
-            try { if (_panel != null && !_panel.IsDisposed) _panel.Visible = false; } catch { }
-        }
-
-        // Пробуем открыть соединение в фоне; успех сам вызовет NotifyOk (внутри OpenConnection).
+        /// <summary>
+        /// Пробуем открыть соединение в фоне; успех сам позовёт
+        /// <see cref="NotifyOk"/> изнутри OpenConnection.
+        /// </summary>
         private static void PingOnce()
         {
             System.Threading.Tasks.Task.Run(() =>
