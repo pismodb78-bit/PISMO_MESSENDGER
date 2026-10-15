@@ -172,8 +172,18 @@ namespace PISMO
             // Без связи отдаём последнее, что видели. Вложения к этим
             // сообщениям и так лежат локально — раньше до них просто нельзя
             // было добраться, потому что сама лента бралась только из базы.
+            //
+            // ПУСТУЮ таблицу не возвращаем НИКОГДА: вызывающий код рисует
+            // по ней ленту, и пустая выборка стёрла бы с экрана переписку,
+            // показанную из кеша. Нечего отдать — пусть будет отказ, как при
+            // любой другой неудаче с базой: тогда на экране останется то, что
+            // уже нарисовано.
             if (ConnectionGuard.Offline)
-                return OfflineStore.Load(OfflineStore.DmKey(themId)) ?? new DataTable();
+            {
+                var saved = OfflineStore.Load(OfflineStore.DmKey(themId));
+                if (saved != null && saved.Rows.Count > 0) return saved;
+                throw new TimeoutException("Нет связи с сервером");
+            }
 
             using var conn = DBHelper.OpenConnection();
             // Постранично: берём ПОСЛЕДНИЕ `limit` сообщений (по id DESC), затем
@@ -326,7 +336,11 @@ namespace PISMO
         public static DataTable LoadGroupMessagesMetaOnly(int groupId, int limit = 0)
         {
             if (ConnectionGuard.Offline)
-                return OfflineStore.Load(OfflineStore.GroupKey(groupId)) ?? new DataTable();
+            {
+                var saved = OfflineStore.Load(OfflineStore.GroupKey(groupId));
+                if (saved != null && saved.Rows.Count > 0) return saved;
+                throw new TimeoutException("Нет связи с сервером");
+            }
 
             using var conn = DBHelper.OpenConnection();
             // Постранично: последние `limit` (по id DESC), затем в хронологическом (ASC).

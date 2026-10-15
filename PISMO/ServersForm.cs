@@ -1030,7 +1030,23 @@ namespace PISMO
                 if (ConnectionGuard.Offline)
                 {
                     dt = OfflineStore.Load(OfflineStore.ServerChannelsKey(_serverId)) ?? new DataTable();
-                    if (dt.Rows.Count == 0) return;
+                    if (dt.Rows.Count == 0)
+                    {
+                        // Этот сервер без связи ещё не открывали — показать
+                        // нечего. Молчать тут нельзя: пустая панель выглядит
+                        // поломкой, хотя причина снаружи и видна в шапке.
+                        _pnlChannels.Controls.Add(new Label
+                        {
+                            Text = "Нет связи.\nКаналы появятся после подключения.",
+                            ForeColor = Color.FromArgb(140, 143, 150),
+                            Font = new Font("Segoe UI", 9f),
+                            AutoSize = false,
+                            Width = 220,
+                            Height = 60,
+                            Padding = new Padding(12, 10, 8, 0),
+                        });
+                        return;
+                    }
                     BuildChannelList(dt);
                     return;
                 }
@@ -2171,9 +2187,14 @@ namespace PISMO
             Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut,
             int limit = 0)
         {
-            // Без связи — последнее, что видели в этом канале.
+            // Без связи — последнее, что видели в этом канале. Пустую
+            // выборку не отдаём: ею перерисовали бы ленту в пустоту поверх
+            // уже показанного.
             if (ConnectionGuard.Offline)
-                return OfflineStore.Load(OfflineStore.ChannelKey(channel)) ?? new DataTable();
+            {
+                var saved = OfflineStore.Load(OfflineStore.ChannelKey(channel));
+                return saved != null && saved.Rows.Count > 0 ? saved : null;
+            }
 
             try
             {
