@@ -89,6 +89,10 @@ namespace PISMO
                 // После auth_error регистрируемся без токена (мягкий режим сервера),
                 // чтобы сообщения всё равно доставлялись.
                 string regToken = _softToken ? "" : (UserSession.AuthToken ?? "");
+                // Новое соединение — новый шанс спрашивать данные у релея:
+                // прежние промахи могли быть и просто обрывом.
+                RelayData.Reset();
+
                 var regMsg = JsonSerializer.Serialize(new { type = "register", userId = _myUserId, token = regToken });
                 var regBytes = Encoding.UTF8.GetBytes(regMsg);
                 await _ws.SendAsync(new ArraySegment<byte>(regBytes), WebSocketMessageType.Text, true, _cts.Token);
@@ -175,6 +179,20 @@ namespace PISMO
             return $"ws://{host}:{port}/";
         }
 
+        /// <summary>Отправить готовое сообщение. false — сокета нет.</summary>
+        public bool SendRaw(string json)
+        {
+            if (!IsConnected) return false;
+            try
+            {
+                var bytes = Encoding.UTF8.GetBytes(json);
+                _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text,
+                              true, CancellationToken.None);
+                return true;
+            }
+            catch { return false; }
+        }
+
         public void SendMessage(string type, int targetUserId, int sessionId, string payload)
         {
             if (!IsConnected) return;
@@ -251,6 +269,14 @@ namespace PISMO
                             string payload = TryStr(root, "payload");
 
                             System.Diagnostics.Debug.WriteLine($"[WS RECV] type={type} from={senderUserId} session={sessionId} payload={payload}");
+
+                            // Ответ на НАШ запрос данных — не сигнал для окон, а
+                            // посылка тому, кто его ждёт.
+                            if (type == "q_ok" || type == "q_err")
+                            {
+                                RelayData.Deliver(json);
+                                continue;
+                            }
 
                             // Сервер отклонил JWT → следующий коннект без токена.
                             if (type == "auth_error") _softToken = true;

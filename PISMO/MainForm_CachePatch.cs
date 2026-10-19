@@ -215,6 +215,16 @@ namespace PISMO
                 throw new TimeoutException("Нет связи с сервером");
             }
 
+            // Короткая дорога: спросить релей, который стоит рядом с базой.
+            // Это один обмен по открытому сокету вместо нескольких кругов до
+            // базы. Не вышло — идём в базу сами, как раньше.
+            var viaRelay = RelayData.Page("dm", new { with = themId, limit });
+            if (viaRelay != null && viaRelay.Rows.Count > 0)
+            {
+                OfflineStore.Save(OfflineStore.DmKey(themId), viaRelay);
+                return viaRelay;
+            }
+
             using var conn = DBHelper.OpenConnection();
             // Постранично: берём ПОСЛЕДНИЕ `limit` сообщений (по id DESC), затем
             // возвращаем в хронологическом порядке (ASC). limit<=0 — без лимита.
@@ -380,6 +390,13 @@ namespace PISMO
                 var saved = OfflineStore.Load(OfflineStore.GroupKey(groupId));
                 if (saved != null && saved.Rows.Count > 0) return saved;
                 throw new TimeoutException("Нет связи с сервером");
+            }
+
+            var viaRelay = RelayData.Page("group", new { group = groupId, limit });
+            if (viaRelay != null && viaRelay.Rows.Count > 0)
+            {
+                OfflineStore.Save(OfflineStore.GroupKey(groupId), viaRelay);
+                return viaRelay;
             }
 
             using var conn = DBHelper.OpenConnection();

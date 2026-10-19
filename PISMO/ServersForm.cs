@@ -2215,6 +2215,14 @@ namespace PISMO
                 return saved != null && saved.Rows.Count > 0 ? saved : null;
             }
 
+            // Короткая дорога через релей — см. пояснение в RelayData.
+            var viaRelay = RelayData.Page("channel", new { channel, limit = limit > 0 ? limit : 40 });
+            if (viaRelay != null && viaRelay.Rows.Count > 0)
+            {
+                OfflineStore.Save(OfflineStore.ChannelKey(channel), viaRelay);
+                return viaRelay;
+            }
+
             try
             {
                 string replyCols = _replyColOk
