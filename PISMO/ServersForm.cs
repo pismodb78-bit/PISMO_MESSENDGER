@@ -84,6 +84,8 @@ namespace PISMO
         // Ответ (reply) на сообщение канала.
         private Panel _replyBar;
         private Panel _bottomDock;
+        /// <summary>Полоса идущих передач над полем ввода канала.</summary>
+        private TransferStrip _chTransferStrip;
         private Label _lblReply;
         private int _replyToId = -1;
         private static bool _replyColOk = true; // есть ли колонка reply_to_id (миграция)
@@ -2082,6 +2084,7 @@ namespace PISMO
             if (_replyBar != null && _replyBar.Visible) h += _replyBar.Height;
             if (_chPreview != null && _chPreview.Visible) h += _chPreview.Height;
             if (_chVoiceBar != null && _chVoiceBar.Visible) h += _chVoiceBar.Height;
+            if (_chTransferStrip != null && _chTransferStrip.Visible) h += _chTransferStrip.Height;
             _bottomDock.Height = h;
         }
 
@@ -2665,7 +2668,8 @@ namespace PISMO
                                 long srvSize = dt.Columns.Contains("file_size") && r["file_size"] != DBNull.Value
                                     ? Convert.ToInt64(r["file_size"]) : -1;
                                 var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false,
-                                                                  srvSize, loader: lazySrv);
+                                                                  srvSize, loader: lazySrv,
+                                                                  where: Transfers.ChannelKey(channel));
                                 card.Location = new Point(LEFT, y);
                                 holder.Controls.Add(card); y += card.Height + 6;
                             }
@@ -3755,7 +3759,24 @@ namespace PISMO
             p.Value = (data != null && data.Length > 0) ? (object)data : DBNull.Value;
         }
 
-        /// <summary>Отправляет медиа-сообщение в канал (картинка/голос/видео/файл).</summary>
+        /// <summary>
+        /// Отправляет медиа-сообщение в канал (картинка/голос/видео/файл) —
+        /// В ФОНЕ.
+        ///
+        /// РАНЬШЕ ЗДЕСЬ БЫЛО МОДАЛЬНОЕ ОКНО с крутящимся кружком: пока файл
+        /// шёл, окном серверов нельзя было пользоваться — ни перейти в другой
+        /// канал, ни прочитать пришедшее, — а видео на сотню мегабайт
+        /// превращало его в окно ожидания. В личных сообщениях это убрали
+        /// давно; канал оставался последним местом, где отправка всё ещё
+        /// держала человека.
+        ///
+        /// Теперь передача живёт в общем списке (<see cref="Transfers"/>):
+        /// видна полосой под каналом и кнопкой в шапке списка чатов, отменяется
+        /// оттуда же, а сорванную можно повторить теми же байтами.
+        ///
+        /// Ничего не возвращает намеренно: ответа «получилось» на момент
+        /// вызова ещё нет и быть не может.
+        /// </summary>
         private void SendChannelMedia(byte[] image, byte[] audio, byte[] video, byte[] file, string fileName, string caption = "")
         {
             if (_channelId <= 0) return;
@@ -3767,71 +3788,57 @@ namespace PISMO
             }
             int replyId = _replyToId;
             int channel = _channelId;
-            string title = fileName ?? "медиа";
+            string title = fileName
+                ?? (image != null ? "Изображение"
+                    : audio != null ? "Голосовое"
+                    : video != null ? "Кружок" : "медиа");
+            long totalBytes = (file ?? image ?? video ?? audio)?.LongLength ?? 0;
 
-            // Окно с отменой + фоновая вставка (большой blob не вешает UI; INSERT
-            // атомарен, поэтому Cancel прерывает до коммита — «хвостов» не остаётся).
-            var dlg = new Form
-            {
-                Text = "Отправка файла", FormBorderStyle = FormBorderStyle.FixedToolWindow,
-                StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false,
-                ClientSize = new Size(300, 188), BackColor = Color.FromArgb(40, 42, 46), ControlBox = false
-            };
-            double angle = 0; bool ok = false; bool cancelled = false; bool retryNoReply = false;
-            string err = null; MySqlCommand activeCmd = null; MySqlConnection activeConn = null;
+            bool ok = false, cancelled = false, retryNoReply = false;
+            string err = null;
+            MySqlCommand activeCmd = null;
+            MySqlConnection activeConn = null;
             // Заливку на файловый сервис обрывает токен: там нет ни команды,
             // ни соединения с базой, которые можно было бы закрыть.
             var httpCts = new System.Threading.CancellationTokenSource();
-            var pic = new Panel { Size = new Size(72, 72), Location = new Point(114, 14), BackColor = Color.Transparent };
-            pic.Paint += (s, e) =>
-            {
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                var rect = new Rectangle(6, 6, 58, 58);
-                using var track = new Pen(Color.FromArgb(90, 255, 255, 255), 6);
-                using var arc = new Pen(Color.FromArgb(88, 101, 242), 6);
-                e.Graphics.DrawEllipse(track, rect);
-                e.Graphics.DrawArc(arc, rect, (float)angle, 110);
-            };
-            var lbl = new Label { Text = "Отправка " + title, ForeColor = Color.FromArgb(220, 221, 222), TextAlign = ContentAlignment.MiddleCenter, Location = new Point(10, 92), Size = new Size(280, 46), Font = new Font("Segoe UI", 9f) };
-            var btnCancel = new Button { Text = "Отмена", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(64, 68, 75), ForeColor = Color.White, Size = new Size(120, 30), Location = new Point(90, 146), Cursor = Cursors.Hand };
-            btnCancel.FlatAppearance.BorderSize = 0;
-            btnCancel.Click += (s, e) =>
-            {
-                // Окно закрываем СРАЗУ, не дожидаясь, пока отзовётся драйвер.
-                //
-                // Раньше здесь отменяли команду, закрывали соединение и ждали, что
-                // фоновая задача упадёт с ошибкой и закроет окно сама. Но Cancel
-                // помогает, только если команда в этот момент опубликована (между
-                // кусками большого файла её нет), а Close на соединении с
-                // выполняющимся запросом из чужого потока может и не разбудить
-                // его, и подвиснуть сам. Отсюда «Отмена…» навсегда.
-                //
-                // Отмена — это «я больше не жду». Окно уходит немедленно, а
-                // прерывание запроса идёт в фоне: даже если драйвер очнётся не
-                // сразу, пользователя это уже не держит. Незавершённая вставка
-                // не оставляет следов — INSERT атомарен, а дозапись кусками
-                // проверяет признак отмены и удаляет строку.
-                cancelled = true;
-                btnCancel.Enabled = false;
-                try { httpCts.Cancel(); } catch { }
-                var cmd0 = activeCmd; var conn0 = activeConn;
-                System.Threading.Tasks.Task.Run(() =>
-                {
-                    try { cmd0?.Cancel(); } catch { }
-                    try { conn0?.Close(); } catch { }
-                });
-                dlg.Close();
-            };
-            dlg.Controls.Add(pic); dlg.Controls.Add(lbl); dlg.Controls.Add(btnCancel);
-            var anim = new System.Windows.Forms.Timer { Interval = 60 };
-            anim.Tick += (s, e) => { angle = (angle + 24) % 360; pic.Invalidate(); };
-            dlg.Shown += (s, e) => anim.Start();
-            dlg.FormClosed += (s, e) => { try { anim.Stop(); anim.Dispose(); } catch { } };
 
-            System.Threading.Tasks.Task.Run(() =>
+            var item = Transfers.Begin(
+                title, upload: true, total: totalBytes,
+                where: Transfers.ChannelKey(channel),
+                indeterminate: totalBytes <= 0,
+                cancel: () =>
+                {
+                    // Отмена — это «я больше не жду».
+                    //
+                    // Прерывание запроса идёт в фоне: Cancel помогает только
+                    // если команда в этот момент опубликована (между кусками
+                    // большого файла её нет), а Close на соединении с
+                    // выполняющимся запросом из чужого потока может и не
+                    // разбудить его, и подвиснуть сам. Поэтому и то и другое —
+                    // отдельной задачей, а список передач помечает строку
+                    // отменённой сразу.
+                    cancelled = true;
+                    try { httpCts.Cancel(); } catch { }
+                    var cmd0 = activeCmd; var conn0 = activeConn;
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { cmd0?.Cancel(); } catch { }
+                        try { conn0?.Close(); } catch { }
+                    });
+                },
+                // «Повторить» теми же байтами: они и так в руках у этого
+                // замыкания, и спрашивать файл заново незачем.
+                retry: () => SendChannelMedia(image, audio, video, file, fileName, caption));
+
+            // Поле ввода и полоску ответа освобождаем сразу: передача ушла в
+            // фон, и держать их до её конца больше нечем.
+            CancelServerReply();
+
+            UploadQueue.Enqueue(() =>
             {
                 try
                 {
+                    if (cancelled) return;
                     using var conn = DBHelper.OpenConnection();
                     activeConn = conn;
                     try { using var to = new MySqlCommand("SET SESSION net_read_timeout=600, net_write_timeout=600, wait_timeout=600", conn); to.ExecuteNonQuery(); } catch { }
@@ -3848,7 +3855,9 @@ namespace PISMO
                     {
                         try
                         {
-                            svcUrl = FileService.Upload(file, fileName, null, httpCts.Token);
+                            svcUrl = FileService.Upload(file, fileName,
+                                frac => Transfers.Progress(item, (long)(frac * file.LongLength)),
+                                httpCts.Token);
                             svcSize = file.LongLength;
                         }
                         catch (OperationCanceledException) { }
@@ -3895,7 +3904,8 @@ namespace PISMO
                     {
                         long msgId = cmd.LastInsertedId;
                         if (!AppendBlobInChunks(conn, msgId, bigCol, bigData,
-                                                () => cancelled, c => activeCmd = c))
+                                                () => cancelled, c => activeCmd = c,
+                                                off => Transfers.Progress(item, off)))
                         {
                             // Не дописали — строка без вложения никому не нужна.
                             try
@@ -3936,28 +3946,46 @@ namespace PISMO
                 catch (Exception ex) { if (!cancelled) err = ex.Message; }
                 finally
                 {
-                    // Окно могло уже закрыться (отмена) — тогда закрывать нечего.
-                    // Проверка на созданный дескриптор нужна и на другом конце:
-                    // при мгновенной ошибке задача добегает сюда раньше, чем
-                    // ShowDialog успевает показать окно, и BeginInvoke падал бы,
-                    // оставляя окно висеть навсегда.
-                    try
+                    // Исход остаётся в списке передач: отмену и срыв молча
+                    // вычёркивать нельзя — со стороны это «нажал, и ничего».
+                    if (!cancelled && !ok && err != null) Transfers.Fail(item, err);
+                    else Transfers.Finish(item);
+
+                    // Остальное — на поток окна: оно могло уже закрыться, пока
+                    // файл шёл.
+                    if (!IsDisposed && IsHandleCreated)
                     {
-                        if (!dlg.IsDisposed && dlg.IsHandleCreated) dlg.BeginInvoke(() => dlg.Close());
-                        else if (!dlg.IsDisposed) dlg.Shown += (s2, e2) => dlg.Close();
+                        try
+                        {
+                            BeginInvoke(new Action(() =>
+                                AfterChannelMedia(ok, cancelled, retryNoReply, err,
+                                                  channel, replyId, caption,
+                                                  image, audio, video, file, fileName)));
+                        }
+                        catch { }
                     }
-                    catch { }
                 }
             });
+        }
 
-            dlg.ShowDialog(this);
-
-            if (cancelled) return;
+        /// <summary>
+        /// Что делать после фоновой отправки в канал: уведомить, разобрать
+        /// упоминания, перечитать ленту. Отдельным методом, потому что зовётся
+        /// уже с потока окна — внутри задачи этого делать нельзя.
+        /// </summary>
+        private void AfterChannelMedia(bool ok, bool cancelled, bool retryNoReply, string err,
+                                       int channel, int replyId, string caption,
+                                       byte[] image, byte[] audio, byte[] video,
+                                       byte[] file, string fileName)
+        {
+            if (cancelled) { LoadMessages(); return; }
+            // Колонки reply_to_id нет — шлём то же самое, но без ответа.
             if (retryNoReply) { SendChannelMedia(image, audio, video, file, fileName, caption); return; }
-            if (!ok) { if (err != null) MessageBox.Show(err, "PISMO"); return; }
+            // Про срыв больше не кричим окном: причина стоит в полосе под
+            // каналом и в списке передач, а рядом с ней «Повторить».
+            if (!ok) { LoadMessages(); return; }
 
-            CancelServerReply();
-            WebSocketSignalingClient.Instance.SendMessage("new_message", 0, channel, "server");
+            try { WebSocketSignalingClient.Instance.SendMessage("new_message", 0, channel, "server"); } catch { }
             // Подпись к вложению может содержать @тег/@роль/@все — уведомляем.
             if (!string.IsNullOrWhiteSpace(caption)) NotifyMentions(caption);
             // Медиа-сообщение как ОТВЕТ — уведомляем автора исходного (как в тексте;
@@ -4022,7 +4050,8 @@ namespace PISMO
         /// </summary>
         private static bool AppendBlobInChunks(MySqlConnection conn, long msgId, string column,
                                                byte[] data, Func<bool> cancelled,
-                                               Action<MySqlCommand> track)
+                                               Action<MySqlCommand> track,
+                                               Action<long> onBytes = null)
         {
             try
             {
@@ -4043,6 +4072,7 @@ namespace PISMO
                     up.ExecuteNonQuery();
                     track(null);
                     off += len;
+                    onBytes?.Invoke(off);
                 }
                 return true;
             }

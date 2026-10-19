@@ -106,6 +106,22 @@ namespace PISMO
             var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68 };
             _pnlInput.Dock = DockStyle.Fill;
             bottom.Controls.Add(_pnlInput);
+
+            // Полоса передач — прямо над полем ввода, как на телефоне.
+            //
+            // Кнопка в шапке списка чатов показывает всё разом, но пока файл
+            // уходит в открытый канал, следить за ним и отменять удобнее
+            // здесь. Своей высоты у пустой полосы нет, поэтому нижний док
+            // пересчитывается вместе с ней (UpdateBottomHeight).
+            _chTransferStrip = new TransferStrip(
+                () => _channelId > 0 ? Transfers.ChannelKey(_channelId) : "")
+            {
+                Dock = DockStyle.Top,
+                BackColor = Color.FromArgb(54, 57, 63),
+            };
+            _chTransferStrip.Resize += (s, e) => UpdateBottomHeight();
+            bottom.Controls.Add(_chTransferStrip);
+
             bottom.Controls.Add(_chVoiceBar);
             bottom.Controls.Add(_chPreview);
             bottom.Controls.Add(_replyBar);

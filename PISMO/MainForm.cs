@@ -2060,6 +2060,17 @@ namespace PISMO
             catch { }
         }
 
+        /// <summary>
+        /// Кто сейчас открыт — для статических частей отрисовки.
+        ///
+        /// Карточка вложения собирается статическим методом (её зовут и окно
+        /// серверов), а полосу передачи нужно привязать к переписке. Держать
+        /// ради этого ссылку на форму — лишнее: открытый чат один на всё
+        /// приложение.
+        /// </summary>
+        private static int _instancePartnerId;
+        private static int _instanceGroupId;
+
         /// <summary>Заголовок окна без пометки о связи.</summary>
         private string _titleBase = "PISMO — Мессенджер";
 
@@ -3698,6 +3709,8 @@ namespace PISMO
 
             _currentChatPartnerId = partnerId;
             _currentChatPartnerName = partnerName;
+            _instancePartnerId = partnerId;
+            _instanceGroupId = -1;
             _currentGroupId = -1;
             _currentGroupName = "";
             _lastMsgCount = 0;
@@ -3741,6 +3754,8 @@ namespace PISMO
             if (_currentGroupId != groupId || _currentChatPartnerId > 0) ReleaseChatMemory();
             _currentGroupId = groupId;
             _currentGroupName = groupName;
+            _instanceGroupId = groupId;
+            _instancePartnerId = -1;
             _currentChatPartnerId = -1;
             _currentChatPartnerName = "";
             _lastGroupMsgCount = 0;
@@ -5967,7 +5982,9 @@ namespace PISMO
             // Документ / архив (теперь проверяем только fileName, так как fileData загружается по требованию)
             if (!inlineVideoShown && !string.IsNullOrWhiteSpace(fileName))
             {
-                var pnlFile = BuildFileCard(fileData, fileName, isMine, innerW, msgId, isGroup, fileSize);
+                var pnlFile = BuildFileCard(fileData, fileName, isMine, innerW, msgId, isGroup, fileSize,
+                    where: Transfers.ChatKey(isGroup,
+                        isGroup ? _instanceGroupId : _instancePartnerId));
                 pnlFile.Location = new Point(PAD, innerY);
                 bubble.Controls.Add(pnlFile);
                 innerY += pnlFile.Height + 6;
@@ -6730,6 +6747,7 @@ namespace PISMO
             var item = Transfers.Begin(
                 string.IsNullOrWhiteSpace(fileName) ? "файл" : fileName,
                 upload: true, total: total,
+                where: Transfers.ChatKey(isGroup, target),
                 cancel: () =>
                 {
                     cancelled = true;
@@ -6739,7 +6757,14 @@ namespace PISMO
                     try { activeCmd?.Cancel(); } catch { }
                     try { var c = activeConn; c?.Close(); } catch { }
                     try { httpCts.Cancel(); } catch { }
-                });
+                },
+                // «Повторить» теми же байтами. Они и так в руках у этого
+                // замыкания, поэтому заново спрашивать файл не нужно: раньше
+                // сорвавшуюся отправку приходилось начинать с выбора файла, а
+                // отменённую — тем более.
+                retry: () => SendFileInBackground(isGroup, target, myId, text,
+                                                  imageData, audioData, videoData,
+                                                  fileData, fileName));
 
             string err = null;
 
@@ -6752,11 +6777,7 @@ namespace PISMO
             // это уже проходили: половина передач падала с потерей связи.
             // Поэтому задачи выстраиваются в цепочку и идут одна за другой, в
             // том порядке, в котором их выбрали.
-            lock (UploadChainLock)
-            {
-                _uploadChain = _uploadChain.ContinueWith(_ => UploadBody(),
-                    System.Threading.Tasks.TaskScheduler.Default);
-            }
+            UploadQueue.Enqueue(UploadBody);
 
             void UploadBody()
             {
@@ -6985,13 +7006,23 @@ namespace PISMO
                 catch (Exception ex) { if (!cancelled) err = ex.Message; }
                 finally
                 {
-                    Transfers.Finish(item);
+                    // Исход остаётся в списке. Отмену и срыв молча вычёркивать
+                    // нельзя: со стороны это «нажал, и ничего» — ни причины,
+                    // ни возможности повторить.
+                    if (!cancelled && !sent && err != null) Transfers.Fail(item, err);
+                    else Transfers.Finish(item);
 
-                    // Отменённую отправку убираем СО СВЕЖЕГО соединения. То, на
-                    // котором шла запись, отмена рвёт насильно — иначе её не
-                    // прервать, — и удалять строку с него уже нечем. Без этого
-                    // в переписке оставался пустой пузырь без файла.
-                    if (cancelled && rowId > 0)
+                    // Отменённую и сорвавшуюся отправку убираем СО СВЕЖЕГО
+                    // соединения. То, на котором шла запись, отмена рвёт
+                    // насильно — иначе её не прервать, — и удалять строку с
+                    // него уже нечем. Без этого в переписке оставался пустой
+                    // пузырь без файла.
+                    //
+                    // Срыв сюда добавлен вместе с «Повторить»: строка от
+                    // неудачной попытки осталась бы в переписке, и повтор
+                    // добавил бы рядом вторую — то же сообщение дважды, одно
+                    // из них без файла.
+                    if (rowId > 0 && (cancelled || (!sent && err != null)))
                     {
                         try
                         {
@@ -7016,10 +7047,11 @@ namespace PISMO
                         {
                             BeginInvoke(new Action(() =>
                             {
-                                // Отменённое уходит тихо: строка удалена, пузыря нет.
-                                if (!cancelled && !sent && err != null)
-                                    MessageBox.Show("Ошибка отправки файла: " + err, "PISMO",
-                                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                // Про срыв больше не кричим окном: причина
+                                // стоит в полосе под перепиской и в списке
+                                // передач, а там же рядом «Повторить». Окно
+                                // поверх всего приходило с запозданием — к
+                                // этому времени человек уже в другом чате.
 
                                 // Обновляем переписку, если она всё ещё открыта:
                                 // за время передачи человек мог уйти в другой
@@ -7039,11 +7071,6 @@ namespace PISMO
                 }
             }
         }
-
-        /// <summary>Очередь отправок: одна за другой, а не все разом.</summary>
-        private static readonly object UploadChainLock = new();
-        private static System.Threading.Tasks.Task _uploadChain =
-            System.Threading.Tasks.Task.CompletedTask;
 
         /// <summary>Своё только что отправленное вложение — сразу в локальный кеш.
         /// Байты уже в руках, иначе при первом же открытии их пришлось бы
@@ -7570,7 +7597,7 @@ namespace PISMO
         /// <param name="loader">Откуда взять байты, если их ещё нет. Нужен там, где
         /// сообщение лежит не в messages/group_messages (например, в канале сервера).</param>
         internal static Panel BuildFileCard(byte[] fileData, string fileName, bool isMine, int maxW, int msgId, bool isGroup, long knownSize = -1,
-                                            Func<byte[]> loader = null)
+                                            Func<byte[]> loader = null, string where = "")
         {
             string ext = Path.GetExtension(fileName).ToLowerInvariant().TrimStart('.');
             bool isVideoMedia = MediaPlayerForm.IsVideo(ext);
@@ -7709,13 +7736,22 @@ namespace PISMO
                 // Проценты не обещаем: файл читается одним запросом.
                 var tr = Transfers.Begin(fileName, upload: false,
                     total: knownSize > 0 ? knownSize : 0,
+                    where: where,
                     cancel: () =>
                     {
                         dlCancelled = true;
                         try { activeDlCmd?.Cancel(); } catch { }
                         try { dlCts?.Cancel(); } catch { }
                     },
-                    indeterminate: true);
+                    indeterminate: true,
+                    // «Повторить» — то же самое нажатие на карточку. Карточки
+                    // может уже не быть (ушли в другой чат) — тогда повтор
+                    // просто ничего не делает.
+                    retry: () =>
+                    {
+                        try { card.BeginInvoke(new Action(() => DoOpen(null, EventArgs.Empty))); }
+                        catch { }
+                    });
                 dlCts = new System.Threading.CancellationTokenSource();
 
                 var dlAnim = new System.Windows.Forms.Timer { Interval = 60 };
@@ -7735,8 +7771,11 @@ namespace PISMO
                     System.Threading.Tasks.Task.Run(() =>
                     {
                         byte[] got = null;
-                        try { got = ldr(); } catch { }
-                        Transfers.Finish(tr);
+                        string why = null;
+                        try { got = ldr(); }
+                        catch (Exception lex) { why = lex.Message; }
+                        if (dlCancelled || got is { Length: > 0 }) Transfers.Finish(tr);
+                        else Transfers.Fail(tr, why ?? "Не удалось загрузить");
                         try
                         {
                             card.BeginInvoke(new Action(() =>
@@ -7801,9 +7840,18 @@ namespace PISMO
                         {
                             try
                             {
+                                // Качаем с файлового сервиса — здесь прогресс
+                                // ЧЕСТНЫЙ, побайтовый, и полосе больше не нужно
+                                // крутить отрезок вместо процентов. Из базы файл
+                                // по-прежнему читается одним запросом, и там
+                                // делить нечего.
                                 var viaUrl = FileService.TryFetch(conn, table, msgId,
-                                    frac => Transfers.Progress(tr,
-                                        (long)(frac * (knownSize > 0 ? knownSize : 0))),
+                                    frac =>
+                                    {
+                                        if (knownSize <= 0) return;
+                                        tr.Indeterminate = false;
+                                        Transfers.Progress(tr, (long)(frac * knownSize));
+                                    },
                                     dlCts.Token);
                                 if (viaUrl is { Length: > 0 }) result = viaUrl;
                             }
@@ -7845,7 +7893,8 @@ namespace PISMO
                         }
                     }
                     catch (Exception ex) { activeDlCmd = null; if (!dlCancelled) err = ex.Message; }
-                    Transfers.Finish(tr);
+                    if (dlCancelled || result is { Length: > 0 }) Transfers.Finish(tr);
+                    else Transfers.Fail(tr, err ?? "Не удалось загрузить");
 
                     try
                     {
