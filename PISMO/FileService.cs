@@ -38,22 +38,46 @@ namespace PISMO
         private const int MaxAttempts = 6;
 
         /// <summary>
-        /// Порция дозаписи — величина подстраивающаяся.
+        /// Сколько частей держим в полёте одновременно.
         /// </summary>
         /// <remarks>
-        /// Одним запросом на весь файл заливать нельзя: чем дольше идёт
-        /// запрос, тем вернее он где-нибудь оборвётся — у оператора, в NAT,
-        /// на смене сети, — и обрыв стоит всего, что ушло сверх
-        /// подтверждённого.
-        ///
-        /// Но и постоянный размер не годится. Бывает связь, которая рвёт
-        /// соединение каждые сто килобайт: крупная порция там не доезжает
-        /// никогда. Поэтому порция ужимается вдвое на каждом обрыве и растёт
-        /// вдвое на каждой дошедшей — связь сама выбирает размер, при
-        /// котором её хватает.
+        /// Так работают мессенджеры: пока одна часть летит, следующие уже в
+        /// пути, и круг до сервера между ними не стоит простоем. На проводе
+        /// этот круг дешёвый, на мобильном модеме — сотни миллисекунд, и
+        /// именно он съедал время при живом канале.
         /// </remarks>
-        private const int ChunkMax = 4 * 1024 * 1024;
-        private const int ChunkMin = 64 * 1024;
+        private const int Lanes = 4;
+
+        /// <summary>Границы размера части.</summary>
+        private const int PartMin = 256 * 1024;
+        private const int PartMax = 8 * 1024 * 1024;
+
+        /// <summary>К какой длительности части стремимся.</summary>
+        private const int PartTargetMs = 3000;
+
+        /// <summary>Замеренная скорость отправки, байт в секунду. 0 — не знаем.</summary>
+        private static long _speedBps;
+
+        private static void RememberSpeed(long bytes, long ms)
+        {
+            if (bytes <= 0 || ms <= 0) return;
+            long now = bytes * 1000L / ms;
+            // Скользящее среднее: одна быстрая часть — ещё не признак канала.
+            _speedBps = _speedBps == 0 ? now : (_speedBps * 3 + now) / 4;
+        }
+
+        /// <summary>
+        /// Размер части под текущую скорость. Постоянный размер плох с обеих
+        /// сторон: на быстром канале мелкие части заставляют ждать круг до
+        /// сервера чаще, чем нужно, а на медленном крупная идёт минутами и
+        /// теряется целиком при обрыве.
+        /// </summary>
+        private static int PartSize()
+        {
+            if (_speedBps <= 0) return 1024 * 1024;
+            long want = _speedBps * PartTargetMs / 1000L;
+            return (int)Math.Min(PartMax, Math.Max(PartMin, want));
+        }
 
         private static readonly HttpClient Http = new HttpClient
         {
@@ -218,77 +242,62 @@ namespace PISMO
                 if (offset < 0 || offset > data.Length) offset = 0;
                 if (offset > 0) onProgress?.Invoke((double)offset / data.Length);
 
-                // 2. Досылаем остаток ПОРЦИЯМИ: каждая подтверждается
-                //    сервером, и обрыв стоит только её одной.
-                int attempt = 0;
-                long chunk = ChunkMax;
-                while (offset < data.Length)
+                // 2. Остаток шлём ЧАСТЯМИ И РАЗОМ.
+                //
+                // Раньше части уходили строго друг за другом, и после каждой
+                // мы ждали ответа сервера. Этот круг на мобильном модеме —
+                // сотни миллисекунд, и на файле из полусотни частей он
+                // складывается в минуты простоя при живом канале. Сервис
+                // принимает части вразнобой и сам следит, что дыр не
+                // осталось, поэтому держим несколько в полёте.
+                long sent = offset;
+                int part = PartSize();
+                var ranges = new System.Collections.Generic.List<(long from, long till)>();
+                for (long at = offset; at < data.Length; at += part)
+                    ranges.Add((at, Math.Min(at + part, data.Length)));
+
+                string key = null;
+                using (var gate = new System.Threading.SemaphoreSlim(Lanes))
                 {
-                    ct.ThrowIfCancellationRequested();
-                    long before = offset;
-                    long till = Math.Min(offset + chunk, data.Length);
-                    try
+                    var tasks = new System.Collections.Generic.List<Task>();
+                    foreach (var (from, till) in ranges)
                     {
-                        string key = Patch(id, data, offset, till, onProgress, ct);
-                        if (key != null) return UrlOf(key, name);
-                        offset = till;
-                        onProgress?.Invoke((double)offset / data.Length);
-                        // Порция дошла целиком — можно осмелеть.
-                        chunk = Math.Min(ChunkMax, chunk * 2);
-                        attempt = 0;
+                        gate.Wait(ct);
+                        tasks.Add(Task.Run(() =>
+                        {
+                            try
+                            {
+                                var got = SendPart(id, data, from, till,
+                                    bytes =>
+                                    {
+                                        long done = System.Threading.Interlocked.Add(ref sent, bytes);
+                                        onProgress?.Invoke(Math.Min(1.0, (double)done / data.Length));
+                                    }, ct);
+                                if (got != null) System.Threading.Volatile.Write(ref key, got);
+                            }
+                            finally { gate.Release(); }
+                        }, ct));
                     }
+                    try { Task.WaitAll(tasks.ToArray(), ct); }
                     catch (OperationCanceledException) { throw; }
-                    catch (OffsetMismatch mm)
-                    {
-                        // Сервер назвал своё смещение. Это сверка, а не сбой:
-                        // попытку не тратим, но и крутиться на месте не даём.
-                        if (mm.Offset == offset && ++attempt > MaxAttempts) return null;
-                        offset = Math.Max(0, Math.Min(mm.Offset, data.Length));
-                        onProgress?.Invoke((double)offset / data.Length);
-                    }
-                    catch
-                    {
-                        // ОБРЫВ ПОСРЕДИ ПОРЦИИ — ещё не беда. Сервер оставляет
-                        // у себя всё, что успел принять, и спрашиваем мы
-                        // именно его. Принятое выросло — отправка ИДЁТ, просто
-                        // связь рваная: такой обрыв не тратит попытку, иначе
-                        // на сети, рвущейся каждые пару мегабайт, большой файл
-                        // сдавался бы, проехав едва десятую часть.
-                        long? have = ResolveOffset(id, ct);
-                        if (have == null) return null;
-                        if (have.Value > before)
-                        {
-                            offset = Math.Max(0, Math.Min(have.Value, data.Length));
-                            attempt = 0;
-                        }
-                        else
-                        {
-                            if (++attempt > MaxAttempts) return null;
-                            // Стоим на месте — ждём дольше с каждым разом.
-                            Thread.Sleep(2000 * attempt);
-                            offset = Math.Max(0, Math.Min(have.Value, data.Length));
-                        }
-                        // На рвущейся связи короткий запрос доезжает вернее.
-                        chunk = Math.Max(ChunkMin, chunk / 2);
-                        onProgress?.Invoke((double)offset / data.Length);
-                    }
+                    catch { /* причина уже учтена в самой части */ }
                 }
 
-                // Всё ушло, а ключа не было: ответ на последнюю порцию мог
-                // потеряться. Пустая дозапись в конец заставит сервер
-                // досчитать отпечаток и отдать ключ.
+                if (key != null) return UrlOf(key, name);
+
+                // Все части ушли, а ключа нет — ответ на последнюю мог
+                // потеряться. Спрашиваем сервер.
                 try
                 {
                     long? have = HeadOffset(id);
                     if (have != null)
                     {
-                        string key = Patch(id, data, have.Value, have.Value, null, ct);
-                        if (key != null) return UrlOf(key, name);
+                        string done = Patch(id, data, have.Value, have.Value, null, ct);
+                        if (done != null) return UrlOf(done, name);
                     }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch { }
-                return null;
                 return null;
             }
             catch (OperationCanceledException) { throw; }
@@ -296,16 +305,48 @@ namespace PISMO
         }
 
         /// <summary>
-        /// Одна порция дозаписи: байты [from, till). Возвращает ключ, если
-        /// этой порцией файл закончился.
+        /// Одна часть со всеми повторами. Возвращает ключ, если именно она
+        /// оказалась последней недостающей.
+        /// </summary>
+        private static string SendPart(string id, byte[] data, long from, long till,
+                                       Action<long> onBytes, CancellationToken ct)
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var started = System.Diagnostics.Stopwatch.StartNew();
+                    string key = Patch(id, data, from, till, onBytes, ct);
+                    started.Stop();
+                    RememberSpeed(till - from, started.ElapsedMilliseconds);
+                    return key;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (OffsetMismatch)
+                {
+                    // Сервер не берёт это место — спорить незачем.
+                    return null;
+                }
+                catch
+                {
+                    if (attempt + 1 > MaxAttempts) return null;
+                    Thread.Sleep(1000 * (attempt + 1));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Одна попытка отправить часть [from, till). Возвращает ключ, если
+        /// этой частью файл закончился.
         /// </summary>
         private static string Patch(string id, byte[] data, long from, long till,
-                                    Action<double> onProgress, CancellationToken ct)
+                                    Action<long> onBytes, CancellationToken ct)
         {
             using var req = new HttpRequestMessage(new HttpMethod("PATCH"), Base + "/files/" + id);
             req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Token());
             req.Headers.TryAddWithoutValidation("Upload-Offset", from.ToString());
-            req.Content = new ProgressContent(data, from, till, onProgress, ct);
+            req.Content = new ProgressContent(data, from, till, onBytes, ct);
             req.Content.Headers.ContentType =
                 new MediaTypeHeaderValue("application/offset+octet-stream");
 
@@ -331,37 +372,6 @@ namespace PISMO
         {
             public readonly long Offset;
             public OffsetMismatch(long offset) : base("offset mismatch") { Offset = offset; }
-        }
-
-        /// <summary>
-        /// Сколько байт у сервера. Спрашиваем с повторами: один неудачный
-        /// вопрос — не повод бросать отправку, на которую уже ушли минуты.
-        /// </summary>
-        private static long? ResolveOffset(string id, CancellationToken ct)
-        {
-            for (int i = 0; i < 3; i++)
-            {
-                ct.ThrowIfCancellationRequested();
-                var have = HeadOffset(id);
-                if (have != null) return have;
-                Thread.Sleep(1500 * (i + 1));
-            }
-            return HeadOffset(id);
-        }
-
-        private static long? HeadOffset(string id)
-        {
-            try
-            {
-                using var req = new HttpRequestMessage(HttpMethod.Head, Base + "/files/" + id);
-                req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Token());
-                using var res = Http.SendAsync(req).GetAwaiter().GetResult();
-                if (!res.IsSuccessStatusCode) return null;
-                if (res.Headers.TryGetValues("Upload-Offset", out var v))
-                    foreach (var s in v) return long.Parse(s);
-            }
-            catch { }
-            return null;
         }
 
         /// <summary>
@@ -417,13 +427,13 @@ namespace PISMO
             private readonly byte[] _data;
             private readonly long _from;
             private readonly long _till;
-            private readonly Action<double> _onProgress;
+            private readonly Action<long> _onBytes;
             private readonly CancellationToken _ct;
 
             public ProgressContent(byte[] data, long from, long till,
-                                   Action<double> onProgress, CancellationToken ct)
+                                   Action<long> onBytes, CancellationToken ct)
             {
-                _data = data; _from = from; _till = till; _onProgress = onProgress; _ct = ct;
+                _data = data; _from = from; _till = till; _onBytes = onBytes; _ct = ct;
             }
 
             protected override async Task SerializeToStreamAsync(Stream stream, TransportContext context)
@@ -436,7 +446,9 @@ namespace PISMO
                     int len = (int)Math.Min(Step, _till - off);
                     await stream.WriteAsync(_data, (int)off, len, _ct).ConfigureAwait(false);
                     off += len;
-                    _onProgress?.Invoke((double)off / _data.Length);
+                    // Отдаём именно сколько ушло: доля считается снаружи, на
+                    // все дорожки сразу — по отдельной части она бессмысленна.
+                    _onBytes?.Invoke(len);
                 }
                 await stream.FlushAsync(_ct).ConfigureAwait(false);
             }
