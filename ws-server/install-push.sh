@@ -41,7 +41,17 @@ die() { printf '\n\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 # прямо тут и работает. Поэтому, если заданной службы нет, ищем среди тех,
 # что запускают наш server.js, — по ней и работаем. Файловый сервис при
 # этом исключаем: он живёт в том же каталоге, но это другая служба.
-if ! systemctl list-unit-files | grep -q "^${SERVICE}\.service"; then
+# Есть ли такая служба — спрашиваем systemd напрямую.
+#
+# Раньше здесь искали имя в выводе list-unit-files, и это подводило: он
+# показывает файлы юнитов, а служба может быть загружена и не иметь файла
+# в ожидаемом виде. Сервер при этом работает, а установщик уверяет, что
+# службы нет. LoadState отвечает за саму службу, а не за её файл.
+unit_loaded() {
+    [ "$(systemctl show -p LoadState --value "$1" 2>/dev/null)" = "loaded" ]
+}
+
+if ! unit_loaded "$SERVICE"; then
     FOUND=$(grep -ls "server\.js" /etc/systemd/system/*.service 2>/dev/null \
             | xargs -r -n1 basename 2>/dev/null \
             | sed 's/\.service$//' \
