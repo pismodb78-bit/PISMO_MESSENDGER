@@ -137,12 +137,11 @@ function findUnfinished(sha, total) {
             if (!f.endsWith('.json')) continue;
             const id = f.slice(0, -5);
             if (!isId(id)) continue;
-            let meta;
-            try { meta = JSON.parse(fs.readFileSync(path.join(TMP, f), 'utf8')); }
-            catch { continue; }
+            const meta = loadMeta(id);
+            if (!meta) continue;
             if (meta.sha !== sha || meta.total !== total) continue;
-            const have = sizeOf(tmpPath(id));
-            if (have < 0 || have >= total) continue;   // файла нет или он уже целый
+            if (sizeOf(tmpPath(id)) < 0) continue;      // файла нет
+            if (solidPrefix(meta) >= total) continue;   // он уже целый
             return id;
         }
     } catch {}
@@ -178,7 +177,7 @@ function createUpload(req, res) {
     if (isSha(sha)) {
         const found = findUnfinished(sha, total);
         if (found) {
-            const have = sizeOf(tmpPath(found));
+            const have = solidPrefix(loadMeta(found) || {});
             log('продолжаем загрузку', found, name, have + '/' + total);
             return send(res, 200, {
                 'Upload-Id': found,
@@ -190,10 +189,14 @@ function createUpload(req, res) {
     }
 
     const id = crypto.randomBytes(16).toString('hex');
+    // Файл нужного размера заводим сразу, «дырявым»: места на диске он пока
+    // не занимает, зато в него можно писать с любого места. Это и позволяет
+    // клиенту слать несколько частей разом, не дожидаясь ответа на
+    // предыдущую — именно так загружают файлы мессенджеры, и именно это
+    // убирает круг до сервера между частями.
     fs.writeFileSync(tmpPath(id), '');
-    fs.writeFileSync(metaPath(id), JSON.stringify({
-        total, name, sha: isSha(sha) ? sha : '', at: Date.now(),
-    }));
+    try { fs.truncateSync(tmpPath(id), total); } catch {}
+    saveMeta(id, { total, name, sha: isSha(sha) ? sha : '', at: Date.now(), ranges: [] });
     log('создана загрузка', id, name, total);
     send(res, 201, {
         'Upload-Id': id,
@@ -203,76 +206,158 @@ function createUpload(req, res) {
     });
 }
 
+/**
+ * Учёт принятого по кускам.
+ *
+ * Пока части шли строго по очереди, «сколько принято» равнялось размеру
+ * файла. С параллельной отправкой это уже не так: файл заведён во всю длину
+ * заранее, а куски приезжают вразнобой. Поэтому принятое держим списком
+ * непересекающихся отрезков, сливая соседние.
+ *
+ * Клиенту при этом отвечаем не суммой, а СПЛОШНЫМ НАЧАЛОМ — до первой дыры:
+ * возобновлять отправку можно только оттуда, и это же число понимают старые
+ * клиенты, которые шлют строго последовательно.
+ */
+/**
+ * Учёт загрузок держим В ПАМЯТИ, а на диск пишем следом.
+ *
+ * Части приходят параллельно, и каждый запрос раньше читал учёт из файла,
+ * дополнял своим куском и записывал обратно. Пока один это делал, другой
+ * успевал прочитать прежнее — и записывал поверх, теряя чужие части. Файл
+ * оставался правильным, а учёт — нет: сервер считал принятым только
+ * последний кусок. Теперь источник правды один на процесс, а файл нужен,
+ * чтобы пережить перезапуск.
+ */
+const metaCache = new Map();
+
+function loadMeta(id) {
+    const cached = metaCache.get(id);
+    if (cached) return cached;
+    try {
+        const meta = JSON.parse(fs.readFileSync(metaPath(id), 'utf8'));
+        if (!Array.isArray(meta.ranges)) meta.ranges = [];
+        metaCache.set(id, meta);
+        return meta;
+    } catch { return null; }
+}
+
+function saveMeta(id, meta) {
+    metaCache.set(id, meta);
+    try { fs.writeFileSync(metaPath(id), JSON.stringify(meta)); } catch {}
+}
+
+function forgetMeta(id) {
+    metaCache.delete(id);
+    fs.rmSync(metaPath(id), { force: true });
+}
+
+function addRange(meta, from, to) {
+    const list = (meta.ranges || []).concat([[from, to]]);
+    list.sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const r of list) {
+        const last = merged[merged.length - 1];
+        if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+        else merged.push([r[0], r[1]]);
+    }
+    meta.ranges = merged;
+    return merged;
+}
+
+/** Докуда файл принят без дыр. */
+function solidPrefix(meta) {
+    const list = meta.ranges || [];
+    return list.length > 0 && list[0][0] === 0 ? list[0][1] : 0;
+}
+
+/** Всё ли принято. */
+function complete(meta) {
+    return solidPrefix(meta) >= (meta.total || 0) && (meta.total || 0) > 0;
+}
+
 // ── HEAD /files/<id> — сколько уже принято ──────────────────────────
 function headUpload(res, id) {
-    const have = sizeOf(tmpPath(id));
-    if (have < 0) return send(res, 404);
-    let total = 0;
-    try { total = JSON.parse(fs.readFileSync(metaPath(id), 'utf8')).total || 0; } catch {}
-    send(res, 200, { 'Upload-Offset': String(have), 'Upload-Length': String(total) });
+    if (sizeOf(tmpPath(id)) < 0) return send(res, 404);
+    const meta = loadMeta(id) || {};
+    send(res, 200, {
+        'Upload-Offset': String(solidPrefix(meta)),
+        'Upload-Length': String(meta.total || 0),
+    });
 }
 
 // ── PATCH /files/<id> — дописать ────────────────────────────────────
 function patchUpload(req, res, id) {
     const file = tmpPath(id);
-    const have = sizeOf(file);
-    if (have < 0) return send(res, 404);
+    if (sizeOf(file) < 0) return send(res, 404);
 
-    let meta = {};
-    try { meta = JSON.parse(fs.readFileSync(metaPath(id), 'utf8')); } catch {}
+    const meta = loadMeta(id);
+    if (!meta) return send(res, 404);
     const total = meta.total || 0;
+    const solid = solidPrefix(meta);
 
     const offset = parseInt(req.headers['upload-offset'] || '-1', 10);
-    // Клиент и сервер обязаны сойтись в том, с какого места продолжаем:
-    // иначе дозапись легла бы поверх дырки или поверх уже принятого.
-    if (offset !== have) {
-        return send(res, 409, { 'Upload-Offset': String(have) }, 'offset mismatch');
+    // Писать можно с любого места в пределах файла: части приходят
+    // параллельно и вразнобой. Отказываем только бессмыслице — отрицательному
+    // смещению и выходу за конец.
+    if (!Number.isFinite(offset) || offset < 0 || offset > total) {
+        return send(res, 409, { 'Upload-Offset': String(solid) }, 'offset mismatch');
     }
 
-    const out = fs.createWriteStream(file, { flags: 'a' });
+    // Пишем ровно с указанного места, не трогая остальное.
+    const out = fs.createWriteStream(file, { flags: 'r+', start: offset });
     let written = 0;
     let failed = false;
 
     req.on('data', chunk => {
         written += chunk.length;
-        if (have + written > total) {       // прислали больше, чем обещали
+        if (offset + written > total) {     // прислали больше, чем обещали
             failed = true;
             req.destroy();
         }
     });
     req.on('error', () => { failed = true; });
-    // Обрыв видно в журнале: «докуда дошли» — первое, что нужно знать, когда
-    // отправка ходит по кругу.
-    req.on('aborted', () => log('обрыв', id, sizeOf(file) + '/' + total));
+    req.on('aborted', () => log('обрыв', id, offset + '+' + written + '/' + total));
 
     req.pipe(out);
 
     out.on('error', () => { failed = true; send(res, 500, {}, 'write failed'); });
     out.on('close', async () => {
-        if (failed) { try { res.destroy(); } catch {} return; }
-        const now = sizeOf(file);
-        if (now < total) {
-            // Каждая принятая порция — строка в журнале. Когда отправка
-            // «не идёт», первый вопрос всегда один: растёт принятое или
-            // стоит на месте. Порции крупные, так что болтовни немного.
-            log('порция', id, now + '/' + total);
-            return send(res, 204, { 'Upload-Offset': String(now) });
+        if (failed) {
+            // Часть доехала не целиком — засчитываем ровно принятое, чтобы
+            // повтор не вёз заново то, что уже легло на диск.
+            if (written > 0) {
+                addRange(meta, offset, offset + written);
+                saveMeta(id, meta);
+            }
+            try { res.destroy(); } catch {}
+            return;
+        }
+
+        addRange(meta, offset, offset + written);
+        saveMeta(id, meta);
+
+        if (!complete(meta)) {
+            // Каждая принятая часть — строка в журнале. Когда отправка «не
+            // идёт», первый вопрос всегда один: растёт принятое или стоит.
+            log('порция', id, solidPrefix(meta) + '/' + total);
+            return send(res, 204, { 'Upload-Offset': String(solidPrefix(meta)) });
         }
 
         // Дошло до конца — проверяем отпечаток и переносим в хранилище.
+        //
+        // Отпечаток здесь не формальность: при параллельной отправке он
+        // единственный, кто подтверждает, что все части легли на свои места.
         try {
             const sha = await hashFile(file);
             if (meta.sha && meta.sha !== sha) {
-                // Содержимое не то, что обещали. Чаще всего это следствие
-                // обрыва, после которого докачали не с того места.
                 fs.rmSync(file, { force: true });
-                fs.rmSync(metaPath(id), { force: true });
+                forgetMeta(id);
                 return send(res, 422, {}, 'sha mismatch');
             }
             const dest = blobPath(sha);
             if (sizeOf(dest) === total) fs.rmSync(file, { force: true });  // уже есть
             else fs.renameSync(file, dest);
-            fs.rmSync(metaPath(id), { force: true });
+            forgetMeta(id);
             log('принят', sha.slice(0, 12), meta.name, total);
             send(res, 200, {
                 'Upload-Offset': String(total),
@@ -280,7 +365,7 @@ function patchUpload(req, res, id) {
                 'File-Key': sha,
             });
         } catch (e) {
-            log('ошибка завершения', e.message);
+            log('ошибка завершения', id, e && e.message);
             send(res, 500, {}, 'finish failed');
         }
     });
