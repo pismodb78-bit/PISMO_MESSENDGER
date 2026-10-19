@@ -375,6 +375,25 @@ namespace PISMO
         }
 
         /// <summary>
+        /// Сколько байт у сервера без дыр. Нужно, когда все части ушли, а
+        /// ключа нет: ответ на последнюю мог потеряться.
+        /// </summary>
+        private static long? HeadOffset(string id)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Head, Base + "/files/" + id);
+                req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Token());
+                using var res = Http.SendAsync(req).GetAwaiter().GetResult();
+                if (!res.IsSuccessStatusCode) return null;
+                if (res.Headers.TryGetValues("Upload-Offset", out var v))
+                    foreach (var sVal in v) if (long.TryParse(sVal, out var at)) return at;
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
         /// Качает файл по ссылке. Ссылку мог записать другой клиент со своим
         /// адресом сервера — берём из неё только путь, а основу свою: сервер
         /// мог переехать, а ссылки в переписке остались прежними.
