@@ -34,8 +34,29 @@ die() { printf '\n\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "Нужен root: sudo bash $0"
 [ -d "$DIR" ] || die "Нет каталога $DIR. Если сервер лежит в другом месте: DIR=/путь bash $0"
 
-systemctl list-unit-files | grep -q "^${SERVICE}\.service" \
-  || die "Нет службы ${SERVICE}.service. Если она называется иначе: SERVICE=имя bash $0"
+# ИМЯ СЛУЖБЫ ИЩЕМ САМИ.
+#
+# Название по умолчанию угадывает не всегда: релей могли завести под другим
+# именем, и тогда установщик упирался в «нет такой службы», хотя сервер
+# прямо тут и работает. Поэтому, если заданной службы нет, ищем среди тех,
+# что запускают наш server.js, — по ней и работаем. Файловый сервис при
+# этом исключаем: он живёт в том же каталоге, но это другая служба.
+if ! systemctl list-unit-files | grep -q "^${SERVICE}\.service"; then
+    FOUND=$(grep -ls "server\.js" /etc/systemd/system/*.service 2>/dev/null \
+            | xargs -r -n1 basename 2>/dev/null \
+            | sed 's/\.service$//' \
+            | grep -v -- '-files$' \
+            | head -1)
+    if [ -n "$FOUND" ]; then
+        SERVICE="$FOUND"
+        say "Служба релея найдена: $SERVICE"
+    else
+        die "Не нашёл службу релея. Посмотрите её имя:
+  systemctl list-units --type=service | grep -i pismo
+и запустите с ним:
+  SERVICE=имя bash $0"
+    fi
+fi
 
 # ─── 1. Ключ сервисного аккаунта ─────────────────────────────────────
 if [ ! -s "$DIR/firebase.json" ]; then
