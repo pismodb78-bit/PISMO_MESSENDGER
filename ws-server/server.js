@@ -21,9 +21,15 @@ const crypto = require('crypto');
 // Push тем, кого нет на связи. Модуль сам решает, включаться ли: без
 // настроек и пакетов он молча спит, и релей работает как раньше.
 const push = require('./push');
+// Чтение переписки через релей: телефону дешевле один обмен с нами, чем
+// десяток кругов до базы по мобильной связи. Модуль сам решает, включаться
+// ли: без доступа к базе он молчит, и клиенты ходят в неё сами.
+const relayData = require('./data');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const wss = new WebSocket.Server({ port: PORT });
+
+relayData.init();
 
 // ── JWT (HS256) ─────────────────────────────────────────────────────
 // Секрет ДОЛЖЕН совпадать с PISMO/JwtAuth.cs (Secret). Можно переопределить
@@ -127,6 +133,26 @@ wss.on('connection', (ws, req) => {
 
         // До регистрации ничего не релеим.
         if (ws.userId == null) return;
+
+        // ЗАПРОС ДАННЫХ. Не релей, а наш собственный ответ: сходим в базу
+        // сами и вернём строки тому же сокету. Спросить можно только
+        // перечисленные операции и только за себя — uid берём из
+        // регистрации, а не из присланного.
+        if (msg.type === 'q') {
+            const qid = msg.qid;
+            relayData.run(ws.userId, String(msg.op || ''), msg.args || {})
+                .then(rows => {
+                    try { ws.send(JSON.stringify({ type: 'q_ok', qid, rows })); } catch {}
+                })
+                .catch(e => {
+                    try {
+                        ws.send(JSON.stringify({
+                            type: 'q_err', qid, error: (e && e.message) || 'error',
+                        }));
+                    } catch {}
+                });
+            return;
+        }
 
         const send = (c) => {
             if (c !== ws && c.readyState === WebSocket.OPEN) { try { c.send(raw); } catch {} }
