@@ -128,6 +128,54 @@ namespace PISMO
         /// </summary>
         private bool _renderAfterWatch;
 
+        /// <summary>
+        /// Подпись без числа догруженных вложений.
+        ///
+        /// Нужна, чтобы отличить «пришло новое сообщение» от «фоновая
+        /// догрузка положила в кеш ещё одну картинку». Первое надо рисовать
+        /// немедленно, второе — копить (см. ScheduleMediaRerender).
+        /// </summary>
+        internal static string StripMediaSig(string sig) => StripMedia(sig);
+
+        private static string StripMedia(string sig) =>
+            sig == null ? null : System.Text.RegularExpressions.Regex.Replace(sig, @"\|m\d+", "");
+
+        private System.Windows.Forms.Timer _mediaRerender;
+
+        /// <summary>
+        /// Перерисовка «из-за догруженной картинки» — с задержкой и одна на
+        /// всех.
+        ///
+        /// Число закешированных вложений входит в подпись ленты, поэтому
+        /// КАЖДАЯ приехавшая картинка требовала собрать страницу заново. На
+        /// десятке фотографий это десяток полных пересборок подряд: пузыри
+        /// уничтожаются и строятся снова, лента дёргается под рукой, и всё
+        /// это пока человек её листает.
+        ///
+        /// Теперь ждём, пока поток догрузки утихнет, и рисуем один раз.
+        /// Отсрочка короткая: картинки всё равно появляются почти сразу.
+        /// </summary>
+        private void ScheduleMediaRerender()
+        {
+            if (IsDisposed) return;
+            if (_mediaRerender == null)
+            {
+                _mediaRerender = new System.Windows.Forms.Timer { Interval = 1200 };
+                _mediaRerender.Tick += (s, e) =>
+                {
+                    _mediaRerender.Stop();
+                    if (IsDisposed || OnServerView) return;
+                    // Подпись снимаем: иначе перерисовка отсечётся как
+                    // «данные те же» — ведь текст и правда тот же.
+                    ForceMessageRerender();
+                    if (_currentGroupId > 0) LoadGroupMessages();
+                    else if (_currentChatPartnerId > 0) LoadMessages(markRead: false);
+                };
+            }
+            _mediaRerender.Stop();
+            _mediaRerender.Start();
+        }
+
         private bool HoldRenderWhileWatching()
         {
             if (InlineVideoPlayer.Watching <= 0) return false;
@@ -718,7 +766,7 @@ namespace PISMO
                 RepaintSearchMatches();
                 UpdateSearchNavUi(query.Length > 0);
                 if (_searchIndex >= 0)
-                    try { pnlMessages.ScrollControlIntoView(_searchMatches[_searchIndex]); } catch { }
+                    try { pnlMessages.ScrollToExplicit(_searchMatches[_searchIndex]); } catch { }
             }
             catch { }
         }
@@ -764,7 +812,7 @@ namespace PISMO
                 _searchIndex = ((_searchIndex + delta) % _searchMatches.Count + _searchMatches.Count) % _searchMatches.Count;
                 RepaintSearchMatches();
                 UpdateSearchNavUi(true);
-                pnlMessages.ScrollControlIntoView(_searchMatches[_searchIndex]);
+                pnlMessages.ScrollToExplicit(_searchMatches[_searchIndex]);
             }
             catch { }
         }
@@ -830,7 +878,7 @@ namespace PISMO
                         _searchIndex = idx;
                         RepaintSearchMatches();
                         UpdateSearchNavUi(true);
-                        try { pnlMessages.ScrollControlIntoView(_searchMatches[idx]); } catch { }
+                        try { pnlMessages.ScrollToExplicit(_searchMatches[idx]); } catch { }
                         try { pop.Close(); } catch { }
                     }
                     card.Click += Go;
@@ -3910,7 +3958,11 @@ namespace PISMO
                    sig = SigOf(dt) + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("g" + group);
             // Данные другие, но в ленте играет ролик — подождём его конца.
             if ((_renderedChatKey != key || _renderedChatSig != sig) && HoldRenderWhileWatching()) return;
-            if (_renderedChatKey == key && _renderedChatSig == sig)
+            // Отличается ТОЛЬКО число догруженных вложений — копим.
+            bool mediaOnly = _renderedChatKey == key && _renderedChatSig != sig
+                             && StripMedia(_renderedChatSig) == StripMedia(sig);
+            if (mediaOnly) ScheduleMediaRerender();
+            if (_renderedChatKey == key && (_renderedChatSig == sig || mediaOnly))
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
                 // «пустой» перезагрузки (данные не изменились) подгрузка старых
@@ -4240,7 +4292,11 @@ namespace PISMO
                        + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("d" + partner);
             // Данные другие, но в ленте играет ролик — подождём его конца.
             if ((_renderedChatKey != key || _renderedChatSig != sig) && HoldRenderWhileWatching()) return;
-            if (_renderedChatKey == key && _renderedChatSig == sig)
+            // Отличается ТОЛЬКО число догруженных вложений — копим.
+            bool mediaOnly = _renderedChatKey == key && _renderedChatSig != sig
+                             && StripMedia(_renderedChatSig) == StripMedia(sig);
+            if (mediaOnly) ScheduleMediaRerender();
+            if (_renderedChatKey == key && (_renderedChatSig == sig || mediaOnly))
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
                 // «пустой» перезагрузки (данные не изменились) подгрузка старых

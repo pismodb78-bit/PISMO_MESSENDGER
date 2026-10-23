@@ -26,7 +26,7 @@ namespace PISMO
 
             var center = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(54, 57, 63) };
             _lblTitle = new Label { Dock = DockStyle.Top, Height = 36, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 12f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0), Text = "Выберите канал" };
-            _pnlMessages = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(54, 57, 63), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(10) };
+            _pnlMessages = new ChatFeedFlowPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(54, 57, 63), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(10) };
 
             // Вид строки ввода перенесён из мессенджера (MainForm): панель повыше,
             // поле без рамки слито с фоном бара, иконочные кнопки плоские/серые,

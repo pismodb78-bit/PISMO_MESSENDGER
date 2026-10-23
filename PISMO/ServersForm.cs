@@ -50,7 +50,7 @@ namespace PISMO
         // Бейджи каналов: channelId → ярлык с числом непрочит./упоминаний.
         private readonly System.Collections.Generic.Dictionary<int, Label> _channelBadgeLabels = new();
         private FlowLayoutPanel _pnlMembers;
-        private FlowLayoutPanel _pnlMessages;
+        private ChatFeedFlowPanel _pnlMessages;
         private Panel _pnlInput;
         private TextBox _txtInput;
         private Label _lblTitle;
@@ -89,6 +89,33 @@ namespace PISMO
 
         /// <summary>Отложили пересборку страницы, пока шёл ролик.</summary>
         private bool _renderAfterWatch;
+
+        private System.Windows.Forms.Timer _mediaRerender;
+
+        /// <summary>
+        /// Перерисовка «из-за догруженной картинки» — с задержкой и одна на
+        /// всех. То же, что в личной переписке: число закешированных
+        /// вложений входит в подпись ленты, и каждая приехавшая картинка
+        /// требовала собрать канал заново. На десятке фотографий это десяток
+        /// полных пересборок подряд, и лента дёргается под рукой.
+        /// </summary>
+        private void ScheduleMediaRerender()
+        {
+            if (IsDisposed) return;
+            if (_mediaRerender == null)
+            {
+                _mediaRerender = new System.Windows.Forms.Timer { Interval = 1200 };
+                _mediaRerender.Tick += (s, e) =>
+                {
+                    _mediaRerender.Stop();
+                    if (IsDisposed || _channelId <= 0) return;
+                    _renderedKey = null; _renderedSig = null;
+                    LoadMessages();
+                };
+            }
+            _mediaRerender.Stop();
+            _mediaRerender.Start();
+        }
 
         /// <summary>Ролики закончились — рисуем то, что откладывали.</summary>
         private void HookVideoWatching()
@@ -2426,7 +2453,12 @@ namespace PISMO
                 _renderAfterWatch = true;
                 return;
             }
-            if (_renderedKey == key && _renderedSig == sig)
+            // Отличается ТОЛЬКО число догруженных вложений — копим и рисуем
+            // один раз, когда поток догрузки утихнет.
+            bool mediaOnly = _renderedKey == key && _renderedSig != sig
+                             && MainForm.StripMediaSig(_renderedSig) == MainForm.StripMediaSig(sig);
+            if (mediaOnly) ScheduleMediaRerender();
+            if (_renderedKey == key && (_renderedSig == sig || mediaOnly))
             {
                 // См. пояснение в MainForm: без сброса флага догрузка старых сообщений
                 // в канале блокировалась после «пустой» перезагрузки.
@@ -2902,7 +2934,7 @@ namespace PISMO
                 else if (channelChanged || newMsgs)
                 {
                     _pnlMessages.PerformLayout();   // актуальный диапазон прокрутки
-                    _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);
+                    _pnlMessages.ScrollToExplicit(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);
                 }
                 else
                     try { _pnlMessages.AutoScrollPosition = new Point(0, savedScrollY); } catch { }
@@ -2980,7 +3012,7 @@ namespace PISMO
             _srvBtnScrollDown.Paint += (s, e) => MainForm.PaintScrollDownCircle(e.Graphics, _srvBtnScrollDown.Width, _srvBtnScrollDown.Height);
             _srvBtnScrollDown.Click += (s, e) =>
             {
-                try { _pnlMessages.ScrollControlIntoView(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null); } catch { }
+                try { _pnlMessages.ScrollToExplicit(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null); } catch { }
                 UpdateSrvScrollDownButton();
             };
             _srvSdAnim = new System.Windows.Forms.Timer { Interval = 12 };

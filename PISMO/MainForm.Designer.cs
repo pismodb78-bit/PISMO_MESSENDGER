@@ -20,7 +20,7 @@ namespace PISMO
         private Panel pnlMain;
         private Panel pnlChatHeader;
         private Label lblChatTitle;
-        private Panel pnlMessages;
+        private ChatFeedPanel pnlMessages;
         private Panel pnlPreview;
         private Panel pnlInputBar;
         private Button btnAttach;
@@ -56,7 +56,7 @@ namespace PISMO
             lblCurrentUser = new Label();
             btnSettings = new Button();
             pnlMain = new Panel();
-            pnlMessages = new Panel();
+            pnlMessages = new ChatFeedPanel();
             pnlPreview = new Panel();
             pnlInputBar = new Panel();
             btnAttach = new Button();
