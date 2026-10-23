@@ -7387,21 +7387,19 @@ namespace PISMO
                 return;
             }
 
-            using var dlg = new OpenFileDialog
-            {
-                Title = "Выбрать файл для отправки",
-                Filter =
-                    "Изображения и GIF|*.jpg;*.jpeg;*.png;*.bmp;*.gif|" +
-                    "Видео и музыка|*.mp4;*.webm;*.m4v;*.mov;*.mp3;*.wav;*.ogg;*.m4a;*.aac;*.flac;*.opus|" +
-                    "Документы|*.docx;*.doc;*.xlsx;*.xls;*.pptx;*.ppt;*.pdf;*.txt;*.rtf|" +
-                    "Архивы|*.zip;*.rar;*.7z;*.tar;*.gz|" +
-                    "Все файлы|*.*",
-                FilterIndex = 1,
-                Multiselect = true
-            };
+            // Своё окно выбора вместо системного диалога: сетка последних
+            // снимков и роликов, кружок с НОМЕРОМ по порядку выбора, просмотр
+            // по нажатию в середину плитки и вкладка «Файлы» с общим выбором —
+            // то же, что в листе вложений на телефоне.
+            using var pick = new AttachPickerForm();
+            if (pick.ShowDialog(this) != DialogResult.OK) return;
 
-            if (dlg.ShowDialog() != DialogResult.OK) return;
-            foreach (var f in dlg.FileNames) AttachFileByPath(f);
+            foreach (var f in pick.Picked) AttachFileByPath(f);
+
+            // Подпись из окна выбора уходит вместе с пачкой — первому
+            // вложению, как и на телефоне.
+            if (!string.IsNullOrWhiteSpace(pick.Caption)) txtMessage.Text = pick.Caption;
+            if (pick.SendNow && _pendingAttach.Count > 0) btnSend_Click(this, EventArgs.Empty);
         }
 
         /// <summary>Прикрепить файл по пути (диалог/перетаскивание) — читает, проверяет

@@ -4406,16 +4406,24 @@ namespace PISMO
         private void AttachChannelFile(bool imageOnly)
         {
             if (_channelId <= 0) return;
-            using var ofd = new OpenFileDialog
+
+            // Своё окно выбора — то же, что в личной переписке и на телефоне:
+            // сетка, кружки с номерами по порядку, просмотр по нажатию,
+            // вкладка «Файлы» с общим выбором.
+            string[] chosen;
+            string caption = "";
+            bool sendNow = false;
+            using (var pick = new AttachPickerForm())
             {
-                Title = imageOnly ? "Выберите изображение" : "Выберите файл",
-                Filter = imageOnly ? "Изображения|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp" : "Все файлы|*.*",
-                Multiselect = true,
-            };
-            if (ofd.ShowDialog(this) != DialogResult.OK) return;
+                if (pick.ShowDialog(this) != DialogResult.OK) return;
+                chosen = pick.Picked.ToArray();
+                caption = pick.Caption;
+                sendNow = pick.SendNow;
+            }
+
             // Слишком большие пропускаем поимённо, а не бросаем всю пачку.
             var skipped = new List<string>();
-            foreach (var path in ofd.FileNames)
+            foreach (var path in chosen)
             {
                 try
                 {
@@ -4434,6 +4442,11 @@ namespace PISMO
             }
             if (skipped.Count > 0)
                 MessageBox.Show("Не приложено (>200 МБ): " + string.Join(", ", skipped), "PISMO");
+
+            // Подпись из окна выбора уходит вместе с пачкой — первому
+            // вложению, как и на телефоне.
+            if (!string.IsNullOrWhiteSpace(caption)) _txtInput.Text = caption;
+            if (sendNow) SendChannelMessage();
         }
 
         private void RecordChannelCircle()
