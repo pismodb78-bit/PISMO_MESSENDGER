@@ -38,7 +38,9 @@ namespace PISMO
         private static readonly string[] VideoExt =
             { ".mp4", ".webm", ".m4v", ".mov", ".mkv", ".3gp" };
 
-        private const int TileSide = 148;
+        // Плитка выбора — крупная: на мелкой не разглядеть, что именно
+        // отмечаешь, а окно всё равно на пол-экрана.
+        private const int TileSide = 196;
         private const int MaxScan = 400;
 
         /// <summary>Выбранное — В ПОРЯДКЕ ВЫБОРА.</summary>
@@ -478,7 +480,7 @@ namespace PISMO
                 Invalidate();
             }
 
-            private Rectangle CircleRect => new(Width - 30, 6, 24, 24);
+            private Rectangle CircleRect => new(Width - 38, 8, 30, 30);
 
             protected override void OnPaint(PaintEventArgs e)
             {
@@ -499,15 +501,15 @@ namespace PISMO
 
                 if (_isVideo)
                 {
-                    int s = 34;
+                    int s = 46;
                     int cx = Width / 2, cy = Height / 2;
                     using var disc = new SolidBrush(Color.FromArgb(120, 0, 0, 0));
                     g.FillEllipse(disc, cx - s / 2, cy - s / 2, s, s);
                     var tri = new[]
                     {
-                        new Point(cx - 6, cy - 9),
-                        new Point(cx - 6, cy + 9),
-                        new Point(cx + 11, cy),
+                        new Point(cx - 8, cy - 12),
+                        new Point(cx - 8, cy + 12),
+                        new Point(cx + 14, cy),
                     };
                     g.FillPolygon(Brushes.White, tri);
                 }
@@ -522,7 +524,7 @@ namespace PISMO
                     g.DrawEllipse(pen, rc);
                 if (_order > 0)
                 {
-                    using var f = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold);
+                    using var f = new Font("Segoe UI Semibold", 10f, FontStyle.Bold);
                     using var sf = new StringFormat
                     { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
                     g.DrawString(_order.ToString(), f, Brushes.White, rc, sf);

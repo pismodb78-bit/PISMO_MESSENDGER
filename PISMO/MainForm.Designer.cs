@@ -1,4 +1,4 @@
-namespace PISMO
+﻿namespace PISMO
 {
     partial class MainForm
     {
@@ -242,7 +242,7 @@ namespace PISMO
             pnlPreview.Dock = DockStyle.Bottom;
             pnlPreview.Location = new Point(0, 562);
             pnlPreview.Name = "pnlPreview";
-            pnlPreview.Size = new Size(810, 70);
+            pnlPreview.Size = new Size(810, 92);
             pnlPreview.TabIndex = 1;
             pnlPreview.Visible = false;
             // 

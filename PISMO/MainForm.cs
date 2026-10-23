@@ -7551,7 +7551,9 @@ namespace PISMO
                         var pb = new PictureBox
                         {
                             SizeMode = PictureBoxSizeMode.Zoom,
-                            Size = new Size(54, 54),
+                            // Крупнее: на 54 точках не видно, что именно
+                            // приложено, — а панель под это место имеет.
+                            Size = new Size(76, 76),
                             Location = new Point(x, 7),
                             Cursor = Cursors.Hand,
                         };
@@ -7559,11 +7561,11 @@ namespace PISMO
                         pb.Image = Image.FromStream(ms);
                         cell = pb;
                     }
-                    catch { cell = MakeFileIcon(a.FileName); cell.Location = new Point(x, 7); }
+                    catch { cell = MakeFileIcon(a.FileName, 76); cell.Location = new Point(x, 7); }
                 }
                 else
                 {
-                    cell = MakeFileIcon(a.FileName);
+                    cell = MakeFileIcon(a.FileName, 76);
                     cell.Location = new Point(x, 7);
                 }
                 cell.Cursor = Cursors.Hand;
@@ -7583,7 +7585,7 @@ namespace PISMO
                 var num = new Label
                 {
                     Text = no.ToString(),
-                    Size = new Size(18, 18),
+                    Size = new Size(22, 22),
                     Location = new Point(x, 7),
                     BackColor = Color.FromArgb(30, 143, 225),
                     ForeColor = Color.White,
@@ -7593,7 +7595,7 @@ namespace PISMO
                 pnlPreview.Controls.Add(num);
                 num.BringToFront();
 
-                x += 60;
+                x += 84;
                 shown++;
             }
 
@@ -7611,7 +7613,7 @@ namespace PISMO
                 Text = caption,
                 Font = new Font("Segoe UI", 9f),
                 ForeColor = Color.FromArgb(185, 187, 190),
-                Location = new Point(x + 6, 14),
+                Location = new Point(x + 6, 24),
                 AutoSize = true
             };
             pnlPreview.Controls.Add(lbl);
@@ -7621,7 +7623,7 @@ namespace PISMO
                 Text = "Esc — сбросить всё, клик по миниатюре — убрать одну",
                 Font = new Font("Segoe UI", 7.5f),
                 ForeColor = Color.FromArgb(130, 133, 140),
-                Location = new Point(x + 6, 32),
+                Location = new Point(x + 6, 46),
                 AutoSize = true
             };
             pnlPreview.Controls.Add(hint);
@@ -7638,7 +7640,7 @@ namespace PISMO
                 Cursor = Cursors.Hand
             };
             btnCancel.FlatAppearance.BorderSize = 0;
-            btnCancel.Location = new Point(pnlPreview.Width - 36, 18);
+            btnCancel.Location = new Point(pnlPreview.Width - 36, 28);
             btnCancel.Click += (s, ev) =>
             {
                 _pendingAttach.Clear();
@@ -7647,14 +7649,14 @@ namespace PISMO
                 pnlPreview.Controls.Clear();
             };
             pnlPreview.Resize += (s, ev) =>
-                btnCancel.Location = new Point(pnlPreview.Width - 36, 18);
+                btnCancel.Location = new Point(pnlPreview.Width - 36, 28);
 
             pnlPreview.Controls.Add(btnCancel);
             pnlPreview.Visible = true;
         }
 
         /// <summary>Универсальная иконка-плейсхолдер для файлов, не являющихся изображением.</summary>
-        internal static Panel MakeFileIcon(string fileName)
+        internal static Panel MakeFileIcon(string fileName, int side = 54)
         {
             string ext = Path.GetExtension(fileName).ToLowerInvariant().TrimStart('.');
             Color bg = ext switch
@@ -7668,15 +7670,16 @@ namespace PISMO
                 _ => Color.FromArgb(88, 101, 242),
             };
 
-            var p = new Panel { Size = new Size(54, 54), Location = new Point(8, 7), BackColor = Color.Transparent };
+            var p = new Panel { Size = new Size(side, side), Location = new Point(8, 7), BackColor = Color.Transparent };
             p.Paint += (s, e) =>
             {
                 e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                e.Graphics.FillRoundedRectangle(new SolidBrush(bg), 0, 0, 53, 53, 8);
+                e.Graphics.FillRoundedRectangle(new SolidBrush(bg), 0, 0, side - 1, side - 1, 8);
                 string label = ext.Length > 0 ? ext.ToUpper() : "FILE";
-                using var f = new Font("Segoe UI Black", label.Length > 3 ? 7.5f : 9.5f, FontStyle.Bold);
+                float pt = side / 5.6f;
+                using var f = new Font("Segoe UI Black", label.Length > 3 ? pt * 0.8f : pt, FontStyle.Bold);
                 using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                e.Graphics.DrawString(label, f, Brushes.White, new RectangleF(0, 0, 54, 54), sf);
+                e.Graphics.DrawString(label, f, Brushes.White, new RectangleF(0, 0, side, side), sf);
             };
             return p;
         }
