@@ -7553,24 +7553,45 @@ namespace PISMO
                 return;
             }
 
-            // Своё окно выбора вместо системного диалога: сетка последних
-            // снимков и роликов, кружок с НОМЕРОМ по порядку выбора, просмотр
-            // по нажатию в середину плитки и вкладка «Файлы» с общим выбором —
-            // то же, что в листе вложений на телефоне.
-            using var pick = new AttachPickerForm();
-            if (pick.ShowDialog(this) != DialogResult.OK) return;
+            // КАК В TELEGRAM DESKTOP: сначала ОБЫЧНЫЙ системный выбор файлов,
+            // потом окно подтверждения с предпросмотром, подписью и
+            // переключателем «как файлы». Своей сетки папок здесь быть не
+            // должно — на компьютере файлы ищут проводником.
+            using var dlg = new OpenFileDialog
+            {
+                Title = "Выбрать файлы для отправки",
+                Filter =
+                    "Все файлы|*.*|" +
+                    "Изображения и GIF|*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp|" +
+                    "Видео и музыка|*.mp4;*.webm;*.m4v;*.mov;*.mkv;*.mp3;*.wav;*.ogg;*.m4a;*.aac;*.flac;*.opus|" +
+                    "Документы|*.docx;*.doc;*.xlsx;*.xls;*.pptx;*.ppt;*.pdf;*.txt;*.rtf|" +
+                    "Архивы|*.zip;*.rar;*.7z;*.tar;*.gz",
+                FilterIndex = 1,
+                Multiselect = true,
+            };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
-            foreach (var f in pick.Picked) AttachFileByPath(f);
+            if (!SendFilesBox.Ask(this, dlg.FileNames, out var files, out var caption, out bool asFiles))
+                return;
 
-            // Подпись из окна выбора уходит вместе с пачкой — первому
-            // вложению, как и на телефоне.
-            if (!string.IsNullOrWhiteSpace(pick.Caption)) txtMessage.Text = pick.Caption;
-            if (pick.SendNow && _pendingAttach.Count > 0) btnSend_Click(this, EventArgs.Empty);
+            foreach (var f in files) AttachFileByPath(f, asFiles);
+
+            // Подпись уходит вместе с пачкой — первому вложению.
+            if (!string.IsNullOrWhiteSpace(caption)) txtMessage.Text = caption;
+            if (_pendingAttach.Count > 0) btnSend_Click(this, EventArgs.Empty);
         }
 
         /// <summary>Прикрепить файл по пути (диалог/перетаскивание) — читает, проверяет
         /// размер, определяет тип и показывает превью над полем ввода.</summary>
-        internal void AttachFileByPath(string path)
+        internal void AttachFileByPath(string path) => AttachFileByPath(path, false);
+
+        /// <summary>
+        /// Прикрепить файл по пути. <paramref name="asFile"/> — отправить
+        /// документом, даже если это картинка: так она доедет без сжатия и без
+        /// превращения в сообщение-изображение (переключатель «как файлы» в
+        /// окне подтверждения).
+        /// </summary>
+        internal void AttachFileByPath(string path, bool asFile)
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
             if (_currentChatPartnerId < 0 && _currentGroupId < 0)
@@ -7607,7 +7628,8 @@ namespace PISMO
             bool isImg = !isGif && new[] { ".jpg", ".jpeg", ".png", ".bmp", ".webp" }.Contains(ext);
 
             AttachKind kind;
-            if (isGif) kind = AttachKind.Gif;
+            if (asFile) kind = AttachKind.File;
+            else if (isGif) kind = AttachKind.Gif;
             else if (isImg) kind = AttachKind.Image;
             else kind = AttachKind.File;
 
@@ -7617,9 +7639,10 @@ namespace PISMO
             // системного расширения WebP увидел бы вместо неё подпись об
             // ошибке — ровно то же, что до недавнего приходило к нам с
             // телефона, только в обратную сторону.
-            if (isImg) bytes = ToPortableImage(bytes, ref outName);
+            // «Как файлы» — ничего с картинкой не делаем: в этом и смысл.
+            if (isImg && !asFile) bytes = ToPortableImage(bytes, ref outName);
 
-            if (isImg && bytes.Length > 2 * 1024 * 1024)
+            if (isImg && !asFile && bytes.Length > 2 * 1024 * 1024)
                 bytes = CompressImageIfNeeded(bytes);
 
             _pendingAttach.Add(new PendingAttachment(bytes, outName, kind));
@@ -8056,7 +8079,7 @@ namespace PISMO
         };
 
         /// <summary>Человекочитаемый размер файла.</summary>
-        private static string FormatFileSize(long bytes)
+        internal static string FormatFileSize(long bytes)
         {
             if (bytes <= 0) return "";
             double kb = bytes / 1024.0;

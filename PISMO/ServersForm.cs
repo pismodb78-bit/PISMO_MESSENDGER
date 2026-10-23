@@ -4495,18 +4495,24 @@ namespace PISMO
         {
             if (_channelId <= 0) return;
 
-            // Своё окно выбора — то же, что в личной переписке и на телефоне:
-            // сетка, кружки с номерами по порядку, просмотр по нажатию,
-            // вкладка «Файлы» с общим выбором.
+            // Как в Telegram Desktop и как в личной переписке: системный выбор
+            // файлов, затем окно подтверждения с предпросмотром и подписью.
             string[] chosen;
-            string caption = "";
-            bool sendNow = false;
-            using (var pick = new AttachPickerForm())
+            string caption;
+            bool asFiles;
+            using (var ofd = new OpenFileDialog
             {
-                if (pick.ShowDialog(this) != DialogResult.OK) return;
-                chosen = pick.Picked.ToArray();
-                caption = pick.Caption;
-                sendNow = pick.SendNow;
+                Title = imageOnly ? "Выберите изображение" : "Выберите файлы",
+                Filter = imageOnly
+                    ? "Изображения|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp"
+                    : "Все файлы|*.*",
+                Multiselect = true,
+            })
+            {
+                if (ofd.ShowDialog(this) != DialogResult.OK) return;
+                if (!SendFilesBox.Ask(this, ofd.FileNames, out var picked, out caption, out asFiles))
+                    return;
+                chosen = picked.ToArray();
             }
 
             // Слишком большие пропускаем поимённо, а не бросаем всю пачку.
@@ -4523,18 +4529,18 @@ namespace PISMO
                     }
                     string ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
                     bool isImg = ext is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp";
-                    // Как в мессенджере: показываем превью, отправка — по «Отправить».
-                    StageChannelAttachment(bytes, Path.GetFileName(path), imageOnly || isImg);
+                    // «Как файлы» — отправляем документом, даже если это картинка.
+                    StageChannelAttachment(bytes, Path.GetFileName(path),
+                                           !asFiles && (imageOnly || isImg));
                 }
                 catch (Exception ex) { MessageBox.Show("Не удалось прикрепить файл: " + ex.Message, "PISMO"); }
             }
             if (skipped.Count > 0)
                 MessageBox.Show("Не приложено (>200 МБ): " + string.Join(", ", skipped), "PISMO");
 
-            // Подпись из окна выбора уходит вместе с пачкой — первому
-            // вложению, как и на телефоне.
+            // Подпись уходит вместе с пачкой — первому вложению.
             if (!string.IsNullOrWhiteSpace(caption)) _txtInput.Text = caption;
-            if (sendNow) SendChannelMessage();
+            SendChannelMessage();
         }
 
         private void RecordChannelCircle()
