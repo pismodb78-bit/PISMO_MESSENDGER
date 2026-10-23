@@ -4503,6 +4503,50 @@ namespace PISMO
         // Одно тело на три случая: личный чат, группа и догрузка вверх.
         // Раньше цикл был написан дважды — для ЛС и для групп, — и догрузка
         // воспользоваться им не могла: ей оставалось звать отрисовку целиком.
+        /// <summary>
+        /// Нажали ячейку плитки — открываем именно её: снимок во весь экран,
+        /// ролик отдельным окном проигрывателя.
+        ///
+        /// Байты берём в ФОНЕ: вложение может лежать только в базе, а поход за
+        /// ним — это полный круг до сервера, и делать его на потоке окна
+        /// значит заморозить ленту прямо под пальцем.
+        /// </summary>
+        private void OpenAlbumCell(AlbumTile.Item it, bool isGroup)
+        {
+            if (it == null) return;
+            var id = it.MsgId;
+            var name = it.FileName;
+            bool video = it.IsVideo;
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                byte[] data = null;
+                try
+                {
+                    data = video
+                        ? LoadFileBytes(id, name, isGroup)
+                        : (MediaCache.Get(id, "img", name)
+                           ?? LoadMediaForMessage(id, name, true, false, false, false, isGroup).img);
+                }
+                catch { }
+
+                if (data == null || data.Length == 0) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            if (video) new MediaPlayerForm(data, name, true).Show();
+                            else ShowImageFullscreen(data);
+                        }
+                        catch { }
+                    }));
+                }
+                catch { }
+            });
+        }
+
         private (List<Control> items, int yEnd, string lastDate) BuildRows(
             DataTable dt, int myId, bool isGroup, bool iBlocked, bool theyBlockedMe,
             int yStart, string lastDate = "")
@@ -4510,8 +4554,21 @@ namespace PISMO
             var items = new List<Control>(dt.Rows.Count + 8);
             int yOffset = yStart;
 
-            foreach (DataRow row in dt.Rows)
+            // Пачка вложений, отправленная разом, идёт ОДНОЙ плиткой, поэтому
+            // строки приходится смотреть вперёд — отсюда индекс вместо foreach.
+            var rowsList = new List<DataRow>(dt.Rows.Count);
+            foreach (DataRow r0 in dt.Rows) rowsList.Add(r0);
+
+            // В плитку не прячем то, у чего есть своё оформление: закреплённое
+            // и то, на чём висят реакции.
+            bool Solo(int id) =>
+                (_pinnedInView != null && _pinnedInView.Contains(id))
+                || (_reactionsInView != null && _reactionsInView.TryGetValue(id, out var rr)
+                    && rr != null && rr.Count > 0);
+
+            for (int ri = 0; ri < rowsList.Count; ri++)
             {
+                DataRow row = rowsList[ri];
                 int senderId = Convert.ToInt32(row["sender_id"]);
                 bool isMine = senderId == myId;
 
@@ -4564,6 +4621,52 @@ namespace PISMO
                     bool isRead = row.Table.Columns.Contains("is_read")
                         && row["is_read"] != DBNull.Value && Convert.ToInt32(row["is_read"]) != 0;
                     readState = isRead ? 2 : 1;
+                }
+
+                // ── Плитка альбома ───────────────────────────────────────
+                int albumLen = Albums.Length(rowsList, ri, Solo);
+                if (albumLen > 1)
+                {
+                    var tileItems = new List<AlbumTile.Item>(albumLen);
+                    for (int k = 0; k < albumLen; k++)
+                    {
+                        var rk = rowsList[ri + k];
+                        string fnk = rk["file_name"] == DBNull.Value ? null : rk["file_name"].ToString();
+                        bool vidk = fnk != null && MediaPlayerForm.IsVideo(
+                            Path.GetExtension(fnk).TrimStart('.').ToLowerInvariant());
+                        tileItems.Add(new AlbumTile.Item
+                        {
+                            MsgId = Convert.ToInt32(rk["id"]),
+                            FileName = fnk,
+                            IsVideo = vidk,
+                        });
+                    }
+
+                    var lastRow = rowsList[ri + albumLen - 1];
+                    string tileTime = ToViewerLocal(Convert.ToDateTime(lastRow["created_at"]))
+                        .ToString("HH:mm");
+                    int tileRead = -1;
+                    if (!isGroup && isMine)
+                    {
+                        bool lastRead = lastRow.Table.Columns.Contains("is_read")
+                            && lastRow["is_read"] != DBNull.Value
+                            && Convert.ToInt32(lastRow["is_read"]) != 0;
+                        tileRead = lastRead ? 2 : 1;
+                    }
+
+                    bool tileGroup = isGroup;
+                    var tile = new AlbumTile(tileItems, text, tileTime, isMine, tileRead, 420);
+                    tile.CellClicked += it => OpenAlbumCell(it, tileGroup);
+                    tile.Top = yOffset;
+                    PositionBubble(tile, isMine);
+                    tile.Tag = isMine;
+                    tile.SizeChanged += (s, e) => ArmRestackSoon();
+                    tile.AccessibleDefaultActionDescription = dt2.ToString("dd.MM.yyyy HH:mm");
+                    items.Add(tile);
+                    AddSelectMark(tile, msgId);
+                    yOffset += tile.Height + 8;
+                    ri += albumLen - 1;
+                    continue;
                 }
 
                 var bubble = BuildBubble(sname, time, text, img, audio, isMine, video,
@@ -8210,6 +8313,21 @@ namespace PISMO
         // Ctrl+V — вставить изображение или файл из буфера
         private void txtMessage_KeyDown(object sender, KeyEventArgs e)
         {
+            // Esc — сбросить прикреплённое, как в Telegram.
+            //
+            // Набранный текст при этом НЕ трогаем: его писал человек, и к
+            // выбору файлов он отношения не имеет. Раньше отменить выбор можно
+            // было только крестиками по одному.
+            if (e.KeyCode == Keys.Escape && (_pendingAttach.Count > 0 || _pendingImageBytes != null))
+            {
+                _pendingAttach.Clear();
+                _pendingImageBytes = null;
+                try { pnlPreview.Visible = false; pnlPreview.Controls.Clear(); } catch { }
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
+
             if (e.Control && e.KeyCode == Keys.V && Clipboard.ContainsImage())
             {
                 var img = Clipboard.GetImage();

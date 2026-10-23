@@ -2328,6 +2328,51 @@ namespace PISMO
         /// <summary>Заполняет mediaOut байтами медиа канала: сначала из локального
         /// кеша, недостающее догружает из БД одним запросом и кеширует на диск.</summary>
         /// <summary>Читает файл сообщения канала по требованию (для крупных вложений).</summary>
+        /// <summary>
+        /// Нажали ячейку плитки в канале — открываем именно её: снимок во весь
+        /// экран, ролик отдельным окном. Байты берём в фоне: вложение может
+        /// лежать только в базе, а поход за ним на потоке окна заморозил бы
+        /// ленту прямо под курсором.
+        /// </summary>
+        private void OpenChannelAlbumCell(AlbumTile.Item it)
+        {
+            if (it == null) return;
+            int id = it.MsgId;
+            string name = it.FileName;
+            bool video = it.IsVideo;
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                byte[] data = null;
+                try
+                {
+                    if (video) data = LoadServerFileBytes(id, name);
+                    else
+                    {
+                        data = MediaCache.Get(id, "simg", null);
+                        if ((data == null || data.Length == 0)
+                            && _serverMedia.TryGetValue(id, out var cur)) data = cur.img;
+                    }
+                }
+                catch { }
+
+                if (data == null || data.Length == 0) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            if (video) new MediaPlayerForm(data, name, true).Show();
+                            else MainForm.ShowImageFullscreen(data);
+                        }
+                        catch { }
+                    }));
+                }
+                catch { }
+            });
+        }
+
         internal static byte[] LoadServerFileBytes(int msgId, string fileName)
         {
             try
@@ -2515,8 +2560,19 @@ namespace PISMO
 
                 var pending = new List<Control>(dt.Rows.Count + 8);
                 string lastDate = null;
-                foreach (DataRow r in dt.Rows)
+
+                // Пачка вложений, отправленная разом, идёт ОДНОЙ плиткой — как
+                // в личной переписке и на телефоне. Поэтому строки приходится
+                // смотреть вперёд, отсюда индекс вместо foreach.
+                var rowsList = new List<DataRow>(dt.Rows.Count);
+                foreach (DataRow r0 in dt.Rows) rowsList.Add(r0);
+                bool SoloInChannel(int mid) =>
+                    _reactionsInView != null && _reactionsInView.TryGetValue(mid, out var rr)
+                    && rr != null && rr.Count > 0;
+
+                for (int ri = 0; ri < rowsList.Count; ri++)
                 {
+                    DataRow r = rowsList[ri];
                     int id = Convert.ToInt32(r["id"]);
                     int senderId = Convert.ToInt32(r["sender_id"]);
                     string nm = r["nm"].ToString().Trim();
@@ -2629,6 +2685,43 @@ namespace PISMO
                     };
                     holder.Controls.Add(head);
                     y += 22;
+
+                    // ── Плитка альбома ───────────────────────────────────
+                    int albumLen = Albums.Length(rowsList, ri, SoloInChannel);
+                    if (albumLen > 1)
+                    {
+                        var tileItems = new List<AlbumTile.Item>(albumLen);
+                        for (int k = 0; k < albumLen; k++)
+                        {
+                            var rk = rowsList[ri + k];
+                            string fnk = dt.Columns.Contains("file_name") && rk["file_name"] != DBNull.Value
+                                ? rk["file_name"].ToString() : null;
+                            bool vidk = fnk != null && MediaPlayerForm.IsVideo(
+                                Path.GetExtension(fnk).TrimStart('.').ToLowerInvariant());
+                            tileItems.Add(new AlbumTile.Item
+                            {
+                                MsgId = Convert.ToInt32(rk["id"]),
+                                FileName = fnk,
+                                IsVideo = vidk,
+                                CacheKind = "simg",
+                            });
+                        }
+
+                        string tileTime = MainForm.ToViewerLocal(
+                            Convert.ToDateTime(rowsList[ri + albumLen - 1]["created_at"])).ToString("HH:mm");
+                        var tile = new AlbumTile(tileItems, text, tileTime, isMe, -1,
+                                                 Math.Min(msgWidth - 10, 420))
+                        { Location = new Point(LEFT, y) };
+                        tile.CellClicked += it => OpenChannelAlbumCell(it);
+                        holder.Controls.Add(tile);
+                        y += tile.Height + 6;
+
+                        AttachServerMsgMenu(holder, head, id, senderId, text, nm);
+                        _msgControls[id] = holder;
+                        pending.Add(holder);
+                        ri += albumLen - 1;
+                        continue;
+                    }
 
                     // Медиа канала (картинка / голосовое / кружок / видео / файл) — как в обычном чате.
                     if (_serverMedia.TryGetValue(id, out var sm))

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Drawing;
 using System.Windows.Forms;
@@ -90,7 +90,7 @@ namespace PISMO
             // проигрывателя: кнопки посередине кадра, полоса времени внизу,
             // и всё это пропадает, пока видео идёт. Она же сообщает сюда
             // 'novideo', если декодировать видеодорожку нечем.
-            string html = VideoPlayerHtml.Page($"https://{Host}/{_safeName}");
+            string html = VideoPlayerHtml.Page($"https://{Host}/{_safeName}", inline: true);
             File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
         }
 

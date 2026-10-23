@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 
 namespace PISMO
 {
@@ -23,9 +23,17 @@ namespace PISMO
     internal static class VideoPlayerHtml
     {
         /// <param name="src">Адрес файла на виртуальном хосте.</param>
-        public static string Page(string src)
+        /// <param name="inline">
+        /// true — плеер стоит В ЛЕНТЕ, прямо в пузыре. Там полоса времени
+        /// лежит почти по нижнему краю кадра: поднятая, как в отдельном окне,
+        /// она закрывала середину видео, а спорить ей в пузыре не с чем —
+        /// ни подписи под кадром, ни жестовой черты внизу там нет.
+        /// </param>
+        public static string Page(string src, bool inline = false)
         {
-            return Template.Replace("__SRC__", WebUtility.HtmlEncode(src ?? ""));
+            return Template
+                .Replace("__BARBOTTOM__", inline ? "10px" : "48px")
+                .Replace("__SRC__", WebUtility.HtmlEncode(src ?? ""));
         }
 
         private const string Template = @"<!doctype html>
@@ -42,7 +50,7 @@ video{width:100%;height:100%;object-fit:contain;background:#141518;outline:none;
   width:46px;height:46px;font-size:14px;font-weight:600;}
 .rnd.big{width:60px;height:60px;font-size:22px;}
 .rnd:hover{background:rgba(0,0,0,.62);}
-#bar{position:absolute;left:16px;right:16px;bottom:48px;display:flex;align-items:center;
+#bar{position:absolute;left:16px;right:16px;bottom:__BARBOTTOM__;display:flex;align-items:center;
   gap:10px;padding:6px 12px;border-radius:18px;background:rgba(0,0,0,.35);
   color:#fff;font-size:12px;transition:opacity .22s;}
 #seek{flex:1;height:4px;-webkit-appearance:none;appearance:none;border-radius:2px;
