@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
@@ -17,7 +17,7 @@ namespace PISMO
     /// месте, как в просмотрщиках и картах). Двойной клик — «вписать в окно» ↔
     /// «1:1». Перетаскивание мышью двигает картинку, Esc закрывает.
     /// </summary>
-    internal sealed class ImageViewerForm : Form
+    internal sealed partial class ImageViewerForm : Form
     {
         private const float MinScale = 0.05f;
         private const float MaxScale = 20f;

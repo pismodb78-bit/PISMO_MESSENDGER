@@ -2334,6 +2334,60 @@ namespace PISMO
         /// лежать только в базе, а поход за ним на потоке окна заморозил бы
         /// ленту прямо под курсором.
         /// </summary>
+        /// <summary>Все снимки и ролики показанной страницы канала, по порядку.</summary>
+        private List<MediaRef> CurrentChannelMedia()
+        {
+            var list = new List<MediaRef>();
+            var dt = _shownDt;
+            if (dt == null) return list;
+            foreach (DataRow r in dt.Rows)
+            {
+                try
+                {
+                    bool hasImg = dt.Columns.Contains("has_img") && r["has_img"] != DBNull.Value
+                                  && Convert.ToBoolean(r["has_img"]);
+                    bool hasFile = dt.Columns.Contains("has_file") && r["has_file"] != DBNull.Value
+                                   && Convert.ToBoolean(r["has_file"]);
+                    string fn = dt.Columns.Contains("file_name") && r["file_name"] != DBNull.Value
+                        ? r["file_name"].ToString() : null;
+                    bool isVid = hasFile && !string.IsNullOrEmpty(fn)
+                        && MediaPlayerForm.IsVideo(Path.GetExtension(fn).TrimStart('.').ToLowerInvariant());
+                    if (!hasImg && !isVid) continue;
+
+                    string who = dt.Columns.Contains("nm") && r["nm"] != DBNull.Value
+                        ? r["nm"].ToString().Trim() : "";
+                    if (string.IsNullOrWhiteSpace(who) && dt.Columns.Contains("login")
+                        && r["login"] != DBNull.Value) who = r["login"].ToString();
+
+                    list.Add(new MediaRef
+                    {
+                        MsgId = Convert.ToInt32(r["id"]),
+                        IsVideo = isVid,
+                        FileName = fn,
+                        Sender = who,
+                        When = MainForm.ToViewerLocal(Convert.ToDateTime(r["created_at"])),
+                    });
+                }
+                catch { }
+            }
+            return list;
+        }
+
+        /// <summary>Открыть просмотр на этом сообщении канала, с переходами.</summary>
+        internal void OpenChannelMediaViewer(int msgId)
+        {
+            try
+            {
+                var list = CurrentChannelMedia();
+                int idx = list.FindIndex(m => m.MsgId == msgId);
+                if (idx < 0) return;
+                MainForm.ShowMediaWithNav(list, idx, m => m.IsVideo
+                    ? LoadServerFileBytes(m.MsgId, m.FileName)
+                    : MediaCache.Get(m.MsgId, "simg", null));
+            }
+            catch { }
+        }
+
         private void OpenChannelAlbumCell(AlbumTile.Item it)
         {
             if (it == null) return;
@@ -2363,8 +2417,9 @@ namespace PISMO
                     {
                         try
                         {
-                            if (video) new MediaPlayerForm(data, name, true).Show();
-                            else MainForm.ShowImageFullscreen(data);
+                            // Из плитки — та же лента просмотра.
+                            OpenChannelMediaViewer(id);
+                            _ = data; _ = name; _ = video;
                         }
                         catch { }
                     }));
@@ -2478,9 +2533,14 @@ namespace PISMO
         private string _renderedKey;
         private string _renderedSig;
 
+        /// <summary>Таблица ПОКАЗАННОЙ страницы канала — по ней просмотр
+        /// листает соседние снимки и ролики.</summary>
+        private DataTable _shownDt;
+
         private void RenderMessages(DataTable dt, int channel)
         {
             if (_channelId != channel) return;
+            _shownDt = dt;
 
             // Пропускаем повторную отрисовку, если тот же канал и данные/медиа не изменились.
             int mediaForChan = 0;
@@ -2746,13 +2806,7 @@ namespace PISMO
                                         Image = readyThumb,
                                     };
                                     int capIdR = id;
-                                    pbr.Click += (s, e) =>
-                                    {
-                                        var full = MediaCache.Get(capIdR, "simg", null);
-                                        if ((full == null || full.Length == 0)
-                                            && _serverMedia.TryGetValue(capIdR, out var cur0)) full = cur0.img;
-                                        if (full is { Length: > 0 }) MainForm.ShowImageFullscreen(full);
-                                    };
+                                    pbr.Click += (s, e) => OpenChannelMediaViewer(capIdR);
                                     holder.Controls.Add(pbr);
                                     y += readyThumb.Height + 6;
                                 }
@@ -2798,15 +2852,9 @@ namespace PISMO
 
                                 var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(LEFT, y), Cursor = Cursors.Hand, Image = shown };
                                 int capId = id;
-                                pb.Click += (s, e) =>
-                                {
-                                    // Байты — в момент нажатия, а не в
-                                    // обработчике на всё время жизни ленты.
-                                    var full = MediaCache.Get(capId, "simg", null);
-                                    if ((full == null || full.Length == 0)
-                                        && _serverMedia.TryGetValue(capId, out var cur)) full = cur.img;
-                                    if (full is { Length: > 0 }) MainForm.ShowImageFullscreen(full);
-                                };
+                                // Через ленту просмотра: стрелками листаются
+                                // соседние снимки и ролики канала.
+                                pb.Click += (s, e) => OpenChannelMediaViewer(capId);
                                 // Копия уходит в кеш: следующая отрисовка
                                 // канала возьмёт готовое и декодер не тронет.
                                 // Поэтому её не освобождаем вместе с пузырём —

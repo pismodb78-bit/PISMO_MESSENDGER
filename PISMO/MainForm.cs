@@ -4540,8 +4540,10 @@ namespace PISMO
                     {
                         try
                         {
-                            if (video) new MediaPlayerForm(data, name, true).Show();
-                            else ShowImageFullscreen(data);
+                            // Из плитки открываем ту же ленту просмотра: стрелки
+                            // листают соседние снимки и ролики.
+                            OpenMediaViewer(id, isGroup);
+                            _ = data; _ = name; _ = video;
                         }
                         catch { }
                     }));
@@ -6252,6 +6254,14 @@ namespace PISMO
                     string capName = fileName;
                     pb.Click += (s, e) =>
                     {
+                        // Через ленту просмотра: стрелками листаются соседние
+                        // снимки и ролики переписки.
+                        var owner = Current;
+                        if (owner != null && !owner.IsDisposed)
+                        {
+                            owner.OpenMediaViewer(capId, capGroup);
+                            return;
+                        }
                         var cached = MediaCache.Get(capId, "img", capName);
                         if (cached is { Length: > 0 }) { ShowImageFullscreen(cached); return; }
                         System.Threading.Tasks.Task.Run(() =>
@@ -8474,6 +8484,100 @@ namespace PISMO
         // Единственное окно просмотра — повторные клики по картинкам не плодят
         // окна, а обновляют изображение в уже открытом окне.
         private static ImageViewerForm _imageViewer;
+
+        /// <summary>
+        /// Открыть просмотр с ПЕРЕХОДАМИ по медиа переписки.
+        ///
+        /// Раньше просмотр знал про одну картинку: соседнюю приходилось искать
+        /// в ленте заново. Теперь стрелки (и ← →) листают все снимки и ролики
+        /// страницы, а внизу видно, который это по счёту и чей.
+        /// </summary>
+        internal static void ShowMediaWithNav(List<MediaRef> items, int index,
+                                              Func<MediaRef, byte[]> loader)
+        {
+            if (items == null || items.Count == 0) return;
+            var v = _imageViewer;
+            if (v == null || v.IsDisposed)
+            {
+                v = new ImageViewerForm();
+                v.FormClosed += (s, e) => _imageViewer = null;
+                _imageViewer = v;
+                v.Show();
+            }
+            else
+            {
+                if (v.WindowState == FormWindowState.Minimized)
+                    v.WindowState = FormWindowState.Normal;
+                v.BringToFront();
+                v.Activate();
+            }
+            v.SetNavigation(items, index, loader);
+        }
+
+        /// <summary>Все снимки и ролики ОТКРЫТОЙ страницы переписки, по порядку.</summary>
+        private List<MediaRef> CurrentChatMedia()
+        {
+            var list = new List<MediaRef>();
+            var dt = _pageDt;
+            if (dt == null) return list;
+            foreach (DataRow r in dt.Rows)
+            {
+                try
+                {
+                    if (dt.Columns.Contains("is_deleted") && r["is_deleted"] != DBNull.Value
+                        && Convert.ToBoolean(r["is_deleted"])) continue;
+
+                    bool hasImg = dt.Columns.Contains("has_img") && r["has_img"] != DBNull.Value
+                                  && Convert.ToBoolean(r["has_img"]);
+                    bool hasFile = dt.Columns.Contains("has_file") && r["has_file"] != DBNull.Value
+                                   && Convert.ToBoolean(r["has_file"]);
+                    string fn = dt.Columns.Contains("file_name") && r["file_name"] != DBNull.Value
+                        ? r["file_name"].ToString() : null;
+                    bool isVid = hasFile && !string.IsNullOrEmpty(fn)
+                        && MediaPlayerForm.IsVideo(Path.GetExtension(fn).TrimStart('.').ToLowerInvariant());
+                    if (!hasImg && !isVid) continue;
+
+                    string who = dt.Columns.Contains("sender_name") && r["sender_name"] != DBNull.Value
+                        ? r["sender_name"].ToString().Trim() : "";
+                    if (string.IsNullOrWhiteSpace(who) && dt.Columns.Contains("login")
+                        && r["login"] != DBNull.Value) who = r["login"].ToString();
+
+                    list.Add(new MediaRef
+                    {
+                        MsgId = Convert.ToInt32(r["id"]),
+                        IsVideo = isVid,
+                        FileName = fn,
+                        Sender = who,
+                        When = ToViewerLocal(Convert.ToDateTime(r["created_at"])),
+                    });
+                }
+                catch { }
+            }
+            return list;
+        }
+
+        /// <summary>Открыть просмотр на этом сообщении, с переходами по соседям.</summary>
+        internal void OpenMediaViewer(int msgId, bool isGroup)
+        {
+            try
+            {
+                var list = CurrentChatMedia();
+                int idx = list.FindIndex(m => m.MsgId == msgId);
+                if (idx < 0)
+                {
+                    // Сообщения нет на странице — показываем в одиночку, как раньше.
+                    var one = MediaCache.Get(msgId, "img", null);
+                    if (one is { Length: > 0 }) ShowImageFullscreen(one);
+                    return;
+                }
+                bool grp = isGroup;
+                ShowMediaWithNav(list, idx, m => m.IsVideo
+                    ? LoadFileBytes(m.MsgId, m.FileName, grp)
+                    : (MediaCache.Get(m.MsgId, "img", m.FileName)
+                       ?? LoadMediaForMessage(m.MsgId, m.FileName, true, false, false, false, grp).img));
+            }
+            catch { }
+        }
 
         internal static void ShowImageFullscreen(byte[] imgBytes)
         {
