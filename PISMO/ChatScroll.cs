@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -368,7 +368,14 @@ namespace PISMO
                 if (c == null || !c.IsHandleCreated) return;
 
                 int now = Environment.TickCount;
-                if (!force && unchecked(now - _lastRepaintTick) < RepaintMinIntervalMs) return;
+                // Чем длиннее лента, тем дороже синхронная перерисовка: она
+                // обходит ВСЕХ детей панели, а их после нескольких догрузок
+                // сотни. На короткой ленте рисуем каждый кадр (мягкое
+                // движение), на длинной — вдвое реже, иначе прокрутка вглубь
+                // начинает спотыкаться.
+                int minGap = RepaintMinIntervalMs;
+                try { if (c.Controls.Count > 150) minGap = 32; } catch { }
+                if (!force && unchecked(now - _lastRepaintTick) < minGap) return;
                 _lastRepaintTick = now;
 
                 // RDW_NOERASE — против мерцания при прокрутке.

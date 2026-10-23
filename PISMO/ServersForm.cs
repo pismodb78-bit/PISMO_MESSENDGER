@@ -2745,10 +2745,13 @@ namespace PISMO
                                 // вес в файле, а ширину на высоту на четыре
                                 // байта — снимок с телефона тянет на полсотни
                                 // мегабайт, показываясь в рамке 420×360.
+                                // Копия ровно по размеру показа: иначе каждый
+                                // кадр прокрутки ужимает снимок заново — см. ту
+                                // же правку в личной переписке.
                                 Image shown = img;
                                 try
                                 {
-                                    int tw = Math.Min(dw * 2, img.Width);
+                                    int tw = Math.Min(dw, img.Width);
                                     int th = Math.Max(1, (int)(img.Height * (tw / (double)img.Width)));
                                     if (tw < img.Width)
                                     {
