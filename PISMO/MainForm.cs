@@ -4655,7 +4655,13 @@ namespace PISMO
                     }
 
                     bool tileGroup = isGroup;
-                    var tile = new AlbumTile(tileItems, text, tileTime, isMine, tileRead, 420);
+                    // Ширина плитки — от ширины ленты, а не жёсткие 420: на
+                    // большом окне такая плитка выглядела маркой, и разглядеть
+                    // на ней что-либо было нельзя. Потолок нужен, чтобы на
+                    // широком мониторе пачка не растянулась через весь экран.
+                    int tileW = Math.Max(360, Math.Min(640,
+                        (int)((pnlMessages.ClientSize.Width - 40) * 0.6)));
+                    var tile = new AlbumTile(tileItems, text, tileTime, isMine, tileRead, tileW);
                     tile.CellClicked += it => OpenAlbumCell(it, tileGroup);
                     tile.Top = yOffset;
                     PositionBubble(tile, isMine);
@@ -5975,7 +5981,9 @@ namespace PISMO
                     // Рамка вывода больше — фото/GIF читабельнее. Крупные вписываем
                     // в рамку, мелкие увеличиваем до читаемого размера (но не более 2x,
                     // чтобы не «замыливать»).
-                    int maxW = 420, maxH = 360;
+                    // Снимок в ленте — во всю ширину пузыря: прежние 420×360
+                    // на большом окне выглядели маркой.
+                    int maxW = innerW, maxH = 460;
                     double fit = Math.Min((double)maxW / img.Width, (double)maxH / img.Height);
                     double ratio = Math.Min(fit, 2.0);
                     int dw = Math.Max(1, (int)(img.Width * ratio));
@@ -6186,7 +6194,10 @@ namespace PISMO
                     // (её присылает страница плеера при первом просмотре, см.
                     // VideoShapes). Пока неизвестна — обычные 4:3.
                     string shapeKey = (isGroup ? "g" : "d") + msgId;
-                    var (boxW, boxH) = VideoShapes.Box(shapeKey, Math.Min(innerW, 280));
+                    // Ролик в ленте был шириной 280 — на мониторе это марка.
+                    // Берём всю ширину пузыря: вертикальному VideoShapes сам
+                    // оставит поменьше.
+                    var (boxW, boxH) = VideoShapes.Box(shapeKey, innerW);
                     // Крупное видео в ленту не подгружается (иначе открытие чата
                     // тянуло бы сотни мегабайт), но выглядеть оно должно так же —
                     // плеером, а не карточкой файла. Байты читаются по клику.

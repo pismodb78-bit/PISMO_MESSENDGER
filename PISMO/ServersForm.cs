@@ -2709,8 +2709,10 @@ namespace PISMO
 
                         string tileTime = MainForm.ToViewerLocal(
                             Convert.ToDateTime(rowsList[ri + albumLen - 1]["created_at"])).ToString("HH:mm");
+                        // Та же ширина, что в личной переписке: жёсткие 420
+                        // на большом окне выглядели маркой.
                         var tile = new AlbumTile(tileItems, text, tileTime, isMe, -1,
-                                                 Math.Min(msgWidth - 10, 420))
+                                                 Math.Max(360, Math.Min(640, msgWidth - 10)))
                         { Location = new Point(LEFT, y) };
                         tile.CellClicked += it => OpenChannelAlbumCell(it);
                         holder.Controls.Add(tile);
@@ -2732,7 +2734,9 @@ namespace PISMO
                             {
                                 var ms = new MemoryStream(sm.img.ToArray());
                                 var img = Image.FromStream(ms);
-                                int mw = 420, mh = 360;
+                                // Крупнее, как в личной переписке: прежние
+                                // 420×360 на большом окне были маркой.
+                                int mw = Math.Max(360, Math.Min(560, msgWidth - 10)), mh = 460;
                                 double rr = Math.Min(2.0, Math.Min((double)mw / img.Width, (double)mh / img.Height));
                                 int dw = Math.Max(1, (int)(img.Width * rr)), dh = Math.Max(1, (int)(img.Height * rr));
 
@@ -2808,7 +2812,8 @@ namespace PISMO
                                     // известна: см. VideoShapes и ту же правку
                                     // в личной переписке.
                                     string shapeKey = "s" + id;
-                                    var (bw, bh) = VideoShapes.Box(shapeKey, Math.Min(msgWidth - 10, 280));
+                                    var (bw, bh) = VideoShapes.Box(shapeKey,
+                                        Math.Max(320, Math.Min(560, msgWidth - 10)));
                                     var vp = haveBytes
                                         ? new InlineVideoPlayer(sm.file, sm.fname, bw, bh)
                                         : new InlineVideoPlayer(lazySrv, sm.fname, bw, bh);

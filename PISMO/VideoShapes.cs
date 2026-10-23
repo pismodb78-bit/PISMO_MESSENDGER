@@ -105,7 +105,7 @@ namespace PISMO
             }
             // Вертикальному хватает и меньшей ширины: во всю ширину пузыря он
             // занял бы пол-ленты — ровно то, что было с коробкой 280×336.
-            int w = r < 1.0 ? Math.Min(maxW, 220) : maxW;
+            int w = r < 1.0 ? Math.Min(maxW, 340) : maxW;
             int h = Math.Max(120, (int)Math.Round(w / r));
             return (w, h);
         }
