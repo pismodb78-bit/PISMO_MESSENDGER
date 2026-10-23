@@ -86,25 +86,11 @@ namespace PISMO
         /// зашито имя файла, а оно меняется на сконвертированное.</summary>
         private void WriteHtml()
         {
-            string html =
-                "<!doctype html><html><head><meta charset='utf-8'><style>" +
-                "html,body{margin:0;height:100%;background:#141518;overflow:hidden;}" +
-                "video{width:100%;height:100%;object-fit:contain;background:#141518;outline:none;}" +
-                "</style></head><body>" +
-                $"<video src='https://{Host}/{_safeName}' autoplay playsinline controls " +
-                "controlslist='nodownload' preload='auto'></video>" +
-                // Сообщаем хосту, если видеодорожку декодировать нечем: Chromium в
-                // этом случае молча играет ОДИН ЗВУК и показывает чёрный
-                // прямоугольник (и другой, компактный набор кнопок) — со стороны
-                // выглядит как «сломалось приложение». Признак — videoWidth == 0
-                // при уже прочитанных метаданных.
-                "<script>" +
-                "var v=document.querySelector('video');" +
-                "function say(k){try{window.chrome.webview.postMessage(k);}catch(e){}}" +
-                "v.addEventListener('loadedmetadata',function(){if(!v.videoWidth)say('novideo');});" +
-                "v.addEventListener('error',function(){say('novideo');});" +
-                "</script>" +
-                "</body></html>";
+            // Страницу собирает VideoPlayerHtml — она общая с окном
+            // проигрывателя: кнопки посередине кадра, полоса времени внизу,
+            // и всё это пропадает, пока видео идёт. Она же сообщает сюда
+            // 'novideo', если декодировать видеодорожку нечем.
+            string html = VideoPlayerHtml.Page($"https://{Host}/{_safeName}");
             File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
         }
 

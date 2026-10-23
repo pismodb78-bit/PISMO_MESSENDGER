@@ -68,15 +68,18 @@ namespace PISMO
             if (data != null) File.WriteAllBytes(Path.Combine(_tempDir, safeName), data);
 
             bool isVideo = _isVideo;
-            string tag = isVideo ? "video" : "audio";
-            string html =
-                "<!doctype html><html><head><meta charset='utf-8'><style>" +
-                "html,body{margin:0;height:100%;background:#141518;display:flex;align-items:center;justify-content:center;}" +
-                (isVideo ? "video{max-width:100%;max-height:100%;outline:none;}"
-                         : "audio{width:92%;}") +
-                "</style></head><body>" +
-                $"<{tag} src='https://{Host}/{safeName}' controls autoplay></{tag}>" +
-                "</body></html>";
+            // У видео страница общая с встроенным плеером в переписке:
+            // кнопки посередине кадра, полоса времени внизу, и всё это
+            // пропадает, пока видео идёт. У музыки оставляем обычную
+            // браузерную полоску — там и нечего прятать, кадра нет.
+            string html = isVideo
+                ? VideoPlayerHtml.Page($"https://{Host}/{safeName}")
+                : "<!doctype html><html><head><meta charset='utf-8'><style>" +
+                  "html,body{margin:0;height:100%;background:#141518;display:flex;align-items:center;justify-content:center;}" +
+                  "audio{width:92%;}" +
+                  "</style></head><body>" +
+                  $"<audio src='https://{Host}/{safeName}' controls autoplay></audio>" +
+                  "</body></html>";
             File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
             return safeName;
         }
