@@ -99,6 +99,12 @@ function tick(){
 }
 function toggle(){ if(v.paused) v.play(); else v.pause(); show(); }
 
+// Размеры кадра — наружу: по ним лента узнаёт форму ролика и со
+// следующего показа ставит коробку по нему, а не 4:3 на всё подряд.
+v.addEventListener('loadedmetadata',function(){
+  if(v.videoWidth>0&&v.videoHeight>0) say('size:'+v.videoWidth+'x'+v.videoHeight);
+});
+
 play.onclick=function(e){e.stopPropagation();toggle();};
 document.getElementById('back').onclick=function(e){e.stopPropagation();v.currentTime=Math.max(0,v.currentTime-10);show();};
 document.getElementById('fwd').onclick=function(e){e.stopPropagation();v.currentTime=Math.min(v.duration||0,v.currentTime+10);show();};

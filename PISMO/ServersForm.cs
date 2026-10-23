@@ -2804,10 +2804,15 @@ namespace PISMO
                             {
                                 try
                                 {
-                                    int bw = Math.Min(msgWidth - 10, 280), bh = (int)(bw * 1.2);
+                                    // Коробка — по форме ролика, если она уже
+                                    // известна: см. VideoShapes и ту же правку
+                                    // в личной переписке.
+                                    string shapeKey = "s" + id;
+                                    var (bw, bh) = VideoShapes.Box(shapeKey, Math.Min(msgWidth - 10, 280));
                                     var vp = haveBytes
                                         ? new InlineVideoPlayer(sm.file, sm.fname, bw, bh)
                                         : new InlineVideoPlayer(lazySrv, sm.fname, bw, bh);
+                                    vp.ShapeKey = shapeKey;
                                     vp.Location = new Point(LEFT, y);
                                     holder.Controls.Add(vp); y += bh + 6;
                                 }

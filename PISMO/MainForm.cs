@@ -6182,8 +6182,11 @@ namespace PISMO
             {
                 try
                 {
-                    int boxW = Math.Min(innerW, 280);
-                    int boxH = (int)(boxW * 1.2); // вертикальный бокс с леттербоксом
+                    // Коробка — по форме самого ролика, если она уже известна
+                    // (её присылает страница плеера при первом просмотре, см.
+                    // VideoShapes). Пока неизвестна — обычные 4:3.
+                    string shapeKey = (isGroup ? "g" : "d") + msgId;
+                    var (boxW, boxH) = VideoShapes.Box(shapeKey, Math.Min(innerW, 280));
                     // Крупное видео в ленту не подгружается (иначе открытие чата
                     // тянуло бы сотни мегабайт), но выглядеть оно должно так же —
                     // плеером, а не карточкой файла. Байты читаются по клику.
@@ -6192,6 +6195,7 @@ namespace PISMO
                         ? new InlineVideoPlayer(fileData, fileName, boxW, boxH)
                         : new InlineVideoPlayer(() => LoadFileBytes(capturedId, capturedName, capturedGroup),
                                                 fileName, boxW, boxH);
+                    vp.ShapeKey = shapeKey;
                     vp.Location = new Point(PAD, innerY);
                     bubble.Controls.Add(vp);
                     innerY += boxH + 6;

@@ -36,6 +36,12 @@ namespace PISMO
         /// бы тянуть при каждом открытии чата — ради превью, которое, может, и не
         /// станут смотреть.
         /// </summary>
+        /// <summary>
+        /// Под каким ключом запоминать форму ролика (см. VideoShapes). Пусто —
+        /// не запоминать: так открывается, например, предпросмотр.
+        /// </summary>
+        public string ShapeKey { get; set; }
+
         public InlineVideoPlayer(Func<byte[]> loader, string fileName, int boxW, int boxH)
             : this((byte[])null, fileName, boxW, boxH)
         {
@@ -202,6 +208,23 @@ namespace PISMO
                     string msg = null;
                     try { msg = e.TryGetWebMessageAsString(); } catch { }
                     if (msg == "novideo") { try { OnNoVideo(); } catch { } }
+                    else if (msg != null && msg.StartsWith("size:"))
+                    {
+                        // Форму ролика страница узнаёт по метаданным и
+                        // присылает сюда. Текущую коробку не трогаем — менять
+                        // её под идущим видео значит перекладывать ленту прямо
+                        // под курсором; зато следующий показ встанет уже по
+                        // роликy (см. VideoShapes).
+                        try
+                        {
+                            var wh = msg.Substring(5).Split('x');
+                            if (wh.Length == 2
+                                && int.TryParse(wh[0], out int vw)
+                                && int.TryParse(wh[1], out int vh))
+                                VideoShapes.Remember(ShapeKey, vw, vh);
+                        }
+                        catch { }
+                    }
                 };
                 _web.CoreWebView2.ContainsFullScreenElementChanged += OnFullScreenChanged;
                 _web.CoreWebView2.Navigate($"https://{Host}/index.html");
