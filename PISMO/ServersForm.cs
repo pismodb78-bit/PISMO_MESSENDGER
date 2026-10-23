@@ -2480,6 +2480,17 @@ namespace PISMO
                 bool channelChanged = _lastScrollChannel != channel;
                 bool newMsgs = dt.Rows.Count > _lastMsgCount;
                 int savedScrollY = -_pnlMessages.AutoScrollPosition.Y;
+                // Видно ли конец канала прямо сейчас. Кто стоял внизу —
+                // тому и после пересборки быть внизу; кто читал историю,
+                // остаётся на своём месте. Раньше любое новое сообщение
+                // уносило вниз прямо посреди чтения.
+                bool wasAtBottom;
+                try
+                {
+                    wasAtBottom = _pnlMessages.DisplayRectangle.Height
+                                  - (savedScrollY + _pnlMessages.ClientSize.Height) <= 24;
+                }
+                catch { wasAtBottom = true; }
 
                 ChatScroll.SuspendDraw(_pnlMessages);   // заморозка — без мигания «загрузки заново»
                 _pnlMessages.SuspendLayout();
@@ -2931,7 +2942,7 @@ namespace PISMO
                 {
                     _pnlMessages.PerformLayout();   // ждём переход к дате — позицию не трогаем
                 }
-                else if (channelChanged || newMsgs)
+                else if (channelChanged || (newMsgs && wasAtBottom))
                 {
                     _pnlMessages.PerformLayout();   // актуальный диапазон прокрутки
                     _pnlMessages.ScrollToExplicit(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null);

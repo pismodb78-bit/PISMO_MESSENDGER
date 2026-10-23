@@ -3983,6 +3983,11 @@ namespace PISMO
             ApplyPageMeta(key);
             _drawingPage = true;
 
+            // Где человек стоял ДО пересборки. Стоял внизу — вернём вниз;
+            // читал историю — вернём на то же сообщение.
+            bool wasAtBottom = AtFeedBottom();
+            if (!wasAtBottom && _dmRestoreFromBottom < 0) RememberAnchor();
+
             // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
             // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
             // начала координат: если оставить панель прокрученной, новые пузыри уедут
@@ -4039,7 +4044,13 @@ namespace PISMO
                     // остаётся от ПРЕДЫДУЩЕГО (длинного) чата и MaxValue уводит в
                     // «пустоту» сверху над короткой перепиской.
                     pnlMessages.PerformLayout();
-                    pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                    // Внизу был — внизу и останется. А читавшего историю
+                    // возвращаем на его сообщение: раньше лента уезжала в
+                    // конец при ЛЮБОЙ пересборке, и пришедшее сообщение (или
+                    // просто догруженная картинка) выдёргивало человека из
+                    // середины переписки.
+                    if (wasAtBottom || !RestoreAnchor())
+                        pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
                 }
                 else pnlMessages.PerformLayout();   // ждём переход к дате — вниз не скидываем
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
@@ -4322,6 +4333,11 @@ namespace PISMO
             ApplyPageMeta(key);
             _drawingPage = true;
 
+            // Где человек стоял ДО пересборки. Стоял внизу — вернём вниз;
+            // читал историю — вернём на то же сообщение.
+            bool wasAtBottom = AtFeedBottom();
+            if (!wasAtBottom && _dmRestoreFromBottom < 0) RememberAnchor();
+
             // Прокрутку сбрасываем в начало ДО очистки и ДО SuspendLayout — пока
             // пузыри ещё на месте. У AutoScroll-панели Top отсчитывается от сдвинутого
             // начала координат: если оставить панель прокрученной, новые пузыри уедут
@@ -4405,7 +4421,10 @@ namespace PISMO
                     // прокрутки остаётся от предыдущего (длинного) чата и MaxValue
                     // уводит в «пустоту» сверху над короткой перепиской.
                     pnlMessages.PerformLayout();
-                    pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                    // Внизу был — внизу и останется; читавшего историю
+                    // возвращаем на его сообщение (см. пояснение в ленте групп).
+                    if (wasAtBottom || !RestoreAnchor())
+                        pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
                 }
                 else pnlMessages.PerformLayout();   // ждём переход к дате — вниз не скидываем
                 ApplyPendingJump();                 // переход выполняем ПОСЛЕ прокрутки
@@ -5018,6 +5037,27 @@ namespace PISMO
         // НИЖЕ могли измениться — догрузилась картинка, поднялся встроенный
         // проигрыватель, — и лента откатывалась на десяток-другой точек. Теперь
         // держимся за конкретное сообщение: оно остаётся собой.
+
+        /// <summary>
+        /// Видно ли конец переписки прямо сейчас.
+        ///
+        /// Нужно перед пересборкой страницы: тому, кто стоял внизу, после
+        /// неё полагается остаться внизу, а тому, кто читал историю, —
+        /// остаться на своём месте. Раньше лента в ЛЮБОМ случае уезжала в
+        /// конец, и пришедшее сообщение (или просто догруженная картинка)
+        /// выдёргивало человека из середины переписки.
+        /// </summary>
+        private bool AtFeedBottom()
+        {
+            try
+            {
+                int viewport = pnlMessages.ClientSize.Height;
+                int top = -pnlMessages.AutoScrollPosition.Y;
+                // Небольшой допуск: «почти внизу» для человека — это внизу.
+                return pnlMessages.DisplayRectangle.Height - (top + viewport) <= 24;
+            }
+            catch { return true; }
+        }
 
         private int _anchorMsgId;
         private int _anchorOffset;
