@@ -7519,45 +7519,103 @@ namespace PISMO
             var att = _pendingAttach[0];
             pnlPreview.Controls.Clear();
 
-            Control icon;
-            if (att.Kind == AttachKind.Image || att.Kind == AttachKind.Gif)
+            // ПОКАЗЫВАЕМ ВСЮ ПАЧКУ, А НЕ ПЕРВЫЙ ФАЙЛ.
+            //
+            // Раньше здесь была одна миниатюра и подпись «5 файл(ов)»: что
+            // именно выбрано и в каком порядке уйдёт — не видно, а убрать
+            // лишнее можно было только сбросив всё. Теперь это ряд миниатюр с
+            // НОМЕРАМИ (в этом порядке пачка и уходит), и нажатие на любую
+            // убирает именно её — как в Telegram.
+            int x = 8;
+            int roomRight = Math.Max(160, pnlPreview.Width - 220);
+            int shown = 0;
+            for (int i = 0; i < _pendingAttach.Count; i++)
             {
-                try
+                if (x + 54 > roomRight) break;
+                var a = _pendingAttach[i];
+
+                Control cell;
+                if (a.Kind == AttachKind.Image || a.Kind == AttachKind.Gif)
                 {
-                    var pb = new PictureBox
+                    try
                     {
-                        SizeMode = PictureBoxSizeMode.Zoom,
-                        Size = new Size(54, 54),
-                        Location = new Point(8, 7)
-                    };
-                    using var ms = new MemoryStream(att.Data);
-                    pb.Image = Image.FromStream(ms);
-                    icon = pb;
+                        var pb = new PictureBox
+                        {
+                            SizeMode = PictureBoxSizeMode.Zoom,
+                            Size = new Size(54, 54),
+                            Location = new Point(x, 7),
+                            Cursor = Cursors.Hand,
+                        };
+                        using var ms = new MemoryStream(a.Data);
+                        pb.Image = Image.FromStream(ms);
+                        cell = pb;
+                    }
+                    catch { cell = MakeFileIcon(a.FileName); cell.Location = new Point(x, 7); }
                 }
-                catch { icon = MakeFileIcon(att.FileName); }
+                else
+                {
+                    cell = MakeFileIcon(a.FileName);
+                    cell.Location = new Point(x, 7);
+                }
+                cell.Cursor = Cursors.Hand;
+                var removed = a;
+                cell.Click += (s, ev) =>
+                {
+                    _pendingAttach.Remove(removed);
+                    if (_pendingAttach.Count == 0) _pendingImageBytes = null;
+                    ShowPreview();
+                };
+                var tip = new ToolTip();
+                tip.SetToolTip(cell, a.FileName + " — нажмите, чтобы убрать");
+                pnlPreview.Controls.Add(cell);
+
+                // Номер по порядку выбора — поверх миниатюры.
+                int no = i + 1;
+                var num = new Label
+                {
+                    Text = no.ToString(),
+                    Size = new Size(18, 18),
+                    Location = new Point(x, 7),
+                    BackColor = Color.FromArgb(30, 143, 225),
+                    ForeColor = Color.White,
+                    Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold),
+                    TextAlign = ContentAlignment.MiddleCenter,
+                };
+                pnlPreview.Controls.Add(num);
+                num.BringToFront();
+
+                x += 60;
+                shown++;
             }
-            else
-            {
-                icon = MakeFileIcon(att.FileName);
-            }
-            pnlPreview.Controls.Add(icon);
 
             long totalBytes = 0;
             foreach (var a in _pendingAttach) totalBytes += a.Data.LongLength;
             long kb = totalBytes / 1024;
             string sz = kb > 1024 ? $"{kb / 1024.0:F1} МБ" : $"{kb} КБ";
+            int hidden = _pendingAttach.Count - shown;
             string caption = _pendingAttach.Count == 1
                 ? $"{att.FileName}  ({sz})"
-                : $"{_pendingAttach.Count} файл(ов)  ({sz})";
+                : $"{_pendingAttach.Count} файл(ов)  ({sz})"
+                  + (hidden > 0 ? $"  · и ещё {hidden}" : "");
             var lbl = new Label
             {
                 Text = caption,
                 Font = new Font("Segoe UI", 9f),
                 ForeColor = Color.FromArgb(185, 187, 190),
-                Location = new Point(70, 20),
+                Location = new Point(x + 6, 14),
                 AutoSize = true
             };
             pnlPreview.Controls.Add(lbl);
+
+            var hint = new Label
+            {
+                Text = "Esc — сбросить всё, клик по миниатюре — убрать одну",
+                Font = new Font("Segoe UI", 7.5f),
+                ForeColor = Color.FromArgb(130, 133, 140),
+                Location = new Point(x + 6, 32),
+                AutoSize = true
+            };
+            pnlPreview.Controls.Add(hint);
 
             var btnCancel = new Button
             {
