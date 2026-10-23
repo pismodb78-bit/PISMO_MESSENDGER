@@ -102,6 +102,9 @@ namespace PISMO
             // Наполнение и поведение в ServersForm_VoiceNote.
             BuildChannelVoiceBar();
 
+            // Пока играет ролик — страницу канала не пересобираем.
+            HookVideoWatching();
+
             // Низ центра: контейнер с полоской ответа над полем ввода.
             var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68 };
             _pnlInput.Dock = DockStyle.Fill;

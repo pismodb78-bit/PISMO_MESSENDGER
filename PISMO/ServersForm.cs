@@ -86,6 +86,28 @@ namespace PISMO
         private Panel _bottomDock;
         /// <summary>Полоса идущих передач над полем ввода канала.</summary>
         private TransferStrip _chTransferStrip;
+
+        /// <summary>Отложили пересборку страницы, пока шёл ролик.</summary>
+        private bool _renderAfterWatch;
+
+        /// <summary>Ролики закончились — рисуем то, что откладывали.</summary>
+        private void HookVideoWatching()
+        {
+            InlineVideoPlayer.WatchingEnded += () =>
+            {
+                if (IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (!_renderAfterWatch || _channelId <= 0) return;
+                        _renderAfterWatch = false;
+                        LoadMessages();
+                    }));
+                }
+                catch { }
+            };
+        }
         private Label _lblReply;
         private int _replyToId = -1;
         private static bool _replyColOk = true; // есть ли колонка reply_to_id (миграция)
@@ -2395,6 +2417,15 @@ namespace PISMO
             string key = "c" + channel,
                    sig = MainForm.SigOf(dt) + "|m" + mediaForChan
                        + "|r" + ReactionsSig(_chanReactions.TryGetValue(channel, out var rsig) ? rsig : null);
+            // Пока в канале играет ролик, страницу не пересобираем: пересборка
+            // уничтожает проигрыватель вместе с местом, на котором
+            // остановились, — то же, что и в личной переписке. Нарисуем, как
+            // только просмотр закончится (см. HookVideoWatching ниже).
+            if ((_renderedKey != key || _renderedSig != sig) && InlineVideoPlayer.Watching > 0)
+            {
+                _renderAfterWatch = true;
+                return;
+            }
             if (_renderedKey == key && _renderedSig == sig)
             {
                 // См. пояснение в MainForm: без сброса флага догрузка старых сообщений

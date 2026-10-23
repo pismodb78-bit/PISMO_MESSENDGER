@@ -116,6 +116,45 @@ namespace PISMO
 
         /// <summary>Сбросить кеш отрисовки, чтобы следующий Load перерисовал чат
         /// (нужно, когда изменились реакции/закрепления — данные сообщений те же).</summary>
+        /// <summary>
+        /// Пока в ленте играет ролик, страницу не пересобираем.
+        ///
+        /// Подпись ленты включает число вложений, уже лежащих в кеше, —
+        /// значит фоновая догрузка картинок сама по себе требует собрать всё
+        /// заново. Пересборка уничтожает проигрыватель: видео обрывается на
+        /// середине, а лента прыгает под рукой. Откладываем до конца
+        /// просмотра — к этому моменту подпись всё ещё не совпадает, и
+        /// страница нарисуется целиком.
+        /// </summary>
+        private bool _renderAfterWatch;
+
+        private bool HoldRenderWhileWatching()
+        {
+            if (InlineVideoPlayer.Watching <= 0) return false;
+            _renderAfterWatch = true;
+            return true;
+        }
+
+        /// <summary>Ролики закончились — рисуем то, что откладывали.</summary>
+        private void HookVideoWatching()
+        {
+            InlineVideoPlayer.WatchingEnded += () =>
+            {
+                if (IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (!_renderAfterWatch) return;
+                        _renderAfterWatch = false;
+                        if (_currentGroupId > 0) LoadGroupMessages();
+                        else if (_currentChatPartnerId > 0) LoadMessages(markRead: false);
+                    }));
+                }
+                catch { }
+            };
+        }
+
         private void ForceMessageRerender() { _renderedChatKey = null; _renderedChatSig = null; }
 
         // created_at хранится во времени СЕРВЕРА БД (CURRENT_TIMESTAMP). Показываем во
@@ -254,6 +293,7 @@ namespace PISMO
             BuildBackgroundStyling();   // мягкий градиент-подложка списка/чата (2.1.7)
             BuildReadAllButton();       // ✓✓ «прочитать все ЛС» в шапке сайдбара
             BuildTransfersButton();     // ⇅ кружок идущих передач файлов
+            HookVideoWatching();        // пока играет ролик — страницу не пересобираем
             HookChatPins();             // закрепы чатов приехали из базы — пересобрать список
             HookLinkPreviews();         // карточка ссылки — сразу, как только собралась
             this.Load += MainForm_Load;
@@ -3868,6 +3908,8 @@ namespace PISMO
             // Пропускаем повторную отрисовку, если та же группа и данные не изменились.
             string key = "g" + group,
                    sig = SigOf(dt) + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("g" + group);
+            // Данные другие, но в ленте играет ролик — подождём его конца.
+            if ((_renderedChatKey != key || _renderedChatSig != sig) && HoldRenderWhileWatching()) return;
             if (_renderedChatKey == key && _renderedChatSig == sig)
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
@@ -4196,6 +4238,8 @@ namespace PISMO
             string key = "d" + partner,
                    sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0)
                        + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("d" + partner);
+            // Данные другие, но в ленте играет ролик — подождём его конца.
+            if ((_renderedChatKey != key || _renderedChatSig != sig) && HoldRenderWhileWatching()) return;
             if (_renderedChatKey == key && _renderedChatSig == sig)
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после

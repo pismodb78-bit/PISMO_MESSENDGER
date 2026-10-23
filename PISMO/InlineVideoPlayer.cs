@@ -94,10 +94,47 @@ namespace PISMO
             File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
         }
 
+        /// <summary>
+        /// Сколько роликов сейчас открыто прямо в переписке.
+        ///
+        /// ЗАЧЕМ СЧИТАТЬ. Страница переписки пересобирается не только на новое
+        /// сообщение: подпись ленты включает число вложений, уже лежащих в
+        /// кеше, — то есть фоновая догрузка картинок сама по себе заставляет
+        /// собрать всё заново. Пересборка уничтожает и проигрыватель: ролик
+        /// обрывается на середине, а лента дёргается. Пока хоть один играет,
+        /// перерисовку откладываем (см. MainForm и ServersForm).
+        /// </summary>
+        internal static int Watching => _watching;
+
+        private static int _watching;
+
+        /// <summary>Последний ролик закрылся — отложенное можно наконец нарисовать.</summary>
+        internal static event Action WatchingEnded;
+
+        private bool _counted;
+
+        private void CountIn()
+        {
+            if (_counted) return;
+            _counted = true;
+            System.Threading.Interlocked.Increment(ref _watching);
+        }
+
+        private void CountOut()
+        {
+            if (!_counted) return;
+            _counted = false;
+            if (System.Threading.Interlocked.Decrement(ref _watching) <= 0)
+            {
+                try { WatchingEnded?.Invoke(); } catch { }
+            }
+        }
+
         private async void StartPlayer()
         {
             if (_playing) return;
             _playing = true;
+            CountIn();
             try
             {
                 // Ленивое видео: сначала достаём байты, и только потом всё остальное.
@@ -115,6 +152,7 @@ namespace PISMO
                     {
                         if (_lblPlay != null) _lblPlay.Text = "Не удалось загрузить";
                         _playing = false;
+                        CountOut();
                         return;
                     }
                     _data = loaded;
@@ -168,7 +206,7 @@ namespace PISMO
                 _web.CoreWebView2.ContainsFullScreenElementChanged += OnFullScreenChanged;
                 _web.CoreWebView2.Navigate($"https://{Host}/index.html");
             }
-            catch { _playing = false; }
+            catch { _playing = false; CountOut(); }
         }
 
         /// <summary>Кодек этого видео — HEVC? Определение общее с конвертером.</summary>
@@ -515,6 +553,7 @@ namespace PISMO
         {
             if (disposing)
             {
+                CountOut();
                 try { ExitFullScreen(); } catch { }
                 try { _web?.Dispose(); } catch { }
                 try { if (_tempDir != null && Directory.Exists(_tempDir)) Directory.Delete(_tempDir, true); } catch { }
