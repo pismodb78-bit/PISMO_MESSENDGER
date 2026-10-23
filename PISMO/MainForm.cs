@@ -5627,8 +5627,12 @@ namespace PISMO
                 // этой строки лента схлопывалась бы на каждом движении.
                 try
                 {
-                    int need = y + 10;
-                    if (pnlMessages.AutoScrollMinSize.Height != need)
+                    // y — экранная координата (см. пояснение в CullFeed), а
+                    // размер содержимого задаётся в координатах содержимого:
+                    // добавляем текущую прокрутку.
+                    int scrolled = -pnlMessages.AutoScrollPosition.Y;
+                    int need = y + scrolled + 10;
+                    if (Math.Abs(pnlMessages.AutoScrollMinSize.Height - need) > 2)
                         pnlMessages.AutoScrollMinSize = new Size(0, need);
                 }
                 catch { }
@@ -5670,15 +5674,35 @@ namespace PISMO
                 if (pnlMessages.AutoScrollMinSize.Height <= 0) return;
                 if (_laidOut == null || _laidOut.Count == 0) return;
 
-                int top = -pnlMessages.AutoScrollPosition.Y;
+                // КООРДИНАТЫ ЗДЕСЬ ЭКРАННЫЕ.
+                //
+                // У прокрученной панели Top ребёнка отсчитывается от сдвинутого
+                // начала — то есть это координата внутри ВИДИМОЙ области, уже с
+                // учётом прокрутки (ровно поэтому вставка порции сначала ставит
+                // AutoScrollPosition в ноль, см. PrependOlder). Сравнивать его с
+                // величиной прокрутки нельзя: окно видимости уезжало, и лента
+                // пряталась целиком — пустой чат.
                 int vh = Math.Max(200, pnlMessages.ClientSize.Height);
-                int from = top - vh, to = top + vh * 2;
+                int from = -vh, to = vh * 2;
 
+                int visible = 0;
                 foreach (var c in _laidOut)
                 {
                     if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
                     bool want = c.Top <= to && c.Top + c.Height >= from;
                     if (c.Visible != want) c.Visible = want;
+                    if (want) visible++;
+                }
+
+                // Предохранитель: если по расчёту не видно НИЧЕГО, а лента не
+                // пуста — показываем всё. Пустой чат хуже тяжёлой прокрутки.
+                if (visible == 0)
+                {
+                    foreach (var c in _laidOut)
+                    {
+                        if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
+                        if (!c.Visible) c.Visible = true;
+                    }
                 }
 
                 // Кружки выделения живут рядом с пузырями — прячутся вместе.
@@ -5929,7 +5953,7 @@ namespace PISMO
         {
             // Ширина пузыря. Было 480 — на широком окне переписка выглядела
             // узкой колонкой, а медиа внутри неё мелкими.
-            const int MAX_W = 560;
+            const int MAX_W = BubbleMaxWidth;
             const int PAD = 12;
 
             var bubble = new Panel
@@ -6733,12 +6757,18 @@ namespace PISMO
             return tb;
         }
 
+        /// <summary>Потолок ширины пузыря — один на отрисовку и на подгонку.</summary>
+        internal const int BubbleMaxWidth = 560;
+
         private int CalcBubbleWidth(Panel bubble, int pad)
         {
             int max = 80;
             foreach (Control c in bubble.Controls)
                 max = Math.Max(max, c.Right + pad);
-            return Math.Min(max, 480);
+            // ТОТ ЖЕ потолок, что у самого пузыря. Пока здесь стояло своё
+            // число, текст набирался по ширине пузыря, а пузырь ужимался до
+            // старых 480 — и последние слова строки просто срезало.
+            return Math.Min(max, BubbleMaxWidth);
         }
 
         private void PositionBubble(Panel bubble, bool isMine)
