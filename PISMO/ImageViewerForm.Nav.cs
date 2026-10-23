@@ -154,6 +154,23 @@ namespace PISMO
             _tools.BringToFront();
         }
 
+        /// <summary>
+        /// Стрелки клавиатуры листают медиа.
+        ///
+        /// Именно ProcessCmdKey, а не KeyDown: стрелки WinForms сначала
+        /// забирает себе на переход между контролами, и обычный обработчик
+        /// формы их уже не видит.
+        /// </summary>
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (_nav != null && _nav.Count > 1)
+            {
+                if (keyData == Keys.Left) { Step(-1); return true; }
+                if (keyData == Keys.Right) { Step(+1); return true; }
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
         private void Step(int delta)
         {
             if (_nav == null || _nav.Count == 0) return;

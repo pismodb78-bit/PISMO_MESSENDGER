@@ -408,9 +408,11 @@ namespace PISMO
                 // свою область целиком. Там, где стирание действительно нужно
                 // (смена чата, под удалёнными пузырями остаётся прошлое), для
                 // этого есть отдельный RepaintAfterSwitch.
-                uint flags = RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW;
-                if (!heavy || force) flags |= RDW_ALLCHILDREN;
-                RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero, flags);
+                // ВСЕГДА со всеми детьми: без этого пузыри перерисовываются
+                // вразнобой, и лента мерцает. Экономим не на полноте кадра, а
+                // на их частоте — см. minGap выше.
+                RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
+                    RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 
                 var parent = c.Parent;
                 if (parent == null) return;
