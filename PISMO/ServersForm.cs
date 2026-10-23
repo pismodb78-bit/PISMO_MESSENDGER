@@ -2732,6 +2732,32 @@ namespace PISMO
                         {
                             try
                             {
+                                // Готовая миниатюра — минуя декодер: см. ту же
+                                // правку в личной переписке (ThumbCache).
+                                var readyThumb = ThumbCache.Get(id);
+                                if (readyThumb != null)
+                                {
+                                    var pbr = new PictureBox
+                                    {
+                                        SizeMode = PictureBoxSizeMode.Normal,
+                                        Size = readyThumb.Size,
+                                        Location = new Point(LEFT, y),
+                                        Cursor = Cursors.Hand,
+                                        Image = readyThumb,
+                                    };
+                                    int capIdR = id;
+                                    pbr.Click += (s, e) =>
+                                    {
+                                        var full = MediaCache.Get(capIdR, "simg", null);
+                                        if ((full == null || full.Length == 0)
+                                            && _serverMedia.TryGetValue(capIdR, out var cur0)) full = cur0.img;
+                                        if (full is { Length: > 0 }) MainForm.ShowImageFullscreen(full);
+                                    };
+                                    holder.Controls.Add(pbr);
+                                    y += readyThumb.Height + 6;
+                                }
+                                else
+                                {
                                 var ms = new MemoryStream(sm.img.ToArray());
                                 var img = Image.FromStream(ms);
                                 // Крупнее, как в личной переписке: прежние
@@ -2781,8 +2807,14 @@ namespace PISMO
                                         && _serverMedia.TryGetValue(capId, out var cur)) full = cur.img;
                                     if (full is { Length: > 0 }) MainForm.ShowImageFullscreen(full);
                                 };
-                                pb.Disposed += (s, e) => { try { shown.Dispose(); } catch { } try { ms.Dispose(); } catch { } };
+                                // Копия уходит в кеш: следующая отрисовка
+                                // канала возьмёт готовое и декодер не тронет.
+                                // Поэтому её не освобождаем вместе с пузырём —
+                                // владелец кеш.
+                                ThumbCache.Put(id, shown);
+                                pb.Disposed += (s, e) => { try { ms.Dispose(); } catch { } };
                                 holder.Controls.Add(pb); y += dh + 6;
+                                }
                             }
                             catch { }
                         }

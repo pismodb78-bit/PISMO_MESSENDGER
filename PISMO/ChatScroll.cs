@@ -151,7 +151,11 @@ namespace PISMO
             // Чем меньше Ease, тем мягче: за кадр проходим лишь малую долю оставшегося
             // пути, поэтому сдвиг между кадрами крошечный и движение «маслянистое».
             private const double Ease = 0.09;
-            private const int MinFrameMs = 15;   // ~65 кадров/с
+            // ~65 кадров/с на обычной ленте. На длинной (сотни пузырей)
+            // столько кадров панель просто не успевает отрисовать, и попытка
+            // выдать их все делает движение рваным — там шагаем реже.
+            private const int MinFrameMs = 15;
+            private const int MinFrameMsHeavy = 30;
             private const int MinStepPx = 6;     // минимальный сдвиг за кадр — чтобы хвост не полз
 
             private readonly Panel _p;
@@ -221,6 +225,13 @@ namespace PISMO
                 _toEnd = _target >= MaxOffset;                  // целимся ровно в конец
                 if (!_t.Enabled)
                 {
+                    // Частота кадров — по длине ленты: на сотнях пузырей
+                    // шестьдесят пять кадров панель всё равно не отрисует, и
+                    // лишние попытки делают движение рваным.
+                    int want = MinFrameMs;
+                    try { if (_p.Controls.Count > 120) want = MinFrameMsHeavy; } catch { }
+                    if (_t.Interval != want) _t.Interval = want;
+
                     _lastSet = Current;
                     _animating.Add(_p);                 // прячем перекрывающие окна
                     try { _onScrolled?.Invoke(); } catch { }
@@ -368,13 +379,23 @@ namespace PISMO
                 if (c == null || !c.IsHandleCreated) return;
 
                 int now = Environment.TickCount;
-                // Чем длиннее лента, тем дороже синхронная перерисовка: она
-                // обходит ВСЕХ детей панели, а их после нескольких догрузок
-                // сотни. На короткой ленте рисуем каждый кадр (мягкое
-                // движение), на длинной — вдвое реже, иначе прокрутка вглубь
-                // начинает спотыкаться.
-                int minGap = RepaintMinIntervalMs;
-                try { if (c.Controls.Count > 150) minGap = 32; } catch { }
+                // ДЛИННАЯ ЛЕНТА РИСУЕТСЯ ПО-ДРУГОМУ.
+                //
+                // Синхронная перерисовка с RDW_ALLCHILDREN обходит ВСЕХ детей
+                // панели — а их после нескольких догрузок сотни, и у каждого
+                // пузыря свои дети. На каждом кадре прокрутки это и роняло
+                // частоту до полутора десятков кадров в секунду.
+                //
+                // На короткой ленте оставляем как было: каждый кадр и со
+                // всеми детьми — движение мягкое, стоит это копейки. На
+                // длинной перерисовываем реже и БЕЗ обхода детей: пузыри
+                // буферизованы и едут вместе с панелью сами, а страховка от
+                // артефактов остаётся в финальном кадре (force), который
+                // рисуется полностью.
+                int childCount = 0;
+                try { childCount = c.Controls.Count; } catch { }
+                bool heavy = childCount > 120;
+                int minGap = heavy ? 32 : RepaintMinIntervalMs;
                 if (!force && unchecked(now - _lastRepaintTick) < minGap) return;
                 _lastRepaintTick = now;
 
@@ -387,8 +408,9 @@ namespace PISMO
                 // свою область целиком. Там, где стирание действительно нужно
                 // (смена чата, под удалёнными пузырями остаётся прошлое), для
                 // этого есть отдельный RepaintAfterSwitch.
-                RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
-                    RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                uint flags = RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW;
+                if (!heavy || force) flags |= RDW_ALLCHILDREN;
+                RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero, flags);
 
                 var parent = c.Parent;
                 if (parent == null) return;

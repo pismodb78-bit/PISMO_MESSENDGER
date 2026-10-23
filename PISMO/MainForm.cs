@@ -4494,6 +4494,9 @@ namespace PISMO
             // воспроизведения). Считаем движением только заметный сдвиг вверх.
             bool movingUp = top < _lastDmTop - 4;
             _lastDmTop = top;
+            // Показать подъехавшее и спрятать уехавшее — до догрузки: так
+            // новые пузыри сразу встанут в уже посчитанное окно.
+            CullFeed();
             if (movingUp) MaybeLoadOlder();
             UpdateScrollDownButton();
         }
@@ -5615,9 +5618,23 @@ namespace PISMO
                     y += h + (c.Tag is bool ? 8 : 4);
                 }
 
+                // ВЫСОТУ СОДЕРЖИМОГО ЗАДАЁМ САМИ.
+                //
+                // Дальше мы прячем пузыри, которых не видно (см. CullFeed), а
+                // полосу прокрутки WinForms считает по ВИДИМЫМ детям — без
+                // этой строки лента схлопывалась бы на каждом движении.
+                try
+                {
+                    int need = y + 10;
+                    if (pnlMessages.AutoScrollMinSize.Height != need)
+                        pnlMessages.AutoScrollMinSize = new Size(0, need);
+                }
+                catch { }
+
                 // Кружки выделения живут рядом с пузырями, а не внутри них, —
                 // значит, переехать должны вместе с ними.
                 if (moved) RepositionSelectMarks();
+                CullFeed();
 
                 // Прокрутку трогаем ТОЛЬКО если что-то сдвинулось и мы стояли
                 // внизу: иначе перечитывание старого сообщения дёргало бы ленту.
@@ -5625,6 +5642,52 @@ namespace PISMO
                 {
                     pnlMessages.PerformLayout();
                     pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Прячем пузыри, которых сейчас не видно.
+        ///
+        /// Windows при прокрутке двигает КАЖДОЕ дочернее окно: после пары
+        /// догрузок их в ленте сотни, и частота падает до полутора десятков
+        /// кадров — та самая «лагучая прокрутка». Скрытое окно не двигается и
+        /// не рисуется, поэтому держим живыми только то, что в окне, плюс
+        /// экран сверху и снизу на запас хода.
+        ///
+        /// Высоту содержимого при этом задаём сами (AutoScrollMinSize в
+        /// RestackBubbles): иначе полоса прокрутки, считающая по видимым
+        /// детям, схлопнула бы ленту.
+        /// </summary>
+        private void CullFeed()
+        {
+            try
+            {
+                if (pnlMessages == null || pnlMessages.IsDisposed) return;
+                if (pnlMessages.AutoScrollMinSize.Height <= 0) return;
+                if (_laidOut == null || _laidOut.Count == 0) return;
+
+                int top = -pnlMessages.AutoScrollPosition.Y;
+                int vh = Math.Max(200, pnlMessages.ClientSize.Height);
+                int from = top - vh, to = top + vh * 2;
+
+                foreach (var c in _laidOut)
+                {
+                    if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
+                    bool want = c.Top <= to && c.Top + c.Height >= from;
+                    if (c.Visible != want) c.Visible = want;
+                }
+
+                // Кружки выделения живут рядом с пузырями — прячутся вместе.
+                if (_selMark != null)
+                {
+                    foreach (var mark in _selMark.Values)
+                    {
+                        if (mark == null || mark.IsDisposed) continue;
+                        if (mark.Tag is not Control b || b.IsDisposed) continue;
+                        if (mark.Visible != b.Visible) mark.Visible = b.Visible;
+                    }
                 }
             }
             catch { }
@@ -5862,7 +5925,9 @@ namespace PISMO
                                    // есть только признак, что они в сообщении есть.
                                    bool hasAudio = false, bool hasVideo = false)
         {
-            const int MAX_W = 480;
+            // Ширина пузыря. Было 480 — на широком окне переписка выглядела
+            // узкой колонкой, а медиа внутри неё мелкими.
+            const int MAX_W = 560;
             const int PAD = 12;
 
             var bubble = new Panel
@@ -5968,20 +6033,34 @@ namespace PISMO
             {
                 try
                 {
-                    // Копируем байты чтобы ms жил независимо
-                    MemoryStream? ms = new MemoryStream(imgBytes.ToArray());
-                    Image img;
-                    try { img = Image.FromStream(ms); }
-                    catch
+                    // ГОТОВАЯ МИНИАТЮРА — МИНУЯ ДЕКОДЕР.
+                    //
+                    // Раскодировать снимок и ужать его до размера показа —
+                    // десятки миллисекунд на штуку. Сборка пузырей делала это
+                    // заново при каждой отрисовке ленты, а догрузка приносит
+                    // сразу сорок сообщений: отсюда пауза при прокрутке
+                    // вглубь. Уже уменьшенную копию держит ThumbCache.
+                    Image ready = IsGif(imgBytes) ? null : ThumbCache.Get(msgId);
+
+                    MemoryStream? ms = null;
+                    Image img = null;
+                    if (ready == null)
                     {
-                        // GDI+ не осилил — пробуем системным декодером.
-                        // Он умеет WebP и HEIC, если в Windows стоят их
-                        // расширения, и это единственный способ показать уже
-                        // отправленные картинки: они лежат в базе как есть.
-                        ms.Dispose();
-                        ms = null;
-                        img = TryDecodeWithWic(imgBytes);
-                        if (img == null) throw;
+                        // Копируем байты чтобы ms жил независимо
+                        ms = new MemoryStream(imgBytes.ToArray());
+                        try { img = Image.FromStream(ms); }
+                        catch
+                        {
+                            // GDI+ не осилил — пробуем системным декодером.
+                            // Он умеет WebP и HEIC, если в Windows стоят их
+                            // расширения, и это единственный способ показать
+                            // уже отправленные картинки: они лежат в базе как
+                            // есть.
+                            ms.Dispose();
+                            ms = null;
+                            img = TryDecodeWithWic(imgBytes);
+                            if (img == null) throw;
+                        }
                     }
 
                     // Рамка вывода больше — фото/GIF читабельнее. Крупные вписываем
@@ -5989,19 +6068,33 @@ namespace PISMO
                     // чтобы не «замыливать»).
                     // Снимок в ленте — во всю ширину пузыря: прежние 420×360
                     // на большом окне выглядели маркой.
-                    int maxW = innerW, maxH = 460;
-                    double fit = Math.Min((double)maxW / img.Width, (double)maxH / img.Height);
-                    double ratio = Math.Min(fit, 2.0);
-                    int dw = Math.Max(1, (int)(img.Width * ratio));
-                    int dh = Math.Max(1, (int)(img.Height * ratio));
+                    int dw, dh;
+                    if (ready != null)
+                    {
+                        dw = ready.Width;
+                        dh = ready.Height;
+                    }
+                    else
+                    {
+                        int maxW = innerW, maxH = 520;
+                        double fit = Math.Min((double)maxW / img.Width, (double)maxH / img.Height);
+                        double ratio = Math.Min(fit, 2.0);
+                        dw = Math.Max(1, (int)(img.Width * ratio));
+                        dh = Math.Max(1, (int)(img.Height * ratio));
+                    }
 
                     var pb = new PictureBox
                     {
-                        SizeMode = PictureBoxSizeMode.StretchImage,
+                        // Готовая миниатюра уже ровно того размера, в котором
+                        // показывается, — растягивать нечего, а Normal дешевле
+                        // на каждом кадре прокрутки.
+                        SizeMode = ready != null
+                            ? PictureBoxSizeMode.Normal : PictureBoxSizeMode.StretchImage,
                         Size = new Size(dw, dh),
                         Location = new Point(PAD, innerY),
                         Cursor = Cursors.Hand
                     };
+                    if (ready != null) pb.Image = ready;
 
                     // GIF: анимация через Timer.
                     // КРИТИЧНО: PictureBox автоматически анимирует МНОГОКАДРОВЫЙ
@@ -6009,7 +6102,12 @@ namespace PISMO
                     // occurred"). Поэтому НИКОГДА не присваиваем pb.Image сам GIF или
                     // его Clone() — заранее рендерим каждый кадр в ОТДЕЛЬНЫЙ одно-
                     // кадровый Bitmap, а таймер просто переключает их.
-                    if (IsGif(imgBytes) && img is Bitmap gifBmp)
+                    if (ready != null)
+                    {
+                        // Нечего делать: картинка уже стоит в пузыре. Освобождать
+                        // её при смерти пузыря НЕЛЬЗЯ — владелец кеш.
+                    }
+                    else if (IsGif(imgBytes) && img is Bitmap gifBmp)
                     {
                         var dimension = new System.Drawing.Imaging.FrameDimension(
                             gifBmp.FrameDimensionsList[0]);
@@ -6133,10 +6231,14 @@ namespace PISMO
                         catch { shown = img; }
 
                         pb.Image = shown;
+                        // Копия уходит в кеш: следующая сборка этого пузыря —
+                        // а она бывает на каждой перерисовке ленты — возьмёт
+                        // готовое и декодер не тронет. Освобождать её при
+                        // смерти пузыря поэтому нельзя: владелец кеш.
+                        ThumbCache.Put(msgId, shown);
                         var keepMs = ms;
                         pb.Disposed += (s, e) =>
                         {
-                            try { shown.Dispose(); } catch { }
                             try { keepMs?.Dispose(); } catch { }
                         };
                     }
