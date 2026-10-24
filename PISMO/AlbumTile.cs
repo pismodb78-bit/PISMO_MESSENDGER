@@ -72,7 +72,19 @@ namespace PISMO
                      | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
 
             Layout0();
+
+            // Обложка ролика из этой пачки готова — перерисоваться.
+            _onCover = id =>
+            {
+                if (IsDisposed || !_items.Exists(x => x.MsgId == id)) return;
+                if (_thumbs.TryGetValue(id, out var stale)) { try { stale?.Dispose(); } catch { } }
+                _thumbs.Remove(id);
+                try { Invalidate(); } catch { }
+            };
+            CoverGrabber.CoverReady += _onCover;
         }
+
+        private readonly Action<int> _onCover;
 
         /// <summary>
         /// Пересчитать раскладку и высоту.
@@ -169,7 +181,10 @@ namespace PISMO
                 }
             }
             catch { bmp = null; }
-            _thumbs[it.MsgId] = bmp;
+            // У ролика кадра может ещё не быть — его снимают в фоне
+            // (CoverGrabber). «Нет кадра» тогда не запоминаем, иначе плитка
+            // так и осталась бы тёмной, когда обложка появится.
+            if (bmp != null || !it.IsVideo) _thumbs[it.MsgId] = bmp;
             return bmp;
         }
 
@@ -296,6 +311,7 @@ namespace PISMO
         {
             if (disposing)
             {
+                try { CoverGrabber.CoverReady -= _onCover; } catch { }
                 foreach (var kv in _thumbs) { try { kv.Value?.Dispose(); } catch { } }
                 _thumbs.Clear();
                 try { _capFont.Dispose(); _timeFont.Dispose(); } catch { }

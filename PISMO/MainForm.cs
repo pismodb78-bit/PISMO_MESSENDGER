@@ -4582,6 +4582,11 @@ namespace PISMO
         /// <summary>Сообщение → номер первого сообщения его пачки (плитки).</summary>
         private readonly Dictionary<int, int> _albumOf = new Dictionary<int, int>();
 
+        /// <summary>Запас под содержимым пузыря — место под время и галочки.</summary>
+        private sealed class BubbleReserve { public readonly int Px; public BubbleReserve(int px) { Px = px; } }
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, BubbleReserve>
+            _bubbleReserve = new();
+
         /// <summary>Шрифты подписи со временем — общие: по одному на приложение,
         /// а не по два на каждый пузырь.</summary>
         private static readonly Font StampFont = new Font("Segoe UI", 7.5f);
@@ -4680,6 +4685,21 @@ namespace PISMO
                             FileName = fnk,
                             IsVideo = vidk,
                         });
+
+                        // Ролик в пачке без обложки — снимаем кадр в фоне; плитка
+                        // перерисуется, когда он будет готов.
+                        int kId = Convert.ToInt32(rk["id"]);
+                        bool kHasImg = rk.Table.Columns.Contains("has_img") && rk["has_img"] != DBNull.Value
+                                       && Convert.ToBoolean(rk["has_img"]);
+                        if (vidk && !kHasImg && !MediaCache.Has(kId, "img"))
+                        {
+                            long kSize = rk.Table.Columns.Contains("file_size") && rk["file_size"] != DBNull.Value
+                                ? Convert.ToInt64(rk["file_size"]) : 0;
+                            string kName = fnk; bool kGroup = isGroup;
+                            CoverGrabber.Request(null, kGroup ? "group_messages" : "messages", kId, kName, "img",
+                                MediaCache.Has(kId, "file", kName), kSize,
+                                () => LoadFileBytes(kId, kName, kGroup));
+                        }
                     }
 
                     var lastRow = rowsList[ri + albumLen - 1];
@@ -5811,7 +5831,10 @@ namespace PISMO
                 foreach (Control ch in c.Controls)
                     if (ch.Visible && ch.Bottom > bottom) bottom = ch.Bottom;
                 if (bottom <= 0) return c.Height;
-                int want = bottom + 8;            // нижнее поле — как при сборке
+                // Нижнее поле — ровно как при сборке: под содержимым рисуются
+                // время и галочки, и восемь точек их бы срезали.
+                int reserve = _bubbleReserve.TryGetValue(c, out var r) ? r.Px : 8;
+                int want = bottom + reserve;
                 if (want > c.Height) c.Height = want;
                 return c.Height;
             }
@@ -6038,6 +6061,20 @@ namespace PISMO
             };
             bubble.Region = System.Drawing.Region.FromHrgn(
                 NativeMethods.CreateRoundRectRgn(0, 0, MAX_W, 999, 10, 10));
+            // РАМКА ЗА РАЗМЕРОМ. Скруглённые углы — это область окна, и она
+            // задаётся числами: пузырь дорос (доехала карточка ссылки,
+            // картинка, текст), а рамка осталась прежней высоты и срезала
+            // низ — вместе с карточкой и временем. Теперь любая смена размера
+            // пересчитывает и рамку.
+            bubble.SizeChanged += (s, e) =>
+            {
+                try
+                {
+                    bubble.Region = System.Drawing.Region.FromHrgn(
+                        NativeMethods.CreateRoundRectRgn(0, 0, bubble.Width, bubble.Height, 10, 10));
+                }
+                catch { }
+            };
 
             int innerY = PAD;
             int innerW = MAX_W - PAD * 2 - 4;
@@ -6434,10 +6471,22 @@ namespace PISMO
                     // (старый ролик), берём из кеша картинок: туда его кладёт
                     // дописывание обложки, когда файл оказался на руках.
                     vp.Poster = videoPoster ?? MediaCache.Get(msgId, "img", null);
-                    // Обложки нет — плеер снимет кадр сам, когда ролик пойдёт.
+                    // Обложки нет — снимаем кадр в фоне сами (CoverGrabber), а
+                    // если ролик успеют запустить раньше — его снимет плеер.
                     if (vp.Poster == null)
-                        vp.CoverCaptured = jpeg => VideoCover.Share(
-                            capturedGroup ? "group_messages" : "messages", capturedId, jpeg);
+                    {
+                        string coverTable = capturedGroup ? "group_messages" : "messages";
+                        vp.CoverCaptured = jpeg => VideoCover.Share(coverTable, capturedId, jpeg);
+                        long sizeKnown = fileData is { Length: > 0 } ? fileData.LongLength : fileSize;
+                        bool haveFile = fileData is { Length: > 0 }
+                                        || MediaCache.Has(capturedId, "file", capturedName);
+                        var dataNow = fileData;
+                        CoverGrabber.Request(vp, coverTable, capturedId, capturedName, "img",
+                            haveFile, sizeKnown,
+                            () => dataNow is { Length: > 0 }
+                                ? dataNow
+                                : LoadFileBytes(capturedId, capturedName, capturedGroup));
+                    }
                     // ⛶ у плеера в ленте открывает окно просмотра: там
                     // соседние ролики стрелками, скорость и «по кругу».
                     vp.ExpandRequested = () =>
@@ -6747,6 +6796,9 @@ namespace PISMO
             bubble.Size = new Size(
                 Math.Max(Math.Max(120, stampW + PAD * 2 + 4), CalcBubbleWidth(bubble, PAD)),
                 innerY);
+            // Сколько места пузырь держит ПОД содержимым: там рисуются время и
+            // галочки. Дорастая потом, он обязан сохранить ровно столько же.
+            _bubbleReserve.AddOrUpdate(bubble, new BubbleReserve(Math.Max(8, innerY - contentBottom)));
 
             bubble.Region = System.Drawing.Region.FromHrgn(
                 NativeMethods.CreateRoundRectRgn(0, 0, bubble.Width, bubble.Height, 10, 10));

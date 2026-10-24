@@ -2806,6 +2806,19 @@ namespace PISMO
                                 IsVideo = vidk,
                                 CacheKind = "simg",
                             });
+
+                            // Ролик без обложки — кадр снимаем в фоне (только
+                            // если ролик уже скачан: размер здесь неизвестен).
+                            int kId = Convert.ToInt32(rk["id"]);
+                            bool kHasImg = dt.Columns.Contains("has_img") && rk["has_img"] != DBNull.Value
+                                           && Convert.ToBoolean(rk["has_img"]);
+                            if (vidk && !kHasImg && !MediaCache.Has(kId, "simg"))
+                            {
+                                string kName = fnk;
+                                CoverGrabber.Request(null, "server_messages", kId, kName, "simg",
+                                    MediaCache.Has(kId, "sfile", kName), 0,
+                                    () => LoadServerFileBytes(kId, kName));
+                            }
                         }
 
                         string tileTime = MainForm.ToViewerLocal(
@@ -2960,11 +2973,21 @@ namespace PISMO
                                     // он может лежать в кеше картинок.
                                     vp.Poster = chanPoster ?? MediaCache.Get(id, "simg", null)
                                                            ?? MediaCache.Get(id, "img", null);
-                                    // Обложки нет — снимет сам плеер.
+                                    // Обложки нет — снимаем кадр в фоне сами,
+                                    // а запустят ролик раньше — снимет плеер.
                                     int capCover = id;
                                     if (vp.Poster == null)
+                                    {
                                         vp.CoverCaptured = jpeg =>
                                             VideoCover.Share("server_messages", capCover, jpeg, "simg");
+                                        var bytesNow = haveBytes ? sm.file : null;
+                                        string nameNow = sm.fname;
+                                        bool haveFile = bytesNow != null
+                                                        || MediaCache.Has(capCover, "sfile", nameNow);
+                                        CoverGrabber.Request(vp, "server_messages", capCover, nameNow, "simg",
+                                            haveFile, bytesNow?.LongLength ?? 0,
+                                            () => bytesNow ?? LoadServerFileBytes(capCover, nameNow));
+                                    }
                                     // ⛶ — окно просмотра канала: стрелки по
                                     // соседним роликам, скорость, «по кругу».
                                     int capVid = id;

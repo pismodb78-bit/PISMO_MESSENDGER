@@ -217,6 +217,12 @@ namespace PISMO
         /// <summary>Esc внутри страницы.</summary>
         internal Action CloseRequested;
 
+        /// <summary>
+        /// Мышь шевельнулась над роликом. Над страницей окно мыши не видит —
+        /// без этого кнопки просмотра гасли бы, пока человек водит по видео.
+        /// </summary>
+        internal Action ActivityDetected;
+
         private bool _counted;
 
         private void CountIn()
@@ -328,7 +334,8 @@ namespace PISMO
                         if (prev != null && !ReferenceEquals(prev, this) && !prev.IsDisposed)
                             prev.PauseNow();
                     }
-                    else if (msg.StartsWith("cover:"))
+                    else if (msg == "activity") { try { ActivityDetected?.Invoke(); } catch { } }
+                    else if (msg != null && msg.StartsWith("cover:"))
                     {
                         try
                         {

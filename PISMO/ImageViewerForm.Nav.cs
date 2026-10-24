@@ -91,8 +91,13 @@ namespace PISMO
             _navIdx = index;
             if (loader != null) _navLoader = loader;
             EnsureChrome();
-            _btnPrev.Visible = index > 0;
-            _btnNext.Visible = index < items.Count - 1;
+            // Интерфейс сейчас погашен — стрелки не показываем: невидимая
+            // кнопка ловила бы нажатия. Проснётся — покажет сама.
+            if (ChromeAlpha > 0.001f)
+            {
+                _btnPrev.Visible = index > 0;
+                _btnNext.Visible = index < items.Count - 1;
+            }
             UpdateInfo(items[index]);
         }
 
@@ -146,6 +151,9 @@ namespace PISMO
                 if (e.KeyCode == Keys.Left) { Step(-1); e.Handled = true; }
                 else if (e.KeyCode == Keys.Right) { Step(+1); e.Handled = true; }
             };
+
+            // Кнопки гаснут без движения мыши — как на телефоне.
+            EnsureFade();
         }
 
         private Panel MakeArrow(bool left)
@@ -155,9 +163,12 @@ namespace PISMO
             {
                 var g = e.Graphics;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                using var br = new SolidBrush(Color.FromArgb(120, 0, 0, 0));
+                // Доля видимости — от затухания интерфейса (см. Fade).
+                float a = ChromeAlpha;
+                if (a <= 0.01f) return;
+                using var br = new SolidBrush(Color.FromArgb((int)(120 * a), 0, 0, 0));
                 g.FillEllipse(br, 0, 0, 45, 45);
-                using var pen = new Pen(Color.White, 2.2f);
+                using var pen = new Pen(Color.FromArgb((int)(255 * a), 255, 255, 255), 2.2f);
                 int cx = 23, cy = 23, d = 8;
                 if (left)
                 {
@@ -245,6 +256,8 @@ namespace PISMO
             _btnPrev.Visible = idx > 0;
             _btnNext.Visible = idx < _nav.Count - 1;
             UpdateInfo(it);
+            // Перелистнули — интерфейс снова виден: счётчик и стрелки нужны.
+            WakeChrome();
 
             // Прошлый ролик закрываем всегда: двух дорожек разом быть не должно.
             DropVideo();
@@ -369,6 +382,7 @@ namespace PISMO
                     try { _actions?.CoverCaptured?.Invoke(coverId, jpeg); } catch { }
                 };
                 _videoHost.CloseRequested = () => { try { Close(); } catch { } };
+                _videoHost.ActivityDetected = () => { try { WakeChrome(); } catch { } };
                 _canvas.Controls.Add(_videoHost);
                 _videoHost.SendToBack();
                 // Выбранные скорость и «по кругу» переживают переход к
@@ -450,6 +464,9 @@ namespace PISMO
                     menu.Items.Add("Удалить", null, (s, e) => { Close(); _actions.Delete(id); });
             }
 
+            // Пока меню открыто, кнопки не гасим: мышь в меню окно не видит.
+            _menuOpen = true;
+            menu.Closed += (s, e) => { _menuOpen = false; WakeChrome(); };
             menu.Show(Cursor.Position);
         }
 

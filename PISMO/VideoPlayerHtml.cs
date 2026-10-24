@@ -171,6 +171,14 @@ v.addEventListener('error',function(){say('novideo');});
 
 document.addEventListener('mousemove',show);
 document.addEventListener('touchstart',show);
+// В окне просмотра кнопки вокруг ролика гаснут без движения мыши, а над
+// страницей окно мыши не видит — сообщаем о движении сами, не чаще
+// пары раз в секунду.
+var lastAct=0;
+function activity(){ if(INLINE) return; var t=Date.now(); if(t-lastAct<400) return; lastAct=t; say('activity'); }
+document.addEventListener('mousemove',activity);
+document.addEventListener('mousedown',activity);
+document.addEventListener('keydown',activity);
 document.getElementById('wrap').addEventListener('click',function(){toggle();});
 document.addEventListener('keydown',function(e){
   if(e.code==='Space'){e.preventDefault();toggle();}

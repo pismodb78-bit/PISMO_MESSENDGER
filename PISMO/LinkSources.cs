@@ -112,19 +112,10 @@ namespace PISMO
             };
             int y = 6;
 
-            var badge = new Label
-            {
-                Text = src.Mark,
-                BackColor = src.Color,
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI", src.Mark.Length > 1 ? 6.5f : 8f, FontStyle.Bold),
-                TextAlign = ContentAlignment.MiddleCenter,
-                Size = new Size(18, 18),
-                Location = new Point(8, y),
-                Cursor = Cursors.Hand,
-            };
-            card.Controls.Add(badge);
-
+            // РАЗМЕРЫ — ОТ ШРИФТА, А НЕ ЧИСЛАМИ. При масштабе экрана 125–150 %
+            // буквы становятся крупнее, а заданные точками высоты — нет: строка
+            // «откуда ссылка» срезалась по низу. Поэтому высоту строк берём у
+            // самих подписей.
             bool playable = VideoLinks.Of(url).Kind != VideoLinks.Kind.None;
             var site = new Label
             {
@@ -133,11 +124,16 @@ namespace PISMO
                 ForeColor = Color.FromArgb(0, 176, 244),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
                 AutoSize = true,
-                Location = new Point(32, y + 3),
                 Cursor = Cursors.Hand,
             };
+            int siteH = site.PreferredHeight;
+            var badge = MakeBadge(src, siteH);
+            int headH = Math.Max(badge.Height, siteH);
+            badge.Location = new Point(8, y + (headH - badge.Height) / 2);
+            site.Location = new Point(badge.Right + 6, y + (headH - siteH) / 2);
+            card.Controls.Add(badge);
             card.Controls.Add(site);
-            y += 24;
+            y += headH + 6;
 
             int textW = card.Width - 16;
             if (!string.IsNullOrWhiteSpace(ready.Title))
@@ -148,12 +144,13 @@ namespace PISMO
                     ForeColor = Color.FromArgb(235, 236, 240),
                     Font = new Font("Segoe UI", 9f, FontStyle.Bold),
                     AutoSize = false,
-                    Size = new Size(textW, TextRenderer.MeasureText(ready.Title,
-                        new Font("Segoe UI", 9f, FontStyle.Bold), new Size(textW, 0),
-                        TextFormatFlags.WordBreak).Height),
                     Location = new Point(8, y),
                     Cursor = Cursors.Hand,
                 };
+                // Высоту спрашиваем у самой подписи: она переносит строки
+                // по-своему, и сторонний замер расходился с ней на строку —
+                // последняя строка пропадала под краем.
+                t.Size = new Size(textW, WrappedHeight(t, textW));
                 card.Controls.Add(t);
                 y += t.Height + 3;
             }
@@ -169,11 +166,10 @@ namespace PISMO
                     ForeColor = Color.FromArgb(160, 165, 175),
                     Font = font,
                     AutoSize = false,
-                    Size = new Size(textW, TextRenderer.MeasureText(desc, font,
-                        new Size(textW, 0), TextFormatFlags.WordBreak).Height),
                     Location = new Point(8, y),
                     Cursor = Cursors.Hand,
                 };
+                d.Size = new Size(textW, WrappedHeight(d, textW));
                 card.Controls.Add(d);
                 y += d.Height + 4;
             }
@@ -225,10 +221,42 @@ namespace PISMO
                 catch { }
             }
 
-            card.Height = y + 4;
+            // Запас снизу — и по фактическому содержимому: ни одна строка не
+            // должна оказаться ниже края карточки.
+            int bottom = y;
+            foreach (Control c in card.Controls) bottom = Math.Max(bottom, c.Bottom);
+            card.Height = bottom + 6;
 
             Hook(card, url);
             return card;
+        }
+
+        /// <summary>Высота подписи с переносом строк по ширине — по её же правилам.</summary>
+        private static int WrappedHeight(Label l, int width)
+        {
+            int byLabel = l.GetPreferredSize(new Size(width, 0)).Height;
+            int byText = TextRenderer.MeasureText(l.Text, l.Font, new Size(width, int.MaxValue),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl).Height;
+            // Берём большее и строку с небольшим запасом: лучше пиксель
+            // воздуха, чем срезанные хвосты букв.
+            return Math.Max(byLabel, byText) + 2;
+        }
+
+        /// <summary>Цветной значок службы — по росту строки рядом с ним.</summary>
+        private static Label MakeBadge(Source src, int lineH)
+        {
+            int side = Math.Max(18, lineH + 2);
+            return new Label
+            {
+                Text = src.Mark,
+                BackColor = src.Color,
+                ForeColor = Color.White,
+                // Шрифт — в пунктах: под масштаб экрана Windows подгонит его сама.
+                Font = new Font("Segoe UI", src.Mark.Length > 1 ? 6.5f : 8f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Size = new Size(side, side),
+                Cursor = Cursors.Hand,
+            };
         }
 
         /// <summary>Метка карточки: по ней её находят в пузыре.</summary>
@@ -294,35 +322,29 @@ namespace PISMO
         internal static Panel MakeRow(string url, int width)
         {
             var src = Of(url);
-            var row = new Panel
-            {
-                Size = new Size(Math.Max(60, width), 20),
-                BackColor = Color.Transparent,
-                Cursor = Cursors.Hand,
-                Tag = TagOf(url),
-            };
-
-            var badge = new Label
-            {
-                Text = src.Mark,
-                BackColor = src.Color,
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI", src.Mark.Length > 1 ? 6.5f : 8f, FontStyle.Bold),
-                TextAlign = ContentAlignment.MiddleCenter,
-                Size = new Size(18, 18),
-                Location = new Point(0, 1),
-                Cursor = Cursors.Hand,
-            };
-
             var title = new Label
             {
                 Text = src.Title + (VideoLinks.Of(url).Kind != VideoLinks.Kind.None ? "  ▶" : ""),
                 ForeColor = Color.FromArgb(160, 165, 175),
                 Font = new Font("Segoe UI", 8f),
                 AutoSize = true,
-                Location = new Point(24, 4),
                 Cursor = Cursors.Hand,
             };
+            // Высота строки — по шрифту: двадцать точек, заданные числом, при
+            // масштабе экрана 125–150 % срезали подпись по низу.
+            int textH = title.PreferredHeight;
+            var badge = MakeBadge(src, textH);
+            int rowH = Math.Max(20, Math.Max(badge.Height, textH) + 4);
+
+            var row = new Panel
+            {
+                Size = new Size(Math.Max(60, width), rowH),
+                BackColor = Color.Transparent,
+                Cursor = Cursors.Hand,
+                Tag = TagOf(url),
+            };
+            badge.Location = new Point(0, (rowH - badge.Height) / 2);
+            title.Location = new Point(badge.Right + 6, (rowH - textH) / 2);
 
             row.Controls.Add(badge);
             row.Controls.Add(title);

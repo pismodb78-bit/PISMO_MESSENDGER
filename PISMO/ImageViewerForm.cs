@@ -75,6 +75,9 @@ namespace PISMO
                 else if (e.KeyCode == Keys.D0 && e.Control) SetScaleAtCenter(1f);
                 else if (e.KeyCode == Keys.F) FitToWindow();
             };
+
+            // Подпись масштаба гаснет вместе с остальным интерфейсом.
+            EnsureFade();
         }
 
         private sealed class DoubleBufferedPanel : Panel
