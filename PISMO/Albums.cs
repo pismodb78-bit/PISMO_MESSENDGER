@@ -34,6 +34,27 @@ namespace PISMO
         /// </summary>
         public const string Mark = "\u2063";
 
+        /// <summary>
+        /// С какого момента пачки ходят со знаком (24 октября 2026, 11:00 UTC —
+        /// выпуск, в котором он появился). Всё, что отправлено раньше, знака не
+        /// несёт и никогда не понесёт, поэтому для старых сообщений оставлено
+        /// прежнее узнавание по времени: иначе собранные когда-то плитки
+        /// рассыпались бы на одиночные снимки.
+        /// </summary>
+        private static readonly DateTime MarkSince = new DateTime(2026, 10, 24, 11, 0, 0, DateTimeKind.Utc);
+
+        /// <summary>Разрыв по времени — только для старых сообщений.</summary>
+        private static readonly TimeSpan Gap = TimeSpan.FromSeconds(120);
+
+        private static DateTime TimeOf(DataRow r) => Convert.ToDateTime(r["created_at"]);
+
+        /// <summary>Старое сообщение — то, что отправлено до появления знака.</summary>
+        private static bool Legacy(DataRow r)
+        {
+            try { return TimeOf(r).ToUniversalTime() < MarkSince; }
+            catch { return false; }
+        }
+
         /// <summary>Пришло ли сообщение продолжением пачки.</summary>
         public static bool IsPart(string text) =>
             !string.IsNullOrEmpty(text) && text.Trim() == Mark;
@@ -85,6 +106,8 @@ namespace PISMO
 
             int take = 1;
             int sender = SenderOf(head);
+            bool headLegacy = Legacy(head);
+            var prevTime = TimeOf(head);
 
             for (int i = start + 1; i < rows.Count && take < Max; i++)
             {
@@ -94,10 +117,21 @@ namespace PISMO
                 if (solo != null && solo(id)) break;
                 if (SenderOf(r) != sender) break;
                 if (ReplyOf(r) != 0) break;
-                // В плитку идёт только ОТМЕЧЕННОЕ пачкой. Отправленное по
-                // одному отметки не несёт и остаётся отдельным сообщением,
-                // даже если ушло секунда в секунду.
-                if (!IsPart(Crypto.Dec(r["text"].ToString()))) break;
+
+                // В плитку идёт ОТМЕЧЕННОЕ пачкой. Отправленное по одному
+                // отметки не несёт и остаётся отдельным сообщением, даже если
+                // ушло секунда в секунду.
+                string text = Crypto.Dec(r["text"].ToString());
+                bool part = IsPart(text);
+
+                // У старых сообщений знака нет и быть не может — для них
+                // прежнее узнавание: без подписи и не дальше двух минут.
+                bool legacy = headLegacy && Legacy(r)
+                              && string.IsNullOrWhiteSpace(text)
+                              && TimeOf(r) - prevTime <= Gap;
+
+                if (!part && !legacy) break;
+                prevTime = TimeOf(r);
                 take++;
             }
 
