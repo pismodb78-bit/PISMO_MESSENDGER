@@ -2543,6 +2543,17 @@ namespace PISMO
         /// листает соседние снимки и ролики.</summary>
         private DataTable _shownDt;
 
+        /// <summary>Текст колонки, которой может и не быть в таблице.</summary>
+        private static string ColText(DataRow r, string col)
+        {
+            try
+            {
+                if (r == null || !r.Table.Columns.Contains(col) || r[col] == DBNull.Value) return "";
+                return r[col].ToString().Trim();
+            }
+            catch { return ""; }
+        }
+
         private void RenderMessages(DataTable dt, int channel)
         {
             if (_channelId != channel) return;
@@ -2657,8 +2668,13 @@ namespace PISMO
                     DataRow r = rowsList[ri];
                     int id = Convert.ToInt32(r["id"]);
                     int senderId = Convert.ToInt32(r["sender_id"]);
-                    string nm = r["nm"].ToString().Trim();
-                    if (string.IsNullOrWhiteSpace(nm)) nm = r["login"].ToString();
+                    // Имя читаем ОСТОРОЖНО: строки приезжают и из базы (колонка
+                    // «nm»), и через релей (там она звалась «sender_name»).
+                    // Прямое обращение к отсутствующей колонке роняло сборку
+                    // ленты целиком — канал оказывался пустым.
+                    string nm = ColText(r, "nm");
+                    if (string.IsNullOrWhiteSpace(nm)) nm = ColText(r, "sender_name");
+                    if (string.IsNullOrWhiteSpace(nm)) nm = ColText(r, "login");
                     string text = Albums.Strip(
                         Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString()));
                     DateTime dtMsg = MainForm.ToViewerLocal(Convert.ToDateTime(r["created_at"]));

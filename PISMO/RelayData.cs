@@ -140,6 +140,12 @@ namespace PISMO
             dt.Columns.Add("has_video", typeof(int));
             dt.Columns.Add("has_file", typeof(int));
             dt.Columns.Add("sender_name", typeof(string));
+            // «nm» — то же имя отправителя, только под тем названием, под
+            // которым его ждут каналы сервера (их запрос зовёт колонку так).
+            // Без неё сборка ленты канала падала на первой же строке — и
+            // канал открывался ПУСТЫМ, потому что данные приехали релеем, а
+            // не из базы.
+            dt.Columns.Add("nm", typeof(string));
             dt.Columns.Add("login", typeof(string));
 
             long nowTs = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -170,6 +176,7 @@ namespace PISMO
                 row["has_video"] = Int(r, "has_video");
                 row["has_file"] = Int(r, "has_file");
                 row["sender_name"] = Str(r, "sender_name") ?? "";
+                row["nm"] = row["sender_name"];
                 row["login"] = Str(r, "login") ?? "";
                 dt.Rows.Add(row);
             }

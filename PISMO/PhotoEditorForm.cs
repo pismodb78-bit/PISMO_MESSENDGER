@@ -75,6 +75,8 @@ namespace PISMO
         private RectangleF _frame;
         private Stroke _live;
         private readonly List<Button> _toolButtons = new();
+        private readonly List<Panel> _swatches = new();
+        private readonly List<Panel> _widthDots = new();
 
         /// <summary>Готовый снимок с нарисованным.</summary>
         public byte[] Result { get; private set; }
@@ -163,12 +165,7 @@ namespace PISMO
                          Color.FromArgb(52,199,89), Color.FromArgb(0,122,255),
                          Color.FromArgb(175,82,222), Color.White, Color.Black,
                      })
-            {
-                var captured = c;
-                var sw = new Panel { Size = new Size(26, 26), Margin = new Padding(6, 6, 0, 0), BackColor = c, Cursor = Cursors.Hand };
-                sw.Click += (s, e) => { _color = captured; _canvas.Invalidate(); };
-                tools.Controls.Add(sw);
-            }
+                tools.Controls.Add(ColorSwatch(c));
             // Палитра — любой оттенок, а не только готовые. На Windows это
             // системное окно выбора цвета, к нему все привыкли.
             var more = new Button { Text = "Палитра…", Size = new Size(92, 28), Margin = new Padding(6, 6, 0, 0) };
@@ -185,34 +182,16 @@ namespace PISMO
                 _color = dlg.Color;
                 // Выбранный цвет встаёт рядом с готовыми — чтобы вернуться к
                 // нему одним нажатием.
-                var captured = dlg.Color;
-                var sw2 = new Panel
-                {
-                    Size = new Size(26, 26),
-                    Margin = new Padding(6, 6, 0, 0),
-                    BackColor = captured,
-                    Cursor = Cursors.Hand,
-                };
-                sw2.Click += (s2, e2) => { _color = captured; _canvas.Invalidate(); };
-                tools.Controls.Add(sw2);
+                tools.Controls.Add(ColorSwatch(dlg.Color));
+                HighlightPicks();
                 _canvas.Invalidate();
             };
             tools.Controls.Add(more);
 
-            // Толщина — доля ширины снимка; на кнопке пишем по-человечески.
+            // Толщина — не числом, а кружком в натуральную величину: видно,
+            // какой будет линия, и видно, какая выбрана.
             foreach (var w in new[] { 0.006f, 0.012f, 0.022f, 0.036f })
-            {
-                float captured = w;
-                var b = new Button
-                {
-                    Text = ((int)Math.Round(w * 1000)).ToString(),
-                    Size = new Size(36, 28),
-                    Margin = new Padding(6, 6, 0, 0),
-                };
-                Flat(b, Color.FromArgb(57, 60, 66));
-                b.Click += (s, e) => _width = captured;
-                tools.Controls.Add(b);
-            }
+                tools.Controls.Add(WidthDot(w));
 
             toolbar.Controls.Add(tools);
             bar.Controls.Add(undo);
@@ -235,6 +214,69 @@ namespace PISMO
             };
 
             HighlightTools();
+            HighlightPicks();
+        }
+
+        /// <summary>
+        /// Кружок цвета. Выбранный обведён белым — иначе угадать, каким
+        /// цветом рисуешь, можно было только по самой линии.
+        /// </summary>
+        private Panel ColorSwatch(Color c)
+        {
+            var sw = new Panel
+            {
+                Size = new Size(26, 26),
+                Margin = new Padding(6, 6, 0, 0),
+                BackColor = c,
+                Cursor = Cursors.Hand,
+            };
+            sw.Paint += (s, e) =>
+            {
+                if (_color.ToArgb() != c.ToArgb()) return;
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using var pen = new Pen(Color.White, 2.5f);
+                e.Graphics.DrawRectangle(pen, 1, 1, sw.Width - 3, sw.Height - 3);
+            };
+            sw.Click += (s, e) => { _color = c; HighlightPicks(); _canvas.Invalidate(); };
+            _swatches.Add(sw);
+            return sw;
+        }
+
+        /// <summary>Толщина кружком в натуральную величину; выбранная подсвечена.</summary>
+        private Panel WidthDot(float w)
+        {
+            var p = new Panel
+            {
+                Size = new Size(34, 28),
+                Margin = new Padding(6, 6, 0, 0),
+                BackColor = Color.FromArgb(47, 49, 54),
+                Cursor = Cursors.Hand,
+                Tag = w,
+            };
+            p.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                bool on = Math.Abs(_width - w) < 0.0001f;
+                using (var back = new SolidBrush(on ? Color.FromArgb(88, 101, 242)
+                                                    : Color.FromArgb(47, 49, 54)))
+                    g.FillRectangle(back, 0, 0, p.Width, p.Height);
+                // Диаметр — та же доля, что и у линии, пересчитанная на палец:
+                // ряд кружков сразу показывает, что выбираешь.
+                int d = Math.Max(4, (int)Math.Round(w * 560));
+                using var dot = new SolidBrush(Color.White);
+                g.FillEllipse(dot, (p.Width - d) / 2f, (p.Height - d) / 2f, d, d);
+            };
+            p.Click += (s, e) => { _width = w; HighlightPicks(); };
+            _widthDots.Add(p);
+            return p;
+        }
+
+        /// <summary>Перерисовать отметки выбранного цвета и толщины.</summary>
+        private void HighlightPicks()
+        {
+            foreach (var c in _swatches) { try { c.Invalidate(); } catch { } }
+            foreach (var d in _widthDots) { try { d.Invalidate(); } catch { } }
         }
 
         private static void Flat(Button b, Color back)
