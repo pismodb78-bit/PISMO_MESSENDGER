@@ -49,7 +49,7 @@ namespace PISMO
             MinimizeBox = false;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
-            ClientSize = new Size(560, 330);
+            ClientSize = new Size(560, 520);
             BackColor = Color.FromArgb(32, 34, 37);
             ForeColor = Color.FromArgb(220, 222, 225);
             ShowInTaskbar = false;
@@ -94,6 +94,8 @@ namespace PISMO
             _asFiles.Height = 26;
             _asFiles.ForeColor = Color.FromArgb(200, 203, 209);
             _asFiles.Font = new Font("Segoe UI", 9f);
+            // Альбом или файлы — вид пачки меняется сразу.
+            _asFiles.CheckedChanged += (s, e) => Rebuild();
 
             _caption.Dock = DockStyle.Fill;
             _caption.Multiline = true;
@@ -177,12 +179,73 @@ namespace PISMO
                 c.Dispose();
             }
 
-            for (int i = 0; i < _files.Count; i++)
+            // КАК УЙДЁТ — ТАК И ПОКАЗЫВАЕМ.
+            //
+            // Снимки и ролики уходят альбомом, и окно рисует их той же
+            // мозаикой, что встанет в переписке: ряды разной длины, без
+            // пустых клеток, по десять в плитку — как в Telegram Desktop.
+            // Файлы и «как файлы» — обычной сеткой одинаковых плиток.
+            bool allMedia = !_asFiles.Checked && _files.Count > 1 && _files.All(IsMedia);
+            if (allMedia)
             {
-                string path = _files[i];
-                _strip.Controls.Add(MakeTile(path, i + 1));
+                int w = Math.Max(240, _strip.ClientSize.Width - _strip.Padding.Horizontal
+                                     - SystemInformation.VerticalScrollBarWidth - 4);
+                const int gap = 3;
+                int order = 0;
+                for (int from = 0; from < _files.Count; from += 10)
+                {
+                    int n = Math.Min(10, _files.Count - from);
+                    int taken = 0;
+                    foreach (int count in RowSplit(n))
+                    {
+                        int side = (w - gap * (count - 1)) / count;
+                        // Ряд из двух — пониже квадрата, иначе альбом из
+                        // четырёх снимков занимал бы весь экран.
+                        int h = count <= 2 ? (int)(side * 0.75) : side;
+                        for (int c = 0; c < count; c++)
+                        {
+                            var tile = MakeTile(_files[from + taken], ++order, side, h);
+                            tile.Margin = new Padding(0, 0, c < count - 1 ? gap : 0, gap);
+                            _strip.Controls.Add(tile);
+                            taken++;
+                            // Последняя клетка ряда — перенос строки.
+                            if (c == count - 1) _strip.SetFlowBreak(tile, true);
+                        }
+                    }
+                    // Между плитками по десять — заметный зазор.
+                    if (_strip.Controls.Count > 0)
+                        _strip.Controls[_strip.Controls.Count - 1].Margin = new Padding(0, 0, 0, 14);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < _files.Count; i++)
+                {
+                    var tile = MakeTile(_files[i], i + 1, 104, 104);
+                    tile.Margin = new Padding(5);
+                    _strip.Controls.Add(tile);
+                }
             }
             _strip.ResumeLayout();
+        }
+
+        private static bool IsMedia(string path)
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            return (Array.IndexOf(ImageExt, ext) >= 0 && ext != ".gif")
+                   || MediaPlayerForm.IsVideo(ext.TrimStart('.'));
+        }
+
+        /// <summary>Длины рядов мозаики — то же правило, что у плитки в ленте.</summary>
+        private static List<int> RowSplit(int n)
+        {
+            var res = new List<int>();
+            if (n <= 0) return res;
+            if (n <= 3) { res.Add(n); return res; }
+            int rows = (n + 2) / 3;
+            int bas = n / rows, rem = n % rows;
+            for (int i = 0; i < rows; i++) res.Add(i < rem ? bas + 1 : bas);
+            return res;
         }
 
         private static string Plural(int n)
@@ -193,95 +256,94 @@ namespace PISMO
             return "файлов";
         }
 
-        /// <summary>Плитка предпросмотра: снимок или карточка файла, номер и крестик.</summary>
-        private Control MakeTile(string path, int order)
+        /// <summary>
+        /// Плитка предпросмотра любого размера: снимок или кадр ролика,
+        /// обрезанные под её форму, либо карточка файла; номер и крестик.
+        /// Углы скруглены — как у плиток в ленте и над полем ввода.
+        /// </summary>
+        private Control MakeTile(string path, int order, int tw, int th)
         {
-            const int side = 104;
             string ext = Path.GetExtension(path).ToLowerInvariant();
             bool isImg = Array.IndexOf(ImageExt, ext) >= 0;
-
-            var tile = new Panel
-            {
-                Size = new Size(side, side),
-                Margin = new Padding(5),
-                BackColor = Color.FromArgb(23, 24, 28),
-            };
-            tile.SetStyle_DoubleBuffer();
-
             // Ролик показывается КАДРОМ, как в телеграме: иначе в пачке он
             // неотличим от любого другого файла (см. VideoCover).
             bool isVid = !isImg && MediaPlayerForm.IsVideo(ext.TrimStart('.'));
 
-            Image thumb = null;
-            if (isVid)
+            var tile = new Panel
             {
-                try
+                Size = new Size(tw, th),
+                BackColor = Color.FromArgb(32, 34, 37),
+                Cursor = Cursors.Hand,
+            };
+            tile.SetStyle_DoubleBuffer();
+
+            Image thumb = null;
+            try
+            {
+                if (isVid)
                 {
-                    var jpeg = VideoCover.Jpeg(path, side * 2);
-                    if (jpeg != null) using (var ms = new MemoryStream(jpeg))
+                    var jpeg = VideoCover.Jpeg(path, Math.Max(tw, th) * 2);
+                    if (jpeg != null)
                     {
+                        using var ms = new MemoryStream(jpeg);
                         using var src = Image.FromStream(ms);
-                        thumb = CropSquare(src, side);
+                        thumb = CropTo(src, tw, th);
                     }
                 }
-                catch { thumb = null; }
-            }
-            if (isImg)
-            {
-                try
+                else if (isImg)
                 {
                     using var src = Image.FromFile(path);
-                    int cut = Math.Min(src.Width, src.Height);
-                    int sx = (src.Width - cut) / 2, sy = (src.Height - cut) / 2;
-                    var bmp = new Bitmap(side, side);
-                    using (var g = Graphics.FromImage(bmp))
-                    {
-                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.DrawImage(src, new Rectangle(0, 0, side, side),
-                                    new Rectangle(sx, sy, cut, cut), GraphicsUnit.Pixel);
-                    }
-                    thumb = bmp;
+                    thumb = CropTo(src, tw, th);
                 }
-                catch { thumb = null; }
             }
+            catch { thumb = null; }
 
             string name = Path.GetFileName(path);
             long size = 0;
             try { size = new FileInfo(path).Length; } catch { }
 
+            var closeRect = new Rectangle(tw - 27, 5, 22, 22);
+
             tile.Paint += (s, e) =>
             {
                 var g = e.Graphics;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                if (thumb != null)
+                g.Clear(tile.BackColor);
+                using (var path0 = Round(new Rectangle(0, 0, tw - 1, th - 1), 8))
                 {
-                    g.DrawImage(thumb, 0, 0, side, side);
-                    if (isVid)
+                    var save = g.Save();
+                    g.SetClip(path0);
+                    if (thumb != null)
                     {
-                        using var disc = new SolidBrush(Color.FromArgb(120, 0, 0, 0));
-                        g.FillEllipse(disc, side / 2 - 17, side / 2 - 17, 34, 34);
-                        g.FillPolygon(Brushes.White, new[]
-                        {
-                            new Point(side / 2 - 6, side / 2 - 9),
-                            new Point(side / 2 - 6, side / 2 + 9),
-                            new Point(side / 2 + 11, side / 2),
-                        });
+                        g.DrawImage(thumb, 0, 0, tw, th);
                     }
+                    else
+                    {
+                        using var bg = new SolidBrush(Color.FromArgb(44, 47, 51));
+                        g.FillRectangle(bg, 0, 0, tw, th);
+                        string label = ext.TrimStart('.').ToUpperInvariant();
+                        if (label.Length == 0) label = "FILE";
+                        using var f1 = new Font("Segoe UI Black", 13f, FontStyle.Bold);
+                        using var sf = new StringFormat
+                        { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                        g.DrawString(label, f1, Brushes.White, new RectangleF(0, th / 2f - 34, tw, 32), sf);
+                        using var f2 = new Font("Segoe UI", 7.5f);
+                        using var br = new SolidBrush(Color.FromArgb(190, 193, 199));
+                        g.DrawString(Shorten(name, 16) + "\n" + MainForm.FormatFileSize(size), f2, br,
+                                     new RectangleF(4, th / 2f, tw - 8, 44), sf);
+                    }
+                    g.Restore(save);
                 }
-                else
+
+                if (isVid && thumb != null)
                 {
-                    using var bg = new SolidBrush(Color.FromArgb(44, 47, 51));
-                    g.FillRectangle(bg, 0, 0, side, side);
-                    string label = ext.TrimStart('.').ToUpperInvariant();
-                    if (label.Length == 0) label = "FILE";
-                    using var f1 = new Font("Segoe UI Black", 13f, FontStyle.Bold);
-                    using var sf = new StringFormat
-                    { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                    g.DrawString(label, f1, Brushes.White, new RectangleF(0, 14, side, 32), sf);
-                    using var f2 = new Font("Segoe UI", 7.5f);
-                    using var br = new SolidBrush(Color.FromArgb(190, 193, 199));
-                    g.DrawString(Shorten(name, 16) + "\n" + MainForm.FormatFileSize(size), f2, br,
-                                 new RectangleF(4, 52, side - 8, 44), sf);
+                    int cx = tw / 2, cy = th / 2;
+                    using var disc = new SolidBrush(Color.FromArgb(120, 0, 0, 0));
+                    g.FillEllipse(disc, cx - 17, cy - 17, 34, 34);
+                    g.FillPolygon(Brushes.White, new[]
+                    {
+                        new Point(cx - 6, cy - 9), new Point(cx - 6, cy + 9), new Point(cx + 11, cy),
+                    });
                 }
 
                 // Номер по порядку отправки.
@@ -294,18 +356,17 @@ namespace PISMO
 
                 // Крестик.
                 using (var xb = new SolidBrush(Color.FromArgb(150, 0, 0, 0)))
-                    g.FillEllipse(xb, side - 27, 5, 22, 22);
+                    g.FillEllipse(xb, closeRect);
                 using (var pen = new Pen(Color.White, 1.8f))
                 {
-                    g.DrawLine(pen, side - 21, 11, side - 11, 21);
-                    g.DrawLine(pen, side - 11, 11, side - 21, 21);
+                    g.DrawLine(pen, closeRect.X + 6, closeRect.Y + 6, closeRect.Right - 6, closeRect.Bottom - 6);
+                    g.DrawLine(pen, closeRect.Right - 6, closeRect.Y + 6, closeRect.X + 6, closeRect.Bottom - 6);
                 }
             };
 
             tile.MouseClick += (s, e) =>
             {
-                var close = new Rectangle(side - 27, 5, 22, 22);
-                if (close.Contains(e.Location))
+                if (closeRect.Contains(e.Location))
                 {
                     _files.Remove(path);
                     if (_files.Count == 0) { DialogResult = DialogResult.Cancel; Close(); return; }
@@ -320,17 +381,31 @@ namespace PISMO
             return tile;
         }
 
-        /// <summary>Квадрат по центру — чтобы плитки не разъезжались.</summary>
-        private static Bitmap CropSquare(Image src, int side)
+        /// <summary>Картинка, обрезанная по центру под форму плитки.</summary>
+        private static Bitmap CropTo(Image src, int w, int h)
         {
-            int cut = Math.Min(src.Width, src.Height);
-            int sx = (src.Width - cut) / 2, sy = (src.Height - cut) / 2;
-            var bmp = new Bitmap(side, side);
+            float want = w / (float)h, have = src.Width / (float)src.Height;
+            int cw = src.Width, ch = src.Height;
+            if (have > want) cw = (int)(src.Height * want); else ch = (int)(src.Width / want);
+            int sx = (src.Width - cw) / 2, sy = (src.Height - ch) / 2;
+            var bmp = new Bitmap(Math.Max(1, w), Math.Max(1, h));
             using var g = Graphics.FromImage(bmp);
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.DrawImage(src, new Rectangle(0, 0, side, side),
-                        new Rectangle(sx, sy, cut, cut), GraphicsUnit.Pixel);
+            g.DrawImage(src, new Rectangle(0, 0, w, h),
+                        new Rectangle(sx, sy, cw, ch), GraphicsUnit.Pixel);
             return bmp;
+        }
+
+        private static GraphicsPath Round(Rectangle r, int radius)
+        {
+            int d = radius * 2;
+            var p = new GraphicsPath();
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
         }
 
         /// <summary>
