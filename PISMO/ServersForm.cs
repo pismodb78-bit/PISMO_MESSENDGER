@@ -34,6 +34,15 @@ namespace PISMO
         private bool _srvHasMore;
         private bool _srvLoadingOlder;
         private int _srvRestoreFromBottom = -1;
+        /// <summary>Сколько старых сообщений везём за одну догрузку вверх.</summary>
+        private const int SrvOlderStep = 40;
+        /// <summary>Порция истории уже едет — вторую не просим.</summary>
+        private bool _srvOlderBusy;
+        /// <summary>Номер последнего показанного сообщения — по нему видно, пришло ли новое.</summary>
+        private int _lastMaxId;
+        /// <summary>Сколько сообщений в канале насчитал прошлый опрос.</summary>
+        private int _lastPolledCount = -1;
+        private int _pollQuiet;
         private bool _srvScrollHooked;
         private Button _srvBtnScrollDown;
 
@@ -829,7 +838,7 @@ namespace PISMO
         private void ClearServerView()
         {
             _serverId = -1; _channelId = -1; _serverName = ""; _isOwner = false;
-            _lastMsgCount = -1;
+            _lastMsgCount = -1; _lastMaxId = 0; _lastPolledCount = -1;
             _renderedKey = null; _renderedSig = null;
             try { _lblTitle.Text = ""; } catch { }
             try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
@@ -905,7 +914,7 @@ namespace PISMO
 
         private void SelectServer(int sid, string name, bool owner)
         {
-            _serverId = sid; _serverName = name; _isOwner = owner; _channelId = -1; _lastMsgCount = -1;
+            _serverId = sid; _serverName = name; _isOwner = owner; _channelId = -1; _lastMsgCount = -1; _lastMaxId = 0; _lastPolledCount = -1;
             _lblTitle.Text = name;
             MainForm.DisposeAndClear(_pnlMessages);
             _renderedKey = null; _renderedSig = null;
@@ -1733,10 +1742,11 @@ namespace PISMO
         private void SelectChannel(int cid, string type, string name, bool joinVoice = true)
         {
             ResetChannelVoiceNote();   // недописанное голосовое в другой канал не тащим
-            _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1;
+            _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1; _lastMaxId = 0; _lastPolledCount = -1;
             // Восстанавливаем столько сообщений, сколько было долистано в этом канале.
             _srvLimit = ChanPageSize;   // каждое открытие канала — снова одна страница
             _srvHasMore = false; _srvLoadingOlder = false; _srvRestoreFromBottom = -1;
+            _srvOlderBusy = false;
             EnsureSrvScrollHook();
             _lblTitle.Text = (type == "voice" ? "🔊 " : "# ") + name;
             Perf.Mark($"SelectChannel #{cid} ({type})");
@@ -2162,7 +2172,16 @@ namespace PISMO
                     if (IsDisposed || !IsHandleCreated) return;
                     BeginInvoke(new Action(() =>
                     {
-                        if (_channelId == ch && n != _lastMsgCount) LoadMessages();
+                        // Сравниваем со ВСЕМ каналом, а не со страницей: число
+                        // строк страницы с числом сообщений канала не совпадает
+                        // никогда, как только их больше страницы, — и канал
+                        // перечитывался каждые две с половиной секунды.
+                        // Правки и реакции числа не меняют — их подхватываем
+                        // реже, раз в пять опросов.
+                        if (_channelId != ch) return;
+                        if (n == _lastPolledCount && (++_pollQuiet % 5) != 0) return;
+                        _lastPolledCount = n;
+                        LoadMessages();
                     }));
                 }
                 catch { }
@@ -2209,14 +2228,56 @@ namespace PISMO
             }
 
             // 2) Свежие данные тянем в ФОНЕ и перерисовываем, если всё ещё в канале.
+            int lim = _srvLimit;
+            // Самое старое из показанного: если выборка «последних N» из-за
+            // пришедших сообщений начнётся ниже, недостающее доберём сверху —
+            // иначе лента теряла бы верх прямо под глазами читающего историю.
+            int shownOldest = OldestShownId(channel);
             System.Threading.Tasks.Task.Run(() =>
             {
                 var media = new Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)>();
-                int lim = _srvLimit;
+                // Первая порция — не больше двухсот: это потолок релея, а он
+                // самый быстрый путь. Глубже добираем порциями «старше такого-то».
+                int firstLim = Math.Min(lim, 200);
                 DataTable dt = Perf.Time("FetchChannelMessages (запрос + медиа)",
-                    () => FetchChannelMessages(channel, media, lim));
+                    () => FetchChannelMessages(channel, media, firstLim));
                 if (dt == null) return;
-                _srvHasMore = dt.Rows.Count >= lim;   // полная страница → возможно есть ещё старые
+                bool more = dt.Rows.Count >= firstLim;   // полная страница → возможно есть ещё старые
+                try
+                {
+                    // Добираем глубину: до запрошенного числа строк (переход к
+                    // дате) и до самого старого из ПОКАЗАННОГО — иначе пришедшее
+                    // снизу сообщение сдвигало окно выборки, и верх ленты
+                    // пропадал прямо под глазами читающего историю.
+                    for (int guard = 0; more && guard < 50; guard++)
+                    {
+                        int first = dt.Rows.Count > 0 ? Convert.ToInt32(dt.Rows[0]["id"]) : 0;
+                        bool needDepth = dt.Rows.Count < lim;
+                        bool needShown = shownOldest > 0 && first > shownOldest;
+                        if (first <= 0 || (!needDepth && !needShown)) break;
+
+                        var extra = FetchChannelMessages(channel, media, 200, first);
+                        // Порция не пришла. Рисовать недобранное нельзя — лента
+                        // потеряла бы то, что на экране; дождёмся следующего раза.
+                        if (extra == null) { if (needShown) return; break; }
+                        if (extra.Rows.Count == 0) { more = false; break; }
+
+                        var keep = extra.Clone();
+                        bool dropped = false;
+                        foreach (DataRow r in extra.Rows)
+                        {
+                            int rid = Convert.ToInt32(r["id"]);
+                            if (rid >= first) continue;
+                            if (!needDepth && rid < shownOldest) { dropped = true; continue; }
+                            keep.ImportRow(r);
+                        }
+                        foreach (DataRow r in dt.Rows) AppendByName(keep, r);
+                        dt = keep;
+                        if (dropped) { more = true; break; }
+                        if (extra.Rows.Count < 200) { more = false; break; }
+                    }
+                }
+                catch { }
 
                 // Реакции страницы — здесь же, в фоне, одним запросом.
                 Dictionary<int, List<ReactionsRepository.Reaction>> reacts = null;
@@ -2236,6 +2297,12 @@ namespace PISMO
                     BeginInvoke(new Action(() =>
                     {
                         if (_channelId != channel) return; // уже переключились
+                        // Пока ехала выборка, лента доросла догрузкой сверху: эта
+                        // выборка короче показанного, и нарисовать её — значит
+                        // выбросить догруженное. Просим заново, с нужной глубиной.
+                        if (lim != _srvLimit) { LoadMessages(); return; }
+                        if (dt.Rows.Count > _srvLimit) _srvLimit = dt.Rows.Count;
+                        _srvHasMore = more;
                         foreach (var kv in media) _serverMedia[kv.Key] = kv.Value;
                         _chanMetaCache[channel] = dt;
                         if (reacts != null) _chanReactions[channel] = reacts;
@@ -2252,7 +2319,7 @@ namespace PISMO
         /// Сам обрабатывает отсутствие колонок reply_to_id / медиа (старая БД).</summary>
         private DataTable FetchChannelMessages(int channel,
             Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut,
-            int limit = 0)
+            int limit = 0, int before = 0)
         {
             // Без связи — последнее, что видели в этом канале. Пустую
             // выборку не отдаём: ею перерисовали бы ленту в пустоту поверх
@@ -2262,6 +2329,13 @@ namespace PISMO
                 // Как и в переписке: сначала постоянный кеш канала — в нём
                 // лежит вся долистанная история, а не последняя страница.
                 var all = MessageCache.Load(MessageCache.ChannelKey(channel));
+                if (before > 0)
+                {
+                    // Догрузка вверх без связи — из того, что уже долистано.
+                    var older = MessageCache.Older(MessageCache.ChannelKey(channel), before,
+                                                   limit > 0 ? limit : SrvOlderStep);
+                    return older;   // null — «не знаем», пустая — «дальше нет»
+                }
                 if (all != null && all.Rows.Count > 0)
                     return limit > 0 ? MainForm.TakeLastRows(all, limit) : all;
 
@@ -2270,11 +2344,42 @@ namespace PISMO
             }
 
             // Короткая дорога через релей — см. пояснение в RelayData.
-            var viaRelay = RelayData.Page("channel", new { channel, limit = limit > 0 ? limit : 40 });
-            if (viaRelay != null && viaRelay.Rows.Count > 0)
+            //
+            // ДВЕСТИ — ЕГО ПОТОЛОК. Релей отдаёт не больше двухсот строк за
+            // раз, сколько ни попроси. Догрузка вверх раньше просила «последние
+            // N» с растущим N, и после двухсот получала те же двести — а раз
+            // пришло меньше просимого, решала, что старше ничего нет: прокрутка
+            // упиралась посреди истории. Теперь история едет порциями «старше
+            // такого-то», а выборки глубже потолка идут прямо в базу.
+            if (limit <= 200)
             {
-                OfflineStore.Save(OfflineStore.ChannelKey(channel), viaRelay);
-                return viaRelay;
+                var viaRelay = RelayData.Page("channel",
+                    new { channel, limit = limit > 0 ? limit : 40, before });
+                // Старый релей «старше такого-то» не знает и отдаёт последнюю
+                // страницу — такую порцию не берём, идём в базу сами.
+                bool relayOk = viaRelay != null && viaRelay.Rows.Count > 0;
+                if (relayOk && before > 0)
+                    foreach (DataRow rr in viaRelay.Rows)
+                        if (Convert.ToInt32(rr["id"]) >= before) { relayOk = false; break; }
+                if (relayOk)
+                {
+                    if (before <= 0) OfflineStore.Save(OfflineStore.ChannelKey(channel), viaRelay);
+                    // Вложения страницы — как и при походе в базу: сначала
+                    // кеш, недостающее одним запросом. Без этого страница от
+                    // релея приезжала голым текстом — снимков, роликов и
+                    // карточек файлов в канале не было, пока их не подтянула
+                    // какая-нибудь другая выборка.
+                    if (mediaOut != null && MediaColumnsExist())
+                    {
+                        try
+                        {
+                            using var mconn = DBHelper.OpenConnection();
+                            LoadChannelMedia(mconn, viaRelay, mediaOut);
+                        }
+                        catch { }
+                    }
+                    return viaRelay;
+                }
             }
 
             try
@@ -2301,14 +2406,16 @@ namespace PISMO
                 string baseSql =
                     "SELECT sm.id, sm.sender_id, sm.text, sm.created_at, TRIM(CONCAT(u.Name,' ',u.Surname)) AS nm, u.login" +
                     replyCols + mediaCols +
-                    " FROM server_messages sm JOIN users u ON u.id=sm.sender_id WHERE sm.channel_id=@c ORDER BY sm.id " +
+                    " FROM server_messages sm JOIN users u ON u.id=sm.sender_id WHERE sm.channel_id=@c" +
+                    (before > 0 ? " AND sm.id < @b" : "") + " ORDER BY sm.id " +
                     (limit > 0 ? "DESC LIMIT " + limit : "ASC");
                 string finalSql = limit > 0 ? "SELECT * FROM (" + baseSql + ") sub ORDER BY id ASC" : baseSql;
 
                 using var cmd = new MySqlCommand(finalSql, conn);
                 cmd.Parameters.AddWithValue("@c", channel);
+                if (before > 0) cmd.Parameters.AddWithValue("@b", before);
                 var dt = new DataTable(); new MySqlDataAdapter(cmd).Fill(dt);
-                OfflineStore.Save(OfflineStore.ChannelKey(channel), dt);
+                if (before <= 0) OfflineStore.Save(OfflineStore.ChannelKey(channel), dt);
 
                 if (media && mediaOut != null)
                     LoadChannelMedia(conn, dt, mediaOut);
@@ -2317,7 +2424,7 @@ namespace PISMO
             catch (MySqlException mex) when (mex.Number == 1054)
             {
                 // Нет колонки reply_to_id (медиа определяем отдельно через information_schema).
-                if (_replyColOk) { _replyColOk = false; return FetchChannelMessages(channel, mediaOut, limit); }
+                if (_replyColOk) { _replyColOk = false; return FetchChannelMessages(channel, mediaOut, limit, before); }
                 throw;
             }
             catch (Exception ex)
@@ -2618,7 +2725,12 @@ namespace PISMO
                 // сообщений; при перерисовке того же канала (выделение/правка/
                 // реакции) сохраняем текущую позицию — иначе список «прыгал» вниз.
                 bool channelChanged = _lastScrollChannel != channel;
-                bool newMsgs = dt.Rows.Count > _lastMsgCount;
+                // Новое сообщение — это новый НОМЕР внизу, а не больше строк:
+                // у полной страницы их число не растёт (сверху одно уходит,
+                // снизу одно приходит), и стоящего внизу оно не догоняло.
+                int maxIdNow = 0;
+                try { if (dt.Rows.Count > 0) maxIdNow = Convert.ToInt32(dt.Rows[dt.Rows.Count - 1]["id"]); } catch { }
+                bool newMsgs = dt.Rows.Count > _lastMsgCount || (_lastMaxId > 0 && maxIdNow > _lastMaxId);
                 int savedScrollY = -_pnlMessages.AutoScrollPosition.Y;
                 // Видно ли конец канала прямо сейчас. Кто стоял внизу —
                 // тому и после пересборки быть внизу; кто читал историю,
@@ -2653,553 +2765,9 @@ namespace PISMO
                 // ходим вовсе: этот запрос стоил 65 мс на потоке интерфейса.
                 _reactionsInView = _chanReactions.TryGetValue(channel, out var rmap) ? rmap : null;
 
-                var pending = new List<Control>(dt.Rows.Count + 8);
-                string lastDate = null;
-
-                // Пачка вложений, отправленная разом, идёт ОДНОЙ плиткой — как
-                // в личной переписке и на телефоне. Поэтому строки приходится
-                // смотреть вперёд, отсюда индекс вместо foreach.
-                var rowsList = new List<DataRow>(dt.Rows.Count);
-                foreach (DataRow r0 in dt.Rows) rowsList.Add(r0);
-                bool SoloInChannel(int mid) =>
-                    _reactionsInView != null && _reactionsInView.TryGetValue(mid, out var rr)
-                    && rr != null && rr.Count > 0;
-
-                for (int ri = 0; ri < rowsList.Count; ri++)
-                {
-                    DataRow r = rowsList[ri];
-                    int id = Convert.ToInt32(r["id"]);
-                    int senderId = Convert.ToInt32(r["sender_id"]);
-                    // Имя читаем ОСТОРОЖНО: строки приезжают и из базы (колонка
-                    // «nm»), и через релей (там она звалась «sender_name»).
-                    // Прямое обращение к отсутствующей колонке роняло сборку
-                    // ленты целиком — канал оказывался пустым.
-                    string nm = ColText(r, "nm");
-                    if (string.IsNullOrWhiteSpace(nm)) nm = ColText(r, "sender_name");
-                    if (string.IsNullOrWhiteSpace(nm)) nm = ColText(r, "login");
-                    string text = Albums.Strip(
-                        Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString()));
-                    DateTime dtMsg = MainForm.ToViewerLocal(Convert.ToDateTime(r["created_at"]));
-                    string time = dtMsg.ToString("HH:mm");
-
-                    // Разделитель по датам (как в ЛС): «13 июля 2026» между днями.
-                    string dsep = dtMsg.ToString("d MMMM yyyy", new System.Globalization.CultureInfo("ru-RU"));
-                    if (dsep != lastDate)
-                    {
-                        lastDate = dsep;
-                        // Линия-разделитель тянется на всю ширину чата, а не до
-                        // потолка бабла (900): иначе на широком окне линия
-                        // обрывалась, не доходя до правого края.
-                        // Нативная полоса скрыта (её место не резервируется), поэтому
-                        // НЕ вычитаем её ширину — иначе линия не дотягивает до края.
-                        int sepWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 20);
-                        pending.Add(MainForm.BuildDateSeparatorW(dsep, sepWidth));
-                    }
-
-                    // Меня упомянули (@логин/@роль/@все) — подсветим бабл зеленоватым.
-                    bool mine = MentionsMe(text);
-                    bool isMe = senderId == _me;
-
-                    // Формат — как в Discord: аватар слева, цветной ник, серый бабл
-                    // (одинаковый для всех, как входящие в ЛС); упоминание — зеленоватый.
-                    const int PAD = 12;
-                    const int AVA = 36;                 // диаметр аватарки
-                    const int LEFT = PAD + AVA + 10;    // отступ контента правее аватара
-                    Color bubbleBg = mine ? Color.FromArgb(47, 68, 55) : Color.FromArgb(48, 51, 58);
-
-                    var holder = new Panel
-                    {
-                        AutoSize = true,
-                        Margin = new Padding(0, 2, 0, 6),
-                        Padding = new Padding(LEFT, PAD, PAD, PAD),
-                        BackColor = Color.FromArgb(54, 57, 63)   // цвет фона чата — углы «прозрачны»
-                    };
-                    ChatScroll.EnableDoubleBufferDeep(holder);   // пузырь И все дочки — не «рвутся» при прокрутке
-                    holder.Paint += (s, e) =>
-                    {
-                        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                        using var br = new SolidBrush(Theme.Map(bubbleBg));   // светлая тема: пузырь тоже светлеет
-                        e.Graphics.FillRoundedRectangle(br, 0, 0, holder.Width - 1, holder.Height - 1, 10);
-                        // Аватар отправителя (кружок) в левом верхнем углу бабла.
-                        if (!AvatarStore.DrawAvatar(e.Graphics, senderId, PAD, PAD, AVA - 1))
-                        {
-                            int h = 0; foreach (char ch in nm) h = (h * 31 + ch) & 0x7fffffff;
-                            Color[] pal = { Color.FromArgb(88,101,242), Color.FromArgb(235,69,158),
-                                Color.FromArgb(59,165,93), Color.FromArgb(250,166,26), Color.FromArgb(0,176,244) };
-                            using var ab = new SolidBrush(pal[h % pal.Length]);
-                            e.Graphics.FillEllipse(ab, PAD, PAD, AVA - 1, AVA - 1);
-                            string letter = nm.Length > 0 ? nm.Substring(0, 1).ToUpper() : "?";
-                            using var f = new Font("Segoe UI Black", 12f, FontStyle.Bold);
-                            using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                            e.Graphics.DrawString(letter, f, Brushes.White, new RectangleF(PAD, PAD, AVA, AVA), sf);
-                        }
-                    };
-                    AvatarStore.EnsureLoaded(senderId);
-                    int y = PAD;
-
-                    // Цитата отвечаемого сообщения (если это ответ).
-                    int replyToId = _replyColOk && dt.Columns.Contains("reply_to_id") && r["reply_to_id"] != DBNull.Value
-                        ? Convert.ToInt32(r["reply_to_id"]) : 0;
-                    if (replyToId > 0)
-                    {
-                        string rs = dt.Columns.Contains("r_sender") && r["r_sender"] != DBNull.Value ? r["r_sender"].ToString().Trim() : "";
-                        if (string.IsNullOrWhiteSpace(rs) && dt.Columns.Contains("r_login") && r["r_login"] != DBNull.Value) rs = r["r_login"].ToString();
-                        string rt = dt.Columns.Contains("r_text") && r["r_text"] != DBNull.Value ? Crypto.Dec(r["r_text"].ToString()) : "";
-                        if (rt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)) rt = "[GIF]";
-                        var quote = new Label
-                        {
-                            AutoSize = true,
-                            // По содержимому, но не шире потолка бабла — иначе пузырь
-                            // с ответом растягивался на всю ширину (AutoSize-holder
-                            // подгонялся под жёсткую ширину цитаты).
-                            MaximumSize = new Size(msgWidth - 14, 0),
-                            Location = new Point(LEFT, y),
-                            ForeColor = Color.FromArgb(0, 176, 244),
-                            Font = new Font("Segoe UI", 8f),
-                            Cursor = Cursors.Hand,
-                            Text = $"↩ {rs}: {(rt.Length > 60 ? rt.Substring(0, 60) + "…" : rt)}"
-                        };
-                        int targetId = replyToId;
-                        quote.Click += (s, e) => ScrollToServerMessage(targetId);
-                        holder.Controls.Add(quote);
-                        y += quote.Height + 2;
-                    }
-
-                    // Ник цветной (стабильный цвет по имени, как в Discord), фон прозрачный —
-                    // без тёмного прямоугольника вокруг имени.
-                    Color nmColor;
-                    {
-                        int nh = 0; foreach (char ch in nm) nh = (nh * 31 + ch) & 0x7fffffff;
-                        Color[] npal = { Color.FromArgb(129,140,248), Color.FromArgb(240,113,170),
-                            Color.FromArgb(87,197,126), Color.FromArgb(250,180,80), Color.FromArgb(84,196,244),
-                            Color.FromArgb(196,151,255) };
-                        nmColor = npal[nh % npal.Length];
-                    }
-                    var head = new Label
-                    {
-                        AutoSize = true,
-                        BackColor = Color.Transparent,
-                        ForeColor = nmColor,
-                        Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
-                        Location = new Point(LEFT, y),
-                        Text = $"{nm} · {time}"
-                    };
-                    holder.Controls.Add(head);
-                    y += 22;
-
-                    // ── Плитка альбома ───────────────────────────────────
-                    int albumLen = Albums.Length(rowsList, ri, SoloInChannel);
-                    if (albumLen > 1)
-                    {
-                        var tileItems = new List<AlbumTile.Item>(albumLen);
-                        for (int k = 0; k < albumLen; k++)
-                        {
-                            var rk = rowsList[ri + k];
-                            string fnk = dt.Columns.Contains("file_name") && rk["file_name"] != DBNull.Value
-                                ? rk["file_name"].ToString() : null;
-                            bool vidk = fnk != null && MediaPlayerForm.IsVideo(
-                                Path.GetExtension(fnk).TrimStart('.').ToLowerInvariant());
-                            tileItems.Add(new AlbumTile.Item
-                            {
-                                MsgId = Convert.ToInt32(rk["id"]),
-                                FileName = fnk,
-                                IsVideo = vidk,
-                                CacheKind = "simg",
-                            });
-
-                            // Ролик без обложки — кадр снимаем в фоне (только
-                            // если ролик уже скачан: размер здесь неизвестен).
-                            int kId = Convert.ToInt32(rk["id"]);
-                            bool kHasImg = dt.Columns.Contains("has_img") && rk["has_img"] != DBNull.Value
-                                           && Convert.ToBoolean(rk["has_img"]);
-                            if (vidk && !kHasImg && !MediaCache.Has(kId, "simg"))
-                            {
-                                string kName = fnk;
-                                CoverGrabber.Request(null, "server_messages", kId, kName, "simg",
-                                    MediaCache.Has(kId, "sfile", kName), 0,
-                                    () => LoadServerFileBytes(kId, kName));
-                            }
-                        }
-
-                        string tileTime = MainForm.ToViewerLocal(
-                            Convert.ToDateTime(rowsList[ri + albumLen - 1]["created_at"])).ToString("HH:mm");
-                        // Та же ширина, что в личной переписке: жёсткие 420
-                        // на большом окне выглядели маркой.
-                        var tile = new AlbumTile(tileItems, text, tileTime, isMe, -1,
-                                                 Math.Max(360, Math.Min(640, msgWidth - 10)))
-                        { Location = new Point(LEFT, y) };
-                        tile.CellClicked += it => OpenChannelAlbumCell(it);
-                        holder.Controls.Add(tile);
-                        y += tile.Height + 6;
-
-                        AttachServerMsgMenu(holder, head, id, senderId, text, nm);
-                        // Своего пузыря у снимков пачки нет — все они живут в
-                        // плитке. Записываем каждого, иначе переход к такому
-                        // сообщению («показать в чате», цитата) не находил
-                        // ничего.
-                        foreach (var it0 in tileItems) _msgControls[it0.MsgId] = holder;
-                        pending.Add(holder);
-                        ri += albumLen - 1;
-                        continue;
-                    }
-
-                    // Медиа канала (картинка / голосовое / кружок / видео / файл) — как в обычном чате.
-                    if (_serverMedia.TryGetValue(id, out var sm))
-                    {
-                        // У ролика картинка — его ОБЛОЖКА, а не второе
-                        // вложение: рисуем её плеером, а не фотографией.
-                        byte[] chanPoster = null;
-                        if (sm.img is { Length: > 0 } && !string.IsNullOrWhiteSpace(sm.fname)
-                            && MediaPlayerForm.IsVideo(
-                                Path.GetExtension(sm.fname).TrimStart('.').ToLowerInvariant()))
-                        {
-                            chanPoster = sm.img;
-                            sm.img = null;
-                        }
-                        if (sm.img is { Length: > 0 })
-                        {
-                            try
-                            {
-                                // Готовая миниатюра — минуя декодер: см. ту же
-                                // правку в личной переписке (ThumbCache).
-                                var readyThumb = ThumbCache.Get(id);
-                                if (readyThumb != null)
-                                {
-                                    var pbr = new PictureBox
-                                    {
-                                        SizeMode = PictureBoxSizeMode.Normal,
-                                        Size = readyThumb.Size,
-                                        Location = new Point(LEFT, y),
-                                        Cursor = Cursors.Hand,
-                                        Image = readyThumb,
-                                    };
-                                    int capIdR = id;
-                                    pbr.Click += (s, e) => OpenChannelMediaViewer(capIdR);
-                                    holder.Controls.Add(pbr);
-                                    y += readyThumb.Height + 6;
-                                }
-                                else
-                                {
-                                var ms = new MemoryStream(sm.img.ToArray());
-                                var img = Image.FromStream(ms);
-                                // Крупнее, как в личной переписке: прежние
-                                // 420×360 на большом окне были маркой.
-                                int mw = Math.Max(360, Math.Min(560, msgWidth - 10)), mh = 460;
-                                double rr = Math.Min(2.0, Math.Min((double)mw / img.Width, (double)mh / img.Height));
-                                int dw = Math.Max(1, (int)(img.Width * rr)), dh = Math.Max(1, (int)(img.Height * rr));
-
-                                // В ленте держим уменьшенную копию, как и в
-                                // переписке: в памяти картинка стоит не свой
-                                // вес в файле, а ширину на высоту на четыре
-                                // байта — снимок с телефона тянет на полсотни
-                                // мегабайт, показываясь в рамке 420×360.
-                                // Копия ровно по размеру показа: иначе каждый
-                                // кадр прокрутки ужимает снимок заново — см. ту
-                                // же правку в личной переписке.
-                                Image shown = img;
-                                try
-                                {
-                                    int tw = Math.Min(dw, img.Width);
-                                    int th = Math.Max(1, (int)(img.Height * (tw / (double)img.Width)));
-                                    if (tw < img.Width)
-                                    {
-                                        var small = new Bitmap(tw, th,
-                                            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-                                        using (var g = Graphics.FromImage(small))
-                                        {
-                                            g.InterpolationMode =
-                                                System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                                            g.DrawImage(img, 0, 0, tw, th);
-                                        }
-                                        shown = small;
-                                        img.Dispose();
-                                        ms.Dispose();
-                                    }
-                                }
-                                catch { shown = img; }
-
-                                var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(LEFT, y), Cursor = Cursors.Hand, Image = shown };
-                                int capId = id;
-                                // Через ленту просмотра: стрелками листаются
-                                // соседние снимки и ролики канала.
-                                pb.Click += (s, e) => OpenChannelMediaViewer(capId);
-                                // Копия уходит в кеш: следующая отрисовка
-                                // канала возьмёт готовое и декодер не тронет.
-                                // Поэтому её не освобождаем вместе с пузырём —
-                                // владелец кеш.
-                                ThumbCache.Put(id, shown);
-                                pb.Disposed += (s, e) => { try { ms.Dispose(); } catch { } };
-                                holder.Controls.Add(pb); y += dh + 6;
-                                }
-                            }
-                            catch { }
-                        }
-                        if (sm.audio is { Length: > 0 })
-                        {
-                            // Голосовое — с перемоткой, как в ЛС.
-                            var vp2 = new InlineAudioPlayer(sm.audio, null, "Голосовое",
-                                                            Math.Min(msgWidth - 10, 340), key: "sv" + id)
-                                      { Location = new Point(LEFT, y) };
-                            holder.Controls.Add(vp2); y += vp2.Height + 6;
-                        }
-                        if (sm.video is { Length: > 0 })
-                        {
-                            try { var pl = new VideoCirclePlayer(sm.video, 180) { Location = new Point(LEFT, y) }; holder.Controls.Add(pl); y += 186; }
-                            catch { }
-                        }
-                        if (!string.IsNullOrWhiteSpace(sm.fname))
-                        {
-                            string fext = Path.GetExtension(sm.fname).TrimStart('.').ToLowerInvariant();
-                            // Крупные вложения в ленту не тянутся: байтов ещё нет, и
-                            // плеер получает загрузчик — прочитает по клику.
-                            bool haveBytes = sm.file is { Length: > 0 };
-                            int mid = id; string mname = sm.fname;
-                            Func<byte[]> lazySrv = haveBytes ? null : () => LoadServerFileBytes(mid, mname);
-                            if (MediaPlayerForm.IsVideo(fext))
-                            {
-                                try
-                                {
-                                    // Коробка — по форме ролика, если она уже
-                                    // известна: см. VideoShapes и ту же правку
-                                    // в личной переписке.
-                                    string shapeKey = "s" + id;
-                                    var (bw, bh) = VideoShapes.Box(shapeKey,
-                                        Math.Max(320, Math.Min(560, msgWidth - 10)));
-                                    var vp = haveBytes
-                                        ? new InlineVideoPlayer(sm.file, sm.fname, bw, bh)
-                                        : new InlineVideoPlayer(lazySrv, sm.fname, bw, bh);
-                                    vp.ShapeKey = shapeKey;
-                                    // Кадр до загрузки файла; у старых роликов
-                                    // он может лежать в кеше картинок.
-                                    vp.Poster = chanPoster ?? MediaCache.Get(id, "simg", null)
-                                                           ?? MediaCache.Get(id, "img", null);
-                                    // Обложки нет — снимаем кадр в фоне сами,
-                                    // а запустят ролик раньше — снимет плеер.
-                                    int capCover = id;
-                                    if (vp.Poster == null)
-                                    {
-                                        vp.CoverCaptured = jpeg =>
-                                            VideoCover.Share("server_messages", capCover, jpeg, "simg");
-                                        var bytesNow = haveBytes ? sm.file : null;
-                                        string nameNow = sm.fname;
-                                        bool haveFile = bytesNow != null
-                                                        || MediaCache.Has(capCover, "sfile", nameNow);
-                                        CoverGrabber.Request(vp, "server_messages", capCover, nameNow, "simg",
-                                            haveFile, bytesNow?.LongLength ?? 0,
-                                            () => bytesNow ?? LoadServerFileBytes(capCover, nameNow));
-                                    }
-                                    // ⛶ — окно просмотра канала: стрелки по
-                                    // соседним роликам, скорость, «по кругу».
-                                    int capVid = id;
-                                    vp.ExpandRequested = () => OpenChannelMediaViewer(capVid);
-                                    vp.Location = new Point(LEFT, y);
-                                    holder.Controls.Add(vp); y += bh + 6;
-                                }
-                                catch { }
-                            }
-                            else if (MediaPlayerForm.IsAudio(fext))
-                            {
-                                // Музыка — плеером прямо в ленте, как в ЛС.
-                                try
-                                {
-                                    int bw = Math.Min(msgWidth - 10, 340);
-                                    var ap = new InlineAudioPlayer(haveBytes ? sm.file : null, lazySrv,
-                                                                   sm.fname, bw, key: "sa" + id)
-                                             { Location = new Point(LEFT, y) };
-                                    holder.Controls.Add(ap); y += ap.Height + 6;
-                                }
-                                catch { }
-                            }
-                            else
-                            {
-                                // Размер знаем заранее, если вложение лежит на
-                                // файловом сервисе: он записан в строке. Для
-                                // блоба в базе его по-прежнему не спрашиваем —
-                                // OCTET_LENGTH поднимает всё вложение с диска.
-                                long srvSize = dt.Columns.Contains("file_size") && r["file_size"] != DBNull.Value
-                                    ? Convert.ToInt64(r["file_size"]) : -1;
-                                var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false,
-                                                                  srvSize, loader: lazySrv,
-                                                                  where: Transfers.ChannelKey(channel));
-                                card.Location = new Point(LEFT, y);
-                                holder.Controls.Add(card); y += card.Height + 6;
-                            }
-                        }
-                    }
-
-                    // GIF-сообщение: "gif:<url>" — анимированная картинка.
-                    if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var ph = new Panel { Location = new Point(LEFT, y), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
-                        holder.Controls.Add(ph);
-                        _ = LoadServerGifAsync(ph, text.Substring(4));
-                        y += 166;
-                    }
-                    else if (!string.IsNullOrEmpty(text))
-                    {
-                        // Как в личке: сообщения с эмодзи рисуем картинкой через
-                        // WPF, иначе GDI отдаёт монохромный контур. Обычный текст
-                        // остаётся полем, которое можно выделять.
-                        var fore = Color.FromArgb(235, 236, 240);
-                        var msgFont = new Font("Segoe UI", 10.5f);
-                        var emojiText = EmojiRender.ContainsEmoji(text)
-                            ? EmojiRender.RenderMessage(text, msgFont, fore, bubbleBg, msgWidth - 10)
-                            : null;
-                        if (emojiText != null)
-                        {
-                            var picBody = new PictureBox
-                            {
-                                Image = emojiText,
-                                SizeMode = PictureBoxSizeMode.AutoSize,
-                                Location = new Point(LEFT, y),
-                                BackColor = bubbleBg,
-                            };
-                            // Пока цветная картинка эмодзи догружается, нарисован
-                            // силуэт; по событию Loaded перерисовываем — как чипы.
-                            var capText = text; var capBg = bubbleBg; var capW = msgWidth - 10;
-                            void OnEmojiLoaded(string _)
-                            {
-                                if (picBody.IsDisposed) return;
-                                try
-                                {
-                                    picBody.BeginInvoke(new Action(() =>
-                                    {
-                                        if (picBody.IsDisposed) return;
-                                        var fresh = EmojiRender.RenderMessage(capText, msgFont, fore, capBg, capW);
-                                        if (fresh == null) return;
-                                        var prev = picBody.Image;
-                                        picBody.Image = fresh;
-                                        try { prev?.Dispose(); } catch { }
-                                    }));
-                                }
-                                catch { }
-                            }
-                            EmojiRender.Loaded += OnEmojiLoaded;
-                            picBody.Disposed += (s2, e2) =>
-                            {
-                                try { EmojiRender.Loaded -= OnEmojiLoaded; } catch { }
-                                try { picBody.Image?.Dispose(); } catch { }
-                            };
-                            holder.Controls.Add(picBody);
-                            y += picBody.Height + 6;
-                        }
-                        else
-                        {
-                            // Со ссылкой — поле, которое её красит и открывает
-                            // по нажатию; без ссылки остаётся обычное.
-                            Control body = MainForm.HasLink(text)
-                                ? MainForm.MakeLinkedText(text, bubbleBg, fore,
-                                    new Font("Segoe UI", 10.5f), msgWidth - 10)
-                                : MainForm.MakeSelectableText(text, bubbleBg, fore,
-                                    new Font("Segoe UI", 10.5f), msgWidth - 10);
-                            body.Location = new Point(LEFT, y);
-                            holder.Controls.Add(body);
-                            y += body.Height + 6;
-                        }
-                    }
-
-                    // ── Реакции (как в ЛС): чипы «эмодзи N», клик — поставить/снять,
-                    // «＋» — добавить новую через пикер. ─────────────────────────
-                    try
-                    {
-                        // ТОЛЬКО из карты, собранной в фоне. Поштучного запасного пути
-                        // здесь быть не должно: на ПЕРВОМ открытии канала карты ещё
-                        // нет — её наполняет фоновая выборка, — и запасной путь давал
-                        // запрос на КАЖДОЕ сообщение. По замеру это и были те 2583 мс
-                        // первой отрисовки против 60–120 у последующих. Если карты нет,
-                        // реакции просто не рисуем: фоновая выборка придёт следом, а её
-                        // подпись входит в подпись страницы, так что перерисовка
-                        // случится и реакции появятся.
-                        var reacts = _reactionsInView != null && _reactionsInView.TryGetValue(id, out var rl)
-                            ? rl
-                            : new List<ReactionsRepository.Reaction>();
-                        if (reacts.Count > 0)
-                        {
-                            int rx = LEFT;
-                            var cntFontR = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
-                            foreach (var re in reacts)
-                            {
-                                // ЦВЕТНОЙ чип, как в ЛС: эмодзи — картинка Twemoji
-                                // (GDI рисует эмодзи монохромными «контурами»), счётчик — текст.
-                                const int emSz = 20;
-                                var reImg = EmojiRender.Get(re.Emoji, emSz);
-                                string cntTxt = re.Count.ToString();
-                                int txtW = TextRenderer.MeasureText(cntTxt, cntFontR).Width;
-                                int imgW = reImg?.Width ?? emSz;
-                                var chipR = new Panel
-                                {
-                                    Size = new Size(8 + imgW + 4 + txtW + 7, 28),
-                                    BackColor = re.Mine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(64, 68, 75),
-                                    Location = new Point(rx, y),
-                                    Cursor = Cursors.Hand
-                                };
-                                string emoC = re.Emoji; int midC = id;
-                                var capCnt = cntTxt; var capImgW = imgW;
-                                chipR.Paint += (s, e) =>
-                                {
-                                    var g = e.Graphics;
-                                    var im = EmojiRender.Get(emoC, emSz);
-                                    if (im != null) g.DrawImage(im, 8, (chipR.Height - im.Height) / 2);
-                                    else using (var f0 = new Font("Segoe UI Emoji", 11f))
-                                        g.DrawString(emoC, f0, Brushes.White, 6, 4);
-                                    TextRenderer.DrawText(g, capCnt, cntFontR,
-                                        new Point(8 + capImgW + 4, (chipR.Height - 16) / 2), Color.White);
-                                };
-                                Action<string> onLoad = em =>
-                                {
-                                    if (em != emoC || chipR.IsDisposed) return;
-                                    try { chipR.BeginInvoke(new Action(() => { try { chipR.Invalidate(); } catch { } })); } catch { }
-                                };
-                                EmojiRender.Loaded += onLoad;
-                                chipR.Disposed += (s, e) => { try { EmojiRender.Loaded -= onLoad; } catch { } };
-                                MainForm.RoundCorners(chipR, 8);
-                                chipR.Click += (s, e) =>
-                                {
-                                    System.Threading.Tasks.Task.Run(() =>
-                                    {
-                                        try { ReactionsRepository.Toggle(midC, ReactionsRepository.Scope.Server, _me, emoC); } catch { }
-                                        if (IsDisposed || !IsHandleCreated) return;
-                                        try { BeginInvoke(new Action(() => { _renderedKey = null; _renderedSig = null; LoadMessages(); })); } catch { }
-                                    });
-                                };
-                                holder.Controls.Add(chipR);
-                                chipR.BringToFront();
-                                rx += chipR.Width + 6;
-                            }
-                            var addR = new Label
-                            {
-                                Text = "＋",
-                                Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
-                                AutoSize = true,
-                                ForeColor = Color.FromArgb(200, 202, 208),
-                                BackColor = Color.FromArgb(64, 68, 75),
-                                Padding = new Padding(7, 3, 7, 3),
-                                Location = new Point(rx, y),
-                                Cursor = Cursors.Hand
-                            };
-                            int midA = id;
-                            addR.Click += (s, e) =>
-                            {
-                                string emo = EmojiPickerForm.Pick(this, Cursor.Position);
-                                if (string.IsNullOrWhiteSpace(emo)) return;
-                                System.Threading.Tasks.Task.Run(() =>
-                                {
-                                    try { ReactionsRepository.Toggle(midA, ReactionsRepository.Scope.Server, _me, emo); } catch { }
-                                    if (IsDisposed || !IsHandleCreated) return;
-                                    try { BeginInvoke(new Action(() => { _renderedKey = null; _renderedSig = null; LoadMessages(); })); } catch { }
-                                });
-                            };
-                            holder.Controls.Add(addR);
-                            addR.BringToFront();
-                        }
-                    }
-                    catch { }
-
-                    AttachServerMsgMenu(holder, head, id, senderId, text, nm);
-                    _msgControls[id] = holder;
-                    pending.Add(holder);
-                }
+                var pending = BuildChannelItems(dt, channel, msgWidth, null, out _);
                 _lastMsgCount = dt.Rows.Count;
+                _lastMaxId = maxIdNow;
                 // Все пузыри — ОДНИМ добавлением. Каждый отдельный Controls.Add
                 // тянет за собой пересчёт раскладки и порядка окон, и на сорока
                 // сообщениях это заметная часть тех двухсот миллисекунд, которые
@@ -3266,6 +2834,576 @@ namespace PISMO
             }
         }
 
+        /// <summary>Метка разделителя дат в ленте канала.</summary>
+        private const string SrvDateTag = "srvdate:";
+
+        /// <summary>
+        /// Пузыри канала по строкам таблицы — без вставки в ленту.
+        ///
+        /// Одно тело на два случая: полная сборка страницы и догрузка
+        /// истории сверху. Раньше сборка жила прямо в RenderMessages, и
+        /// догрузке ничего не оставалось, кроме как пересобирать весь канал
+        /// заново с большей выборкой — отсюда и «рваная» прокрутка вверх.
+        /// </summary>
+        /// <param name="prevDate">День, которым кончается то, что выше; null — начало.</param>
+        private List<Control> BuildChannelItems(DataTable dt, int channel, int msgWidth,
+                                                string prevDate, out string lastDateOut)
+        {
+            var pending = new List<Control>(dt.Rows.Count + 8);
+            string lastDate = prevDate;
+
+            // Пачка вложений, отправленная разом, идёт ОДНОЙ плиткой — как
+            // в личной переписке и на телефоне. Поэтому строки приходится
+            // смотреть вперёд, отсюда индекс вместо foreach.
+            var rowsList = new List<DataRow>(dt.Rows.Count);
+            foreach (DataRow r0 in dt.Rows) rowsList.Add(r0);
+            bool SoloInChannel(int mid) =>
+                _reactionsInView != null && _reactionsInView.TryGetValue(mid, out var rr)
+                && rr != null && rr.Count > 0;
+
+            for (int ri = 0; ri < rowsList.Count; ri++)
+            {
+                DataRow r = rowsList[ri];
+                int id = Convert.ToInt32(r["id"]);
+                int senderId = Convert.ToInt32(r["sender_id"]);
+                // Имя читаем ОСТОРОЖНО: строки приезжают и из базы (колонка
+                // «nm»), и через релей (там она звалась «sender_name»).
+                // Прямое обращение к отсутствующей колонке роняло сборку
+                // ленты целиком — канал оказывался пустым.
+                string nm = ColText(r, "nm");
+                if (string.IsNullOrWhiteSpace(nm)) nm = ColText(r, "sender_name");
+                if (string.IsNullOrWhiteSpace(nm)) nm = ColText(r, "login");
+                string text = Albums.Strip(
+                    Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString()));
+                DateTime dtMsg = MainForm.ToViewerLocal(Convert.ToDateTime(r["created_at"]));
+                string time = dtMsg.ToString("HH:mm");
+
+                // Разделитель по датам (как в ЛС): «13 июля 2026» между днями.
+                string dsep = dtMsg.ToString("d MMMM yyyy", new System.Globalization.CultureInfo("ru-RU"));
+                if (dsep != lastDate)
+                {
+                    lastDate = dsep;
+                    // Линия-разделитель тянется на всю ширину чата, а не до
+                    // потолка бабла (900): иначе на широком окне линия
+                    // обрывалась, не доходя до правого края.
+                    // Нативная полоса скрыта (её место не резервируется), поэтому
+                    // НЕ вычитаем её ширину — иначе линия не дотягивает до края.
+                    int sepWidth = Math.Max(120, _pnlMessages.ClientSize.Width - 20);
+                    var sepCtl = MainForm.BuildDateSeparatorW(dsep, sepWidth);
+                    // По метке догрузка сверху узнаёт верхний разделитель и
+                    // убирает его, если приехавшая порция кончается тем же днём.
+                    sepCtl.AccessibleName = SrvDateTag + dsep;
+                    pending.Add(sepCtl);
+                }
+
+                // Меня упомянули (@логин/@роль/@все) — подсветим бабл зеленоватым.
+                bool mine = MentionsMe(text);
+                bool isMe = senderId == _me;
+
+                // Формат — как в Discord: аватар слева, цветной ник, серый бабл
+                // (одинаковый для всех, как входящие в ЛС); упоминание — зеленоватый.
+                const int PAD = 12;
+                const int AVA = 36;                 // диаметр аватарки
+                const int LEFT = PAD + AVA + 10;    // отступ контента правее аватара
+                Color bubbleBg = mine ? Color.FromArgb(47, 68, 55) : Color.FromArgb(48, 51, 58);
+
+                var holder = new Panel
+                {
+                    AutoSize = true,
+                    Margin = new Padding(0, 2, 0, 6),
+                    Padding = new Padding(LEFT, PAD, PAD, PAD),
+                    BackColor = Color.FromArgb(54, 57, 63)   // цвет фона чата — углы «прозрачны»
+                };
+                ChatScroll.EnableDoubleBufferDeep(holder);   // пузырь И все дочки — не «рвутся» при прокрутке
+                holder.Paint += (s, e) =>
+                {
+                    e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    using var br = new SolidBrush(Theme.Map(bubbleBg));   // светлая тема: пузырь тоже светлеет
+                    e.Graphics.FillRoundedRectangle(br, 0, 0, holder.Width - 1, holder.Height - 1, 10);
+                    // Аватар отправителя (кружок) в левом верхнем углу бабла.
+                    if (!AvatarStore.DrawAvatar(e.Graphics, senderId, PAD, PAD, AVA - 1))
+                    {
+                        int h = 0; foreach (char ch in nm) h = (h * 31 + ch) & 0x7fffffff;
+                        Color[] pal = { Color.FromArgb(88,101,242), Color.FromArgb(235,69,158),
+                            Color.FromArgb(59,165,93), Color.FromArgb(250,166,26), Color.FromArgb(0,176,244) };
+                        using var ab = new SolidBrush(pal[h % pal.Length]);
+                        e.Graphics.FillEllipse(ab, PAD, PAD, AVA - 1, AVA - 1);
+                        string letter = nm.Length > 0 ? nm.Substring(0, 1).ToUpper() : "?";
+                        using var f = new Font("Segoe UI Black", 12f, FontStyle.Bold);
+                        using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                        e.Graphics.DrawString(letter, f, Brushes.White, new RectangleF(PAD, PAD, AVA, AVA), sf);
+                    }
+                };
+                AvatarStore.EnsureLoaded(senderId);
+                int y = PAD;
+
+                // Цитата отвечаемого сообщения (если это ответ).
+                int replyToId = _replyColOk && dt.Columns.Contains("reply_to_id") && r["reply_to_id"] != DBNull.Value
+                    ? Convert.ToInt32(r["reply_to_id"]) : 0;
+                if (replyToId > 0)
+                {
+                    string rs = dt.Columns.Contains("r_sender") && r["r_sender"] != DBNull.Value ? r["r_sender"].ToString().Trim() : "";
+                    if (string.IsNullOrWhiteSpace(rs) && dt.Columns.Contains("r_login") && r["r_login"] != DBNull.Value) rs = r["r_login"].ToString();
+                    string rt = dt.Columns.Contains("r_text") && r["r_text"] != DBNull.Value ? Crypto.Dec(r["r_text"].ToString()) : "";
+                    if (rt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)) rt = "[GIF]";
+                    var quote = new Label
+                    {
+                        AutoSize = true,
+                        // По содержимому, но не шире потолка бабла — иначе пузырь
+                        // с ответом растягивался на всю ширину (AutoSize-holder
+                        // подгонялся под жёсткую ширину цитаты).
+                        MaximumSize = new Size(msgWidth - 14, 0),
+                        Location = new Point(LEFT, y),
+                        ForeColor = Color.FromArgb(0, 176, 244),
+                        Font = new Font("Segoe UI", 8f),
+                        Cursor = Cursors.Hand,
+                        Text = $"↩ {rs}: {(rt.Length > 60 ? rt.Substring(0, 60) + "…" : rt)}"
+                    };
+                    int targetId = replyToId;
+                    quote.Click += (s, e) => ScrollToServerMessage(targetId);
+                    holder.Controls.Add(quote);
+                    y += quote.Height + 2;
+                }
+
+                // Ник цветной (стабильный цвет по имени, как в Discord), фон прозрачный —
+                // без тёмного прямоугольника вокруг имени.
+                Color nmColor;
+                {
+                    int nh = 0; foreach (char ch in nm) nh = (nh * 31 + ch) & 0x7fffffff;
+                    Color[] npal = { Color.FromArgb(129,140,248), Color.FromArgb(240,113,170),
+                        Color.FromArgb(87,197,126), Color.FromArgb(250,180,80), Color.FromArgb(84,196,244),
+                        Color.FromArgb(196,151,255) };
+                    nmColor = npal[nh % npal.Length];
+                }
+                var head = new Label
+                {
+                    AutoSize = true,
+                    BackColor = Color.Transparent,
+                    ForeColor = nmColor,
+                    Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                    Location = new Point(LEFT, y),
+                    Text = $"{nm} · {time}"
+                };
+                holder.Controls.Add(head);
+                y += 22;
+
+                // ── Плитка альбома ───────────────────────────────────
+                int albumLen = Albums.Length(rowsList, ri, SoloInChannel);
+                if (albumLen > 1)
+                {
+                    var tileItems = new List<AlbumTile.Item>(albumLen);
+                    for (int k = 0; k < albumLen; k++)
+                    {
+                        var rk = rowsList[ri + k];
+                        string fnk = dt.Columns.Contains("file_name") && rk["file_name"] != DBNull.Value
+                            ? rk["file_name"].ToString() : null;
+                        bool vidk = fnk != null && MediaPlayerForm.IsVideo(
+                            Path.GetExtension(fnk).TrimStart('.').ToLowerInvariant());
+                        tileItems.Add(new AlbumTile.Item
+                        {
+                            MsgId = Convert.ToInt32(rk["id"]),
+                            FileName = fnk,
+                            IsVideo = vidk,
+                            CacheKind = "simg",
+                        });
+
+                        // Ролик без обложки — кадр снимаем в фоне (только
+                        // если ролик уже скачан: размер здесь неизвестен).
+                        int kId = Convert.ToInt32(rk["id"]);
+                        bool kHasImg = dt.Columns.Contains("has_img") && rk["has_img"] != DBNull.Value
+                                       && Convert.ToBoolean(rk["has_img"]);
+                        if (vidk && !kHasImg && !MediaCache.Has(kId, "simg"))
+                        {
+                            string kName = fnk;
+                            CoverGrabber.Request(null, "server_messages", kId, kName, "simg",
+                                MediaCache.Has(kId, "sfile", kName), 0,
+                                () => LoadServerFileBytes(kId, kName));
+                        }
+                    }
+
+                    string tileTime = MainForm.ToViewerLocal(
+                        Convert.ToDateTime(rowsList[ri + albumLen - 1]["created_at"])).ToString("HH:mm");
+                    // Та же ширина, что в личной переписке: жёсткие 420
+                    // на большом окне выглядели маркой.
+                    var tile = new AlbumTile(tileItems, text, tileTime, isMe, -1,
+                                             Math.Max(360, Math.Min(640, msgWidth - 10)))
+                    { Location = new Point(LEFT, y) };
+                    tile.CellClicked += it => OpenChannelAlbumCell(it);
+                    holder.Controls.Add(tile);
+                    y += tile.Height + 6;
+
+                    AttachServerMsgMenu(holder, head, id, senderId, text, nm);
+                    // Своего пузыря у снимков пачки нет — все они живут в
+                    // плитке. Записываем каждого, иначе переход к такому
+                    // сообщению («показать в чате», цитата) не находил
+                    // ничего.
+                    foreach (var it0 in tileItems) _msgControls[it0.MsgId] = holder;
+                    pending.Add(holder);
+                    ri += albumLen - 1;
+                    continue;
+                }
+
+                // Медиа канала (картинка / голосовое / кружок / видео / файл) — как в обычном чате.
+                if (_serverMedia.TryGetValue(id, out var sm))
+                {
+                    // У ролика картинка — его ОБЛОЖКА, а не второе
+                    // вложение: рисуем её плеером, а не фотографией.
+                    byte[] chanPoster = null;
+                    if (sm.img is { Length: > 0 } && !string.IsNullOrWhiteSpace(sm.fname)
+                        && MediaPlayerForm.IsVideo(
+                            Path.GetExtension(sm.fname).TrimStart('.').ToLowerInvariant()))
+                    {
+                        chanPoster = sm.img;
+                        sm.img = null;
+                    }
+                    if (sm.img is { Length: > 0 })
+                    {
+                        try
+                        {
+                            // Готовая миниатюра — минуя декодер: см. ту же
+                            // правку в личной переписке (ThumbCache).
+                            var readyThumb = ThumbCache.Get(id);
+                            if (readyThumb != null)
+                            {
+                                var pbr = new PictureBox
+                                {
+                                    SizeMode = PictureBoxSizeMode.Normal,
+                                    Size = readyThumb.Size,
+                                    Location = new Point(LEFT, y),
+                                    Cursor = Cursors.Hand,
+                                    Image = readyThumb,
+                                };
+                                int capIdR = id;
+                                pbr.Click += (s, e) => OpenChannelMediaViewer(capIdR);
+                                holder.Controls.Add(pbr);
+                                y += readyThumb.Height + 6;
+                            }
+                            else
+                            {
+                            var ms = new MemoryStream(sm.img.ToArray());
+                            var img = Image.FromStream(ms);
+                            // Крупнее, как в личной переписке: прежние
+                            // 420×360 на большом окне были маркой.
+                            int mw = Math.Max(360, Math.Min(560, msgWidth - 10)), mh = 460;
+                            double rr = Math.Min(2.0, Math.Min((double)mw / img.Width, (double)mh / img.Height));
+                            int dw = Math.Max(1, (int)(img.Width * rr)), dh = Math.Max(1, (int)(img.Height * rr));
+
+                            // В ленте держим уменьшенную копию, как и в
+                            // переписке: в памяти картинка стоит не свой
+                            // вес в файле, а ширину на высоту на четыре
+                            // байта — снимок с телефона тянет на полсотни
+                            // мегабайт, показываясь в рамке 420×360.
+                            // Копия ровно по размеру показа: иначе каждый
+                            // кадр прокрутки ужимает снимок заново — см. ту
+                            // же правку в личной переписке.
+                            Image shown = img;
+                            try
+                            {
+                                int tw = Math.Min(dw, img.Width);
+                                int th = Math.Max(1, (int)(img.Height * (tw / (double)img.Width)));
+                                if (tw < img.Width)
+                                {
+                                    var small = new Bitmap(tw, th,
+                                        System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                                    using (var g = Graphics.FromImage(small))
+                                    {
+                                        g.InterpolationMode =
+                                            System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                                        g.DrawImage(img, 0, 0, tw, th);
+                                    }
+                                    shown = small;
+                                    img.Dispose();
+                                    ms.Dispose();
+                                }
+                            }
+                            catch { shown = img; }
+
+                            var pb = new PictureBox { SizeMode = PictureBoxSizeMode.StretchImage, Size = new Size(dw, dh), Location = new Point(LEFT, y), Cursor = Cursors.Hand, Image = shown };
+                            int capId = id;
+                            // Через ленту просмотра: стрелками листаются
+                            // соседние снимки и ролики канала.
+                            pb.Click += (s, e) => OpenChannelMediaViewer(capId);
+                            // Копия уходит в кеш: следующая отрисовка
+                            // канала возьмёт готовое и декодер не тронет.
+                            // Поэтому её не освобождаем вместе с пузырём —
+                            // владелец кеш.
+                            ThumbCache.Put(id, shown);
+                            pb.Disposed += (s, e) => { try { ms.Dispose(); } catch { } };
+                            holder.Controls.Add(pb); y += dh + 6;
+                            }
+                        }
+                        catch { }
+                    }
+                    if (sm.audio is { Length: > 0 })
+                    {
+                        // Голосовое — с перемоткой, как в ЛС.
+                        var vp2 = new InlineAudioPlayer(sm.audio, null, "Голосовое",
+                                                        Math.Min(msgWidth - 10, 340), key: "sv" + id)
+                                  { Location = new Point(LEFT, y) };
+                        holder.Controls.Add(vp2); y += vp2.Height + 6;
+                    }
+                    if (sm.video is { Length: > 0 })
+                    {
+                        try { var pl = new VideoCirclePlayer(sm.video, 180) { Location = new Point(LEFT, y) }; holder.Controls.Add(pl); y += 186; }
+                        catch { }
+                    }
+                    if (!string.IsNullOrWhiteSpace(sm.fname))
+                    {
+                        string fext = Path.GetExtension(sm.fname).TrimStart('.').ToLowerInvariant();
+                        // Крупные вложения в ленту не тянутся: байтов ещё нет, и
+                        // плеер получает загрузчик — прочитает по клику.
+                        bool haveBytes = sm.file is { Length: > 0 };
+                        int mid = id; string mname = sm.fname;
+                        Func<byte[]> lazySrv = haveBytes ? null : () => LoadServerFileBytes(mid, mname);
+                        if (MediaPlayerForm.IsVideo(fext))
+                        {
+                            try
+                            {
+                                // Коробка — по форме ролика, если она уже
+                                // известна: см. VideoShapes и ту же правку
+                                // в личной переписке.
+                                string shapeKey = "s" + id;
+                                var (bw, bh) = VideoShapes.Box(shapeKey,
+                                    Math.Max(320, Math.Min(560, msgWidth - 10)));
+                                var vp = haveBytes
+                                    ? new InlineVideoPlayer(sm.file, sm.fname, bw, bh)
+                                    : new InlineVideoPlayer(lazySrv, sm.fname, bw, bh);
+                                vp.ShapeKey = shapeKey;
+                                // Кадр до загрузки файла; у старых роликов
+                                // он может лежать в кеше картинок.
+                                vp.Poster = chanPoster ?? MediaCache.Get(id, "simg", null)
+                                                       ?? MediaCache.Get(id, "img", null);
+                                // Обложки нет — снимаем кадр в фоне сами,
+                                // а запустят ролик раньше — снимет плеер.
+                                int capCover = id;
+                                if (vp.Poster == null)
+                                {
+                                    vp.CoverCaptured = jpeg =>
+                                        VideoCover.Share("server_messages", capCover, jpeg, "simg");
+                                    var bytesNow = haveBytes ? sm.file : null;
+                                    string nameNow = sm.fname;
+                                    bool haveFile = bytesNow != null
+                                                    || MediaCache.Has(capCover, "sfile", nameNow);
+                                    CoverGrabber.Request(vp, "server_messages", capCover, nameNow, "simg",
+                                        haveFile, bytesNow?.LongLength ?? 0,
+                                        () => bytesNow ?? LoadServerFileBytes(capCover, nameNow));
+                                }
+                                // ⛶ — окно просмотра канала: стрелки по
+                                // соседним роликам, скорость, «по кругу».
+                                int capVid = id;
+                                vp.ExpandRequested = () => OpenChannelMediaViewer(capVid);
+                                vp.Location = new Point(LEFT, y);
+                                holder.Controls.Add(vp); y += bh + 6;
+                            }
+                            catch { }
+                        }
+                        else if (MediaPlayerForm.IsAudio(fext))
+                        {
+                            // Музыка — плеером прямо в ленте, как в ЛС.
+                            try
+                            {
+                                int bw = Math.Min(msgWidth - 10, 340);
+                                var ap = new InlineAudioPlayer(haveBytes ? sm.file : null, lazySrv,
+                                                               sm.fname, bw, key: "sa" + id)
+                                         { Location = new Point(LEFT, y) };
+                                holder.Controls.Add(ap); y += ap.Height + 6;
+                            }
+                            catch { }
+                        }
+                        else
+                        {
+                            // Размер знаем заранее, если вложение лежит на
+                            // файловом сервисе: он записан в строке. Для
+                            // блоба в базе его по-прежнему не спрашиваем —
+                            // OCTET_LENGTH поднимает всё вложение с диска.
+                            long srvSize = dt.Columns.Contains("file_size") && r["file_size"] != DBNull.Value
+                                ? Convert.ToInt64(r["file_size"]) : -1;
+                            var card = MainForm.BuildFileCard(sm.file, sm.fname, isMe, msgWidth - 10, id, false,
+                                                              srvSize, loader: lazySrv,
+                                                              where: Transfers.ChannelKey(channel));
+                            card.Location = new Point(LEFT, y);
+                            holder.Controls.Add(card); y += card.Height + 6;
+                        }
+                    }
+                }
+
+                // GIF-сообщение: "gif:<url>" — анимированная картинка.
+                if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var ph = new Panel { Location = new Point(LEFT, y), Size = new Size(220, 160), BackColor = Color.FromArgb(40, 42, 46) };
+                    holder.Controls.Add(ph);
+                    _ = LoadServerGifAsync(ph, text.Substring(4));
+                    y += 166;
+                }
+                else if (!string.IsNullOrEmpty(text))
+                {
+                    // Как в личке: сообщения с эмодзи рисуем картинкой через
+                    // WPF, иначе GDI отдаёт монохромный контур. Обычный текст
+                    // остаётся полем, которое можно выделять.
+                    var fore = Color.FromArgb(235, 236, 240);
+                    var msgFont = new Font("Segoe UI", 10.5f);
+                    var emojiText = EmojiRender.ContainsEmoji(text)
+                        ? EmojiRender.RenderMessage(text, msgFont, fore, bubbleBg, msgWidth - 10)
+                        : null;
+                    if (emojiText != null)
+                    {
+                        var picBody = new PictureBox
+                        {
+                            Image = emojiText,
+                            SizeMode = PictureBoxSizeMode.AutoSize,
+                            Location = new Point(LEFT, y),
+                            BackColor = bubbleBg,
+                        };
+                        // Пока цветная картинка эмодзи догружается, нарисован
+                        // силуэт; по событию Loaded перерисовываем — как чипы.
+                        var capText = text; var capBg = bubbleBg; var capW = msgWidth - 10;
+                        void OnEmojiLoaded(string _)
+                        {
+                            if (picBody.IsDisposed) return;
+                            try
+                            {
+                                picBody.BeginInvoke(new Action(() =>
+                                {
+                                    if (picBody.IsDisposed) return;
+                                    var fresh = EmojiRender.RenderMessage(capText, msgFont, fore, capBg, capW);
+                                    if (fresh == null) return;
+                                    var prev = picBody.Image;
+                                    picBody.Image = fresh;
+                                    try { prev?.Dispose(); } catch { }
+                                }));
+                            }
+                            catch { }
+                        }
+                        EmojiRender.Loaded += OnEmojiLoaded;
+                        picBody.Disposed += (s2, e2) =>
+                        {
+                            try { EmojiRender.Loaded -= OnEmojiLoaded; } catch { }
+                            try { picBody.Image?.Dispose(); } catch { }
+                        };
+                        holder.Controls.Add(picBody);
+                        y += picBody.Height + 6;
+                    }
+                    else
+                    {
+                        // Со ссылкой — поле, которое её красит и открывает
+                        // по нажатию; без ссылки остаётся обычное.
+                        Control body = MainForm.HasLink(text)
+                            ? MainForm.MakeLinkedText(text, bubbleBg, fore,
+                                new Font("Segoe UI", 10.5f), msgWidth - 10)
+                            : MainForm.MakeSelectableText(text, bubbleBg, fore,
+                                new Font("Segoe UI", 10.5f), msgWidth - 10);
+                        body.Location = new Point(LEFT, y);
+                        holder.Controls.Add(body);
+                        y += body.Height + 6;
+                    }
+                }
+
+                // ── Реакции (как в ЛС): чипы «эмодзи N», клик — поставить/снять,
+                // «＋» — добавить новую через пикер. ─────────────────────────
+                try
+                {
+                    // ТОЛЬКО из карты, собранной в фоне. Поштучного запасного пути
+                    // здесь быть не должно: на ПЕРВОМ открытии канала карты ещё
+                    // нет — её наполняет фоновая выборка, — и запасной путь давал
+                    // запрос на КАЖДОЕ сообщение. По замеру это и были те 2583 мс
+                    // первой отрисовки против 60–120 у последующих. Если карты нет,
+                    // реакции просто не рисуем: фоновая выборка придёт следом, а её
+                    // подпись входит в подпись страницы, так что перерисовка
+                    // случится и реакции появятся.
+                    var reacts = _reactionsInView != null && _reactionsInView.TryGetValue(id, out var rl)
+                        ? rl
+                        : new List<ReactionsRepository.Reaction>();
+                    if (reacts.Count > 0)
+                    {
+                        int rx = LEFT;
+                        var cntFontR = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
+                        foreach (var re in reacts)
+                        {
+                            // ЦВЕТНОЙ чип, как в ЛС: эмодзи — картинка Twemoji
+                            // (GDI рисует эмодзи монохромными «контурами»), счётчик — текст.
+                            const int emSz = 20;
+                            var reImg = EmojiRender.Get(re.Emoji, emSz);
+                            string cntTxt = re.Count.ToString();
+                            int txtW = TextRenderer.MeasureText(cntTxt, cntFontR).Width;
+                            int imgW = reImg?.Width ?? emSz;
+                            var chipR = new Panel
+                            {
+                                Size = new Size(8 + imgW + 4 + txtW + 7, 28),
+                                BackColor = re.Mine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(64, 68, 75),
+                                Location = new Point(rx, y),
+                                Cursor = Cursors.Hand
+                            };
+                            string emoC = re.Emoji; int midC = id;
+                            var capCnt = cntTxt; var capImgW = imgW;
+                            chipR.Paint += (s, e) =>
+                            {
+                                var g = e.Graphics;
+                                var im = EmojiRender.Get(emoC, emSz);
+                                if (im != null) g.DrawImage(im, 8, (chipR.Height - im.Height) / 2);
+                                else using (var f0 = new Font("Segoe UI Emoji", 11f))
+                                    g.DrawString(emoC, f0, Brushes.White, 6, 4);
+                                TextRenderer.DrawText(g, capCnt, cntFontR,
+                                    new Point(8 + capImgW + 4, (chipR.Height - 16) / 2), Color.White);
+                            };
+                            Action<string> onLoad = em =>
+                            {
+                                if (em != emoC || chipR.IsDisposed) return;
+                                try { chipR.BeginInvoke(new Action(() => { try { chipR.Invalidate(); } catch { } })); } catch { }
+                            };
+                            EmojiRender.Loaded += onLoad;
+                            chipR.Disposed += (s, e) => { try { EmojiRender.Loaded -= onLoad; } catch { } };
+                            MainForm.RoundCorners(chipR, 8);
+                            chipR.Click += (s, e) =>
+                            {
+                                System.Threading.Tasks.Task.Run(() =>
+                                {
+                                    try { ReactionsRepository.Toggle(midC, ReactionsRepository.Scope.Server, _me, emoC); } catch { }
+                                    if (IsDisposed || !IsHandleCreated) return;
+                                    try { BeginInvoke(new Action(() => { _renderedKey = null; _renderedSig = null; LoadMessages(); })); } catch { }
+                                });
+                            };
+                            holder.Controls.Add(chipR);
+                            chipR.BringToFront();
+                            rx += chipR.Width + 6;
+                        }
+                        var addR = new Label
+                        {
+                            Text = "＋",
+                            Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+                            AutoSize = true,
+                            ForeColor = Color.FromArgb(200, 202, 208),
+                            BackColor = Color.FromArgb(64, 68, 75),
+                            Padding = new Padding(7, 3, 7, 3),
+                            Location = new Point(rx, y),
+                            Cursor = Cursors.Hand
+                        };
+                        int midA = id;
+                        addR.Click += (s, e) =>
+                        {
+                            string emo = EmojiPickerForm.Pick(this, Cursor.Position);
+                            if (string.IsNullOrWhiteSpace(emo)) return;
+                            System.Threading.Tasks.Task.Run(() =>
+                            {
+                                try { ReactionsRepository.Toggle(midA, ReactionsRepository.Scope.Server, _me, emo); } catch { }
+                                if (IsDisposed || !IsHandleCreated) return;
+                                try { BeginInvoke(new Action(() => { _renderedKey = null; _renderedSig = null; LoadMessages(); })); } catch { }
+                            });
+                        };
+                        holder.Controls.Add(addR);
+                        addR.BringToFront();
+                    }
+                }
+                catch { }
+
+                AttachServerMsgMenu(holder, head, id, senderId, text, nm);
+                _msgControls[id] = holder;
+                pending.Add(holder);
+            }
+
+            lastDateOut = lastDate;
+            return pending;
+        }
+
         private int _lastSrvTop = int.MaxValue;
         private void EnsureSrvScrollHook()
         {
@@ -3286,30 +3424,238 @@ namespace PISMO
         {
             int top = -_pnlMessages.AutoScrollPosition.Y;
             // Событие Scroll приходит и не от пользователя (фокус, раскладка,
-            // пересборка ленты). Раньше любое такое срабатывание считалось
-            // движением вверх и запускало догрузку — то есть полную перезагрузку
-            // канала. Реагируем только на заметный сдвиг вверх.
+            // пересборка ленты), поэтому догрузку будит только заметный сдвиг
+            // вверх. Но У САМОГО ВЕРХА колесо уже ничего не сдвигает — и
+            // «движения вверх» не видно вовсе. Раньше ровно здесь прокрутка и
+            // застревала: дошёл до верха, пока ехала прошлая порция, — и всё,
+            // следующая не просилась никогда. Поэтому у верха просим всегда.
             bool movingUp = top < _lastSrvTop - 4;
             _lastSrvTop = top;
-            if (movingUp) MaybeLoadOlderSrv();
+            if (movingUp || top <= 2) MaybeLoadOlderSrv();
             UpdateSrvScrollDownButton();
         }
 
-        /// <summary>У верха канала и есть более старые сообщения — догружаем ещё
-        /// страницу с сохранением позиции (канал не скидывается вниз).</summary>
+        /// <summary>Номер самого старого показанного сообщения канала; 0 — не знаем.</summary>
+        private int OldestShownId(int channel)
+        {
+            try
+            {
+                if (_renderedKey != "c" + channel) return 0;
+                var dt = _shownDt;
+                if (dt == null || dt.Rows.Count == 0) return 0;
+                return Convert.ToInt32(dt.Rows[0]["id"]);
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>
+        /// У верха канала и есть более старые сообщения — везём порцию
+        /// «старше самого старого показанного» и вставляем её НАД лентой, не
+        /// трогая того, что уже нарисовано.
+        ///
+        /// Раньше догрузка пересобирала канал целиком с выборкой побольше:
+        /// каждая порция стоила полной сборки всех пузырей (на глубине — сотен),
+        /// прокрутка рвалась, а после двухсот сообщений упиралась совсем (см.
+        /// потолок релея в FetchChannelMessages).
+        /// </summary>
         private void MaybeLoadOlderSrv()
         {
-            if (_channelId <= 0 || _srvLoadingOlder || !_srvHasMore) return;
-            if (-_pnlMessages.AutoScrollPosition.Y > 60) return;   // ещё не у верха
-            if ((DateTime.UtcNow - _lastSrvOlderLoad).TotalMilliseconds < 800) return;
+            if (_channelId <= 0 || _srvOlderBusy || !_srvHasMore) return;
+            // Канал ещё не нарисован — догружать не к чему.
+            if (_lastScrollChannel != _channelId) return;
+            int channel = _channelId;
+            int oldest = OldestShownId(channel);
+            if (oldest <= 0) return;
+            // Просим заранее — за экран до верха: к тому моменту, как человек
+            // туда докрутит, порция уже будет на месте.
+            int viewport = Math.Max(200, _pnlMessages.ClientSize.Height);
+            if (-_pnlMessages.AutoScrollPosition.Y > viewport) return;
+            if ((DateTime.UtcNow - _lastSrvOlderLoad).TotalMilliseconds < 250) return;
             _lastSrvOlderLoad = DateTime.UtcNow;
-            _srvLoadingOlder = true;
-            int viewport = _pnlMessages.ClientSize.Height;
+            _srvOlderBusy = true;
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var media = new Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)>();
+                DataTable older = null;
+                try { older = FetchChannelMessages(channel, media, SrvOlderStep, oldest); }
+                catch { older = null; }
+                // Ответ мог прийти «целой страницей» поверх старой базы —
+                // оставляем строго то, что старше показанного.
+                if (older != null && older.Rows.Count > 0)
+                {
+                    try
+                    {
+                        var only = older.Clone();
+                        foreach (DataRow r in older.Rows)
+                            if (Convert.ToInt32(r["id"]) < oldest) only.ImportRow(r);
+                        older = only;
+                    }
+                    catch { }
+                }
+                Dictionary<int, List<ReactionsRepository.Reaction>> reacts = null;
+                if (older != null && older.Rows.Count > 0)
+                {
+                    try
+                    {
+                        var rids = new List<int>();
+                        foreach (DataRow rr in older.Rows)
+                            if (rr["id"] != DBNull.Value) rids.Add(Convert.ToInt32(rr["id"]));
+                        reacts = ReactionsRepository.ForMessages(rids, ReactionsRepository.Scope.Server, _me);
+                    }
+                    catch { }
+                    // Долистанное — в постоянный кеш канала: следующий подъём
+                    // по нему, и без связи тоже, будет мгновенным.
+                    try { MessageCache.Merge(MessageCache.ChannelKey(channel), older); } catch { }
+                }
+                if (IsDisposed || !IsHandleCreated) return;
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        _srvOlderBusy = false;
+                        if (_channelId != channel) return;
+                        // База не ответила — «дальше ничего нет» из этого НЕ
+                        // следует: иначе одна неудачная попытка запирала бы
+                        // прокрутку до переоткрытия канала.
+                        if (older == null) return;
+                        if (older.Rows.Count == 0) { _srvHasMore = false; return; }
+                        _srvHasMore = older.Rows.Count >= SrvOlderStep;
+
+                        foreach (var kv in media) _serverMedia[kv.Key] = kv.Value;
+                        if (reacts != null && reacts.Count > 0)
+                        {
+                            if (!_chanReactions.TryGetValue(channel, out var map) || map == null)
+                                _chanReactions[channel] = map = new Dictionary<int, List<ReactionsRepository.Reaction>>();
+                            foreach (var kv in reacts) map[kv.Key] = kv.Value;
+                        }
+
+                        if (!PrependOlderSrv(older, channel, oldest, out var merged) && merged != null)
+                        {
+                            // Вставить сверху нельзя (на стыке разрезалась бы
+                            // плитка альбома) — пересобираем ленту целиком, но с
+                            // той же позицией.
+                            int viewportNow = _pnlMessages.ClientSize.Height;
+                            int curTop = -_pnlMessages.AutoScrollPosition.Y;
+                            _srvRestoreFromBottom = _pnlMessages.DisplayRectangle.Height - (curTop + viewportNow);
+                            _srvLimit = merged.Rows.Count;
+                            _chanMetaCache[channel] = merged;
+                            _renderedKey = null; _renderedSig = null;
+                            RenderMessages(merged, channel);
+                        }
+
+                        // Человек всё ещё у верха (порция оказалась короткой) —
+                        // сразу следующую, не дожидаясь нового движения колеса.
+                        _lastSrvOlderLoad = DateTime.MinValue;
+                        try { BeginInvoke(new Action(MaybeLoadOlderSrv)); } catch { }
+                    }));
+                }
+                catch { _srvOlderBusy = false; }
+            });
+        }
+
+        /// <summary>
+        /// Вставить порцию истории над лентой. false — вставка невозможна:
+        /// merged == null — лента уже другая (подождём следующего раза), иначе
+        /// в merged готовая таблица для полной пересборки.
+        /// </summary>
+        private bool PrependOlderSrv(DataTable older, int channel, int oldest, out DataTable merged)
+        {
+            merged = null;
+            if (_channelId != channel || _renderedKey != "c" + channel) return false;
+            var cur = _shownDt;
+            if (cur == null || cur.Rows.Count == 0) return false;
+            try { if (Convert.ToInt32(cur.Rows[0]["id"]) != oldest) return false; }
+            catch { return false; }
+            if (_pnlMessages == null || _pnlMessages.IsDisposed || _pnlMessages.Controls.Count == 0) return false;
+
+            try
+            {
+                merged = older.Clone();
+                foreach (DataRow r in older.Rows) merged.ImportRow(r);
+                foreach (DataRow r in cur.Rows) AppendByName(merged, r);
+            }
+            catch { merged = null; return false; }
+
+            // Плитка альбома на стыке: если пачка начинается в порции, а
+            // кончается на экране, вставкой её не собрать — нужна пересборка.
+            _reactionsInView = _chanReactions.TryGetValue(channel, out var rmap) ? rmap : null;
+            bool Solo(int mid) =>
+                _reactionsInView != null && _reactionsInView.TryGetValue(mid, out var rr)
+                && rr != null && rr.Count > 0;
+            var all = new List<DataRow>(merged.Rows.Count);
+            foreach (DataRow r in merged.Rows) all.Add(r);
+            int boundary = older.Rows.Count;
+            for (int i = 0; i < boundary;)
+            {
+                int len = Math.Max(1, Albums.Length(all, i, Solo));
+                if (i + len > boundary) return false;
+                i += len;
+            }
+
+            int avail = _pnlMessages.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 90;
+            int msgWidth = Math.Max(120, Math.Min(avail, 900));
+            List<Control> items;
+            string lastDate;
+            try { items = BuildChannelItems(older, channel, msgWidth, null, out lastDate); }
+            catch { return false; }
+            if (items.Count == 0) return false;
+
             int curTop = -_pnlMessages.AutoScrollPosition.Y;
-            _srvRestoreFromBottom = _pnlMessages.DisplayRectangle.Height - (curTop + viewport);
-            _srvLimit += ChanPageSize;
-            _renderedKey = null; _renderedSig = null;   // форсим перерисовку с большей выборкой
-            LoadMessages();
+            int oldHeight = _pnlMessages.DisplayRectangle.Height;
+            ChatScroll.SuspendDraw(_pnlMessages);
+            _pnlMessages.SuspendLayout();
+            try
+            {
+                // Порция кончается тем же днём, с которого начиналась лента, —
+                // второй разделитель «13 июля» подряд не нужен.
+                var first = _pnlMessages.Controls[0];
+                if (lastDate != null && first != null && first.AccessibleName == SrvDateTag + lastDate)
+                {
+                    _pnlMessages.Controls.Remove(first);
+                    try { first.Dispose(); } catch { }
+                }
+                _pnlMessages.Controls.AddRange(items.ToArray());
+                for (int i = 0; i < items.Count; i++) _pnlMessages.Controls.SetChildIndex(items[i], i);
+            }
+            finally { _pnlMessages.ResumeLayout(); }
+
+            // Позиция — та же самая строка на экране: сдвигаем прокрутку ровно
+            // на высоту вставленного.
+            _pnlMessages.PerformLayout();
+            int added = _pnlMessages.DisplayRectangle.Height - oldHeight;
+            try { _pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, curTop + added)); } catch { }
+            ChatScroll.ShiftBy(_pnlMessages, added);
+            _lastSrvTop = -_pnlMessages.AutoScrollPosition.Y;
+            ChatScroll.ResumeDraw(_pnlMessages);
+
+            // Запоминаем ленту такой, какая она теперь на экране: следующая
+            // выборка с той же глубиной даст ту же подпись и пересборки не будет.
+            _shownDt = merged;
+            _chanMetaCache[channel] = merged;
+            _srvLimit = Math.Max(_srvLimit, merged.Rows.Count);
+            _lastMsgCount = merged.Rows.Count;
+            int mediaForChan = 0;
+            foreach (DataRow rr in merged.Rows)
+                if (_serverMedia.ContainsKey(Convert.ToInt32(rr["id"]))) mediaForChan++;
+            _renderedSig = MainForm.SigOf(merged) + "|m" + mediaForChan
+                           + "|r" + ReactionsSig(_chanReactions.TryGetValue(channel, out var rsig) ? rsig : null);
+            return true;
+        }
+
+        private static void AppendByName(DataTable target, DataRow src)
+        {
+            var nr = target.NewRow();
+            foreach (DataColumn c in target.Columns)
+                if (src.Table.Columns.Contains(c.ColumnName))
+                {
+                    var v = src[c.ColumnName];
+                    if (v != null && v != DBNull.Value)
+                    {
+                        try { nr[c] = v; } catch { }
+                    }
+                }
+            target.Rows.Add(nr);
         }
 
         // ── Плавающая кнопка «вниз к новым сообщениям» (сервер) ─────────────

@@ -37,6 +37,20 @@ namespace PISMO
 
         private static readonly System.Collections.Generic.HashSet<Panel> _hkill = new();
         private static readonly System.Collections.Generic.HashSet<Panel> _attached = new();
+        private static readonly System.Collections.Generic.Dictionary<Panel, SmoothScroller> _scrollers = new();
+
+        /// <summary>
+        /// Содержимое над видимой частью выросло на <paramref name="dy"/> и
+        /// позицию прокрутки сдвинули на столько же (догрузка истории сверху).
+        /// Идущую прокрутку колесом сдвигаем вместе с ней: иначе плавный
+        /// скроллер принял бы сдвиг за чужое вмешательство и встал посреди
+        /// движения — прокрутка вверх обрывалась бы на каждой догрузке.
+        /// </summary>
+        public static void ShiftBy(Panel p, int dy)
+        {
+            if (p == null || dy == 0) return;
+            if (_scrollers.TryGetValue(p, out var s)) s.ShiftBy(dy);
+        }
         private static bool _appDark;
 
         // Панели, у которых прямо сейчас идёт плавная прокрутка. Пока она идёт, окна,
@@ -126,6 +140,8 @@ namespace PISMO
             // покрывает ВСЕ способы прокрутки: колесо, перетаскивание полосы,
             // клавиатуру.
             var scroller = new SmoothScroller(p, onScrolled);
+            _scrollers[p] = scroller;
+            p.Disposed += (s, e) => { _scrollers.Remove(p); _attached.Remove(p); };
             var rp = new ScrollRepainter(p, scroller);
             void HookRepaint()
             {
@@ -211,6 +227,14 @@ namespace PISMO
                 }
             }
             private int Current => -_p.AutoScrollPosition.Y;
+
+            /// <summary>Над лентой вставили содержимое — цель едет вместе с ним.</summary>
+            public void ShiftBy(int dy)
+            {
+                if (!_t.Enabled) return;
+                _target += dy;
+                if (_lastSet != int.MinValue) _lastSet += dy;
+            }
             private int Clamp(int v) => Math.Max(0, Math.Min(MaxOffset, v));
 
             /// <summary>Щелчок колеса. true — сообщение обработано, панели его не отдаём.
