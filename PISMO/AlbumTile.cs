@@ -121,7 +121,10 @@ namespace PISMO
             Bitmap bmp = null;
             try
             {
-                var bytes = it.IsVideo ? null : MediaCache.Get(it.MsgId, it.CacheKind, it.FileName);
+                // У ролика картинка сообщения — это его обложка (см.
+                // VideoCover), поэтому пробуем её и для видео: раньше в пачке
+                // ролики были просто тёмными квадратами.
+                var bytes = MediaCache.Get(it.MsgId, it.CacheKind, it.FileName);
                 if (bytes != null && bytes.Length > 0)
                 {
                     using var ms = new MemoryStream(bytes);

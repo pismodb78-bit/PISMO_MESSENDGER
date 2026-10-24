@@ -6091,6 +6091,18 @@ namespace PISMO
                 }
             }
 
+            // У РОЛИКА КАРТИНКА — ЭТО ЕГО ОБЛОЖКА, а не второе вложение:
+            // отправитель кладёт в сообщение и кадр, и сам файл. Отдельной
+            // фотографией её рисовать нельзя — вышло бы два вложения на одно
+            // сообщение; она уходит плееру под обложку (см. VideoCover).
+            byte[] videoPoster = null;
+            if (imgBytes is { Length: > 0 } && !string.IsNullOrWhiteSpace(fileName)
+                && MediaPlayerForm.IsVideo(Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant()))
+            {
+                videoPoster = imgBytes;
+                imgBytes = null;
+            }
+
             // GIF или изображение
             if (imgBytes is { Length: > 0 })
             {
@@ -6393,6 +6405,7 @@ namespace PISMO
                         : new InlineVideoPlayer(() => LoadFileBytes(capturedId, capturedName, capturedGroup),
                                                 fileName, boxW, boxH);
                     vp.ShapeKey = shapeKey;
+                    vp.Poster = videoPoster;     // кадр виден до загрузки файла
                     // ⛶ у плеера в ленте открывает окно просмотра: там
                     // соседние ролики стрелками, скорость и «по кругу».
                     vp.ExpandRequested = () =>
@@ -6915,7 +6928,9 @@ namespace PISMO
                     var att = batch[i];
                     string caption = i == 0 ? text : "";   // подпись только первому
                     bool asImage = att.Kind == AttachKind.Image || att.Kind == AttachKind.Gif;
-                    byte[] img = asImage ? att.Data : null;
+                    // У ролика картинка — это ОБЛОЖКА: место под неё в строке
+                    // свободно, и собеседник видит кадр, не скачивая файл.
+                    byte[] img = asImage ? att.Data : att.Cover;
                     byte[] file = asImage ? null : att.Data;
                     string name = asImage ? null : att.FileName;
 
@@ -7690,7 +7705,11 @@ namespace PISMO
             if (isImg && !asFile && bytes.Length > 2 * 1024 * 1024)
                 bytes = CompressImageIfNeeded(bytes);
 
-            _pendingAttach.Add(new PendingAttachment(bytes, outName, kind));
+            var added = new PendingAttachment(bytes, outName, kind);
+            // У ролика берём кадр — он уйдёт обложкой в ту же строку.
+            if (kind == AttachKind.File && MediaPlayerForm.IsVideo(ext.TrimStart('.')))
+                added.Cover = VideoCover.Jpeg(path);
+            _pendingAttach.Add(added);
             ShowPreview();
         }
 

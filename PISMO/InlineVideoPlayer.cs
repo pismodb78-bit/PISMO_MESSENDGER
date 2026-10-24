@@ -52,6 +52,41 @@ namespace PISMO
         /// </summary>
         public bool InlinePage { get; set; } = true;
 
+        /// <summary>
+        /// Обложка ролика (JPEG) — кадр, присланный вместе с сообщением. Видна
+        /// до запуска, то есть и до загрузки самого файла: раньше на её месте
+        /// был чёрный прямоугольник с одной стрелкой, и что за ролик — узнать
+        /// было нельзя (см. VideoCover).
+        /// </summary>
+        public byte[] Poster
+        {
+            get => _poster;
+            set { _poster = value; ApplyPoster(); }
+        }
+
+        private byte[] _poster;
+        private Image _posterImage;
+
+        private void ApplyPoster()
+        {
+            if (_lblPlay == null || _lblPlay.IsDisposed) return;
+            try { _posterImage?.Dispose(); } catch { }
+            _posterImage = null;
+            if (_poster == null || _poster.Length == 0)
+            {
+                _lblPlay.BackgroundImage = null;
+                _lblPlay.ForeColor = Color.White;
+                return;
+            }
+            try
+            {
+                _posterImage = Image.FromStream(new MemoryStream(_poster));
+                _lblPlay.BackgroundImage = _posterImage;
+                _lblPlay.BackgroundImageLayout = ImageLayout.Zoom;
+            }
+            catch { _lblPlay.BackgroundImage = null; }
+        }
+
         public InlineVideoPlayer(Func<byte[]> loader, string fileName, int boxW, int boxH)
             : this((byte[])null, fileName, boxW, boxH)
         {
@@ -634,6 +669,7 @@ namespace PISMO
         {
             if (disposing)
             {
+                try { _posterImage?.Dispose(); } catch { }
                 CountOut();
                 try { ExitFullScreen(); } catch { }
                 try { _web?.Dispose(); } catch { }

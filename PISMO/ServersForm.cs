@@ -2801,6 +2801,16 @@ namespace PISMO
                     // Медиа канала (картинка / голосовое / кружок / видео / файл) — как в обычном чате.
                     if (_serverMedia.TryGetValue(id, out var sm))
                     {
+                        // У ролика картинка — его ОБЛОЖКА, а не второе
+                        // вложение: рисуем её плеером, а не фотографией.
+                        byte[] chanPoster = null;
+                        if (sm.img is { Length: > 0 } && !string.IsNullOrWhiteSpace(sm.fname)
+                            && MediaPlayerForm.IsVideo(
+                                Path.GetExtension(sm.fname).TrimStart('.').ToLowerInvariant()))
+                        {
+                            chanPoster = sm.img;
+                            sm.img = null;
+                        }
                         if (sm.img is { Length: > 0 })
                         {
                             try
@@ -2914,6 +2924,7 @@ namespace PISMO
                                         ? new InlineVideoPlayer(sm.file, sm.fname, bw, bh)
                                         : new InlineVideoPlayer(lazySrv, sm.fname, bw, bh);
                                     vp.ShapeKey = shapeKey;
+                                    vp.Poster = chanPoster;   // кадр до загрузки файла
                                     // ⛶ — окно просмотра канала: стрелки по
                                     // соседним роликам, скорость, «по кругу».
                                     int capVid = id;

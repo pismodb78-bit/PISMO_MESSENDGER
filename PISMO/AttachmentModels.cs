@@ -14,6 +14,12 @@ namespace PISMO
         public string FileName { get; }
         public AttachKind Kind { get; }
 
+        /// <summary>
+        /// Кадр ролика. Уходит картинкой в ту же строку сообщения, чтобы
+        /// обложка была видна ещё до загрузки файла (см. VideoCover).
+        /// </summary>
+        public byte[] Cover { get; set; }
+
         public PendingAttachment(byte[] data, string fileName, AttachKind kind)
         {
             Data = data;
