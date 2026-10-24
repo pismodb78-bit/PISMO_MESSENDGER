@@ -8701,12 +8701,79 @@ namespace PISMO
             return list;
         }
 
+        /// <summary>
+        /// Все снимки и ролики ПЕРЕПИСКИ ЦЕЛИКОМ — не только загруженной
+        /// страницы.
+        ///
+        /// Раньше просмотр листал лишь то, что успело попасть в ленту: в чате
+        /// с сотней снимков он показывал «7 из 32». Запрос лёгкий — ни одного
+        /// блоба, только номера и имена файлов.
+        /// </summary>
+        private List<MediaRef> AllChatMedia(bool isGroup, int chatId)
+        {
+            var list = new List<MediaRef>();
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                string sql = isGroup
+                    ? @"SELECT m.id, m.file_name, m.created_at,
+                               (m.image_data IS NOT NULL) AS has_img,
+                               (m.file_data IS NOT NULL OR m.file_url IS NOT NULL) AS has_file,
+                               u.name AS sender_name, u.login
+                          FROM group_messages m JOIN users u ON u.id = m.sender_id
+                         WHERE m.group_id=@c AND m.is_deleted=0
+                         ORDER BY m.id ASC LIMIT 600"
+                    : @"SELECT m.id, m.file_name, m.created_at,
+                               (m.image_data IS NOT NULL) AS has_img,
+                               (m.file_data IS NOT NULL OR m.file_url IS NOT NULL) AS has_file,
+                               u.name AS sender_name, u.login
+                          FROM messages m JOIN users u ON u.id = m.sender_id
+                         WHERE ((m.sender_id=@me AND m.receiver_id=@c)
+                             OR (m.sender_id=@c AND m.receiver_id=@me)) AND m.is_deleted=0
+                         ORDER BY m.id ASC LIMIT 600";
+                using var cmd = new MySqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("@c", chatId);
+                if (!isGroup) cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
+                using var rd = cmd.ExecuteReader();
+                while (rd.Read())
+                {
+                    bool hasImg = !rd.IsDBNull(rd.GetOrdinal("has_img"))
+                                  && Convert.ToBoolean(rd["has_img"]);
+                    bool hasFile = !rd.IsDBNull(rd.GetOrdinal("has_file"))
+                                   && Convert.ToBoolean(rd["has_file"]);
+                    string fn = rd["file_name"] == DBNull.Value ? null : rd["file_name"].ToString();
+                    bool isVid = hasFile && !string.IsNullOrEmpty(fn)
+                        && MediaPlayerForm.IsVideo(
+                            Path.GetExtension(fn).TrimStart('.').ToLowerInvariant());
+                    if (!hasImg && !isVid) continue;
+                    string who = rd["sender_name"] == DBNull.Value ? "" : rd["sender_name"].ToString().Trim();
+                    if (string.IsNullOrWhiteSpace(who) && rd["login"] != DBNull.Value)
+                        who = rd["login"].ToString();
+                    list.Add(new MediaRef
+                    {
+                        MsgId = Convert.ToInt32(rd["id"]),
+                        IsVideo = isVid,
+                        FileName = fn,
+                        Sender = who,
+                        When = ToViewerLocal(Convert.ToDateTime(rd["created_at"])),
+                    });
+                }
+            }
+            catch { }
+            return list;
+        }
+
         /// <summary>Открыть просмотр на этом сообщении, с переходами по соседям.</summary>
         internal void OpenMediaViewer(int msgId, bool isGroup)
         {
             try
             {
-                var list = CurrentChatMedia();
+                // Сперва вся переписка, и только если запрос не удался —
+                // то, что есть на странице.
+                int chatId = isGroup ? _currentGroupId : _currentChatPartnerId;
+                var list = AllChatMedia(isGroup, chatId);
+                if (list.Count == 0 || list.FindIndex(m => m.MsgId == msgId) < 0)
+                    list = CurrentChatMedia();
                 int idx = list.FindIndex(m => m.MsgId == msgId);
                 if (idx < 0)
                 {

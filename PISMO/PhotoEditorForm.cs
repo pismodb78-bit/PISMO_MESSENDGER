@@ -105,12 +105,26 @@ namespace PISMO
             _canvas.MouseWheel += Canvas_MouseWheel;
             _canvas.Resize += (s, e) => _canvas.Invalidate();
 
+            // ДВЕ ПОЛОСЫ, А НЕ ОДНА.
+            //
+            // Инструментов стало больше (перо, маркер, неон, ластик, текст,
+            // наклейка, палитра, толщина), и в одну полосу они не влезали: у
+            // неё появлялась полоса прокрутки, которая съедала высоту, и
+            // кнопок было просто не видно. Теперь снизу — кнопки, над ними —
+            // инструменты, и они переносятся на вторую строку.
             var bar = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 56,
+                Height = 48,
                 BackColor = Color.FromArgb(28, 29, 32),
-                Padding = new Padding(10, 10, 10, 10),
+                Padding = new Padding(10, 6, 10, 6),
+            };
+            var toolbar = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 88,
+                BackColor = Color.FromArgb(24, 25, 28),
+                Padding = new Padding(10, 6, 10, 6),
             };
 
             var done = new Button { Text = "Готово", Dock = DockStyle.Right, Width = 130 };
@@ -129,13 +143,13 @@ namespace PISMO
             Flat(undo, Color.FromArgb(57, 60, 66));
             undo.Click += (s, e) => Undo();
 
-            // Инструментов больше, чем влезает в узкое окно, — ряд
-            // прокручивается вбок, а не обрезается.
+            // Переносим на вторую строку, а не прокручиваем: полоса
+            // прокрутки в узкой панели съедала саму панель.
             var tools = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                WrapContents = false,
-                AutoScroll = true,
+                WrapContents = true,
+                AutoScroll = false,
             };
             tools.Controls.Add(ToolButton("Перо", Tool.Pen));
             tools.Controls.Add(ToolButton("Маркер", Tool.Marker));
@@ -200,13 +214,16 @@ namespace PISMO
                 tools.Controls.Add(b);
             }
 
-            bar.Controls.Add(tools);
+            toolbar.Controls.Add(tools);
             bar.Controls.Add(undo);
             bar.Controls.Add(redo);
             bar.Controls.Add(cancel);
             bar.Controls.Add(done);
 
+            // Порядок добавления = порядок раскладки снизу вверх: кнопки у
+            // самого края, над ними инструменты, остальное — холсту.
             Controls.Add(_canvas);
+            Controls.Add(toolbar);
             Controls.Add(bar);
 
             KeyDown += (s, e) =>

@@ -6,6 +6,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Drawing;
 using System.Windows.Forms;
 using MySqlConnector;
@@ -573,6 +574,24 @@ namespace PISMO
             menu.BackColor = Color.FromArgb(24, 25, 28);
             menu.ForeColor = Color.FromArgb(220, 221, 222);
             menu.Font = new Font("Segoe UI", 9.5f);
+
+            // ── Просмотр ─────────────────────────────────────────────────
+            // У ролика своего входа в просмотр не было вовсе: открыть его
+            // можно было только развернув запущенный плеер. Снимку пункт тоже
+            // не мешает — по нему переходы и инструменты те же.
+            if (msgId > 0)
+            {
+                bool vid = !string.IsNullOrWhiteSpace(fileName)
+                    && MediaPlayerForm.IsVideo(
+                        Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant());
+                if (vid || imgBytes is { Length: > 0 })
+                {
+                    int capId = msgId; bool capGrp = isGroup;
+                    menu.Items.Add("Открыть в просмотре", null,
+                        (s, e) => OpenMediaViewer(capId, capGrp));
+                    menu.Items.Add(new ToolStripSeparator());
+                }
+            }
 
             // ── Ссылки ───────────────────────────────────────────────────
             // Сообщение С ЭМОДЗИ рисуется картинкой, и нажать на адрес внутри
