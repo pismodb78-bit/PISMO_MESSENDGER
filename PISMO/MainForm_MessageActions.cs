@@ -910,6 +910,11 @@ namespace PISMO
         private bool ScrollAndFlash(int msgId)
         {
             var found = pnlMessages.Controls.Find("msg" + msgId, false);
+            // Снимок из пачки своего пузыря не имеет — он показан плиткой.
+            // Прыгаем к ней: иначе «показать в чате» для любого фото из
+            // альбома не находило ничего и лента уезжала в конец.
+            if (found.Length == 0 && _albumOf.TryGetValue(msgId, out int owner))
+                found = pnlMessages.Controls.Find("msg" + owner, false);
             if (found.Length == 0 || found[0].IsDisposed) return false;
             var target = found[0];
 
@@ -923,7 +928,15 @@ namespace PISMO
                 if (target.IsDisposed) return;
                 pnlMessages.PerformLayout();
                 int abs = target.Top - pnlMessages.AutoScrollPosition.Y;
-                pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, abs - 12));
+                // ПО СЕРЕДИНЕ ЭКРАНА, а не у верхнего края. Прижатый к краю
+                // пузырь с фото наполовину оказывался за границей окна —
+                // со стороны это и есть «промахнулось». Пузырь выше экрана
+                // ставим верхом: середину такого всё равно не поймать.
+                int view = pnlMessages.ClientSize.Height;
+                int want = target.Height >= view - 24
+                    ? abs - 12
+                    : abs - (view - target.Height) / 2;
+                pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, want));
             }
             ScrollToTarget();
             // Повтор после полного цикла раскладки: если высоты сместились

@@ -7,8 +7,9 @@
 //
 //  Раньше каждое вложение было отдельным пузырём: десяток снимков занимал
 //  ленту на десять прокруток, и понять, что это была одна отправка, было
-//  нельзя. Теперь пачка собирается в плитку: до четырёх — по два в ряд,
-//  дальше по три. Подпись и время — под сеткой, одни на всю пачку.
+//  нельзя. Теперь пачка собирается в плитку мозаикой: ряды разной длины, так
+//  что пустых клеток не остаётся. Подпись и время — под сеткой, одни на всю
+//  пачку.
 //
 //  Кто попал в одну плитку, решает Albums — по тем же признакам, что и на
 //  телефоне: один отправитель, подряд, подпись только у первого. Отдельного
@@ -46,9 +47,9 @@ namespace PISMO
         private readonly Font _capFont = new Font("Segoe UI", 10f);
         private readonly Font _timeFont = new Font("Segoe UI", 7.5f);
 
-        private int _cols;
-        private int _side;
-        private int _gridTop;
+        /// <summary>Готовые прямоугольники ячеек — мозаика считается один раз.</summary>
+        private readonly List<Rectangle> _cells = new();
+        private int _gridBottom;
         private int _capHeight;
 
         /// <summary>Нажали ячейку — открыть именно её.</summary>
@@ -73,16 +74,31 @@ namespace PISMO
             Layout0();
         }
 
-        /// <summary>Пересчитать раскладку и высоту: ячейки квадратные, как в Telegram.</summary>
+        /// <summary>
+        /// Пересчитать раскладку и высоту.
+        ///
+        /// Ряды РАЗНОЙ длины — так плитка заполняется целиком. Раньше ряды были
+        /// одинаковые, и хвост последнего оставался пустым: в пузыре зияла
+        /// синяя проплешина в треть плитки. Теперь ячейки ряда делят ширину
+        /// поровну, поэтому ряд из двух выше ряда из трёх — мозаика, как в
+        /// телеграме.
+        /// </summary>
         private void Layout0()
         {
-            _cols = _items.Count <= 4 ? 2 : 3;
             int gridW = Width - Pad * 2;
-            _side = (gridW - Gap * (_cols - 1)) / _cols;
-            int rows = (int)Math.Ceiling(_items.Count / (double)_cols);
-            _gridTop = Pad;
+            _cells.Clear();
+            int y = Pad;
+            int i = 0;
+            foreach (int count in RowSplit(_items.Count))
+            {
+                int side = (gridW - Gap * (count - 1)) / count;
+                for (int c = 0; c < count && i < _items.Count; c++, i++)
+                    _cells.Add(new Rectangle(Pad + c * (side + Gap), y, side, side));
+                y += side + Gap;
+            }
+            _gridBottom = y;                     // с хвостовым зазором: отсюда подпись
 
-            int h = Pad + rows * _side + (rows - 1) * Gap;
+            int h = _gridBottom - Gap;
 
             _capHeight = 0;
             if (!string.IsNullOrWhiteSpace(_caption))
@@ -99,7 +115,7 @@ namespace PISMO
 
         /// <summary>Миниатюра ячейки — из кеша страницы; чего нет, то дорисуется
         /// после фоновой выборки и следующей перерисовки ленты.</summary>
-        private Bitmap ThumbFor(Item it)
+        private Bitmap ThumbFor(Item it, int side)
         {
             if (_thumbs.TryGetValue(it.MsgId, out var cached)) return cached;
             Bitmap bmp = null;
@@ -110,7 +126,7 @@ namespace PISMO
                 {
                     using var ms = new MemoryStream(bytes);
                     using var src = Image.FromStream(ms);
-                    bmp = CropSquare(src, _side);
+                    bmp = CropSquare(src, side);
                 }
             }
             catch { bmp = null; }
@@ -132,14 +148,23 @@ namespace PISMO
             return dst;
         }
 
-        private Rectangle CellRect(int index)
+        /// <summary>
+        /// Длины рядов плитки: лишних клеток не остаётся. До трёх — один ряд,
+        /// дальше поровну по рядам из двух-четырёх ячеек.
+        /// </summary>
+        private static List<int> RowSplit(int n)
         {
-            int r = index / _cols, c = index % _cols;
-            return new Rectangle(
-                Pad + c * (_side + Gap),
-                _gridTop + r * (_side + Gap),
-                _side, _side);
+            var res = new List<int>();
+            if (n <= 0) return res;
+            if (n <= 3) { res.Add(n); return res; }
+            int rows = (n + 2) / 3;
+            int bas = n / rows, rem = n % rows;
+            for (int i = 0; i < rows; i++) res.Add(i < rem ? bas + 1 : bas);
+            return res;
         }
+
+        private Rectangle CellRect(int index) =>
+            index >= 0 && index < _cells.Count ? _cells[index] : Rectangle.Empty;
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -153,7 +178,7 @@ namespace PISMO
             {
                 var it = _items[i];
                 var rc = CellRect(i);
-                var thumb = ThumbFor(it);
+                var thumb = ThumbFor(it, rc.Width);
                 if (thumb != null)
                 {
                     g.DrawImage(thumb, rc);
@@ -188,7 +213,7 @@ namespace PISMO
                 }
             }
 
-            int y = _gridTop + ((int)Math.Ceiling(_items.Count / (double)_cols)) * (_side + Gap);
+            int y = _gridBottom;
 
             if (_capHeight > 0)
             {

@@ -2383,7 +2383,11 @@ namespace PISMO
                 if (idx < 0) return;
                 MainForm.ShowMediaWithNav(list, idx, m => m.IsVideo
                     ? LoadServerFileBytes(m.MsgId, m.FileName)
-                    : MediaCache.Get(m.MsgId, "simg", null));
+                    : MediaCache.Get(m.MsgId, "simg", null),
+                    new MediaViewerActions
+                    {
+                        ShowInChat = mid => ScrollToServerMessage(mid),
+                    });
             }
             catch { }
         }
@@ -2779,7 +2783,11 @@ namespace PISMO
                         y += tile.Height + 6;
 
                         AttachServerMsgMenu(holder, head, id, senderId, text, nm);
-                        _msgControls[id] = holder;
+                        // Своего пузыря у снимков пачки нет — все они живут в
+                        // плитке. Записываем каждого, иначе переход к такому
+                        // сообщению («показать в чате», цитата) не находил
+                        // ничего.
+                        foreach (var it0 in tileItems) _msgControls[it0.MsgId] = holder;
                         pending.Add(holder);
                         ri += albumLen - 1;
                         continue;
@@ -3273,7 +3281,13 @@ namespace PISMO
                     if (ctrl.IsDisposed) return;
                     _pnlMessages.PerformLayout();
                     int abs = ctrl.Top - _pnlMessages.AutoScrollPosition.Y;
-                    _pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, abs - 12));
+                    // ПО СЕРЕДИНЕ ЭКРАНА, а не у верхнего края: прижатый к краю
+                    // пузырь с фото наполовину уезжал за границу окна.
+                    int view = _pnlMessages.ClientSize.Height;
+                    int want = ctrl.Height >= view - 24
+                        ? abs - 12
+                        : abs - (view - ctrl.Height) / 2;
+                    _pnlMessages.AutoScrollPosition = new Point(0, Math.Max(0, want));
                 }
                 ScrollToTarget();
                 // Повтор после полного цикла раскладки: если высоты сместились

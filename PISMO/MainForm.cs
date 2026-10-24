@@ -4007,6 +4007,8 @@ namespace PISMO
                 // сорок. Кружки выделения по-прежнему добавляются сразу — они
                 // должны остаться ПОВЕРХ пузырей, а AddRange кладёт добавленное
                 // последним ниже по порядку окон.
+                // Лента собирается заново — старая карта пачек больше не о ней.
+                _albumOf.Clear();
                 var pendingBubbles = BuildRows(dt, myId, isGroup: true,
                                                iBlocked: false, theyBlockedMe: false,
                                                yStart: yOffset).items;
@@ -4380,6 +4382,7 @@ namespace PISMO
             {
                 int yOffset = (iBlocked || theyBlockedMe) ? 10 + 32 + 8 : 10;
                 // См. пояснение в RenderGroupMessages: копим пузыри и добавляем разом.
+                _albumOf.Clear();
                 var pendingBubbles = BuildRows(dt, myId, isGroup: false,
                                                iBlocked: iBlocked, theyBlockedMe: theyBlockedMe,
                                                yStart: yOffset).items;
@@ -4552,6 +4555,9 @@ namespace PISMO
             });
         }
 
+        /// <summary>Сообщение → номер первого сообщения его пачки (плитки).</summary>
+        private readonly Dictionary<int, int> _albumOf = new Dictionary<int, int>();
+
         private (List<Control> items, int yEnd, string lastDate) BuildRows(
             DataTable dt, int myId, bool isGroup, bool iBlocked, bool theyBlockedMe,
             int yStart, string lastDate = "")
@@ -4667,6 +4673,14 @@ namespace PISMO
                     int tileW = Math.Max(360, Math.Min(640,
                         (int)((pnlMessages.ClientSize.Width - 40) * 0.6)));
                     var tile = new AlbumTile(tileItems, text, tileTime, isMine, tileRead, tileW);
+                    // Имя — как у обычного пузыря: по нему прыжки находят
+                    // плитку в ленте. И запоминаем, какая плитка накрыла
+                    // каждое сообщение пачки: «показать в чате» приходит с
+                    // номером снимка, а в ленте его отдельного пузыря нет —
+                    // без этой записи прыжок не находил ничего и скидывал
+                    // ленту вниз.
+                    tile.Name = "msg" + msgId;
+                    foreach (var it0 in tileItems) _albumOf[it0.MsgId] = msgId;
                     tile.CellClicked += it => OpenAlbumCell(it, tileGroup);
                     tile.Top = yOffset;
                     PositionBubble(tile, isMine);
