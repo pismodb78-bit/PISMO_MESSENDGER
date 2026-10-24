@@ -194,6 +194,23 @@ namespace PISMO
         /// <summary>Нажали «развернуть» у плеера в ленте.</summary>
         internal Action ExpandRequested;
 
+        /// <summary>Страница сняла кадр ролика — его можно положить обложкой.</summary>
+        internal Action<byte[]> CoverCaptured;
+
+        /// <summary>Ролик, который играет прямо сейчас, — он один на приложение.</summary>
+        private static InlineVideoPlayer _nowPlaying;
+
+        /// <summary>Поставить на паузу, если страница уже поднята.</summary>
+        internal void PauseNow()
+        {
+            try
+            {
+                if (_web?.CoreWebView2 != null)
+                    _ = _web.CoreWebView2.ExecuteScriptAsync("try{document.getElementById('v').pause()}catch(e){}");
+            }
+            catch { }
+        }
+
         /// <summary>Стрелка на клавиатуре внутри страницы: −1 назад, +1 вперёд.</summary>
         internal Action<int> NavRequested;
 
@@ -294,7 +311,32 @@ namespace PISMO
                     // ⛶ в ленте — открыть окно просмотра; стрелки и Esc
                     // приходят отсюда же: пока курсор в странице, окно их
                     // вообще не видит.
-                    else if (msg == "expand") { try { ExpandRequested?.Invoke(); } catch { } }
+                    else if (msg == "expand")
+                    {
+                        // Разворачиваем в окно просмотра — здесь ролик
+                        // останавливаем, иначе один и тот же играл бы в два
+                        // голоса: в ленте и в просмотре.
+                        PauseNow();
+                        try { ExpandRequested?.Invoke(); } catch { }
+                    }
+                    else if (msg == "playing")
+                    {
+                        // ИГРАЕТ ОДИН РОЛИК. Запустили этот — прежний ставим на
+                        // паузу, где бы он ни был: в ленте или в просмотре.
+                        var prev = _nowPlaying;
+                        _nowPlaying = this;
+                        if (prev != null && !ReferenceEquals(prev, this) && !prev.IsDisposed)
+                            prev.PauseNow();
+                    }
+                    else if (msg.StartsWith("cover:"))
+                    {
+                        try
+                        {
+                            var jpeg = Convert.FromBase64String(msg.Substring(6));
+                            if (jpeg.Length > 0) CoverCaptured?.Invoke(jpeg);
+                        }
+                        catch { }
+                    }
                     else if (msg == "key:prev") { try { NavRequested?.Invoke(-1); } catch { } }
                     else if (msg == "key:next") { try { NavRequested?.Invoke(+1); } catch { } }
                     else if (msg == "key:close") { try { CloseRequested?.Invoke(); } catch { } }
@@ -670,6 +712,7 @@ namespace PISMO
             if (disposing)
             {
                 try { _posterImage?.Dispose(); } catch { }
+                if (ReferenceEquals(_nowPlaying, this)) _nowPlaying = null;
                 CountOut();
                 try { ExitFullScreen(); } catch { }
                 try { _web?.Dispose(); } catch { }

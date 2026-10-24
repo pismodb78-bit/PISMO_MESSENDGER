@@ -6434,6 +6434,10 @@ namespace PISMO
                     // (старый ролик), берём из кеша картинок: туда его кладёт
                     // дописывание обложки, когда файл оказался на руках.
                     vp.Poster = videoPoster ?? MediaCache.Get(msgId, "img", null);
+                    // Обложки нет — плеер снимет кадр сам, когда ролик пойдёт.
+                    if (vp.Poster == null)
+                        vp.CoverCaptured = jpeg => VideoCover.Share(
+                            capturedGroup ? "group_messages" : "messages", capturedId, jpeg);
                     // ⛶ у плеера в ленте открывает окно просмотра: там
                     // соседние ролики стрелками, скорость и «по кругу».
                     vp.ExpandRequested = () =>
@@ -8832,6 +8836,8 @@ namespace PISMO
                     ShowInChat = id => JumpToMessage(id),
                     Reply = id => BeginReply(id, "", null),
                     Delete = id => DeleteMessage(id, grp),
+                    CoverCaptured = (id, jpeg) =>
+                        VideoCover.Share(grp ? "group_messages" : "messages", id, jpeg),
                     // Нарисованное ПРИКРЕПЛЯЕТСЯ к полю ввода, а не уходит
                     // сразу: к снимку можно дописать текст, и уходит всё
                     // одним сообщением — как вложение со скрепки.

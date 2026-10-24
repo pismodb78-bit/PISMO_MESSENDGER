@@ -135,7 +135,29 @@ seek.addEventListener('change',function(){
   if(v.duration>0) v.currentTime=seek.value/1000*v.duration;
   dragging=false;show();});
 
-v.addEventListener('play',function(){play.innerHTML='&#10074;&#10074;';show();});
+v.addEventListener('play',function(){play.innerHTML='&#10074;&#10074;';show();say('playing');});
+
+// ОБЛОЖКА — ПРЯМО С КАДРА, который показывает плеер.
+//
+// Кадр у Проводника Windows умеет не для всех роликов (снятое телефоном в
+// HEVC без расширения кодека он не читает), а раз плеер ролик показывает —
+// кадр у нас уже есть. Снимаем его один раз, уменьшаем и отдаём окну: оно
+// дописывает обложку в сообщение, и её дальше видят все.
+var coverSent=false;
+function sendCover(){
+  if(coverSent||!v.videoWidth||!v.videoHeight) return;
+  try{
+    var k=Math.min(1,640/Math.max(v.videoWidth,v.videoHeight));
+    var c=document.createElement('canvas');
+    c.width=Math.max(1,Math.round(v.videoWidth*k));
+    c.height=Math.max(1,Math.round(v.videoHeight*k));
+    c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+    var url=c.toDataURL('image/jpeg',0.72);
+    if(url&&url.length>64){coverSent=true;say('cover:'+url.substring(url.indexOf(',')+1));}
+  }catch(e){}
+}
+v.addEventListener('loadeddata',function(){setTimeout(sendCover,150);});
+v.addEventListener('timeupdate',function(){if(!coverSent&&v.currentTime>0.2)sendCover();});
 v.addEventListener('pause',function(){play.innerHTML='&#9654;';show();});
 v.addEventListener('loadedmetadata',function(){
   dur.textContent=clock(v.duration);

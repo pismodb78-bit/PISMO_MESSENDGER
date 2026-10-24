@@ -28,6 +28,8 @@ namespace PISMO
         public Action<int> Delete;
         /// <summary>Отправить нарисованное новым снимком в ту же переписку.</summary>
         public Action<byte[]> SendEdited;
+        /// <summary>Плеер снял кадр ролика — положить его обложкой.</summary>
+        public Action<int, byte[]> CoverCaptured;
     }
 
     /// <summary>Одно медиа переписки — для переходов в просмотре.</summary>
@@ -360,6 +362,12 @@ namespace PISMO
                 // Стрелки и Esc приходят из самой страницы: пока курсор в ней,
                 // окно клавиш не видит.
                 _videoHost.NavRequested = d => { try { Step(d); } catch { } };
+                // Кадр, снятый плеером, — обложкой ролику, у которого её нет.
+                int coverId = (_nav != null && _navIdx >= 0 && _navIdx < _nav.Count) ? _nav[_navIdx].MsgId : 0;
+                _videoHost.CoverCaptured = jpeg =>
+                {
+                    try { _actions?.CoverCaptured?.Invoke(coverId, jpeg); } catch { }
+                };
                 _videoHost.CloseRequested = () => { try { Close(); } catch { } };
                 _canvas.Controls.Add(_videoHost);
                 _videoHost.SendToBack();
@@ -424,7 +432,10 @@ namespace PISMO
 
                 menu.Items.Add(new ToolStripMenuItem(_looping ? "Не зацикливать" : "Зациклить", null,
                     (s, e) => ApplyLooping(!_looping)));
-                menu.Items.Add("Открыть в…", null, (s, e) => OpenExternally());
+                // Понятным языком, куда именно: «Открыть в…» без продолжения
+                // ничего не говорило. Открывается программой Windows,
+                // назначенной для этого типа файлов.
+                menu.Items.Add("Открыть в плеере Windows", null, (s, e) => OpenExternally());
             }
 
             if (_actions != null)

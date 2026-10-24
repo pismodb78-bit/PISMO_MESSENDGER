@@ -59,6 +59,33 @@ namespace PISMO
             finally { if (hbm != IntPtr.Zero) try { DeleteObject(hbm); } catch { } }
         }
 
+        /// <summary>
+        /// Положить снятый кадр ОБЛОЖКОЙ: в кеш картинок — чтобы показалась
+        /// уже на следующей отрисовке, — и в саму строку сообщения, если
+        /// обложки там ещё нет. Дальше её видят все клиенты, не скачивая ролик.
+        /// Пишем только в пустое место и молча: прав на чужую строку может и
+        /// не быть.
+        /// </summary>
+        public static void Share(string table, int msgId, byte[] jpeg, string cacheKind = "img")
+        {
+            if (msgId <= 0 || jpeg == null || jpeg.Length == 0 || string.IsNullOrEmpty(table)) return;
+            try { MediaCache.Put(msgId, cacheKind, jpeg, null); } catch { }
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var up = new MySqlConnector.MySqlCommand(
+                        $"UPDATE {table} SET image_data=@img " +
+                        "WHERE id=@id AND (image_data IS NULL OR OCTET_LENGTH(image_data)=0)", conn);
+                    up.Parameters.AddWithValue("@img", jpeg);
+                    up.Parameters.AddWithValue("@id", msgId);
+                    up.ExecuteNonQuery();
+                }
+                catch { }
+            });
+        }
+
         [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
         private static extern void SHCreateItemFromParsingName(
             string path, IntPtr pbc, ref Guid riid,

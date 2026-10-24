@@ -2389,6 +2389,8 @@ namespace PISMO
                     new MediaViewerActions
                     {
                         ShowInChat = mid => ScrollToServerMessage(mid),
+                        CoverCaptured = (mid, jpeg) =>
+                            VideoCover.Share("server_messages", mid, jpeg, "simg"),
                     });
             }
             catch { }
@@ -2958,6 +2960,11 @@ namespace PISMO
                                     // он может лежать в кеше картинок.
                                     vp.Poster = chanPoster ?? MediaCache.Get(id, "simg", null)
                                                            ?? MediaCache.Get(id, "img", null);
+                                    // Обложки нет — снимет сам плеер.
+                                    int capCover = id;
+                                    if (vp.Poster == null)
+                                        vp.CoverCaptured = jpeg =>
+                                            VideoCover.Share("server_messages", capCover, jpeg, "simg");
                                     // ⛶ — окно просмотра канала: стрелки по
                                     // соседним роликам, скорость, «по кругу».
                                     int capVid = id;
