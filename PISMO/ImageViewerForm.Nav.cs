@@ -107,7 +107,11 @@ namespace PISMO
             _spinner = new SpinPanel { Visible = false };
             _canvas.Controls.Add(_spinner);
 
-            _canvas.Resize += (s, e) => LayoutChrome();
+            _canvas.Resize += (s, e) =>
+            {
+                LayoutChrome();
+                if (_videoHost != null && !_videoHost.IsDisposed) _videoHost.Bounds = VideoBox();
+            };
             LayoutChrome();
 
             KeyDown += (s, e) =>
@@ -315,12 +319,23 @@ namespace PISMO
             DropVideo();
             try
             {
-                _videoHost = new InlineVideoPlayer(data, name,
-                    Math.Max(320, _canvas.ClientSize.Width - 40),
-                    Math.Max(240, _canvas.ClientSize.Height - 40))
+                // Видео НЕ растягиваем на всё окно: страница плеера живёт в
+                // отдельном окне Chromium, и оно рисуется поверх любых наших
+                // кнопок, сколько их ни поднимай вперёд. Поэтому оставляем
+                // поля — слева и справа под стрелки, снизу под панель
+                // инструментов: тогда и стрелки видны, и «⋮» со скоростью
+                // нажимается. Раньше они были, но под роликом — и со стороны
+                // это выглядело как «у видео переходов нет».
+                var box = VideoBox();
+                _videoHost = new InlineVideoPlayer(data, name, box.Width, box.Height)
                 {
-                    Dock = DockStyle.Fill,
+                    InlinePage = false,         // ⛶ = настоящий полный экран
+                    Bounds = box,
                 };
+                // Стрелки и Esc приходят из самой страницы: пока курсор в ней,
+                // окно клавиш не видит.
+                _videoHost.NavRequested = d => { try { Step(d); } catch { } };
+                _videoHost.CloseRequested = () => { try { Close(); } catch { } };
                 _canvas.Controls.Add(_videoHost);
                 _videoHost.SendToBack();
                 // Выбранные скорость и «по кругу» переживают переход к
@@ -330,6 +345,17 @@ namespace PISMO
                 LayoutChrome();
             }
             catch { }
+        }
+
+        /// <summary>Место под ролик: поля под стрелки по бокам и панель снизу.</summary>
+        private Rectangle VideoBox()
+        {
+            int w = _canvas.ClientSize.Width, h = _canvas.ClientSize.Height;
+            int side = w > 420 ? 74 : 0;          // в узком окне стрелки не влезут всё равно
+            int bottom = h > 360 ? 66 : 0;
+            return new Rectangle(side, 8,
+                                 Math.Max(160, w - side * 2),
+                                 Math.Max(120, h - bottom - 8));
         }
 
         private void DropVideo()

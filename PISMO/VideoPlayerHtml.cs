@@ -33,6 +33,7 @@ namespace PISMO
         {
             return Template
                 .Replace("__BARBOTTOM__", inline ? "10px" : "48px")
+                .Replace("__INLINE__", inline ? "1" : "0")
                 .Replace("__SRC__", WebUtility.HtmlEncode(src ?? ""));
         }
 
@@ -110,9 +111,23 @@ document.getElementById('back').onclick=function(e){e.stopPropagation();v.curren
 document.getElementById('fwd').onclick=function(e){e.stopPropagation();v.currentTime=Math.min(v.duration||0,v.currentTime+10);show();};
 mute.onclick=function(e){e.stopPropagation();v.muted=!v.muted;
   mute.innerHTML=v.muted?'&#128263;':'&#128266;';show();};
+var INLINE=__INLINE__;
 full.onclick=function(e){e.stopPropagation();
+  // В ЛЕНТЕ разворачивание — это окно просмотра: там и соседние ролики
+  // стрелками, и скорость, и «по кругу». В самом окне — настоящий полный
+  // экран, как раньше.
+  if(INLINE){say('expand');return;}
   var w=document.getElementById('wrap');
   if(document.fullscreenElement) document.exitFullscreen(); else w.requestFullscreen();show();};
+
+// Клавиши ловит САМА СТРАНИЦА: пока в неё вставлен курсор, стрелки до окна
+// не доходят вовсе — и листание соседних роликов не работало.
+document.addEventListener('keydown',function(e){
+  if(e.key==='ArrowLeft'){ if(INLINE){v.currentTime=Math.max(0,v.currentTime-10);show();} else say('key:prev'); e.preventDefault(); }
+  else if(e.key==='ArrowRight'){ if(INLINE){v.currentTime=Math.min(v.duration||0,v.currentTime+10);show();} else say('key:next'); e.preventDefault(); }
+  else if(e.key===' '){ toggle(); e.preventDefault(); }
+  else if(e.key==='Escape'){ if(!INLINE) say('key:close'); }
+});
 
 seek.addEventListener('input',function(){dragging=true;show();
   if(v.duration>0) cur.textContent=clock(seek.value/1000*v.duration);});

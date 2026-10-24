@@ -176,8 +176,20 @@ namespace PISMO
             _mediaRerender.Start();
         }
 
-        private bool HoldRenderWhileWatching()
+        /// <summary>
+        /// Отложить пересборку ленты, пока играет ролик.
+        ///
+        /// ТОЛЬКО для переписки, которая уже на экране. Счётчик просмотров
+        /// общий на всё приложение и держится, пока жив сам проигрыватель, а
+        /// не пока идёт ролик. Из-за этого один запущенный ролик запрещал
+        /// рисовать ЛЮБУЮ другую ленту: переходишь в канал сервера — а там
+        /// пусто, потому что отрисовку отложили «до конца просмотра», который
+        /// не кончится никогда. Чужую ленту рисуем сразу: её пузыри с
+        /// проигрывателем всё равно будут созданы заново.
+        /// </summary>
+        private bool HoldRenderWhileWatching(string key)
         {
+            if (_renderedChatKey != key) return false;
             if (InlineVideoPlayer.Watching <= 0) return false;
             _renderAfterWatch = true;
             return true;
@@ -3957,7 +3969,7 @@ namespace PISMO
             string key = "g" + group,
                    sig = SigOf(dt) + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("g" + group);
             // Данные другие, но в ленте играет ролик — подождём его конца.
-            if ((_renderedChatKey != key || _renderedChatSig != sig) && HoldRenderWhileWatching()) return;
+            if (_renderedChatSig != sig && HoldRenderWhileWatching(key)) return;
             // Отличается ТОЛЬКО число догруженных вложений — копим.
             bool mediaOnly = _renderedChatKey == key && _renderedChatSig != sig
                              && StripMedia(_renderedChatSig) == StripMedia(sig);
@@ -4304,7 +4316,7 @@ namespace PISMO
                    sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0)
                        + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("d" + partner);
             // Данные другие, но в ленте играет ролик — подождём его конца.
-            if ((_renderedChatKey != key || _renderedChatSig != sig) && HoldRenderWhileWatching()) return;
+            if (_renderedChatSig != sig && HoldRenderWhileWatching(key)) return;
             // Отличается ТОЛЬКО число догруженных вложений — копим.
             bool mediaOnly = _renderedChatKey == key && _renderedChatSig != sig
                              && StripMedia(_renderedChatSig) == StripMedia(sig);
@@ -6381,6 +6393,14 @@ namespace PISMO
                         : new InlineVideoPlayer(() => LoadFileBytes(capturedId, capturedName, capturedGroup),
                                                 fileName, boxW, boxH);
                     vp.ShapeKey = shapeKey;
+                    // ⛶ у плеера в ленте открывает окно просмотра: там
+                    // соседние ролики стрелками, скорость и «по кругу».
+                    vp.ExpandRequested = () =>
+                    {
+                        var owner = Current;
+                        if (owner != null && !owner.IsDisposed)
+                            owner.OpenMediaViewer(capturedId, capturedGroup);
+                    };
                     vp.Location = new Point(PAD, innerY);
                     bubble.Controls.Add(vp);
                     innerY += boxH + 6;

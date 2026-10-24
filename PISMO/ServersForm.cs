@@ -2557,7 +2557,12 @@ namespace PISMO
             // уничтожает проигрыватель вместе с местом, на котором
             // остановились, — то же, что и в личной переписке. Нарисуем, как
             // только просмотр закончится (см. HookVideoWatching ниже).
-            if ((_renderedKey != key || _renderedSig != sig) && InlineVideoPlayer.Watching > 0)
+            // ТОЛЬКО для канала, который уже на экране: счётчик просмотров
+            // общий на всё приложение и держится, пока жив проигрыватель, а не
+            // пока идёт ролик. Пока условие было шире, один запущенный в
+            // личной переписке ролик запрещал рисовать канал вообще — и чат
+            // сервера открывался ПУСТЫМ, навсегда.
+            if (_renderedKey == key && _renderedSig != sig && InlineVideoPlayer.Watching > 0)
             {
                 _renderAfterWatch = true;
                 return;
@@ -2909,6 +2914,10 @@ namespace PISMO
                                         ? new InlineVideoPlayer(sm.file, sm.fname, bw, bh)
                                         : new InlineVideoPlayer(lazySrv, sm.fname, bw, bh);
                                     vp.ShapeKey = shapeKey;
+                                    // ⛶ — окно просмотра канала: стрелки по
+                                    // соседним роликам, скорость, «по кругу».
+                                    int capVid = id;
+                                    vp.ExpandRequested = () => OpenChannelMediaViewer(capVid);
                                     vp.Location = new Point(LEFT, y);
                                     holder.Controls.Add(vp); y += bh + 6;
                                 }

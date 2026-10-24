@@ -45,6 +45,13 @@ namespace PISMO
         /// </summary>
         public string ShapeKey { get; set; }
 
+        /// <summary>
+        /// Плеер стоит В ЛЕНТЕ (по умолчанию). В окне просмотра ставят false:
+        /// там ⛶ разворачивает на весь экран, а стрелки листают соседние
+        /// ролики, а не перематывают.
+        /// </summary>
+        public bool InlinePage { get; set; } = true;
+
         public InlineVideoPlayer(Func<byte[]> loader, string fileName, int boxW, int boxH)
             : this((byte[])null, fileName, boxW, boxH)
         {
@@ -99,7 +106,7 @@ namespace PISMO
             // проигрывателя: кнопки посередине кадра, полоса времени внизу,
             // и всё это пропадает, пока видео идёт. Она же сообщает сюда
             // 'novideo', если декодировать видеодорожку нечем.
-            string html = VideoPlayerHtml.Page($"https://{Host}/{_safeName}", inline: true);
+            string html = VideoPlayerHtml.Page($"https://{Host}/{_safeName}", inline: InlinePage);
             File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
         }
 
@@ -148,6 +155,15 @@ namespace PISMO
 
         /// <summary>Последний ролик закрылся — отложенное можно наконец нарисовать.</summary>
         internal static event Action WatchingEnded;
+
+        /// <summary>Нажали «развернуть» у плеера в ленте.</summary>
+        internal Action ExpandRequested;
+
+        /// <summary>Стрелка на клавиатуре внутри страницы: −1 назад, +1 вперёд.</summary>
+        internal Action<int> NavRequested;
+
+        /// <summary>Esc внутри страницы.</summary>
+        internal Action CloseRequested;
 
         private bool _counted;
 
@@ -240,6 +256,13 @@ namespace PISMO
                     string msg = null;
                     try { msg = e.TryGetWebMessageAsString(); } catch { }
                     if (msg == "novideo") { try { OnNoVideo(); } catch { } }
+                    // ⛶ в ленте — открыть окно просмотра; стрелки и Esc
+                    // приходят отсюда же: пока курсор в странице, окно их
+                    // вообще не видит.
+                    else if (msg == "expand") { try { ExpandRequested?.Invoke(); } catch { } }
+                    else if (msg == "key:prev") { try { NavRequested?.Invoke(-1); } catch { } }
+                    else if (msg == "key:next") { try { NavRequested?.Invoke(+1); } catch { } }
+                    else if (msg == "key:close") { try { CloseRequested?.Invoke(); } catch { } }
                     else if (msg != null && msg.StartsWith("size:"))
                     {
                         // Форму ролика страница узнаёт по метаданным и

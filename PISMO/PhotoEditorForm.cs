@@ -15,6 +15,9 @@
 //
 //  Ластик стирает НАРИСОВАННОЕ, а не протирает дыру в фотографии: линии
 //  идут отдельным прозрачным слоем, который кладётся поверх снимка.
+//
+//  Наклейку можно двигать мышью, колесом менять её размер, а с Ctrl —
+//  поворачивать.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -54,6 +57,8 @@ namespace PISMO
             public Image Image;
             public PointF Pos;
             public float Scale;
+            /// <summary>Поворот в градусах — колесом с Ctrl.</summary>
+            public float Angle;
         }
 
         private readonly Image _src;
@@ -96,6 +101,8 @@ namespace PISMO
             _canvas.MouseDown += Canvas_MouseDown;
             _canvas.MouseMove += Canvas_MouseMove;
             _canvas.MouseUp += (s, e) => _live = null;
+            // Колесо над наклейкой меняет размер, с Ctrl — поворачивает.
+            _canvas.MouseWheel += Canvas_MouseWheel;
             _canvas.Resize += (s, e) => _canvas.Invalidate();
 
             var bar = new Panel
@@ -288,7 +295,7 @@ namespace PISMO
                     float sw = _frame.Width * st.Scale;
                     float sh = sw * st.Image.Height / st.Image.Width;
                     var c = Denorm(st.Pos);
-                    g.DrawImage(st.Image, new RectangleF(c.X - sw / 2f, c.Y - sh / 2f, sw, sh));
+                    DrawSticker(g, st.Image, c.X, c.Y, sw, sh, st.Angle);
                 }
                 else if (m is TextMark t)
                 {
@@ -371,6 +378,23 @@ namespace PISMO
             }
         }
 
+        /// <summary>
+        /// Наклейка рисуется вокруг своей середины и с поворотом — одним и тем
+        /// же кодом в окне и в готовом файле.
+        /// </summary>
+        private static void DrawSticker(Graphics g, Image img, float cx, float cy,
+                                        float w, float h, float angle)
+        {
+            var save = g.Save();
+            try
+            {
+                g.TranslateTransform(cx, cy);
+                if (Math.Abs(angle) > 0.01f) g.RotateTransform(angle);
+                g.DrawImage(img, new RectangleF(-w / 2f, -h / 2f, w, h));
+            }
+            finally { g.Restore(save); }
+        }
+
         private PointF Denorm(PointF n) =>
             new(_frame.Left + n.X * _frame.Width, _frame.Top + n.Y * _frame.Height);
 
@@ -447,6 +471,19 @@ namespace PISMO
                 _live.Points.Add(n.Value);
                 _canvas.Invalidate();
             }
+        }
+
+        private void Canvas_MouseWheel(object sender, MouseEventArgs e)
+        {
+            var st = LastOf<StickerMark>();
+            if (st == null) return;
+            int steps = e.Delta / 120;
+            if (steps == 0) return;
+            if (ModifierKeys.HasFlag(Keys.Control))
+                st.Angle = (st.Angle + steps * 5f) % 360f;
+            else
+                st.Scale = Math.Max(0.05f, Math.Min(1.6f, st.Scale * (steps > 0 ? 1.08f : 1f / 1.08f)));
+            _canvas.Invalidate();
         }
 
         private void AddText()
@@ -568,8 +605,7 @@ namespace PISMO
                         {
                             float sw = w * st.Scale;
                             float sh = sw * st.Image.Height / st.Image.Width;
-                            g.DrawImage(st.Image,
-                                new RectangleF(st.Pos.X * w - sw / 2f, st.Pos.Y * h - sh / 2f, sw, sh));
+                            DrawSticker(g, st.Image, st.Pos.X * w, st.Pos.Y * h, sw, sh, st.Angle);
                         }
                         else if (m is TextMark t)
                         {
