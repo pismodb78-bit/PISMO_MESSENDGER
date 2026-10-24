@@ -8557,7 +8557,8 @@ namespace PISMO
         /// страницы, а внизу видно, который это по счёту и чей.
         /// </summary>
         internal static void ShowMediaWithNav(List<MediaRef> items, int index,
-                                              Func<MediaRef, byte[]> loader)
+                                              Func<MediaRef, byte[]> loader,
+                                              MediaViewerActions actions = null)
         {
             if (items == null || items.Count == 0) return;
             var v = _imageViewer;
@@ -8575,7 +8576,7 @@ namespace PISMO
                 v.BringToFront();
                 v.Activate();
             }
-            v.SetNavigation(items, index, loader);
+            v.SetNavigation(items, index, loader, actions);
         }
 
         /// <summary>Все снимки и ролики ОТКРЫТОЙ страницы переписки, по порядку.</summary>
