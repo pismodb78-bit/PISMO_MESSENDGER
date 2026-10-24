@@ -516,19 +516,67 @@ namespace PISMO
                 if (viaUrl is { Length: > 0 })
                 {
                     MediaCache.Put(msgId, "file", viaUrl, fileName);
+                    ShareVideoCover(table, msgId, fileName, viaUrl);
                     return viaUrl;
                 }
 
                 using var cmd = new MySqlCommand($"SELECT file_data FROM {table} WHERE id=@id", conn);
                 cmd.Parameters.AddWithValue("@id", msgId);
                 cmd.CommandTimeout = 600;
-                using var rd = cmd.ExecuteReader();
-                if (!rd.Read() || rd.IsDBNull(0)) return null;
-                var data = (byte[])rd[0];
+                byte[] data;
+                using (var rd = cmd.ExecuteReader())
+                {
+                    if (!rd.Read() || rd.IsDBNull(0)) return null;
+                    data = (byte[])rd[0];
+                }
                 if (data is { Length: > 0 }) MediaCache.Put(msgId, "file", data, fileName);
+                ShareVideoCover(table, msgId, fileName, data);
                 return data;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Дописать ролику ОБЛОЖКУ, раз его байты уже на руках.
+        ///
+        /// Новые ролики уходят с кадром сразу (см. VideoCover), а у старых его
+        /// взять неоткуда: кадр живёт только в самом файле, а он на сервере.
+        /// Зато как только файл скачан — кадр есть, и мы кладём его в ту же
+        /// строку. Дальше обложку видят ВСЕ, не скачивая ролик.
+        ///
+        /// Пишем только в пустое место и молча: прав на чужую строку может и
+        /// не быть, и это не повод чем-то беспокоить человека.
+        /// </summary>
+        private static void ShareVideoCover(string table, int msgId, string fileName, byte[] data)
+        {
+            if (msgId <= 0 || data == null || data.Length == 0) return;
+            if (string.IsNullOrWhiteSpace(fileName)) return;
+            string ext = Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant();
+            if (!MediaPlayerForm.IsVideo(ext)) return;
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                string tmp = null;
+                try
+                {
+                    // Кадр Проводник умеет доставать только из файла на диске.
+                    tmp = Path.Combine(Path.GetTempPath(),
+                        "pismo-cover-" + Guid.NewGuid().ToString("N") + Path.GetExtension(fileName));
+                    File.WriteAllBytes(tmp, data);
+                    var jpeg = VideoCover.Jpeg(tmp);
+                    if (jpeg == null || jpeg.Length == 0) return;
+
+                    using var conn = DBHelper.OpenConnection();
+                    using var up = new MySqlCommand(
+                        $"UPDATE {table} SET image_data=@img " +
+                        "WHERE id=@id AND (image_data IS NULL OR OCTET_LENGTH(image_data)=0)", conn);
+                    up.Parameters.AddWithValue("@img", jpeg);
+                    up.Parameters.AddWithValue("@id", msgId);
+                    up.ExecuteNonQuery();
+                }
+                catch { }
+                finally { try { if (tmp != null) File.Delete(tmp); } catch { } }
+            });
         }
 
         /// <summary>
