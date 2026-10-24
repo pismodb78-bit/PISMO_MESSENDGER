@@ -733,7 +733,105 @@ namespace PISMO
                 Location = new Point(16, 58)
             });
 
-            _btnSave.Location = new Point(20, pnlChat.Bottom + 20);
+            // ── О приложении ─────────────────────────────────────────────
+            // Как в настройках телефона: проверить связь с сервером и наличие
+            // новой версии, не дожидаясь перезапуска.
+            var pnlAbout = new Panel
+            {
+                BackColor = Color.FromArgb(47, 49, 54),
+                Location = new Point(20, pnlChat.Bottom + 14),
+                Size = new Size(456, 118)
+            };
+            pnlAbout.Controls.Add(new Label
+            {
+                Text = "ℹ О приложении",
+                Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(14, 8)
+            });
+            var lblAboutState = new Label
+            {
+                Text = "",
+                Font = new Font("Segoe UI", 8.5f),
+                ForeColor = Color.FromArgb(160, 163, 170),
+                AutoSize = false,
+                Size = new Size(430, 34),
+                Location = new Point(16, 78)
+            };
+            var btnCheckConn = new Button
+            {
+                Text = "Проверить подключение",
+                Size = new Size(206, 34),
+                Location = new Point(14, 38),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(64, 68, 75),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+                Cursor = Cursors.Hand,
+            };
+            btnCheckConn.FlatAppearance.BorderSize = 0;
+            btnCheckConn.Click += async (s, e) =>
+            {
+                btnCheckConn.Enabled = false;
+                lblAboutState.ForeColor = Color.FromArgb(160, 163, 170);
+                lblAboutState.Text = "Проверяем связь с сервером…";
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                string err = await System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        using var conn = DBHelper.OpenConnection();
+                        using var cmd = new MySqlConnector.MySqlCommand("SELECT 1", conn);
+                        cmd.ExecuteScalar();
+                        return null;
+                    }
+                    catch (Exception ex) { return ex.Message; }
+                });
+                sw.Stop();
+                if (err == null)
+                {
+                    lblAboutState.ForeColor = Color.FromArgb(87, 197, 126);
+                    lblAboutState.Text = $"Сервер на связи — ответ за {sw.ElapsedMilliseconds} мс.";
+                }
+                else
+                {
+                    lblAboutState.ForeColor = Color.FromArgb(240, 120, 120);
+                    lblAboutState.Text = "Нет связи с сервером: " + err;
+                }
+                btnCheckConn.Enabled = true;
+            };
+            var btnCheckUpd = new Button
+            {
+                Text = "Проверить обновления",
+                Size = new Size(206, 34),
+                Location = new Point(234, 38),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(64, 68, 75),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+                Cursor = Cursors.Hand,
+            };
+            btnCheckUpd.FlatAppearance.BorderSize = 0;
+            btnCheckUpd.Click += async (s, e) =>
+            {
+                btnCheckUpd.Enabled = false;
+                lblAboutState.ForeColor = Color.FromArgb(160, 163, 170);
+                lblAboutState.Text = "Ищем новую версию…";
+                bool updating = false;
+                try { updating = await Updater.CheckInteractiveAsync(this); } catch { }
+                if (!updating)
+                {
+                    lblAboutState.ForeColor = Color.FromArgb(160, 163, 170);
+                    lblAboutState.Text = "Проверка завершена.";
+                }
+                btnCheckUpd.Enabled = true;
+            };
+            pnlAbout.Controls.Add(btnCheckConn);
+            pnlAbout.Controls.Add(btnCheckUpd);
+            pnlAbout.Controls.Add(lblAboutState);
+
+            _btnSave.Location = new Point(20, pnlAbout.Bottom + 20);
 
             // Вычисляем реальную высоту всего контента
             int contentHeight = _btnSave.Bottom + 20;
@@ -751,7 +849,7 @@ namespace PISMO
             // Переносим все контролы в scrollPanel
             scrollPanel.Controls.AddRange(new Control[]
             {
-                lblTitle, pnlCamera, pnlMic, pnlScreen, pnlOverlay, pnlKeys, pnlChat, _btnSave
+                lblTitle, pnlCamera, pnlMic, pnlScreen, pnlOverlay, pnlKeys, pnlChat, pnlAbout, _btnSave
             });
 
             // Форма фиксирована — содержимое скроллится

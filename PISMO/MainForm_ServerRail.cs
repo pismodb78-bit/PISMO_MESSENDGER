@@ -228,6 +228,9 @@ namespace PISMO
                         menu.Items.Add($"✓✓  Прочитать все на «{capName}»", null, (s2, e2) =>
                             System.Threading.Tasks.Task.Run(() =>
                                 ServerReads.MarkServerRead(UserSession.EffectiveId, capSid)));
+                        // Выйти с сервера можно было только на телефоне.
+                        menu.Items.Add(new ToolStripSeparator());
+                        menu.Items.Add("🚪  Покинуть сервер", null, (s2, e2) => LeaveServer(capSid, capName));
                         menu.Show(Cursor.Position);
                     };
                     _tooltip.SetToolTip(c, name);
@@ -591,6 +594,56 @@ namespace PISMO
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Покинуть сервер — как на телефоне: участника убираем из сервера,
+        /// остальным сообщаем, что состав сменился. Владельцу выходить нельзя
+        /// — сервер остался бы без хозяина.
+        /// </summary>
+        private void LeaveServer(int serverId, string name)
+        {
+            try
+            {
+                int owner = 0;
+                using (var conn = DBHelper.OpenConnection())
+                using (var cmd = new MySqlCommand("SELECT owner_id FROM servers WHERE id=@s", conn))
+                {
+                    cmd.Parameters.AddWithValue("@s", serverId);
+                    var o = cmd.ExecuteScalar();
+                    if (o != null && o != DBNull.Value) owner = Convert.ToInt32(o);
+                }
+                if (owner == UserSession.EffectiveId)
+                {
+                    MessageBox.Show(this,
+                        "Вы владелец этого сервера — его нельзя покинуть. " +
+                        "Удалить сервер можно в его настройках.",
+                        "PISMO", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (MessageBox.Show(this,
+                        $"Покинуть сервер «{name}»?\n\nВернуться можно будет по его ID, если вас не забанят.",
+                        "PISMO", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                    return;
+
+                using (var conn = DBHelper.OpenConnection())
+                using (var cmd = new MySqlCommand(
+                           "DELETE FROM server_members WHERE server_id=@s AND user_id=@u", conn))
+                {
+                    cmd.Parameters.AddWithValue("@s", serverId);
+                    cmd.Parameters.AddWithValue("@u", UserSession.EffectiveId);
+                    cmd.ExecuteNonQuery();
+                }
+                try { WebSocketSignalingClient.Instance.SendMessage("server_members", 0, serverId, "members"); }
+                catch { }
+
+                LoadServerRailItems();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Не удалось покинуть сервер:\n" + ex.Message, "PISMO");
+            }
         }
     }
 }

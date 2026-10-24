@@ -7844,61 +7844,20 @@ namespace PISMO
             int shown = 0;
             for (int i = 0; i < _pendingAttach.Count; i++)
             {
-                if (x + 54 > roomRight) break;
+                if (x + 76 > roomRight) break;
                 var a = _pendingAttach[i];
-
-                Control cell;
-                if (a.Kind == AttachKind.Image || a.Kind == AttachKind.Gif)
+                // Плитка как на телефоне: номер, крестик, кадр у ролика.
+                // Нажатие — предпросмотр; убирает только крестик.
+                var chip = new AttachChip(a, i + 1, 76) { Location = new Point(x, 7) };
+                var capA = a;
+                chip.Removed += () =>
                 {
-                    try
-                    {
-                        var pb = new PictureBox
-                        {
-                            SizeMode = PictureBoxSizeMode.Zoom,
-                            // Крупнее: на 54 точках не видно, что именно
-                            // приложено, — а панель под это место имеет.
-                            Size = new Size(76, 76),
-                            Location = new Point(x, 7),
-                            Cursor = Cursors.Hand,
-                        };
-                        using var ms = new MemoryStream(a.Data);
-                        pb.Image = Image.FromStream(ms);
-                        cell = pb;
-                    }
-                    catch { cell = MakeFileIcon(a.FileName, 76); cell.Location = new Point(x, 7); }
-                }
-                else
-                {
-                    cell = MakeFileIcon(a.FileName, 76);
-                    cell.Location = new Point(x, 7);
-                }
-                cell.Cursor = Cursors.Hand;
-                var removed = a;
-                cell.Click += (s, ev) =>
-                {
-                    _pendingAttach.Remove(removed);
+                    _pendingAttach.Remove(capA);
                     if (_pendingAttach.Count == 0) _pendingImageBytes = null;
                     ShowPreview();
                 };
-                var tip = new ToolTip();
-                tip.SetToolTip(cell, a.FileName + " — нажмите, чтобы убрать");
-                pnlPreview.Controls.Add(cell);
-
-                // Номер по порядку выбора — поверх миниатюры.
-                int no = i + 1;
-                var num = new Label
-                {
-                    Text = no.ToString(),
-                    Size = new Size(22, 22),
-                    Location = new Point(x, 7),
-                    BackColor = Color.FromArgb(30, 143, 225),
-                    ForeColor = Color.White,
-                    Font = new Font("Segoe UI Semibold", 8f, FontStyle.Bold),
-                    TextAlign = ContentAlignment.MiddleCenter,
-                };
-                pnlPreview.Controls.Add(num);
-                num.BringToFront();
-
+                chip.Opened += () => PreviewPending(capA);
+                pnlPreview.Controls.Add(chip);
                 x += 84;
                 shown++;
             }
@@ -7924,7 +7883,7 @@ namespace PISMO
 
             var hint = new Label
             {
-                Text = "Esc — сбросить всё, клик по миниатюре — убрать одну",
+                Text = "Нажатие — посмотреть и поправить, ✕ — убрать, Esc — сбросить всё",
                 Font = new Font("Segoe UI", 7.5f),
                 ForeColor = Color.FromArgb(130, 133, 140),
                 Location = new Point(x + 6, 46),
@@ -7957,6 +7916,53 @@ namespace PISMO
 
             pnlPreview.Controls.Add(btnCancel);
             pnlPreview.Visible = true;
+        }
+
+        /// <summary>
+        /// Предпросмотр прикреплённого перед отправкой: снимок открывается в
+        /// редакторе, и правка встаёт на место оригинала; ролик — в плеере.
+        /// </summary>
+        private void PreviewPending(PendingAttachment a)
+        {
+            try
+            {
+                int at = _pendingAttach.IndexOf(a);
+                if (at < 0) return;
+
+                if (a.Kind == AttachKind.Image)
+                {
+                    using var ed = new PhotoEditorForm(a.Data);
+                    if (ed.ShowDialog(this) != DialogResult.OK) return;
+                    var res = ed.Result;
+                    if (res == null || res.Length == 0) return;
+                    _pendingAttach[at] = new PendingAttachment(res, a.FileName, AttachKind.Image);
+                    ShowPreview();
+                    return;
+                }
+
+                string ext = Path.GetExtension(a.FileName ?? "").TrimStart('.').ToLowerInvariant();
+                if (a.Kind == AttachKind.File && MediaPlayerForm.IsVideo(ext))
+                {
+                    using var win = new Form
+                    {
+                        Text = a.FileName,
+                        StartPosition = FormStartPosition.CenterParent,
+                        ClientSize = new Size(880, 540),
+                        BackColor = Color.FromArgb(20, 21, 24),
+                        ShowInTaskbar = false,
+                        MinimizeBox = false,
+                    };
+                    var data = a.Data;
+                    var vp = new InlineVideoPlayer(data, a.FileName, 860, 520)
+                    {
+                        Dock = DockStyle.Fill,
+                        InlinePage = false,
+                    };
+                    win.Controls.Add(vp);
+                    win.ShowDialog(this);
+                }
+            }
+            catch { }
         }
 
         /// <summary>Универсальная иконка-плейсхолдер для файлов, не являющихся изображением.</summary>
