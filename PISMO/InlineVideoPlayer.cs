@@ -19,6 +19,9 @@ namespace PISMO
         private readonly Func<byte[]> _loader;   // для больших видео: байты берём по клику
         private readonly string _fileName;
         private WebView2 _web;
+        /// <summary>Чего хотим от ролика, даже если плеер ещё не поднялся.</summary>
+        private double _wantSpeed = 1.0;
+        private bool _wantLoop;
         private string _tempDir;
         private const string Host = "pismo-inline.local";
         private string _safeName;
@@ -98,6 +101,35 @@ namespace PISMO
             // 'novideo', если декодировать видеодорожку нечем.
             string html = VideoPlayerHtml.Page($"https://{Host}/{_safeName}", inline: true);
             File.WriteAllText(Path.Combine(_tempDir, "index.html"), html, System.Text.Encoding.UTF8);
+        }
+
+        /// <summary>Скорость воспроизведения: 0.2 … 2.0.</summary>
+        public void SetSpeed(double v)
+        {
+            _wantSpeed = v <= 0 ? 1.0 : v;
+            PushPlaybackPrefs();
+        }
+
+        /// <summary>Проигрывать по кругу.</summary>
+        public void SetLooping(bool on)
+        {
+            _wantLoop = on;
+            PushPlaybackPrefs();
+        }
+
+        private void PushPlaybackPrefs()
+        {
+            try
+            {
+                var core = _web?.CoreWebView2;
+                if (core == null) return;
+                string speed = _wantSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                string loop = _wantLoop ? "true" : "false";
+                core.ExecuteScriptAsync(
+                    "(function(){var v=document.getElementById('v');" +
+                    "if(v){v.playbackRate=" + speed + ";v.loop=" + loop + ";}})()");
+            }
+            catch { }
         }
 
         /// <summary>
@@ -227,6 +259,9 @@ namespace PISMO
                     }
                 };
                 _web.CoreWebView2.ContainsFullScreenElementChanged += OnFullScreenChanged;
+                // Скорость и «по кругу» могли выбрать ДО того, как плеер
+                // поднялся: применяем, как только страница встала.
+                _web.CoreWebView2.NavigationCompleted += (s, e) => PushPlaybackPrefs();
                 _web.CoreWebView2.Navigate($"https://{Host}/index.html");
             }
             catch { _playing = false; CountOut(); }
