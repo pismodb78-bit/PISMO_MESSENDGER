@@ -2559,12 +2559,23 @@ namespace PISMO
             // уничтожает проигрыватель вместе с местом, на котором
             // остановились, — то же, что и в личной переписке. Нарисуем, как
             // только просмотр закончится (см. HookVideoWatching ниже).
+            // ЛЕНТА ПУСТА, А СООБЩЕНИЯ ЕСТЬ — РИСУЕМ, ЧТО БЫ НИ ГОВОРИЛИ ФЛАГИ.
+            //
+            // У отрисовки несколько причин пропустить работу: та же подпись
+            // страницы, идущий ролик, копящиеся вложения. Любая осечка в них
+            // оставляла канал ПУСТЫМ навсегда: подпись уже записана, а на
+            // экране ничего нет, и каждая следующая попытка считала, что всё
+            // нарисовано. Эта проверка такую яму закрывает — если на экране
+            // пусто, а сообщения есть, рисуем в любом случае.
+            bool emptyOnScreen = dt.Rows.Count > 0 && _pnlMessages.Controls.Count == 0;
+
             // ТОЛЬКО для канала, который уже на экране: счётчик просмотров
             // общий на всё приложение и держится, пока жив проигрыватель, а не
             // пока идёт ролик. Пока условие было шире, один запущенный в
             // личной переписке ролик запрещал рисовать канал вообще — и чат
             // сервера открывался ПУСТЫМ, навсегда.
-            if (_renderedKey == key && _renderedSig != sig && InlineVideoPlayer.Watching > 0)
+            if (!emptyOnScreen && _renderedKey == key && _renderedSig != sig
+                && InlineVideoPlayer.Watching > 0)
             {
                 _renderAfterWatch = true;
                 return;
@@ -2574,7 +2585,7 @@ namespace PISMO
             bool mediaOnly = _renderedKey == key && _renderedSig != sig
                              && MainForm.StripMediaSig(_renderedSig) == MainForm.StripMediaSig(sig);
             if (mediaOnly) ScheduleMediaRerender();
-            if (_renderedKey == key && (_renderedSig == sig || mediaOnly))
+            if (!emptyOnScreen && _renderedKey == key && (_renderedSig == sig || mediaOnly))
             {
                 // См. пояснение в MainForm: без сброса флага догрузка старых сообщений
                 // в канале блокировалась после «пустой» перезагрузки.
@@ -3172,7 +3183,38 @@ namespace PISMO
                 ApplySrvPendingJump();                 // переход к выбранной дате, если он ждёт
                 ChatScroll.ResumeDraw(_pnlMessages);   // разморозка + показ собранного одним движением
             }
-            catch (Exception ex) { try { _pnlMessages.ResumeLayout(); } catch { } ChatScroll.ResumeDraw(_pnlMessages); ShowDbError(ex); }
+            catch (Exception ex)
+            {
+                try { _pnlMessages.ResumeLayout(); } catch { }
+                ChatScroll.ResumeDraw(_pnlMessages);
+                ShowDbError(ex);
+                // И ГОВОРИМ ОБ ЭТОМ ВСЛУХ.
+                //
+                // Сборка ленты падала молча: ShowDbError показывает окно
+                // только про миграцию, всё остальное уходило в отладочный
+                // вывод. Со стороны это выглядело как «в каналах нет
+                // сообщений» — пустой экран без единого слова. Теперь на
+                // пустой ленте остаётся строка с причиной, а подпись
+                // страницы сбрасывается, чтобы следующая попытка не сочла
+                // канал уже нарисованным.
+                _renderedKey = null; _renderedSig = null;
+                try
+                {
+                    if (_pnlMessages.Controls.Count == 0)
+                    {
+                        _pnlMessages.Controls.Add(new Label
+                        {
+                            AutoSize = true,
+                            Location = new Point(16, 16),
+                            MaximumSize = new Size(Math.Max(240, _pnlMessages.ClientSize.Width - 40), 0),
+                            ForeColor = Color.FromArgb(240, 120, 120),
+                            Font = new Font("Segoe UI", 9.5f),
+                            Text = "Не удалось показать сообщения канала:\n" + ex.Message,
+                        });
+                    }
+                }
+                catch { }
+            }
         }
 
         private int _lastSrvTop = int.MaxValue;

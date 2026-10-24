@@ -3975,12 +3975,15 @@ namespace PISMO
             string key = "g" + group,
                    sig = SigOf(dt) + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("g" + group);
             // Данные другие, но в ленте играет ролик — подождём его конца.
-            if (_renderedChatSig != sig && HoldRenderWhileWatching(key)) return;
+            bool emptyOnScreen = dt.Rows.Count > 0 && pnlMessages.Controls.Count == 0;
+            if (!emptyOnScreen && _renderedChatSig != sig && HoldRenderWhileWatching(key)) return;
             // Отличается ТОЛЬКО число догруженных вложений — копим.
             bool mediaOnly = _renderedChatKey == key && _renderedChatSig != sig
                              && StripMedia(_renderedChatSig) == StripMedia(sig);
             if (mediaOnly) ScheduleMediaRerender();
-            if (_renderedChatKey == key && (_renderedChatSig == sig || mediaOnly))
+            // Лента пуста, а сообщения есть — рисуем, что бы ни говорили флаги
+            // (см. то же в ServersForm).
+            if (!emptyOnScreen && _renderedChatKey == key && (_renderedChatSig == sig || mediaOnly))
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
                 // «пустой» перезагрузки (данные не изменились) подгрузка старых
@@ -4322,12 +4325,15 @@ namespace PISMO
                    sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0)
                        + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("d" + partner);
             // Данные другие, но в ленте играет ролик — подождём его конца.
-            if (_renderedChatSig != sig && HoldRenderWhileWatching(key)) return;
+            bool emptyOnScreen = dt.Rows.Count > 0 && pnlMessages.Controls.Count == 0;
+            if (!emptyOnScreen && _renderedChatSig != sig && HoldRenderWhileWatching(key)) return;
             // Отличается ТОЛЬКО число догруженных вложений — копим.
             bool mediaOnly = _renderedChatKey == key && _renderedChatSig != sig
                              && StripMedia(_renderedChatSig) == StripMedia(sig);
             if (mediaOnly) ScheduleMediaRerender();
-            if (_renderedChatKey == key && (_renderedChatSig == sig || mediaOnly))
+            // Лента пуста, а сообщения есть — рисуем, что бы ни говорили флаги
+            // (см. то же в ServersForm).
+            if (!emptyOnScreen && _renderedChatKey == key && (_renderedChatSig == sig || mediaOnly))
             {
                 // Отрисовку пропускаем, но флаг догрузки обязаны снять: иначе после
                 // «пустой» перезагрузки (данные не изменились) подгрузка старых
