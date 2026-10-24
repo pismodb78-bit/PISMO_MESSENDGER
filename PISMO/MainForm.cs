@@ -8655,11 +8655,15 @@ namespace PISMO
                     ShowInChat = id => JumpToMessage(id),
                     Reply = id => BeginReply(id, "", null),
                     Delete = id => DeleteMessage(id, grp),
-                    // Нарисованное уходит новым снимком в эту же переписку.
+                    // Нарисованное ПРИКРЕПЛЯЕТСЯ к полю ввода, а не уходит
+                    // сразу: к снимку можно дописать текст, и уходит всё
+                    // одним сообщением — как вложение со скрепки.
                     SendEdited = data =>
                     {
-                        if (grp) SendGroupMessage("", data, null, null, null, null);
-                        else SendMessage("", data, null, null, null, null);
+                        _pendingAttach.Add(new PendingAttachment(
+                            data, "drawing.jpg", AttachKind.Image));
+                        ShowPreview();
+                        try { txtMessage.Focus(); } catch { }
                     },
                 };
                 ShowMediaWithNav(list, idx, m => m.IsVideo

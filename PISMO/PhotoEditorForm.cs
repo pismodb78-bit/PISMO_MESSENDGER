@@ -2,42 +2,54 @@
 //  PhotoEditorForm — рисование поверх снимка
 // ============================================================
 //
-//  То же, что в редакторе на телефоне и в Telegram: кисть, надпись прямо на
-//  фотографии и наклейка — другой снимок с диска. Гифки в наклейку не берём:
-//  в ней они всё равно замрут первым кадром, а весят как ролик.
+//  То же, что в редакторе на телефоне и в Telegram: перо, маркер, неон,
+//  ластик, надпись прямо на фотографии и наклейка — другой снимок с диска.
+//  Гифки в наклейку не берём: в ней они всё равно замрут первым кадром, а
+//  весят как ролик.
 //
-//  Слои живут в ДОЛЯХ от размера снимка, а не в точках экрана. Поэтому
-//  нарисованное ложится одинаково и в окне, и в готовом файле, какого бы
-//  размера ни была фотография: при сборке доли умножаются на её пиксели.
+//  Слои живут в ДОЛЯХ от размера снимка — и координаты, и толщина линии, и
+//  кегль надписи. Поэтому нарисованное ложится одинаково и в окне, и в
+//  готовом файле, какого бы размера ни была фотография. Раньше толщина
+//  считалась в точках окна и при сборке домножалась на отношение ширин —
+//  тонкая линия в готовом снимке превращалась в жирную полосу.
+//
+//  Ластик стирает НАРИСОВАННОЕ, а не протирает дыру в фотографии: линии
+//  идут отдельным прозрачным слоем, который кладётся поверх снимка.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace PISMO
 {
     internal sealed class PhotoEditorForm : Form
     {
-        private enum Tool { Brush, Text, Sticker }
+        private enum Tool { Pen, Marker, Neon, Eraser, Text, Sticker }
 
-        private sealed class Stroke
+        private abstract class Mark { }
+
+        private sealed class Stroke : Mark
         {
             public readonly List<PointF> Points = new();
             public Color Color;
+            /// <summary>Доля ширины снимка.</summary>
             public float Width;
+            public Tool Kind;
         }
 
-        private sealed class TextMark
+        private sealed class TextMark : Mark
         {
             public string Text;
             public PointF Pos;
             public Color Color;
+            /// <summary>Доля ширины снимка.</summary>
             public float Size;
         }
 
-        private sealed class StickerMark
+        private sealed class StickerMark : Mark
         {
             public Image Image;
             public PointF Pos;
@@ -45,25 +57,26 @@ namespace PISMO
         }
 
         private readonly Image _src;
-        private readonly List<Stroke> _strokes = new();
-        private readonly List<TextMark> _texts = new();
-        private readonly List<StickerMark> _stickers = new();
-        private readonly List<string> _order = new();
+        // Один список на всё нарисованное, по порядку: только так «отменить»
+        // и «вернуть» работают по-человечески — шаг за шагом, что бы это ни
+        // было, линия, надпись или наклейка.
+        private readonly List<Mark> _marks = new();
+        private readonly List<Mark> _undone = new();
 
         private readonly Panel _canvas = new();
-        private Tool _tool = Tool.Brush;
+        private Tool _tool = Tool.Pen;
         private Color _color = Color.FromArgb(255, 59, 48);
-        private float _width = 10f;
+        private float _width = 0.012f;
         private RectangleF _frame;
         private Stroke _live;
+        private readonly List<Button> _toolButtons = new();
 
         /// <summary>Готовый снимок с нарисованным.</summary>
         public byte[] Result { get; private set; }
 
         public PhotoEditorForm(byte[] bytes)
         {
-            using (var ms = new MemoryStream(bytes))
-                _src = Image.FromStream(new MemoryStream(bytes));
+            _src = Image.FromStream(new MemoryStream(bytes));
 
             Text = "Рисование";
             StartPosition = FormStartPosition.CenterParent;
@@ -97,18 +110,32 @@ namespace PISMO
             Flat(done, Color.FromArgb(88, 101, 242));
             done.Click += (s, e) => Finish();
 
-            var cancel = new Button { Text = "Отмена", Dock = DockStyle.Right, Width = 110 };
+            var cancel = new Button { Text = "Отмена", Dock = DockStyle.Right, Width = 100 };
             Flat(cancel, Color.FromArgb(57, 60, 66));
             cancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
 
-            var undo = new Button { Text = "Отменить", Dock = DockStyle.Right, Width = 110 };
+            var redo = new Button { Text = "Вернуть", Dock = DockStyle.Right, Width = 100 };
+            Flat(redo, Color.FromArgb(57, 60, 66));
+            redo.Click += (s, e) => Redo();
+
+            var undo = new Button { Text = "Отменить", Dock = DockStyle.Right, Width = 100 };
             Flat(undo, Color.FromArgb(57, 60, 66));
             undo.Click += (s, e) => Undo();
 
-            var tools = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            tools.Controls.Add(ToolButton("Кисть", () => _tool = Tool.Brush));
-            tools.Controls.Add(ToolButton("Текст", AddText));
-            tools.Controls.Add(ToolButton("Наклейка", AddSticker));
+            // Инструментов больше, чем влезает в узкое окно, — ряд
+            // прокручивается вбок, а не обрезается.
+            var tools = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                WrapContents = false,
+                AutoScroll = true,
+            };
+            tools.Controls.Add(ToolButton("Перо", Tool.Pen));
+            tools.Controls.Add(ToolButton("Маркер", Tool.Marker));
+            tools.Controls.Add(ToolButton("Неон", Tool.Neon));
+            tools.Controls.Add(ToolButton("Ластик", Tool.Eraser));
+            tools.Controls.Add(ActionButton("Текст", AddText));
+            tools.Controls.Add(ActionButton("Наклейка", AddSticker));
             foreach (var c in new[]
                      {
                          Color.FromArgb(255,59,48), Color.FromArgb(255,204,0),
@@ -151,10 +178,16 @@ namespace PISMO
             };
             tools.Controls.Add(more);
 
-            foreach (var w in new[] { 6f, 10f, 18f, 28f })
+            // Толщина — доля ширины снимка; на кнопке пишем по-человечески.
+            foreach (var w in new[] { 0.006f, 0.012f, 0.022f, 0.036f })
             {
                 float captured = w;
-                var b = new Button { Text = ((int)w).ToString(), Size = new Size(36, 28), Margin = new Padding(6, 6, 0, 0) };
+                var b = new Button
+                {
+                    Text = ((int)Math.Round(w * 1000)).ToString(),
+                    Size = new Size(36, 28),
+                    Margin = new Padding(6, 6, 0, 0),
+                };
                 Flat(b, Color.FromArgb(57, 60, 66));
                 b.Click += (s, e) => _width = captured;
                 tools.Controls.Add(b);
@@ -162,6 +195,7 @@ namespace PISMO
 
             bar.Controls.Add(tools);
             bar.Controls.Add(undo);
+            bar.Controls.Add(redo);
             bar.Controls.Add(cancel);
             bar.Controls.Add(done);
 
@@ -172,7 +206,11 @@ namespace PISMO
             {
                 if (e.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); }
                 else if (e.Control && e.KeyCode == Keys.Z) Undo();
+                else if (e.Control && (e.KeyCode == Keys.Y
+                         || (e.Shift && e.KeyCode == Keys.Z))) Redo();
             };
+
+            HighlightTools();
         }
 
         private static void Flat(Button b, Color back)
@@ -186,12 +224,32 @@ namespace PISMO
             b.TabStop = false;
         }
 
-        private Button ToolButton(string title, Action onClick)
+        private Button ActionButton(string title, Action onClick)
         {
-            var b = new Button { Text = title, Size = new Size(96, 28), Margin = new Padding(0, 6, 6, 0) };
+            var b = new Button { Text = title, Size = new Size(90, 28), Margin = new Padding(0, 6, 6, 0) };
             Flat(b, Color.FromArgb(47, 49, 54));
             b.Click += (s, e) => onClick();
             return b;
+        }
+
+        private Button ToolButton(string title, Tool tool)
+        {
+            var b = new Button { Text = title, Size = new Size(84, 28), Margin = new Padding(0, 6, 6, 0) };
+            Flat(b, Color.FromArgb(47, 49, 54));
+            b.Tag = tool;
+            b.Click += (s, e) => { _tool = tool; HighlightTools(); };
+            _toolButtons.Add(b);
+            return b;
+        }
+
+        /// <summary>Выбранный инструмент виден — иначе не угадать, чем рисуешь.</summary>
+        private void HighlightTools()
+        {
+            foreach (var b in _toolButtons)
+            {
+                bool on = b.Tag is Tool t && t == _tool;
+                b.BackColor = on ? Color.FromArgb(88, 101, 242) : Color.FromArgb(47, 49, 54);
+            }
         }
 
         private void Canvas_Paint(object sender, PaintEventArgs e)
@@ -207,31 +265,109 @@ namespace PISMO
                                     (_canvas.ClientSize.Height - h) / 2f, w, h);
             g.DrawImage(_src, _frame);
 
-            foreach (var s in _strokes)
+            // Линии — в отдельном прозрачном слое: ластик стирает их, а не
+            // саму фотографию.
+            var pens = _marks.OfType<Stroke>().ToList();
+            if (pens.Count > 0 && _frame.Width >= 1 && _frame.Height >= 1)
             {
-                if (s.Points.Count < 2) continue;
-                using var pen = new Pen(s.Color, Math.Max(1f, s.Width * k))
-                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-                var pts = new PointF[s.Points.Count];
-                for (int i = 0; i < s.Points.Count; i++) pts[i] = Denorm(s.Points[i]);
-                g.DrawLines(pen, pts);
+                using var layer = new Bitmap((int)_frame.Width, (int)_frame.Height,
+                                             System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using (var lg = Graphics.FromImage(layer))
+                {
+                    lg.SmoothingMode = SmoothingMode.AntiAlias;
+                    foreach (var s in pens)
+                        DrawStroke(lg, s, _frame.Width, _frame.Height);
+                }
+                g.DrawImage(layer, _frame.Left, _frame.Top);
             }
 
-            foreach (var st in _stickers)
+            foreach (var m in _marks)
             {
-                float sw = _frame.Width * st.Scale;
-                float sh = sw * st.Image.Height / st.Image.Width;
-                var c = Denorm(st.Pos);
-                g.DrawImage(st.Image, new RectangleF(c.X - sw / 2f, c.Y - sh / 2f, sw, sh));
+                if (m is StickerMark st)
+                {
+                    float sw = _frame.Width * st.Scale;
+                    float sh = sw * st.Image.Height / st.Image.Width;
+                    var c = Denorm(st.Pos);
+                    g.DrawImage(st.Image, new RectangleF(c.X - sw / 2f, c.Y - sh / 2f, sw, sh));
+                }
+                else if (m is TextMark t)
+                {
+                    using var f = new Font("Segoe UI", Math.Max(1f, t.Size * _frame.Width),
+                                           FontStyle.Bold, GraphicsUnit.Pixel);
+                    using var br = new SolidBrush(t.Color);
+                    var c = Denorm(t.Pos);
+                    var size = g.MeasureString(t.Text, f);
+                    g.DrawString(t.Text, f, br, c.X - size.Width / 2f, c.Y - size.Height / 2f);
+                }
             }
+        }
 
-            foreach (var t in _texts)
+        /// <summary>
+        /// Одна линия в слое размером w×h. Координаты — доли, толщина — доля
+        /// ширины: и в окне, и в готовом файле рисуется одним и тем же кодом,
+        /// поэтому что видно, то и уходит.
+        /// </summary>
+        private static void DrawStroke(Graphics g, Stroke s, float w, float h)
+        {
+            float pw = Math.Max(1f, s.Width * w);
+            var pts = new PointF[s.Points.Count];
+            for (int i = 0; i < s.Points.Count; i++)
+                pts[i] = new PointF(s.Points[i].X * w, s.Points[i].Y * h);
+
+            if (s.Points.Count == 1)
             {
-                using var f = new Font("Segoe UI", t.Size * k, FontStyle.Bold, GraphicsUnit.Pixel);
-                using var br = new SolidBrush(t.Color);
-                var c = Denorm(t.Pos);
-                var size = g.MeasureString(t.Text, f);
-                g.DrawString(t.Text, f, br, c.X - size.Width / 2f, c.Y - size.Height / 2f);
+                float r = pw / 2f;
+                if (s.Kind == Tool.Eraser)
+                {
+                    var save = g.CompositingMode;
+                    g.CompositingMode = CompositingMode.SourceCopy;
+                    using var clear = new SolidBrush(Color.Transparent);
+                    g.FillEllipse(clear, pts[0].X - r * 1.6f, pts[0].Y - r * 1.6f, r * 3.2f, r * 3.2f);
+                    g.CompositingMode = save;
+                    return;
+                }
+                using var dot = new SolidBrush(s.Color);
+                g.FillEllipse(dot, pts[0].X - r, pts[0].Y - r, pw, pw);
+                return;
+            }
+            if (s.Points.Count < 2) return;
+
+            switch (s.Kind)
+            {
+                case Tool.Eraser:
+                {
+                    var save = g.CompositingMode;
+                    g.CompositingMode = CompositingMode.SourceCopy;
+                    using var pen = new Pen(Color.Transparent, pw * 1.6f)
+                    { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+                    g.DrawLines(pen, pts);
+                    g.CompositingMode = save;
+                    break;
+                }
+                case Tool.Marker:
+                {
+                    using var pen = new Pen(Color.FromArgb(102, s.Color), pw * 1.8f)
+                    { StartCap = LineCap.Square, EndCap = LineCap.Square, LineJoin = LineJoin.Round };
+                    g.DrawLines(pen, pts);
+                    break;
+                }
+                case Tool.Neon:
+                {
+                    using var glow = new Pen(Color.FromArgb(90, s.Color), pw * 2.6f)
+                    { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+                    g.DrawLines(glow, pts);
+                    using var core = new Pen(Color.White, Math.Max(1f, pw * 0.6f))
+                    { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+                    g.DrawLines(core, pts);
+                    break;
+                }
+                default:
+                {
+                    using var pen = new Pen(s.Color, pw)
+                    { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+                    g.DrawLines(pen, pts);
+                    break;
+                }
             }
         }
 
@@ -247,6 +383,20 @@ namespace PISMO
             return new PointF(x, y);
         }
 
+        private void Add(Mark m)
+        {
+            _marks.Add(m);
+            // Новое действие обрывает ветку «вернуть» — как в любом редакторе.
+            _undone.Clear();
+        }
+
+        private T LastOf<T>() where T : Mark
+        {
+            for (int i = _marks.Count - 1; i >= 0; i--)
+                if (_marks[i] is T t) return t;
+            return null;
+        }
+
         private void Canvas_MouseDown(object sender, MouseEventArgs e)
         {
             if (e.Button != MouseButtons.Left) return;
@@ -255,17 +405,23 @@ namespace PISMO
 
             switch (_tool)
             {
-                case Tool.Brush:
-                    _live = new Stroke { Color = _color, Width = _width };
-                    _live.Points.Add(n.Value);
-                    _strokes.Add(_live);
-                    _order.Add("stroke");
-                    break;
                 case Tool.Text:
-                    if (_texts.Count > 0) { _texts[^1].Pos = n.Value; _canvas.Invalidate(); }
+                {
+                    var t = LastOf<TextMark>();
+                    if (t != null) { t.Pos = n.Value; _canvas.Invalidate(); }
                     break;
+                }
                 case Tool.Sticker:
-                    if (_stickers.Count > 0) { _stickers[^1].Pos = n.Value; _canvas.Invalidate(); }
+                {
+                    var st = LastOf<StickerMark>();
+                    if (st != null) { st.Pos = n.Value; _canvas.Invalidate(); }
+                    break;
+                }
+                default:
+                    _live = new Stroke { Color = _color, Width = _width, Kind = _tool };
+                    _live.Points.Add(n.Value);
+                    Add(_live);
+                    _canvas.Invalidate();
                     break;
             }
         }
@@ -276,19 +432,19 @@ namespace PISMO
             var n = Norm(e.Location);
             if (n == null) return;
 
-            if (_tool == Tool.Brush && _live != null)
+            if (_tool == Tool.Text)
+            {
+                var t = LastOf<TextMark>();
+                if (t != null) { t.Pos = n.Value; _canvas.Invalidate(); }
+            }
+            else if (_tool == Tool.Sticker)
+            {
+                var st = LastOf<StickerMark>();
+                if (st != null) { st.Pos = n.Value; _canvas.Invalidate(); }
+            }
+            else if (_live != null)
             {
                 _live.Points.Add(n.Value);
-                _canvas.Invalidate();
-            }
-            else if (_tool == Tool.Text && _texts.Count > 0)
-            {
-                _texts[^1].Pos = n.Value;
-                _canvas.Invalidate();
-            }
-            else if (_tool == Tool.Sticker && _stickers.Count > 0)
-            {
-                _stickers[^1].Pos = n.Value;
                 _canvas.Invalidate();
             }
         }
@@ -296,16 +452,19 @@ namespace PISMO
         private void AddText()
         {
             _tool = Tool.Text;
+            HighlightTools();
             string text = Prompt("Надпись на фото");
             if (string.IsNullOrWhiteSpace(text)) return;
-            _texts.Add(new TextMark { Text = text, Pos = new PointF(0.5f, 0.5f), Color = _color, Size = 28f });
-            _order.Add("text");
+            // Кегль — доля ширины снимка: иначе на большом снимке надпись
+            // выходила мелкой, а на маленьком — во весь кадр.
+            Add(new TextMark { Text = text, Pos = new PointF(0.5f, 0.5f), Color = _color, Size = 0.06f });
             _canvas.Invalidate();
         }
 
         private void AddSticker()
         {
             _tool = Tool.Sticker;
+            HighlightTools();
             using var dlg = new OpenFileDialog
             {
                 Title = "Наклейка — снимок с диска",
@@ -316,8 +475,7 @@ namespace PISMO
             try
             {
                 var img = Image.FromStream(new MemoryStream(File.ReadAllBytes(dlg.FileName)));
-                _stickers.Add(new StickerMark { Image = img, Pos = new PointF(0.5f, 0.45f), Scale = 0.35f });
-                _order.Add("sticker");
+                Add(new StickerMark { Image = img, Pos = new PointF(0.5f, 0.45f), Scale = 0.35f });
                 _canvas.Invalidate();
             }
             catch { }
@@ -325,16 +483,21 @@ namespace PISMO
 
         private void Undo()
         {
-            if (_order.Count == 0) return;
-            string last = _order[^1];
-            _order.RemoveAt(_order.Count - 1);
-            if (last == "stroke" && _strokes.Count > 0) _strokes.RemoveAt(_strokes.Count - 1);
-            else if (last == "text" && _texts.Count > 0) _texts.RemoveAt(_texts.Count - 1);
-            else if (last == "sticker" && _stickers.Count > 0)
-            {
-                try { _stickers[^1].Image?.Dispose(); } catch { }
-                _stickers.RemoveAt(_stickers.Count - 1);
-            }
+            if (_marks.Count == 0) return;
+            var last = _marks[^1];
+            _marks.RemoveAt(_marks.Count - 1);
+            // Наклейку не выбрасываем: её ещё могут вернуть.
+            _undone.Add(last);
+            if (ReferenceEquals(last, _live)) _live = null;
+            _canvas.Invalidate();
+        }
+
+        private void Redo()
+        {
+            if (_undone.Count == 0) return;
+            var back = _undone[^1];
+            _undone.RemoveAt(_undone.Count - 1);
+            _marks.Add(back);
             _canvas.Invalidate();
         }
 
@@ -382,36 +545,41 @@ namespace PISMO
                     g.DrawImage(_src, 0, 0, bmp.Width, bmp.Height);
 
                     float w = bmp.Width, h = bmp.Height;
-                    // Кисть задавалась в точках окна; переводим через ширину,
-                    // иначе на большом снимке линия вышла бы волоском.
-                    float k = w / Math.Max(1f, _frame.Width);
 
-                    foreach (var s in _strokes)
+                    // Линии — тем же кодом, что и в окне, только слой размером
+                    // с настоящий снимок. Толщина — та же доля ширины, поэтому
+                    // линия больше не толстеет при сборке.
+                    var pens = _marks.OfType<Stroke>().ToList();
+                    if (pens.Count > 0)
                     {
-                        if (s.Points.Count < 2) continue;
-                        using var pen = new Pen(s.Color, Math.Max(1f, s.Width * k))
-                        { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-                        var pts = new PointF[s.Points.Count];
-                        for (int i = 0; i < s.Points.Count; i++)
-                            pts[i] = new PointF(s.Points[i].X * w, s.Points[i].Y * h);
-                        g.DrawLines(pen, pts);
+                        using var layer = new Bitmap(bmp.Width, bmp.Height,
+                                                     System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                        using (var lg = Graphics.FromImage(layer))
+                        {
+                            lg.SmoothingMode = SmoothingMode.AntiAlias;
+                            foreach (var s in pens) DrawStroke(lg, s, w, h);
+                        }
+                        g.DrawImage(layer, 0, 0);
                     }
 
-                    foreach (var st in _stickers)
+                    foreach (var m in _marks)
                     {
-                        float sw = w * st.Scale;
-                        float sh = sw * st.Image.Height / st.Image.Width;
-                        g.DrawImage(st.Image,
-                            new RectangleF(st.Pos.X * w - sw / 2f, st.Pos.Y * h - sh / 2f, sw, sh));
-                    }
-
-                    foreach (var t in _texts)
-                    {
-                        using var f = new Font("Segoe UI", t.Size * k, FontStyle.Bold, GraphicsUnit.Pixel);
-                        using var br = new SolidBrush(t.Color);
-                        var size = g.MeasureString(t.Text, f);
-                        g.DrawString(t.Text, f, br,
-                            t.Pos.X * w - size.Width / 2f, t.Pos.Y * h - size.Height / 2f);
+                        if (m is StickerMark st)
+                        {
+                            float sw = w * st.Scale;
+                            float sh = sw * st.Image.Height / st.Image.Width;
+                            g.DrawImage(st.Image,
+                                new RectangleF(st.Pos.X * w - sw / 2f, st.Pos.Y * h - sh / 2f, sw, sh));
+                        }
+                        else if (m is TextMark t)
+                        {
+                            using var f = new Font("Segoe UI", Math.Max(1f, t.Size * w),
+                                                   FontStyle.Bold, GraphicsUnit.Pixel);
+                            using var br = new SolidBrush(t.Color);
+                            var size = g.MeasureString(t.Text, f);
+                            g.DrawString(t.Text, f, br,
+                                t.Pos.X * w - size.Width / 2f, t.Pos.Y * h - size.Height / 2f);
+                        }
                     }
                 }
 
@@ -433,7 +601,10 @@ namespace PISMO
             if (disposing)
             {
                 try { _src?.Dispose(); } catch { }
-                foreach (var st in _stickers) { try { st.Image?.Dispose(); } catch { } }
+                foreach (var m in _marks)
+                    if (m is StickerMark st) { try { st.Image?.Dispose(); } catch { } }
+                foreach (var m in _undone)
+                    if (m is StickerMark st) { try { st.Image?.Dispose(); } catch { } }
             }
             base.Dispose(disposing);
         }

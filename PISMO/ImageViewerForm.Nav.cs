@@ -440,7 +440,11 @@ namespace PISMO
                 using var ed = new PhotoEditorForm(_curBytes);
                 if (ed.ShowDialog(this) != DialogResult.OK) return;
                 var result = ed.Result;
-                if (result != null && result.Length > 0) _actions?.SendEdited?.Invoke(result);
+                if (result == null || result.Length == 0) return;
+                _actions?.SendEdited?.Invoke(result);
+                // Снимок прикреплён к полю ввода — закрываем просмотр, иначе
+                // поля с дописанным текстом за ним не видно.
+                Close();
             }
             catch { }
         }
