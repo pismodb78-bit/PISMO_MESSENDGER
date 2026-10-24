@@ -6,16 +6,16 @@
 //  отправленная разом, собирается в один альбом.
 //
 //  Почему без отдельного столбца в базе: прав на ALTER у приложения нет (см.
-//  DbMigrator), и «album_id» пришлось бы ждать от администратора, а до тех
-//  пор плиток не было бы вовсе. Поэтому альбом УЗНАЁТСЯ по тем же признакам,
-//  по которым его узнал бы человек: подряд идущие вложения одного
-//  отправителя, где подпись есть только у первого. Ровно так пачка и уходит
-//  из обоих клиентов, а заодно в плитки собирается и всё, отправленное
-//  россыпью раньше.
+//  DbMigrator), и «album_id» пришлось бы ждать от администратора. Поэтому
+//  пачка помечает САМА СЕБЯ: все вложения, кроме первого, уходят с невидимым
+//  знаком вместо текста (U+2063, «невидимый разделитель»). Он ничего не
+//  весит, ничего не показывает и ничего не ломает у клиента, который о нём
+//  не знает, — там это просто сообщение без подписи.
 //
-//  Разрыв по времени нужен для больших роликов: пока такой уезжает на
-//  сервер, соседний по пачке уже лежит в базе. Две минуты — с запасом больше
-//  любой паузы внутри пачки и заметно меньше обычной паузы между отправками.
+//  Раньше пачка угадывалась по времени: подряд, один отправитель, без
+//  подписи и не дальше двух минут. Угадывание ошибалось в обе стороны —
+//  снимки, отправленные ПО ОДНОМУ, слипались в плитку, а пачка с медленным
+//  роликом распадалась. Теперь догадок нет.
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -28,7 +28,18 @@ namespace PISMO
         /// <summary>Больше десяти в одну плитку не кладём — как в Telegram.</summary>
         public const int Max = 10;
 
-        private static readonly TimeSpan Gap = TimeSpan.FromSeconds(120);
+        /// <summary>
+        /// Знак «это продолжение пачки» — невидимый разделитель U+2063. Стоит
+        /// вместо текста у всех вложений пачки, кроме первого.
+        /// </summary>
+        public const string Mark = "\u2063";
+
+        /// <summary>Пришло ли сообщение продолжением пачки.</summary>
+        public static bool IsPart(string text) =>
+            !string.IsNullOrEmpty(text) && text.Trim() == Mark;
+
+        /// <summary>Текст для показа: знак пачки — это не текст.</summary>
+        public static string Strip(string text) => IsPart(text) ? "" : text;
 
         private static bool Flag(DataRow r, string col) =>
             r.Table.Columns.Contains(col) && r[col] != DBNull.Value && Convert.ToBoolean(r[col]);
@@ -52,7 +63,6 @@ namespace PISMO
         }
 
         private static int SenderOf(DataRow r) => Convert.ToInt32(r["sender_id"]);
-        private static DateTime TimeOf(DataRow r) => Convert.ToDateTime(r["created_at"]);
         private static int ReplyOf(DataRow r) =>
             r.Table.Columns.Contains("reply_to_id") && r["reply_to_id"] != DBNull.Value
                 ? Convert.ToInt32(r["reply_to_id"]) : 0;
@@ -74,7 +84,6 @@ namespace PISMO
             if (solo != null && solo(headId)) return 1;
 
             int take = 1;
-            var prevTime = TimeOf(head);
             int sender = SenderOf(head);
 
             for (int i = start + 1; i < rows.Count && take < Max; i++)
@@ -85,13 +94,10 @@ namespace PISMO
                 if (solo != null && solo(id)) break;
                 if (SenderOf(r) != sender) break;
                 if (ReplyOf(r) != 0) break;
-                // Своя подпись — это уже отдельное сообщение, а не продолжение
-                // пачки: подпись бывает только у первого.
-                string text = Crypto.Dec(r["text"].ToString());
-                if (!string.IsNullOrWhiteSpace(text)) break;
-                var t = TimeOf(r);
-                if (t - prevTime > Gap) break;
-                prevTime = t;
+                // В плитку идёт только ОТМЕЧЕННОЕ пачкой. Отправленное по
+                // одному отметки не несёт и остаётся отдельным сообщением,
+                // даже если ушло секунда в секунду.
+                if (!IsPart(Crypto.Dec(r["text"].ToString()))) break;
                 take++;
             }
 

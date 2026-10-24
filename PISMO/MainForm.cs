@@ -2386,7 +2386,9 @@ namespace PISMO
                 bool i = r["i"] != DBNull.Value && Convert.ToInt32(r["i"]) == 1;
                 bool f = r["f"] != DBNull.Value && Convert.ToInt32(r["f"]) == 1;
                 string txt = "";
-                try { txt = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString()); } catch { }
+                // Знак пачки — не текст: в списке чатов он выглядел бы пустой
+                // строкой вместо «Фото» (см. Albums).
+                try { txt = Albums.Strip(Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString())); } catch { }
                 if (a) return "🎤 Голосовое";
                 if (v) return "⭕ Кружок";
                 if (i) return txt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase) ? "🎞 GIF" : "🖼 Фото";
@@ -4607,7 +4609,7 @@ namespace PISMO
                 // Чат в режиме блокировки — входящие скрыты.
                 if (!isGroup && (iBlocked || theyBlockedMe) && !isMine) continue;
 
-                string text = Crypto.Dec(row["text"].ToString());
+                string text = Albums.Strip(Crypto.Dec(row["text"].ToString()));
                 string sname = row["sender_name"].ToString().Trim();
                 if (string.IsNullOrWhiteSpace(sname)) sname = row["login"].ToString();
                 DateTime dt2 = ToViewerLocal(Convert.ToDateTime(row["created_at"]));
@@ -6948,7 +6950,10 @@ namespace PISMO
                 for (int i = 0; i < batch.Count; i++)
                 {
                     var att = batch[i];
-                    string caption = i == 0 ? text : "";   // подпись только первому
+                    // Подпись — только первому, остальным знак пачки: по нему
+                    // лента соберёт плитку. Одиночная отправка знака не несёт
+                    // и остаётся самостоятельным сообщением (см. Albums).
+                    string caption = i == 0 ? text : (batch.Count > 1 ? Albums.Mark : "");
                     bool asImage = att.Kind == AttachKind.Image || att.Kind == AttachKind.Gif;
                     // У ролика картинка — это ОБЛОЖКА: место под неё в строке
                     // свободно, и собеседник видит кадр, не скачивая файл.

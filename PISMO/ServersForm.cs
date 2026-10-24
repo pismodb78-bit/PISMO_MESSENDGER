@@ -2648,7 +2648,8 @@ namespace PISMO
                     int senderId = Convert.ToInt32(r["sender_id"]);
                     string nm = r["nm"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(nm)) nm = r["login"].ToString();
-                    string text = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString());
+                    string text = Albums.Strip(
+                        Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString()));
                     DateTime dtMsg = MainForm.ToViewerLocal(Convert.ToDateTime(r["created_at"]));
                     string time = dtMsg.ToString("HH:mm");
 
@@ -3771,7 +3772,9 @@ namespace PISMO
                 for (int i = 0; i < batch.Count; i++)
                 {
                     var (data, nm, isImg) = batch[i];
-                    string caption = i == 0 ? text : "";
+                    // Знак пачки — всем, кроме первого: по нему лента соберёт
+                    // плитку, а одиночная отправка его не несёт (см. Albums).
+                    string caption = i == 0 ? text : (batch.Count > 1 ? Albums.Mark : "");
                     if (isImg) SendChannelMedia(data, null, null, null, null, caption);
                     else SendChannelMedia(null, null, null, data, nm, caption);
                 }
