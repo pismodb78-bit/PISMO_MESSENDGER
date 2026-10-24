@@ -504,7 +504,16 @@ namespace PISMO
                 if (MediaCache.Has(msgId, "file", fileName))
                 {
                     var cached = MediaCache.Get(msgId, "file", fileName);
-                    if (cached != null && cached.Length > 0) return cached;
+                    if (cached != null && cached.Length > 0)
+                    {
+                        // Файл уже на руках — значит и кадр есть. Старому
+                        // ролику, у которого обложки нет, дописываем её
+                        // отсюда же: иначе до неё дело не доходило вовсе,
+                        // ведь скачивать больше нечего.
+                        ShareVideoCover(isGroup ? "group_messages" : "messages",
+                                        msgId, fileName, cached);
+                        return cached;
+                    }
                 }
 
                 string table = isGroup ? "group_messages" : "messages";
@@ -565,6 +574,10 @@ namespace PISMO
                     File.WriteAllBytes(tmp, data);
                     var jpeg = VideoCover.Jpeg(tmp);
                     if (jpeg == null || jpeg.Length == 0) return;
+
+                    // В кеш картинок — чтобы обложка показалась уже на
+                    // следующей отрисовке, не дожидаясь новой выборки.
+                    try { MediaCache.Put(msgId, "img", jpeg, null); } catch { }
 
                     using var conn = DBHelper.OpenConnection();
                     using var up = new MySqlCommand(

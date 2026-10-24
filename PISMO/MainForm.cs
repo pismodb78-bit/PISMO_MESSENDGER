@@ -5586,6 +5586,14 @@ namespace PISMO
                 foreach (Control ch in bubble.Controls)
                     if (!ReferenceEquals(ch, changed) && ch.Top > y) ch.Top += delta;
                 bubble.Height += delta;
+                // Скруглённые углы заданы областью окна по ПРЕЖНЕЙ высоте:
+                // без пересчёта выросший пузырь обрезался бы по старой рамке.
+                try
+                {
+                    bubble.Region = System.Drawing.Region.FromHrgn(
+                        NativeMethods.CreateRoundRectRgn(0, 0, bubble.Width, bubble.Height, 10, 10));
+                }
+                catch { }
                 bubble.ResumeLayout();
                 RestackBubbles();
             }
@@ -6422,7 +6430,10 @@ namespace PISMO
                         : new InlineVideoPlayer(() => LoadFileBytes(capturedId, capturedName, capturedGroup),
                                                 fileName, boxW, boxH);
                     vp.ShapeKey = shapeKey;
-                    vp.Poster = videoPoster;     // кадр виден до загрузки файла
+                    // Кадр виден до загрузки файла. Если в строке его ещё нет
+                    // (старый ролик), берём из кеша картинок: туда его кладёт
+                    // дописывание обложки, когда файл оказался на руках.
+                    vp.Poster = videoPoster ?? MediaCache.Get(msgId, "img", null);
                     // ⛶ у плеера в ленте открывает окно просмотра: там
                     // соседние ролики стрелками, скорость и «по кругу».
                     vp.ExpandRequested = () =>
@@ -6782,6 +6793,24 @@ namespace PISMO
             int h = TextRenderer.MeasureText(text, font, new Size(w, 0),
                 TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl).Height + 6;
             rtb.Size = new Size(w, h);
+
+            // ВЫСОТУ СПРАШИВАЕМ У САМОГО ПОЛЯ.
+            //
+            // MeasureText переносит по СЛОВАМ, а длинная ссылка — это одно
+            // слово на тысячу знаков: мерка давала одну-две строки, поле
+            // рисовало десять, и хвост адреса оказывался срезан. RichTextBox
+            // сам сообщает, сколько места заняло содержимое, — берём эту
+            // высоту и подрастаем вместе с пузырём.
+            rtb.ContentsResized += (s, e) =>
+            {
+                int want = e.NewRectangle.Height + 6;
+                if (want <= rtb.Height) return;
+                int before = rtb.Height;
+                rtb.Height = want;
+                var owner = Current;
+                if (owner != null && !owner.IsDisposed)
+                    owner.GrowBubble(rtb.Parent as Panel, rtb, before);
+            };
             return rtb;
         }
 
@@ -8774,12 +8803,15 @@ namespace PISMO
         {
             try
             {
-                // Сперва вся переписка, и только если запрос не удался —
-                // то, что есть на странице.
+                // ОТКРЫВАЕМ СРАЗУ, по тому, что уже на странице.
+                //
+                // Полный список — это запрос к базе, и делать его до показа
+                // окна значит держать человека перед замершим приложением:
+                // просмотр открывался с заметной задержкой. Полный список
+                // приезжает следом, в фоне, и подменяет ленту просмотра —
+                // ровно как на телефоне.
                 int chatId = isGroup ? _currentGroupId : _currentChatPartnerId;
-                var list = AllChatMedia(isGroup, chatId);
-                if (list.Count == 0 || list.FindIndex(m => m.MsgId == msgId) < 0)
-                    list = CurrentChatMedia();
+                var list = CurrentChatMedia();
                 int idx = list.FindIndex(m => m.MsgId == msgId);
                 if (idx < 0)
                 {
@@ -8805,11 +8837,32 @@ namespace PISMO
                         try { txtMessage.Focus(); } catch { }
                     },
                 };
-                ShowMediaWithNav(list, idx, m => m.IsVideo
+                Func<MediaRef, byte[]> loader = m => m.IsVideo
                     ? LoadFileBytes(m.MsgId, m.FileName, grp)
                     : (MediaCache.Get(m.MsgId, "img", m.FileName)
-                       ?? LoadMediaForMessage(m.MsgId, m.FileName, true, false, false, false, grp).img),
-                    actions);
+                       ?? LoadMediaForMessage(m.MsgId, m.FileName, true, false, false, false, grp).img);
+                ShowMediaWithNav(list, idx, loader, actions);
+
+                // Полная лента — следом и в фоне: окно уже открыто, а список
+                // соседей просто становится шире.
+                int capMsg = msgId;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    var full = AllChatMedia(grp, chatId);
+                    if (full.Count <= list.Count) return;
+                    int at = full.FindIndex(m => m.MsgId == capMsg);
+                    if (at < 0) return;
+                    try
+                    {
+                        BeginInvoke(new Action(() =>
+                        {
+                            var v = _imageViewer;
+                            if (v == null || v.IsDisposed) return;
+                            v.ExtendNavigation(full, at, loader);
+                        }));
+                    }
+                    catch { }
+                });
             }
             catch { }
         }

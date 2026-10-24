@@ -69,6 +69,31 @@ namespace PISMO
             GoTo(index);
         }
 
+        /// <summary>
+        /// Подменить ленту на ПОЛНУЮ, не трогая показанное.
+        ///
+        /// Окно открывается мгновенно — по тому, что уже на странице
+        /// переписки, — а полный список соседей приезжает следом, из базы.
+        /// Показанный кадр остаётся на месте, меняются только соседи и
+        /// счётчик.
+        /// </summary>
+        public void ExtendNavigation(List<MediaRef> items, int index, Func<MediaRef, byte[]> loader)
+        {
+            if (items == null || items.Count == 0) return;
+            if (index < 0 || index >= items.Count) return;
+            // Открыт не тот кадр — значит человек уже перелистнул; не мешаем.
+            var cur = (_nav != null && _navIdx >= 0 && _navIdx < _nav.Count) ? _nav[_navIdx] : null;
+            if (cur != null && items[index].MsgId != cur.MsgId) return;
+
+            _nav = items;
+            _navIdx = index;
+            if (loader != null) _navLoader = loader;
+            EnsureChrome();
+            _btnPrev.Visible = index > 0;
+            _btnNext.Visible = index < items.Count - 1;
+            UpdateInfo(items[index]);
+        }
+
         private void EnsureChrome()
         {
             if (_btnPrev != null) return;

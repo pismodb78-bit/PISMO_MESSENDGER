@@ -50,6 +50,8 @@ namespace PISMO
             public Color Color;
             /// <summary>Доля ширины снимка.</summary>
             public float Size;
+            /// <summary>Поворот в градусах — колесом с Ctrl или правой кнопкой.</summary>
+            public float Angle;
         }
 
         private sealed class StickerMark : Mark
@@ -358,12 +360,8 @@ namespace PISMO
                 }
                 else if (m is TextMark t)
                 {
-                    using var f = new Font("Segoe UI", Math.Max(1f, t.Size * _frame.Width),
-                                           FontStyle.Bold, GraphicsUnit.Pixel);
-                    using var br = new SolidBrush(t.Color);
                     var c = Denorm(t.Pos);
-                    var size = g.MeasureString(t.Text, f);
-                    g.DrawString(t.Text, f, br, c.X - size.Width / 2f, c.Y - size.Height / 2f);
+                    DrawText(g, t, _frame.Width, c.X, c.Y);
                 }
             }
         }
@@ -454,6 +452,26 @@ namespace PISMO
             finally { g.Restore(save); }
         }
 
+        /// <summary>
+        /// Надпись вокруг своей середины и с поворотом — одним и тем же кодом
+        /// в окне и в готовом файле, чтобы что видно, то и уходило.
+        /// </summary>
+        private static void DrawText(Graphics g, TextMark t, float baseW, float cx, float cy)
+        {
+            using var f = new Font("Segoe UI", Math.Max(1f, t.Size * baseW),
+                                   FontStyle.Bold, GraphicsUnit.Pixel);
+            using var br = new SolidBrush(t.Color);
+            var size = g.MeasureString(t.Text, f);
+            var save = g.Save();
+            try
+            {
+                g.TranslateTransform(cx, cy);
+                if (Math.Abs(t.Angle) > 0.01f) g.RotateTransform(t.Angle);
+                g.DrawString(t.Text, f, br, -size.Width / 2f, -size.Height / 2f);
+            }
+            finally { g.Restore(save); }
+        }
+
         private PointF Denorm(PointF n) =>
             new(_frame.Left + n.X * _frame.Width, _frame.Top + n.Y * _frame.Height);
 
@@ -532,16 +550,34 @@ namespace PISMO
             }
         }
 
+        /// <summary>
+        /// Колесо над холстом меняет РАЗМЕР последнего добавленного — наклейки
+        /// или надписи, — а с Ctrl (или с зажатой правой кнопкой) поворачивает
+        /// его. Иначе надпись нельзя было ни увеличить, ни наклонить.
+        /// </summary>
         private void Canvas_MouseWheel(object sender, MouseEventArgs e)
         {
-            var st = LastOf<StickerMark>();
-            if (st == null) return;
             int steps = e.Delta / 120;
             if (steps == 0) return;
-            if (ModifierKeys.HasFlag(Keys.Control))
-                st.Angle = (st.Angle + steps * 5f) % 360f;
-            else
-                st.Scale = Math.Max(0.05f, Math.Min(1.6f, st.Scale * (steps > 0 ? 1.08f : 1f / 1.08f)));
+            bool rotate = ModifierKeys.HasFlag(Keys.Control)
+                          || (MouseButtons & MouseButtons.Right) == MouseButtons.Right;
+
+            // Крутим то, что добавили последним: наклейку или надпись.
+            Mark last = null;
+            for (int i = _marks.Count - 1; i >= 0; i--)
+                if (_marks[i] is StickerMark || _marks[i] is TextMark) { last = _marks[i]; break; }
+            if (last == null) return;
+
+            if (last is StickerMark st)
+            {
+                if (rotate) st.Angle = (st.Angle + steps * 5f) % 360f;
+                else st.Scale = Math.Max(0.05f, Math.Min(1.6f, st.Scale * (steps > 0 ? 1.08f : 1f / 1.08f)));
+            }
+            else if (last is TextMark t)
+            {
+                if (rotate) t.Angle = (t.Angle + steps * 5f) % 360f;
+                else t.Size = Math.Max(0.015f, Math.Min(0.5f, t.Size * (steps > 0 ? 1.08f : 1f / 1.08f)));
+            }
             _canvas.Invalidate();
         }
 
@@ -668,12 +704,7 @@ namespace PISMO
                         }
                         else if (m is TextMark t)
                         {
-                            using var f = new Font("Segoe UI", Math.Max(1f, t.Size * w),
-                                                   FontStyle.Bold, GraphicsUnit.Pixel);
-                            using var br = new SolidBrush(t.Color);
-                            var size = g.MeasureString(t.Text, f);
-                            g.DrawString(t.Text, f, br,
-                                t.Pos.X * w - size.Width / 2f, t.Pos.Y * h - size.Height / 2f);
+                            DrawText(g, t, w, t.Pos.X * w, t.Pos.Y * h);
                         }
                     }
                 }

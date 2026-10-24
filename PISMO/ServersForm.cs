@@ -2954,7 +2954,10 @@ namespace PISMO
                                         ? new InlineVideoPlayer(sm.file, sm.fname, bw, bh)
                                         : new InlineVideoPlayer(lazySrv, sm.fname, bw, bh);
                                     vp.ShapeKey = shapeKey;
-                                    vp.Poster = chanPoster;   // кадр до загрузки файла
+                                    // Кадр до загрузки файла; у старых роликов
+                                    // он может лежать в кеше картинок.
+                                    vp.Poster = chanPoster ?? MediaCache.Get(id, "simg", null)
+                                                           ?? MediaCache.Get(id, "img", null);
                                     // ⛶ — окно просмотра канала: стрелки по
                                     // соседним роликам, скорость, «по кругу».
                                     int capVid = id;
