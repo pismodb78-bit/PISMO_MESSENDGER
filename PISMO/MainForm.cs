@@ -17,7 +17,11 @@ namespace PISMO
         // ── Постраничная загрузка переписки (слабое железо / длинные чаты) ──
         // На открытии грузим ПОСЛЕДНИЕ MsgPageSize сообщений; при прокрутке вверх
         // догружаем ещё страницу, сохраняя позицию (не скидывая вниз).
-        private const int MsgPageSize = 40;
+        //
+        // Страница в 28 сообщений, а не 40: открытие чата — это сборка пузырей
+        // со всеми их окнами, и каждое лишнее сообщение видно глазом на старте.
+        // Экран всё равно вмещает меньше, а прокрутка вверх догрузит остальное.
+        private const int MsgPageSize = 28;
         private int _dmLimit = MsgPageSize;         // сколько последних сообщений грузим сейчас (ЛС/группа)
         private bool _dmHasMore;                     // есть ли более старые сообщения
         private bool _dmLoadingOlder;                // идёт догрузка вверх
@@ -4570,6 +4574,11 @@ namespace PISMO
         /// <summary>Сообщение → номер первого сообщения его пачки (плитки).</summary>
         private readonly Dictionary<int, int> _albumOf = new Dictionary<int, int>();
 
+        /// <summary>Шрифты подписи со временем — общие: по одному на приложение,
+        /// а не по два на каждый пузырь.</summary>
+        private static readonly Font StampFont = new Font("Segoe UI", 7.5f);
+        private static readonly Font StampBoldFont = new Font("Segoe UI", 7.5f, FontStyle.Bold);
+
         private (List<Control> items, int yEnd, string lastDate) BuildRows(
             DataTable dt, int myId, bool isGroup, bool iBlocked, bool theyBlockedMe,
             int yStart, string lastDate = "")
@@ -6547,35 +6556,46 @@ namespace PISMO
                 }
             }
 
-            // Время (+ "изменено")
-            var lblTime = new Label
-            {
-                Text = isEdited ? $"{time} · изменено" : time,
-                Font = new Font("Segoe UI", 7.5f),
-                ForeColor = Color.FromArgb(isMine ? 180 : 114, isMine ? 186 : 118, isMine ? 255 : 125),
-                AutoSize = true,
-                Location = new Point(PAD, innerY)
-            };
-            bubble.Controls.Add(lblTime);
-
-            // Галочки прочтения (только для моих личных сообщений):
-            // 0 — ✓ серая (отправляется), 1 — ✓✓ серые (доставлено), 2 — ✓✓ синие (прочитано).
+            // ВРЕМЯ И ГАЛОЧКИ — РИСУЕМ, А НЕ КЛАДЁМ КОНТРОЛАМИ.
+            //
+            // Каждый контрол в ленте — это отдельное окно Windows, и при
+            // прокрутке система двигает их все по одному. На длинной ленте
+            // подпись со временем и галочки давали по два лишних окна на
+            // сообщение — то есть сотни лишних окон, которые надо подвинуть
+            // на КАЖДОМ кадре. Отсюда и «будто фпс пятнадцать».
+            //
+            // Ни выделять, ни нажимать их не нужно, поэтому они просто
+            // рисуются на самом пузыре. Привязка — к НИЖНЕМУ краю: пузырь
+            // дорастает, когда доезжает картинка или карточка ссылки, и
+            // подпись должна оставаться под ними.
+            string stampText = isEdited ? $"{time} · изменено" : time;
+            string checkText = readState == 0 ? "✓" : "✓✓";
+            var stampColor = Color.FromArgb(isMine ? 180 : 114, isMine ? 186 : 118, isMine ? 255 : 125);
+            var checkColor = readState == 2
+                ? Color.FromArgb(88, 170, 255)            // прочитано — синие
+                : Color.FromArgb(150, 160, 180);          // доставлено/отправка — серые
+            var stampSize = TextRenderer.MeasureText(stampText, StampFont);
+            int stampW = stampSize.Width;
             if (readState >= 0)
+                stampW += 4 + TextRenderer.MeasureText(checkText, StampBoldFont).Width;
+            int stampH = stampSize.Height;
+            int capRead = readState;
+            // Что ещё встанет НИЖЕ подписи (закреп, чипы реакций) — на столько
+            // поднимаем её от нижнего края. Замыкание держит переменную, а не
+            // её значение, поэтому блоки ниже просто дописывают свою высоту.
+            int stampTail = 0;
+            bubble.Paint += (s, e) =>
             {
-                var lblCheck = new Label
-                {
-                    Text = readState == 0 ? "✓" : "✓✓",
-                    Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
-                    ForeColor = readState == 2
-                        ? Color.FromArgb(88, 170, 255)            // прочитано — синие
-                        : Color.FromArgb(150, 160, 180),          // доставлено/отправка — серые
-                    AutoSize = true,
-                    Location = new Point(lblTime.Right + 4, innerY)
-                };
-                bubble.Controls.Add(lblCheck);
-            }
+                int y = bubble.Height - PAD - stampH - stampTail;
+                TextRenderer.DrawText(e.Graphics, stampText, StampFont,
+                    new Point(PAD, y), stampColor, TextFormatFlags.NoPadding);
+                if (capRead >= 0)
+                    TextRenderer.DrawText(e.Graphics, checkText, StampBoldFont,
+                        new Point(PAD + stampSize.Width + 4, y), checkColor,
+                        TextFormatFlags.NoPadding);
+            };
 
-            innerY += lblTime.PreferredHeight + 4;
+            innerY += stampH + 4;
 
             // ── Закреплено (2.0): маркер под сообщением ──────────────────
             bool isPinned = false;
@@ -6595,6 +6615,7 @@ namespace PISMO
                     };
                     bubble.Controls.Add(pin);
                     innerY += pin.PreferredHeight + 4;
+                    stampTail += pin.PreferredHeight + 4;
                 }
             }
 
@@ -6685,6 +6706,7 @@ namespace PISMO
                     rh = Math.Max(rh, addChip.Height);
 
                     innerY += rh + 6;
+                    stampTail += rh + 6;
                 }
             }
 
@@ -6700,7 +6722,7 @@ namespace PISMO
             innerY = Math.Max(innerY, contentBottom + PAD - 4);
 
             bubble.Size = new Size(
-                Math.Max(120, CalcBubbleWidth(bubble, PAD)),
+                Math.Max(Math.Max(120, stampW + PAD * 2 + 4), CalcBubbleWidth(bubble, PAD)),
                 innerY);
 
             bubble.Region = System.Drawing.Region.FromHrgn(

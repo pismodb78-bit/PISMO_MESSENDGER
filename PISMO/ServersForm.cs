@@ -27,7 +27,9 @@ namespace PISMO
 
         // Постраничная загрузка канала (как в ЛС): последняя страница на открытии,
         // догрузка вверх с сохранением позиции.
-        private const int ChanPageSize = 40;
+        // 28, а не 40: открытие канала — сборка пузырей, и лишние сообщения
+        // видно глазом на старте. Прокрутка вверх догрузит остальное.
+        private const int ChanPageSize = 28;
         private int _srvLimit = ChanPageSize;
         private bool _srvHasMore;
         private bool _srvLoadingOlder;
