@@ -121,6 +121,36 @@ namespace PISMO
                 sw.Click += (s, e) => { _color = captured; _canvas.Invalidate(); };
                 tools.Controls.Add(sw);
             }
+            // Палитра — любой оттенок, а не только готовые. На Windows это
+            // системное окно выбора цвета, к нему все привыкли.
+            var more = new Button { Text = "Палитра…", Size = new Size(92, 28), Margin = new Padding(6, 6, 0, 0) };
+            Flat(more, Color.FromArgb(47, 49, 54));
+            more.Click += (s, e) =>
+            {
+                using var dlg = new ColorDialog
+                {
+                    Color = _color,
+                    FullOpen = true,
+                    AnyColor = true,
+                };
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                _color = dlg.Color;
+                // Выбранный цвет встаёт рядом с готовыми — чтобы вернуться к
+                // нему одним нажатием.
+                var captured = dlg.Color;
+                var sw2 = new Panel
+                {
+                    Size = new Size(26, 26),
+                    Margin = new Padding(6, 6, 0, 0),
+                    BackColor = captured,
+                    Cursor = Cursors.Hand,
+                };
+                sw2.Click += (s2, e2) => { _color = captured; _canvas.Invalidate(); };
+                tools.Controls.Add(sw2);
+                _canvas.Invalidate();
+            };
+            tools.Controls.Add(more);
+
             foreach (var w in new[] { 6f, 10f, 18f, 28f })
             {
                 float captured = w;
