@@ -208,7 +208,24 @@ namespace PISMO
             };
             tile.SetStyle_DoubleBuffer();
 
+            // Ролик показывается КАДРОМ, как в телеграме: иначе в пачке он
+            // неотличим от любого другого файла (см. VideoCover).
+            bool isVid = !isImg && MediaPlayerForm.IsVideo(ext.TrimStart('.'));
+
             Image thumb = null;
+            if (isVid)
+            {
+                try
+                {
+                    var jpeg = VideoCover.Jpeg(path, side * 2);
+                    if (jpeg != null) using (var ms = new MemoryStream(jpeg))
+                    {
+                        using var src = Image.FromStream(ms);
+                        thumb = CropSquare(src, side);
+                    }
+                }
+                catch { thumb = null; }
+            }
             if (isImg)
             {
                 try
@@ -236,7 +253,21 @@ namespace PISMO
             {
                 var g = e.Graphics;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                if (thumb != null) g.DrawImage(thumb, 0, 0, side, side);
+                if (thumb != null)
+                {
+                    g.DrawImage(thumb, 0, 0, side, side);
+                    if (isVid)
+                    {
+                        using var disc = new SolidBrush(Color.FromArgb(120, 0, 0, 0));
+                        g.FillEllipse(disc, side / 2 - 17, side / 2 - 17, 34, 34);
+                        g.FillPolygon(Brushes.White, new[]
+                        {
+                            new Point(side / 2 - 6, side / 2 - 9),
+                            new Point(side / 2 - 6, side / 2 + 9),
+                            new Point(side / 2 + 11, side / 2),
+                        });
+                    }
+                }
                 else
                 {
                     using var bg = new SolidBrush(Color.FromArgb(44, 47, 51));
@@ -279,11 +310,78 @@ namespace PISMO
                     _files.Remove(path);
                     if (_files.Count == 0) { DialogResult = DialogResult.Cancel; Close(); return; }
                     Rebuild();
+                    return;
                 }
+                // Нажатие по самой плитке — предпросмотр с редактором.
+                PreviewFile(path);
             };
             tile.Disposed += (s, e) => { try { thumb?.Dispose(); } catch { } };
             new ToolTip().SetToolTip(tile, name);
             return tile;
+        }
+
+        /// <summary>Квадрат по центру — чтобы плитки не разъезжались.</summary>
+        private static Bitmap CropSquare(Image src, int side)
+        {
+            int cut = Math.Min(src.Width, src.Height);
+            int sx = (src.Width - cut) / 2, sy = (src.Height - cut) / 2;
+            var bmp = new Bitmap(side, side);
+            using var g = Graphics.FromImage(bmp);
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.DrawImage(src, new Rectangle(0, 0, side, side),
+                        new Rectangle(sx, sy, cut, cut), GraphicsUnit.Pixel);
+            return bmp;
+        }
+
+        /// <summary>
+        /// Предпросмотр перед отправкой: снимок открывается в редакторе —
+        /// правка возвращается в ту же пачку, — а ролик в плеере. Раньше
+        /// пачка уходила вслепую.
+        /// </summary>
+        private void PreviewFile(string path)
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            bool isImg = Array.IndexOf(ImageExt, ext) >= 0 && ext != ".gif";
+            try
+            {
+                if (isImg)
+                {
+                    using var ed = new PhotoEditorForm(File.ReadAllBytes(path));
+                    if (ed.ShowDialog(this) != DialogResult.OK) return;
+                    var res = ed.Result;
+                    if (res == null || res.Length == 0) return;
+                    string tmp = Path.Combine(Path.GetTempPath(),
+                        "pismo-edit-" + Guid.NewGuid().ToString("N") + ".jpg");
+                    File.WriteAllBytes(tmp, res);
+                    int i = _files.IndexOf(path);
+                    if (i >= 0) _files[i] = tmp;
+                    Rebuild();
+                    return;
+                }
+
+                if (MediaPlayerForm.IsVideo(ext.TrimStart('.')))
+                {
+                    using var win = new Form
+                    {
+                        Text = Path.GetFileName(path),
+                        StartPosition = FormStartPosition.CenterParent,
+                        ClientSize = new Size(880, 540),
+                        BackColor = Color.FromArgb(20, 21, 24),
+                        ShowInTaskbar = false,
+                        MinimizeBox = false,
+                    };
+                    var capture = path;
+                    var vp = new InlineVideoPlayer(() => File.ReadAllBytes(capture),
+                                                   Path.GetFileName(path), 860, 520)
+                    {
+                        Dock = DockStyle.Fill,
+                        InlinePage = false,
+                    };
+                    win.Controls.Add(vp);
+                    win.ShowDialog(this);
+                }
+            }
+            catch { }
         }
 
         private static string Shorten(string s, int max) =>
