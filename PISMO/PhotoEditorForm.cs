@@ -633,36 +633,97 @@ namespace PISMO
             _canvas.Invalidate();
         }
 
-        private static string Prompt(string title)
+        /// <summary>
+        /// Окно ввода надписи.
+        ///
+        /// Раньше это было поле, прилипшее к краям окна, и кнопка, обрезанная
+        /// нижней кромкой. Теперь — как в остальном приложении: подсказка,
+        /// поле в собственной рамке с отступами, «Отмена» и «Добавить»
+        /// ровным рядом. Размеры пересчитываются под масштаб экрана, иначе на
+        /// 125–150 % кнопки снова уезжали бы за край.
+        /// </summary>
+        private string Prompt(string title)
         {
             using var box = new Form
             {
                 Text = title,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 StartPosition = FormStartPosition.CenterParent,
-                ClientSize = new Size(380, 110),
-                BackColor = Color.FromArgb(32, 34, 37),
+                BackColor = Color.FromArgb(30, 31, 34),
                 ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9.5f),
                 MinimizeBox = false,
                 MaximizeBox = false,
                 ShowInTaskbar = false,
+                AutoScaleMode = AutoScaleMode.None,
+            };
+            float k = DeviceDpi / 96f;
+            int S(int v) => (int)Math.Round(v * k);
+            box.ClientSize = new Size(S(440), S(164));
+
+            var hint = new Label
+            {
+                AutoSize = false,
+                Location = new Point(S(16), S(12)),
+                Size = new Size(S(408), S(20)),
+                ForeColor = Color.FromArgb(150, 153, 160),
+                Text = "Мышью — двигать, колесо — размер, Ctrl+колесо — поворот.",
+            };
+
+            // Поле в своей рамке: текст не прилипает к краям, а рамка
+            // подсвечивается, пока в поле курсор.
+            var field = new Panel
+            {
+                Location = new Point(S(16), S(40)),
+                Size = new Size(S(408), S(44)),
+                BackColor = Color.FromArgb(44, 47, 51),
+                Padding = new Padding(S(12), S(11), S(12), S(8)),
             };
             var tb = new TextBox
             {
-                Dock = DockStyle.Top,
+                Dock = DockStyle.Fill,
+                BorderStyle = BorderStyle.None,
                 BackColor = Color.FromArgb(44, 47, 51),
                 ForeColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle,
-                Margin = new Padding(10),
+                Font = new Font("Segoe UI", 12f),
             };
-            var ok = new Button { Text = "Добавить", Dock = DockStyle.Right, Width = 120, DialogResult = DialogResult.OK };
+            field.Controls.Add(tb);
+            field.Paint += (s, e) =>
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                var c = tb.Focused ? Color.FromArgb(88, 101, 242) : Color.FromArgb(70, 73, 80);
+                using var pen = new Pen(c, tb.Focused ? 2f : 1f);
+                e.Graphics.DrawRectangle(pen, 0.5f, 0.5f, field.Width - 2, field.Height - 2);
+            };
+            tb.GotFocus += (s, e) => field.Invalidate();
+            tb.LostFocus += (s, e) => field.Invalidate();
+
+            // Кнопки — ровным рядом справа, одной высоты, с зазором.
+            var ok = new Button
+            {
+                Text = "Добавить",
+                Size = new Size(S(116), S(36)),
+                Location = new Point(S(440 - 16 - 116), S(108)),
+                DialogResult = DialogResult.OK,
+            };
             Flat(ok, Color.FromArgb(88, 101, 242));
-            var row = new Panel { Dock = DockStyle.Bottom, Height = 40, Padding = new Padding(10) };
-            row.Controls.Add(ok);
-            box.Controls.Add(row);
-            box.Controls.Add(tb);
+            var cancel = new Button
+            {
+                Text = "Отмена",
+                Size = new Size(S(116), S(36)),
+                Location = new Point(S(440 - 16 - 116 - 10 - 116), S(108)),
+                DialogResult = DialogResult.Cancel,
+            };
+            Flat(cancel, Color.FromArgb(57, 60, 66));
+
+            box.Controls.Add(hint);
+            box.Controls.Add(field);
+            box.Controls.Add(cancel);
+            box.Controls.Add(ok);
             box.AcceptButton = ok;
-            return box.ShowDialog() == DialogResult.OK ? tb.Text.Trim() : null;
+            box.CancelButton = cancel;
+            box.Shown += (s, e) => tb.Focus();
+            return box.ShowDialog(this) == DialogResult.OK ? tb.Text.Trim() : null;
         }
 
         private void Finish()

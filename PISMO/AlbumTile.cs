@@ -111,6 +111,42 @@ namespace PISMO
 
             h += 16 + Pad;                       // строка времени и нижнее поле
             Height = h;
+            ApplyRoundRegion();
+        }
+
+        /// <summary>
+        /// Скруглённые углы самой плитки. Нарисовать их мало: окно остаётся
+        /// прямоугольным, и в углах торчал прямой край фона — плитка выглядела
+        /// квадратной коробкой среди круглых пузырей. Область окна обрезаем
+        /// по той же дуге.
+        /// </summary>
+        private void ApplyRoundRegion()
+        {
+            try
+            {
+                using var path = RoundRect(new Rectangle(0, 0, Width, Height), 14);
+                Region = new Region(path);
+            }
+            catch { }
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            ApplyRoundRegion();
+        }
+
+        /// <summary>Прямоугольник со скруглёнными углами.</summary>
+        private static GraphicsPath RoundRect(Rectangle r, int radius)
+        {
+            int d = Math.Max(2, radius * 2);
+            var path = new GraphicsPath();
+            path.AddArc(r.X, r.Y, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         /// <summary>Миниатюра ячейки — из кеша страницы; чего нет, то дорисуется
@@ -175,7 +211,18 @@ namespace PISMO
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
             using (var br = new SolidBrush(BackColor))
-                g.FillRoundedRectangle(br, 0, 0, Width - 1, Height - 1, 10);
+                g.FillRoundedRectangle(br, 0, 0, Width - 1, Height - 1, 14);
+
+            // Внешние углы мозаики скругляем, внутренние стыки оставляем
+            // прямыми — как в телеграме: альбом читается одной карточкой.
+            var gridState = g.Save();
+            if (_cells.Count > 0)
+            {
+                var grid = _cells[0];
+                foreach (var c in _cells) grid = Rectangle.Union(grid, c);
+                using var clip = RoundRect(grid, 9);
+                g.SetClip(clip);
+            }
 
             for (int i = 0; i < _items.Count; i++)
             {
@@ -215,6 +262,8 @@ namespace PISMO
                         TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
             }
+
+            g.Restore(gridState);
 
             int y = _gridBottom;
 
