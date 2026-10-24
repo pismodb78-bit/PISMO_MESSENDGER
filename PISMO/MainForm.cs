@@ -8635,10 +8635,23 @@ namespace PISMO
                     return;
                 }
                 bool grp = isGroup;
+                var actions = new MediaViewerActions
+                {
+                    ShowInChat = id => JumpToMessage(id),
+                    Reply = id => BeginReply(id, "", null),
+                    Delete = id => DeleteMessage(id, grp),
+                    // Нарисованное уходит новым снимком в эту же переписку.
+                    SendEdited = data =>
+                    {
+                        if (grp) SendGroupMessage("", data, null, null, null, null);
+                        else SendMessage("", data, null, null, null, null);
+                    },
+                };
                 ShowMediaWithNav(list, idx, m => m.IsVideo
                     ? LoadFileBytes(m.MsgId, m.FileName, grp)
                     : (MediaCache.Get(m.MsgId, "img", m.FileName)
-                       ?? LoadMediaForMessage(m.MsgId, m.FileName, true, false, false, false, grp).img));
+                       ?? LoadMediaForMessage(m.MsgId, m.FileName, true, false, false, false, grp).img),
+                    actions);
             }
             catch { }
         }
