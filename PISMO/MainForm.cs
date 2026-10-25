@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Diagnostics;
@@ -6002,11 +6002,29 @@ namespace PISMO
             if (feed == null || feed.Count == 0 || pnlMessages == null || pnlMessages.IsDisposed) return;
             int vh = Math.Max(200, pnlMessages.ClientSize.Height);
             int from = -vh * 2, to = vh * 3;
-            List<Control> show = null;
-            foreach (var c in feed)
+
+            // _laidOut хранится в порядке ленты, и Top у его элементов
+            // монотонно растёт. При прокрутке ленты в глубину полный проход
+            // по тысячам пузырей на каждом колёсном событии сам становился
+            // источником рывков. Бинарным поиском находим первый пузырь у
+            // окна, затем проверяем только небольшую окрестность экрана.
+            int lo = 0, hi = feed.Count;
+            while (lo < hi)
             {
-                if (c == null || c.IsDisposed || c.Visible || c.Parent != pnlMessages) continue;
-                if (c.Top <= to && c.Top + c.Height >= from) (show ??= new List<Control>()).Add(c);
+                int mid = lo + ((hi - lo) >> 1);
+                var c = feed[mid];
+                if (c == null || c.IsDisposed || c.Top + c.Height < from) lo = mid + 1;
+                else hi = mid;
+            }
+
+            List<Control> show = null;
+            for (int i = lo; i < feed.Count; i++)
+            {
+                var c = feed[i];
+                if (c == null || c.IsDisposed) continue;
+                if (c.Top > to) break;
+                if (c.Parent != pnlMessages || c.Visible || c.Top + c.Height < from) continue;
+                (show ??= new List<Control>()).Add(c);
             }
             if (show == null) return;
             pnlMessages.SuspendLayout();
@@ -6014,7 +6032,6 @@ namespace PISMO
             finally { pnlMessages.ResumeLayout(false); }
             _cullSettled = false;
         }
-
         private void RevealAllFeed()
         {
             var feed = _laidOut;
