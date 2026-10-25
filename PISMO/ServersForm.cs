@@ -2786,6 +2786,7 @@ namespace PISMO
                 _pnlMessages.SuspendLayout();
                 MainForm.DisposeAndClear(_pnlMessages);
                 _msgControls.Clear();
+                _srvAlbumIds.Clear();
                 _srvSelMark.Clear();
                 // -80: у бабла слева отступ под аватар (58) + правый паддинг (12).
                 // Без этого запаса длинное сообщение делало бабл шире панели →
@@ -3088,7 +3089,16 @@ namespace PISMO
                     holder.Controls.Add(tile);
                     y += tile.Height + 6;
 
-                    AttachServerMsgMenu(holder, head, id, senderId, text, nm);
+                    // Альбом — одно сообщение: меню по правой кнопке (по
+                    // плитке тоже) действует на всю пачку.
+                    var albumIds = new List<int>(tileItems.Count);
+                    foreach (var it0 in tileItems) albumIds.Add(it0.MsgId);
+                    _srvAlbumIds[id] = albumIds;
+                    AttachServerMsgMenu(holder, head, id, senderId, text, nm, albumIds);
+                    // Для пересылки выделенного пачка помнит себя: первое — с
+                    // подписью, остальные — со знаком пачки.
+                    for (int k = 1; k < albumIds.Count; k++)
+                        _srvMsgMeta[albumIds[k]] = (nm ?? "", Albums.Mark, senderId);
                     // Своего пузыря у снимков пачки нет — все они живут в
                     // плитке. Записываем каждого, иначе переход к такому
                     // сообщению («показать в чате», цитата) не находил
@@ -4051,19 +4061,180 @@ namespace PISMO
             return menu;
         }
 
+        /// <summary>Первое сообщение пачки канала → все сообщения пачки по порядку.</summary>
+        private readonly Dictionary<int, List<int>> _srvAlbumIds = new();
+
+        /// <summary>
+        /// Меню альбома канала — то же, что у сообщения, но для всей пачки:
+        /// ответить на альбом, переслать его целиком (придёт альбомом), сохранить
+        /// всё, выбрать, удалить своё.
+        /// </summary>
+        private ContextMenuStrip BuildServerAlbumMenu(List<int> ids, int senderId, string caption, string senderName)
+        {
+            bool isMine = senderId == _me;
+            int head = ids[0];
+            string what = $"🖼 Альбом ({ids.Count})";
+            var menu = new ContextMenuStrip { BackColor = Color.FromArgb(24, 25, 28), ForeColor = Color.FromArgb(220, 221, 222) };
+
+            List<(string sender, string text, int id)> Batch()
+            {
+                var b = new List<(string sender, string text, int id)>(ids.Count);
+                for (int i = 0; i < ids.Count; i++)
+                    b.Add((senderName ?? "", i == 0 ? (caption ?? "") : Albums.Mark, ids[i]));
+                return b;
+            }
+
+            menu.Items.Add("↩  Ответить", null,
+                (s, e) => BeginServerReply(head, string.IsNullOrWhiteSpace(caption) ? what : caption));
+            menu.Items.Add("↪  Переслать альбом в ЛС/группу…", null, (s, e) =>
+            {
+                var mf = MainForm.Current;
+                if (mf == null || mf.IsDisposed) { MessageBox.Show("Главное окно закрыто."); return; }
+                mf.BeginForwardExternalBatch(Batch());
+                try { mf.Activate(); mf.BringToFront(); } catch { }
+            });
+
+            var fwd = new ToolStripMenuItem("↪  Переслать альбом в…");
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT id,name FROM server_channels WHERE server_id=@s AND type='text' ORDER BY position,id", conn);
+                cmd.Parameters.AddWithValue("@s", _serverId);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    int chId = Convert.ToInt32(r["id"]);
+                    string chName = r["name"].ToString();
+                    fwd.DropDownItems.Add("# " + chName, null, (s, e) =>
+                    {
+                        try
+                        {
+                            foreach (var (snd, txt, mid) in Batch())
+                                ForwardHelper.Forward(2, mid, snd, txt, 2, _me, chId);
+                            WebSocketSignalingClient.Instance.SendMessage("new_message", 0, chId, "server");
+                            if (chId == _channelId) { _renderedKey = null; _renderedSig = null; LoadMessages(); }
+                        }
+                        catch (Exception ex) { ShowDbError(ex); }
+                    });
+                }
+            }
+            catch { }
+            if (fwd.DropDownItems.Count > 0) menu.Items.Add(fwd);
+
+            menu.Items.Add("⤓  Сохранить всё…", null, (s, e) => SaveChannelAlbum(ids));
+            menu.Items.Add("Открыть в просмотре", null, (s, e) => OpenChannelMediaViewer(head));
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("☑  Выбрать", null, (s, e) =>
+            {
+                if (!_srvSelectMode) EnterSrvSelect();
+                ToggleSrvSelect(head);
+            });
+            if (!string.IsNullOrWhiteSpace(caption))
+                menu.Items.Add("📋  Копировать подпись", null, (s, e) => { try { Clipboard.SetText(caption); } catch { } });
+
+            // Удалить — только своё, как и у одиночного сообщения.
+            if (isMine)
+            {
+                menu.Items.Add(new ToolStripSeparator());
+                var del = new ToolStripMenuItem("🗑  Удалить альбом") { ForeColor = Color.FromArgb(240, 71, 71) };
+                del.Click += (s, e) =>
+                {
+                    if (MessageBox.Show($"Удалить альбом ({ids.Count} вложений)?", "PISMO",
+                            MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                    try
+                    {
+                        using var conn = DBHelper.OpenConnection();
+                        foreach (int mid in ids)
+                        {
+                            using var cmd = new MySqlCommand("DELETE FROM server_messages WHERE id=@id AND sender_id=@me", conn);
+                            cmd.Parameters.AddWithValue("@id", mid);
+                            cmd.Parameters.AddWithValue("@me", _me);
+                            cmd.ExecuteNonQuery();
+                        }
+                        WebSocketSignalingClient.Instance.SendMessage("new_message", 0, _channelId, "server");
+                        _renderedKey = null; _renderedSig = null;
+                        LoadMessages();
+                    }
+                    catch (Exception ex) { ShowDbError(ex); }
+                };
+                menu.Items.Add(del);
+            }
+            return menu;
+        }
+
+        /// <summary>Сохранить все вложения альбома канала в папку — в фоне.</summary>
+        private void SaveChannelAlbum(List<int> ids)
+        {
+            string dir;
+            using (var dlg = new FolderBrowserDialog { Description = "Куда сохранить вложения альбома" })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK || string.IsNullOrEmpty(dlg.SelectedPath)) return;
+                dir = dlg.SelectedPath;
+            }
+            var names = new Dictionary<int, string>();
+            try
+            {
+                var dt = _shownDt;
+                if (dt != null && dt.Columns.Contains("file_name"))
+                    foreach (DataRow r in dt.Rows)
+                    {
+                        int id = Convert.ToInt32(r["id"]);
+                        if (ids.Contains(id) && r["file_name"] != DBNull.Value) names[id] = r["file_name"].ToString();
+                    }
+            }
+            catch { }
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                int saved = 0, n = 0;
+                foreach (int id in ids)
+                {
+                    n++;
+                    try
+                    {
+                        names.TryGetValue(id, out var fn);
+                        bool video = !string.IsNullOrEmpty(fn) && MediaPlayerForm.IsVideo(
+                            Path.GetExtension(fn).TrimStart('.').ToLowerInvariant());
+                        byte[] data = video ? LoadServerFileBytes(id, fn) : MediaCache.Get(id, "simg", null);
+                        if (data == null || data.Length == 0)
+                        {
+                            if (!video && _serverMedia.TryGetValue(id, out var sm)) data = sm.img;
+                        }
+                        if (data == null || data.Length == 0) continue;
+                        string name = !string.IsNullOrEmpty(fn) ? Path.GetFileName(fn) : $"album_{ids[0]}_{n}.jpg";
+                        string path = Path.Combine(dir, name);
+                        for (int k = 1; File.Exists(path); k++)
+                            path = Path.Combine(dir, Path.GetFileNameWithoutExtension(name) + $" ({k})" + Path.GetExtension(name));
+                        File.WriteAllBytes(path, data);
+                        saved++;
+                    }
+                    catch { }
+                }
+                try
+                {
+                    BeginInvoke(new Action(() => MessageBox.Show(this,
+                        saved == ids.Count ? $"Сохранено: {saved}." : $"Сохранено {saved} из {ids.Count}.",
+                        "Альбом", MessageBoxButtons.OK, MessageBoxIcon.Information)));
+                }
+                catch { }
+            });
+        }
+
         /// <summary>
         /// Правый клик по сообщению канала. Меню строится по требованию: раньше
         /// оно собиралось на каждое сообщение при отрисовке, а внутри был запрос
         /// «список текстовых каналов сервера» для подменю «Переслать в…» —
         /// то есть отдельный поход в базу на КАЖДОЕ сообщение ленты.
         /// </summary>
-        private void AttachServerMsgMenu(Panel holder, Control header, int id, int senderId, string text, string senderName = "")
+        private void AttachServerMsgMenu(Panel holder, Control header, int id, int senderId, string text,
+                                         string senderName = "", List<int> album = null)
         {
             // Метаданные для пакетных операций (пересылка/удаление выбранных).
             _srvMsgMeta[id] = (senderName ?? "", text ?? "", senderId);
 
             ContextMenuStrip menu = null;
-            ContextMenuStrip Menu() => menu ??= BuildServerMsgMenu(holder, id, senderId, text, senderName);
+            ContextMenuStrip Menu() => menu ??= album != null && album.Count > 1
+                ? BuildServerAlbumMenu(album, senderId, text, senderName)
+                : BuildServerMsgMenu(holder, id, senderId, text, senderName);
 
             void Show(object s, MouseEventArgs e)
             {
@@ -4253,6 +4424,14 @@ namespace PISMO
             if (id <= 0) return;
             bool sel = _srvSelected.Add(id);   // true — добавили, false — уже был → снимаем
             if (!sel) _srvSelected.Remove(id);
+            // Альбом выделяется ЦЕЛИКОМ — иначе пересылка выделенного унесла бы
+            // один снимок из пачки.
+            if (_srvAlbumIds.TryGetValue(id, out var pack))
+                foreach (int pid in pack)
+                {
+                    if (pid == id) continue;
+                    if (sel) _srvSelected.Add(pid); else _srvSelected.Remove(pid);
+                }
 
             // Обновляем ТОЛЬКО кружок и подсветку конкретного сообщения — без
             // LoadMessages (раньше он перерисовывал весь чат и прокручивал вниз).

@@ -4034,7 +4034,7 @@ namespace PISMO
                 // Сколько вложений уже в кеше — с этим ими лента и собрана.
                 int mediaAtRender = CachedMediaCount(dt);
                 // Лента собирается заново — старая карта пачек больше не о ней.
-                _albumOf.Clear();
+                _albumOf.Clear(); _albumIds.Clear();
                 var pendingBubbles = BuildRows(dt, myId, isGroup: true,
                                                iBlocked: false, theyBlockedMe: false,
                                                yStart: yOffset).items;
@@ -4417,7 +4417,7 @@ namespace PISMO
                 // См. пояснение в RenderGroupMessages: копим пузыри и добавляем разом.
                 // Сколько вложений уже в кеше — с этим ими лента и собрана.
                 int mediaAtRender = CachedMediaCount(dt);
-                _albumOf.Clear();
+                _albumOf.Clear(); _albumIds.Clear();
                 var pendingBubbles = BuildRows(dt, myId, isGroup: false,
                                                iBlocked: iBlocked, theyBlockedMe: theyBlockedMe,
                                                yStart: yOffset).items;
@@ -4594,6 +4594,9 @@ namespace PISMO
         /// <summary>Сообщение → номер первого сообщения его пачки (плитки).</summary>
         private readonly Dictionary<int, int> _albumOf = new Dictionary<int, int>();
 
+        /// <summary>Первое сообщение пачки → все сообщения пачки по порядку.</summary>
+        private readonly Dictionary<int, List<int>> _albumIds = new Dictionary<int, List<int>>();
+
         /// <summary>Галочки пузыря: −1 — нет, 0 — отправка, 1 — доставлено, 2 — прочитано.</summary>
         private sealed class ReadBox { public int State; public ReadBox(int s) { State = s; } }
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, ReadBox>
@@ -4751,6 +4754,31 @@ namespace PISMO
                     tile.Name = "msg" + msgId;
                     foreach (var it0 in tileItems) _albumOf[it0.MsgId] = msgId;
                     tile.CellClicked += it => OpenAlbumCell(it, tileGroup);
+
+                    // АЛЬБОМ — ОДНО СООБЩЕНИЕ: правая кнопка по плитке даёт то
+                    // же меню, что у обычного пузыря, и действует на всю пачку.
+                    // Для пересылки выделенного пачка помнит себя так же:
+                    // первое — с подписью, остальные — со знаком пачки.
+                    var albumIds = new List<int>(tileItems.Count);
+                    foreach (var it0 in tileItems) albumIds.Add(it0.MsgId);
+                    _albumIds[msgId] = albumIds;
+                    for (int k = 0; k < albumIds.Count; k++)
+                        _msgMeta[albumIds[k]] = (sname, k == 0 ? text : Albums.Mark, isGroup ? 1 : 0);
+                    {
+                        var capTile = tile; var capIds = albumIds; string capCaption = text;
+                        string capSender = sname; bool capMine = isMine; bool capGrp = isGroup;
+                        tile.MouseClick += (s, e) =>
+                        {
+                            if (e.Button != MouseButtons.Right) return;
+                            if (_selectMode) { ToggleSelect(capIds[0]); return; }
+                            try
+                            {
+                                var menu = BuildAlbumMenu(capIds, capGrp, capMine, capCaption, capSender);
+                                menu.Show(capTile, e.Location);
+                            }
+                            catch { }
+                        };
+                    }
                     tile.Top = yOffset;
                     PositionBubble(tile, isMine);
                     tile.Tag = isMine;

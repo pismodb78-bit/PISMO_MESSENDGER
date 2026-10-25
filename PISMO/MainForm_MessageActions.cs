@@ -330,6 +330,18 @@ namespace PISMO
         {
             if (msgId <= 0) return;
             if (!_selectedMsgIds.Add(msgId)) _selectedMsgIds.Remove(msgId);
+            // Альбом выделяется ЦЕЛИКОМ: у его снимков нет своих пузырей, и
+            // выбранной иначе оказалась бы только первая строка пачки —
+            // пересылка выделенного унесла бы один снимок из десяти.
+            if (_albumIds.TryGetValue(msgId, out var pack))
+            {
+                bool on = _selectedMsgIds.Contains(msgId);
+                foreach (int id in pack)
+                {
+                    if (id == msgId) continue;
+                    if (on) _selectedMsgIds.Add(id); else _selectedMsgIds.Remove(id);
+                }
+            }
             UpdateSelectBar();
 
             // ТОЧЕЧНОЕ обновление вида выбранного пузыря — БЕЗ перезагрузки чата
@@ -756,6 +768,163 @@ namespace PISMO
             }
 
             return menu;
+        }
+
+        /// <summary>
+        /// Меню альбома — как у обычного сообщения, но для всей пачки: ответить
+        /// на альбом, переслать его целиком (у получателя он придёт альбомом),
+        /// сохранить все вложения, выбрать, удалить.
+        /// </summary>
+        private ContextMenuStrip BuildAlbumMenu(List<int> ids, bool isGroup, bool isMine,
+                                                string caption, string senderName)
+        {
+            var menu = new ContextMenuStrip
+            {
+                BackColor = Color.FromArgb(24, 25, 28),
+                ForeColor = Color.FromArgb(220, 221, 222),
+                Font = new Font("Segoe UI", 9.5f),
+                ShowImageMargin = false,
+            };
+            int head = ids[0];
+            string what = $"🖼 Альбом ({ids.Count})";
+
+            menu.Items.Add("↩  Ответить", null,
+                (s, e) => BeginReply(head, senderName, string.IsNullOrWhiteSpace(caption) ? what : caption));
+            menu.Items.Add("↪  Переслать альбом", null,
+                (s, e) => ForwardAlbum(ids, isGroup, senderName, caption));
+            menu.Items.Add("⤓  Сохранить всё…", null, (s, e) => SaveAlbum(ids, isGroup));
+            menu.Items.Add("Открыть в просмотре", null, (s, e) => OpenMediaViewer(head, isGroup));
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("☑  Выбрать", null, (s, e) =>
+            {
+                if (!_selectMode) EnterSelectMode(isGroup);
+                ToggleSelect(head);
+            });
+            if (!string.IsNullOrWhiteSpace(caption))
+                menu.Items.Add("📋  Копировать подпись", null, (s, e) =>
+                {
+                    try { Clipboard.SetText(caption); } catch { }
+                });
+
+            if (isMine || UserSession.Role == "admin")
+            {
+                menu.Items.Add(new ToolStripSeparator());
+                var del = new ToolStripMenuItem("🗑  Удалить альбом") { ForeColor = Color.FromArgb(240, 71, 71) };
+                del.Click += (s, e) => DeleteAlbum(ids, isGroup);
+                menu.Items.Add(del);
+            }
+            return menu;
+        }
+
+        /// <summary>Переслать альбом целиком: первое — с подписью, остальные — со знаком пачки.</summary>
+        private void ForwardAlbum(List<int> ids, bool isGroup, string senderName, string caption)
+        {
+            CancelReply();
+            CancelEdit();
+            _forwardMsgId = -1;
+            _forwardBatch.Clear();
+            int scope = isGroup ? 1 : 0;
+            for (int i = 0; i < ids.Count; i++)
+                _forwardBatch.Add((senderName ?? "", i == 0 ? (caption ?? "") : Albums.Mark, scope, ids[i]));
+
+            _lblForwardInfo.Text = $"↪ Пересылка альбома ({ids.Count}) — выберите диалог и нажмите «Отправить»";
+            _pnlForwardBar.Visible = true;
+            try
+            {
+                using var picker = new ForwardPickerForm();
+                if (picker.ShowDialog(this) == DialogResult.OK && picker.TargetId > 0)
+                {
+                    SendForwardTo(picker.TargetScope, picker.TargetId);
+                    return;
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Не удалось открыть выбор: " + ex.Message, "PISMO"); }
+            txtMessage.Focus();
+        }
+
+        /// <summary>Удалить весь альбом — одним вопросом, а не десятью.</summary>
+        private void DeleteAlbum(List<int> ids, bool isGroup)
+        {
+            if (MessageBox.Show(
+                $"Удалить альбом ({ids.Count} вложений)? Это нельзя отменить.",
+                "PISMO", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            string table = isGroup ? "group_messages" : "messages";
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                foreach (int id in ids)
+                {
+                    using var cmd = new MySqlCommand(
+                        $"UPDATE {table} SET is_deleted=1, text='[сообщение удалено]', " +
+                        "image_data=NULL, audio_data=NULL, video_data=NULL WHERE id=@id", conn);
+                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Ошибка удаления: " + ex.Message); return; }
+            NotifyChatEdited(isGroup);
+            ForceMessageRerender();
+            if (isGroup) LoadGroupMessages(); else LoadMessages();
+        }
+
+        /// <summary>Сохранить все вложения альбома в выбранную папку — в фоне.</summary>
+        private void SaveAlbum(List<int> ids, bool isGroup)
+        {
+            string dir;
+            using (var dlg = new FolderBrowserDialog { Description = "Куда сохранить вложения альбома" })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK || string.IsNullOrEmpty(dlg.SelectedPath)) return;
+                dir = dlg.SelectedPath;
+            }
+            // Имена файлов берём из открытой страницы: там они уже есть.
+            var names = new Dictionary<int, string>();
+            try
+            {
+                var dt = _pageDt;
+                if (dt != null && dt.Columns.Contains("file_name"))
+                    foreach (DataRow r in dt.Rows)
+                    {
+                        int id = Convert.ToInt32(r["id"]);
+                        if (ids.Contains(id) && r["file_name"] != DBNull.Value) names[id] = r["file_name"].ToString();
+                    }
+            }
+            catch { }
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                int saved = 0, n = 0;
+                foreach (int id in ids)
+                {
+                    n++;
+                    try
+                    {
+                        names.TryGetValue(id, out var fn);
+                        bool video = !string.IsNullOrEmpty(fn) && MediaPlayerForm.IsVideo(
+                            Path.GetExtension(fn).TrimStart('.').ToLowerInvariant());
+                        byte[] data = video
+                            ? LoadFileBytes(id, fn, isGroup)
+                            : (MediaCache.Get(id, "img", fn)
+                               ?? LoadMediaForMessage(id, fn, true, false, false, false, isGroup).img);
+                        if (data is not { Length: > 0 }) continue;
+                        string name = !string.IsNullOrEmpty(fn) ? Path.GetFileName(fn)
+                                    : $"album_{ids[0]}_{n}.jpg";
+                        string path = Path.Combine(dir, name);
+                        // Не затираем то, что уже лежит в папке.
+                        for (int k = 1; File.Exists(path); k++)
+                            path = Path.Combine(dir, Path.GetFileNameWithoutExtension(name) + $" ({k})" + Path.GetExtension(name));
+                        File.WriteAllBytes(path, data);
+                        saved++;
+                    }
+                    catch { }
+                }
+                try
+                {
+                    BeginInvoke(new Action(() => MessageBox.Show(this,
+                        saved == ids.Count ? $"Сохранено: {saved}." : $"Сохранено {saved} из {ids.Count}.",
+                        "Альбом", MessageBoxButtons.OK, MessageBoxIcon.Information)));
+                }
+                catch { }
+            });
         }
 
         /// <summary>Кружок выделения СПРАВА от сообщения (как в Telegram) — сосед

@@ -25,6 +25,10 @@ namespace PISMO
             plainText ??= "";
             if (plainText.StartsWith("gif:", StringComparison.OrdinalIgnoreCase))
                 return plainText;
+            // Продолжение альбома уходит со знаком пачки и без своей пометки:
+            // у получателя альбом соберётся той же плиткой, а «Переслано от…»
+            // останется одно — у первого вложения.
+            if (Albums.IsPart(plainText)) return plainText;
 
             // Пересылают уже пересланное — второй пометки не добавляем.
             // Иначе они копятся цепочкой: «↪ Переслано от Пети: ↪ Переслано от
