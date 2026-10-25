@@ -2493,6 +2493,21 @@ namespace PISMO
             return list;
         }
 
+        /// <summary>Текст сообщения канала с экрана — для цитаты ответа.</summary>
+        private string ChannelTextOf(int msgId)
+        {
+            try
+            {
+                var dt = _shownDt;
+                if (dt == null) return "";
+                foreach (DataRow r in dt.Rows)
+                    if (Convert.ToInt32(r["id"]) == msgId)
+                        return Albums.Strip(Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString()));
+            }
+            catch { }
+            return "";
+        }
+
         /// <summary>Открыть просмотр на этом сообщении канала, с переходами.</summary>
         internal void OpenChannelMediaViewer(int msgId)
         {
@@ -2507,8 +2522,17 @@ namespace PISMO
                     new MediaViewerActions
                     {
                         ShowInChat = mid => ScrollToServerMessage(mid),
+                        Reply = mid => BeginServerReply(mid, ChannelTextOf(mid)),
                         CoverCaptured = (mid, jpeg) =>
                             VideoCover.Share("server_messages", mid, jpeg, "simg"),
+                        // «Рисовать…» — как в личной переписке: нарисованное
+                        // ПРИКРЕПЛЯЕТСЯ к полю ввода канала, к нему можно
+                        // дописать текст и отправить одним сообщением.
+                        SendEdited = data =>
+                        {
+                            StageChannelAttachment(data, "drawing.jpg", true);
+                            try { _txtInput.Focus(); } catch { }
+                        },
                     });
             }
             catch { }
@@ -2849,6 +2873,18 @@ namespace PISMO
             }
         }
 
+        /// <summary>Цвет пузыря и идёт ли по нему вспышка «показать в чате».</summary>
+        private sealed class HolderFill
+        {
+            public readonly Color Back;
+            public bool Flash;
+            public HolderFill(Color back) { Back = back; }
+        }
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, HolderFill>
+            _holderFill = new();
+        /// <summary>Цвет вспышки — тот же, что в личной переписке.</summary>
+        private static readonly Color SrvFlashColor = Color.FromArgb(0, 120, 160);
+
         /// <summary>Метка разделителя дат в ленте канала.</summary>
         private const string SrvDateTag = "srvdate:";
 
@@ -2930,10 +2966,15 @@ namespace PISMO
                     BackColor = Color.FromArgb(54, 57, 63)   // цвет фона чата — углы «прозрачны»
                 };
                 ChatScroll.EnableDoubleBufferDeep(holder);   // пузырь И все дочки — не «рвутся» при прокрутке
+                _holderFill.AddOrUpdate(holder, new HolderFill(bubbleBg));
                 holder.Paint += (s, e) =>
                 {
                     e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                    using var br = new SolidBrush(Theme.Map(bubbleBg));   // светлая тема: пузырь тоже светлеет
+                    // Вспышка «показать в чате» красит САМ пузырь, а не панель
+                    // под ним: панель видна только в скруглённых углах.
+                    var fill = _holderFill.TryGetValue(holder, out var hf) && hf.Flash
+                        ? SrvFlashColor : Theme.Map(bubbleBg);
+                    using var br = new SolidBrush(fill);   // светлая тема: пузырь тоже светлеет
                     e.Graphics.FillRoundedRectangle(br, 0, 0, holder.Width - 1, holder.Height - 1, 10);
                     // Аватар отправителя (кружок) в левом верхнем углу бабла.
                     if (!AvatarStore.DrawAvatar(e.Graphics, senderId, PAD, PAD, AVA - 1))
@@ -3874,10 +3915,42 @@ namespace PISMO
                 // Повтор после полного цикла раскладки: если высоты сместились
                 // (догрузилось изображение/видео), первая попытка окажется неточной.
                 try { BeginInvoke(new Action(ScrollToTarget)); } catch { }
-                var orig = ctrl.BackColor;
-                ctrl.BackColor = Color.FromArgb(60, 90, 130);
-                var t = new System.Windows.Forms.Timer { Interval = 900 };
-                t.Tick += (s, e) => { t.Stop(); t.Dispose(); if (!ctrl.IsDisposed) ctrl.BackColor = orig; };
+
+                // ВСПЫШКА — НА ВЕСЬ ПУЗЫРЬ, как в личной переписке.
+                //
+                // Раньше красился фон панели, а пузырь поверх неё рисуется
+                // своим серым скруглённым прямоугольником: от подсветки
+                // оставались тонкие уголки по краям. Теперь сам пузырь
+                // рисуется цветом вспышки, а подписи и текстовое поле с
+                // пузырным фоном перекрашиваются вместе с ним. Держится 2,5 с —
+                // за меньшее лента не успевала доехать до сообщения.
+                if (!_holderFill.TryGetValue(ctrl, out var hf)) return;
+                var painted = new List<(Control c, Color was)>();
+                void PaintKids(Control root)
+                {
+                    foreach (Control ch in root.Controls)
+                    {
+                        bool textish = ch is Label || ch is TextBoxBase;
+                        if (textish && (ch.BackColor == hf.Back || ch.BackColor == Theme.Map(hf.Back)))
+                        {
+                            painted.Add((ch, ch.BackColor));
+                            ch.BackColor = SrvFlashColor;
+                        }
+                        PaintKids(ch);
+                    }
+                }
+                hf.Flash = true;
+                PaintKids(ctrl);
+                ctrl.Invalidate(true);
+                var t = new System.Windows.Forms.Timer { Interval = 2500 };
+                t.Tick += (s, e) =>
+                {
+                    t.Stop(); t.Dispose();
+                    hf.Flash = false;
+                    foreach (var (c, was) in painted)
+                        try { if (!c.IsDisposed) c.BackColor = was; } catch { }
+                    try { if (!ctrl.IsDisposed) ctrl.Invalidate(true); } catch { }
+                };
                 t.Start();
             }
             catch { }
