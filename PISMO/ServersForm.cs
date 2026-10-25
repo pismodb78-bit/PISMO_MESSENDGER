@@ -1501,16 +1501,21 @@ namespace PISMO
                         {
                             var lbl = kv.Value;
                             if (lbl == null || lbl.IsDisposed) continue;
-                            if (kv.Key == _channelId) { lbl.Visible = false; continue; }   // открытый канал читается
+                            // Трогаем значок, ТОЛЬКО если он поменялся: каждые две
+                            // секунды переставлять и перекрашивать все значки —
+                            // это перерисовка списка каналов на ровном месте.
+                            if (kv.Key == _channelId) { if (lbl.Visible) lbl.Visible = false; continue; }   // открытый канал читается
                             if (map.TryGetValue(kv.Key, out var c) && (c.unread > 0 || c.mentions > 0))
                             {
                                 bool men = c.mentions > 0;
                                 int n = men ? c.mentions : c.unread;
-                                lbl.Text = n > 99 ? "99+" : n.ToString();
-                                lbl.BackColor = men ? Color.FromArgb(237, 66, 69) : Color.FromArgb(88, 101, 242);
-                                lbl.Visible = true; lbl.BringToFront();
+                                string txt = n > 99 ? "99+" : n.ToString();
+                                var back = men ? Color.FromArgb(237, 66, 69) : Color.FromArgb(88, 101, 242);
+                                if (lbl.Text != txt) lbl.Text = txt;
+                                if (lbl.BackColor != back) lbl.BackColor = back;
+                                if (!lbl.Visible) { lbl.Visible = true; lbl.BringToFront(); }
                             }
-                            else lbl.Visible = false;
+                            else if (lbl.Visible) lbl.Visible = false;
                         }
                     }));
                 }
@@ -1571,10 +1576,12 @@ namespace PISMO
                             if (lbl == null || lbl.IsDisposed) continue;
                             if (!_channelLimits.TryGetValue(cl.Key, out int limit) || limit <= 0) continue;
                             int busy = map.TryGetValue(cl.Key, out var pp) ? pp.Count : 0;
-                            lbl.Text = busy + "/" + limit;
+                            string txt = busy + "/" + limit;
+                            if (lbl.Text != txt) lbl.Text = txt;
                             // Заполнен — красным, чтобы было видно, что войти нельзя.
-                            lbl.ForeColor = busy >= limit
+                            var fore = busy >= limit
                                 ? Color.FromArgb(237, 66, 69) : Color.FromArgb(185, 187, 190);
+                            if (lbl.ForeColor != fore) lbl.ForeColor = fore;
                         }
 
                         foreach (var kv in _voiceContainers)
@@ -2449,6 +2456,8 @@ namespace PISMO
             var list = new List<MediaRef>();
             var dt = _shownDt;
             if (dt == null) return list;
+            // Подпись у пачки одна на всех — та, что ушла с первым вложением.
+            var caps = Albums.Captions(dt);
             foreach (DataRow r in dt.Rows)
             {
                 try
@@ -2468,13 +2477,15 @@ namespace PISMO
                     if (string.IsNullOrWhiteSpace(who) && dt.Columns.Contains("login")
                         && r["login"] != DBNull.Value) who = r["login"].ToString();
 
+                    int rid = Convert.ToInt32(r["id"]);
                     list.Add(new MediaRef
                     {
-                        MsgId = Convert.ToInt32(r["id"]),
+                        MsgId = rid,
                         IsVideo = isVid,
                         FileName = fn,
                         Sender = who,
                         When = MainForm.ToViewerLocal(Convert.ToDateTime(r["created_at"])),
+                        Caption = caps.TryGetValue(rid, out var cap) ? cap : "",
                     });
                 }
                 catch { }
@@ -2666,6 +2677,7 @@ namespace PISMO
         private void RenderMessages(DataTable dt, int channel)
         {
             if (_channelId != channel) return;
+            var prevShown = _shownDt;
             _shownDt = dt;
 
             // Пропускаем повторную отрисовку, если тот же канал и данные/медиа не изменились.
@@ -2675,6 +2687,8 @@ namespace PISMO
             string key = "c" + channel,
                    sig = MainForm.SigOf(dt) + "|m" + mediaForChan
                        + "|r" + ReactionsSig(_chanReactions.TryGetValue(channel, out var rsig) ? rsig : null);
+            // Пришли новые сообщения — дописываем вниз, не пересобирая канал.
+            if (TryAppendChannel(prevShown, dt, channel, key, sig)) return;
             // Пока в канале играет ролик, страницу не пересобираем: пересборка
             // уничтожает проигрыватель вместе с местом, на котором
             // остановились, — то же, что и в личной переписке. Нарисуем, как
@@ -2768,6 +2782,7 @@ namespace PISMO
                 var pending = BuildChannelItems(dt, channel, msgWidth, null, out _);
                 _lastMsgCount = dt.Rows.Count;
                 _lastMaxId = maxIdNow;
+                _renderedChanMedia = mediaForChan;
                 // Все пузыри — ОДНИМ добавлением. Каждый отдельный Controls.Add
                 // тянет за собой пересчёт раскладки и порядка окон, и на сорока
                 // сообщениях это заметная часть тех двухсот миллисекунд, которые
@@ -3640,7 +3655,113 @@ namespace PISMO
                 if (_serverMedia.ContainsKey(Convert.ToInt32(rr["id"]))) mediaForChan++;
             _renderedSig = MainForm.SigOf(merged) + "|m" + mediaForChan
                            + "|r" + ReactionsSig(_chanReactions.TryGetValue(channel, out var rsig) ? rsig : null);
+            _renderedChanMedia = mediaForChan;
             return true;
+        }
+
+        /// <summary>Сколько сообщений показанной ленты были со вложениями на руках, когда её собирали.</summary>
+        private int _renderedChanMedia = -1;
+
+        /// <summary>
+        /// Новые сообщения канала — ДОПИСЫВАЕМ вниз, а не пересобираем ленту.
+        ///
+        /// Раньше каждое пришедшее сообщение разбирало и собирало заново весь
+        /// канал — все пузыри с картинками и плеерами. В живом канале это и
+        /// были подлагивания на каждом сообщении. Берёмся лишь за безопасный
+        /// случай: прежние сообщения те же, реакции те же, новое пришло строго
+        /// снизу и не продолжает пачку альбома. Иначе — false, и всё как раньше.
+        /// </summary>
+        private bool TryAppendChannel(DataTable old, DataTable dt, int channel, string key, string sig)
+        {
+            try
+            {
+                if (old == null || dt == null || old.Rows.Count == 0 || dt.Rows.Count == 0) return false;
+                if (_renderedKey != key || string.IsNullOrEmpty(_renderedSig)) return false;
+                if (_srvPendingJumpId > 0 || _srvRestoreFromBottom >= 0) return false;
+                if (_pnlMessages == null || _pnlMessages.IsDisposed || _pnlMessages.Controls.Count == 0) return false;
+                if (_lastScrollChannel != channel) return false;
+
+                // Реакции те же — иначе их чипы надо перерисовать.
+                int ri = _renderedSig.LastIndexOf("|r", StringComparison.Ordinal);
+                int rj = sig.LastIndexOf("|r", StringComparison.Ordinal);
+                if (ri < 0 || rj < 0 || _renderedSig.Substring(ri) != sig.Substring(rj)) return false;
+
+                int Id(DataRow r) => Convert.ToInt32(r["id"]);
+                string Content(DataRow r)
+                {
+                    var t = r.Table;
+                    string ed = t.Columns.Contains("edited_at") && r["edited_at"] != DBNull.Value ? r["edited_at"].ToString() : "";
+                    bool del = t.Columns.Contains("is_deleted") && r["is_deleted"] != DBNull.Value && Convert.ToBoolean(r["is_deleted"]);
+                    int len = t.Columns.Contains("text") && r["text"] != DBNull.Value ? r["text"].ToString().Length : 0;
+                    return ed + "|" + (del ? 1 : 0) + "|" + len;
+                }
+
+                // Вложения показанных сообщений с тех пор доехали — их рисует
+                // полная сборка.
+                int mediaOld = 0;
+                foreach (DataRow r in old.Rows) if (_serverMedia.ContainsKey(Id(r))) mediaOld++;
+                if (_renderedChanMedia < 0 || mediaOld != _renderedChanMedia) return false;
+
+                var oldById = new Dictionary<int, DataRow>(old.Rows.Count);
+                int oldMax = 0;
+                foreach (DataRow r in old.Rows) { int id = Id(r); oldById[id] = r; if (id > oldMax) oldMax = id; }
+                int newFirst = Id(dt.Rows[0]);
+                var newIds = new HashSet<int>();
+                var fresh = new List<DataRow>();
+                foreach (DataRow r in dt.Rows)
+                {
+                    int id = Id(r);
+                    newIds.Add(id);
+                    if (oldById.TryGetValue(id, out var o)) { if (Content(o) != Content(r)) return false; }
+                    else if (id > oldMax) fresh.Add(r);
+                    else return false;
+                }
+                foreach (var kv in oldById)
+                    if (kv.Key >= newFirst && !newIds.Contains(kv.Key)) return false;
+                if (fresh.Count == 0 || fresh.Count > 12) return false;
+                foreach (var r in fresh)
+                {
+                    string txt = "";
+                    try { txt = Crypto.Dec(r["text"] == DBNull.Value ? "" : r["text"].ToString()); } catch { }
+                    if (Albums.IsPart(txt)) return false;
+                }
+
+                int viewport = _pnlMessages.ClientSize.Height;
+                int top = -_pnlMessages.AutoScrollPosition.Y;
+                bool wasAtBottom = _pnlMessages.DisplayRectangle.Height - (top + viewport) <= 24;
+
+                _reactionsInView = _chanReactions.TryGetValue(channel, out var rmap) ? rmap : null;
+                int avail = _pnlMessages.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 90;
+                int msgWidth = Math.Max(120, Math.Min(avail, 900));
+                var add = dt.Clone();
+                foreach (var r in fresh) add.ImportRow(r);
+                var lastRow = old.Rows[old.Rows.Count - 1];
+                string lastDate = MainForm.ToViewerLocal(Convert.ToDateTime(lastRow["created_at"]))
+                    .ToString("d MMMM yyyy", new System.Globalization.CultureInfo("ru-RU"));
+                var items = BuildChannelItems(add, channel, msgWidth, lastDate, out _);
+
+                _pnlMessages.SuspendLayout();
+                try { _pnlMessages.Controls.AddRange(items.ToArray()); }
+                finally { _pnlMessages.ResumeLayout(); }
+
+                var merged = old.Copy();
+                foreach (var r in fresh) AppendByName(merged, r);
+                _shownDt = merged;
+                _renderedSig = sig;
+                int mediaNow = 0;
+                foreach (DataRow r in merged.Rows) if (_serverMedia.ContainsKey(Id(r))) mediaNow++;
+                _renderedChanMedia = mediaNow;
+                _lastMsgCount = dt.Rows.Count;
+                try { _lastMaxId = Id(merged.Rows[merged.Rows.Count - 1]); } catch { }
+
+                _pnlMessages.PerformLayout();
+                // Внизу стоял — внизу и остаётся; читающего историю не дёргаем.
+                if (wasAtBottom && _pnlMessages.Controls.Count > 0)
+                    _pnlMessages.ScrollToExplicit(_pnlMessages.Controls[_pnlMessages.Controls.Count - 1]);
+                UpdateSrvScrollDownButton();
+                return true;
+            }
+            catch { return false; }
         }
 
         private static void AppendByName(DataTable target, DataRow src)

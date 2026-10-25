@@ -92,10 +92,21 @@ namespace PISMO
                     if (IsDisposed || !IsHandleCreated || fresh == null) return;
                     BeginInvoke(new Action(() =>
                     {
+                        // Перерисовываем только тех, у кого точка поменялась:
+                        // раньше каждые две секунды перерисовывался весь
+                        // список участников, даже если в нём ничего не случилось.
+                        var changed = new HashSet<int>();
+                        foreach (var kv in fresh)
+                            if (!_memberPresence.TryGetValue(kv.Key, out var was) || was != kv.Value)
+                                changed.Add(kv.Key);
+                        foreach (var k in _memberPresence.Keys)
+                            if (!fresh.ContainsKey(k)) changed.Add(k);
+                        if (changed.Count == 0) return;
                         _memberPresence.Clear();
                         foreach (var kv in fresh) _memberPresence[kv.Key] = kv.Value;
-                        foreach (var (_, b) in _memberButtons)
-                            try { if (!b.IsDisposed) b.Invalidate(); } catch { }
+                        foreach (var (uid, b) in _memberButtons)
+                            if (changed.Contains(uid))
+                                try { if (!b.IsDisposed) b.Invalidate(); } catch { }
                     }));
                 }
                 catch { }

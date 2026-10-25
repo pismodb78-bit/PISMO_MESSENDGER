@@ -40,6 +40,8 @@ namespace PISMO
         public string FileName;
         public string Sender;
         public DateTime When;
+        /// <summary>Текст сообщения; у альбома — подпись всей пачки.</summary>
+        public string Caption;
     }
 
     internal sealed partial class ImageViewerForm
@@ -54,6 +56,10 @@ namespace PISMO
         private Panel _btnPrev, _btnNext, _tools;
         private SpinPanel _spinner;
         private Label _lblInfo;
+        /// <summary>Кто прислал и когда — сверху, как у ролика во весь экран на телефоне.</summary>
+        private Label _lblWho;
+        /// <summary>Что написал — снизу, над панелью; у альбома подпись всей пачки.</summary>
+        private Label _lblCaption;
         private InlineVideoPlayer _videoHost;
         private byte[] _curBytes;
         private string _curName = "image.png";
@@ -119,6 +125,30 @@ namespace PISMO
                 Padding = new Padding(10, 6, 10, 6),
             };
             _canvas.Controls.Add(_lblInfo);
+
+            _lblWho = new Label
+            {
+                AutoSize = true,
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(28, 29, 32),
+                Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+                Padding = new Padding(10, 6, 10, 6),
+                Visible = false,
+            };
+            _canvas.Controls.Add(_lblWho);
+
+            _lblCaption = new Label
+            {
+                AutoSize = true,
+                ForeColor = Color.FromArgb(235, 236, 240),
+                BackColor = Color.FromArgb(28, 29, 32),
+                Font = new Font("Segoe UI", 10.5f),
+                Padding = new Padding(12, 8, 12, 8),
+                Visible = false,
+            };
+            _canvas.Controls.Add(_lblCaption);
+            // Подпись масштаба уезжает вправо — левый верх занят именем.
+            _lblZoom.SizeChanged += (s, e) => LayoutChrome();
 
             _tools = new Panel
             {
@@ -216,6 +246,22 @@ namespace PISMO
                                               Math.Max(0, (h - _spinner.Height) / 2));
             _lblInfo.Location = new Point(14, Math.Max(0, h - _lblInfo.Height - 16));
             _tools.Location = new Point(Math.Max(0, (w - _tools.Width) / 2), Math.Max(0, h - _tools.Height - 14));
+            if (_lblWho != null)
+            {
+                _lblWho.MaximumSize = new Size(Math.Max(160, w / 2), 0);
+                _lblWho.Location = new Point(14, 12);
+                _lblWho.BringToFront();
+                _lblZoom.Location = new Point(Math.Max(0, w - _lblZoom.Width - 14), 12);
+            }
+            if (_lblCaption != null)
+            {
+                // Не шире двух третей окна: длинная строка во всю ширину
+                // читается хуже, чем абзац посередине.
+                _lblCaption.MaximumSize = new Size(Math.Max(200, Math.Min(760, w * 2 / 3)), 0);
+                _lblCaption.Location = new Point(Math.Max(0, (w - _lblCaption.Width) / 2),
+                                                 Math.Max(0, _tools.Top - _lblCaption.Height - 10));
+                _lblCaption.BringToFront();
+            }
             _btnPrev.BringToFront();
             _btnNext.BringToFront();
             _lblInfo.BringToFront();
@@ -350,7 +396,21 @@ namespace PISMO
             string who = string.IsNullOrWhiteSpace(it.Sender) ? "" : it.Sender + " · ";
             string when = it.When == default ? "" : it.When.ToString("d MMMM, HH:mm",
                 new System.Globalization.CultureInfo("ru-RU"));
-            _lblInfo.Text = $"{kind} {_navIdx + 1} из {_nav.Count}\n{who}{when}";
+            _lblInfo.Text = $"{kind} {_navIdx + 1} из {_nav.Count}";
+
+            // КТО ПРИСЛАЛ — СВЕРХУ, ЧТО НАПИСАЛ — СНИЗУ, как у ролика во весь
+            // экран на телефоне: в просмотре от переписки ничего не остаётся,
+            // и без этого непонятно ни чей это снимок, ни что к нему писали.
+            string sender = (it.Sender ?? "").Trim();
+            _lblWho.Text = sender.Length > 0 && when.Length > 0 ? sender + "\n" + when
+                         : sender.Length > 0 ? sender : when;
+            string cap = (it.Caption ?? "").Trim();
+            // Длинную подпись обрываем: целиком она в переписке.
+            if (cap.Length > 400) cap = cap.Substring(0, 400).TrimEnd() + "…";
+            _lblCaption.Text = cap;
+            bool shown = ChromeAlpha > 0.001f;
+            _lblWho.Visible = shown && _lblWho.Text.Length > 0;
+            _lblCaption.Visible = shown && cap.Length > 0;
             LayoutChrome();
         }
 
@@ -400,9 +460,18 @@ namespace PISMO
             int w = _canvas.ClientSize.Width, h = _canvas.ClientSize.Height;
             int side = w > 420 ? 74 : 0;          // в узком окне стрелки не влезут всё равно
             int bottom = h > 360 ? 66 : 0;
-            return new Rectangle(side, 8,
+            int top = 8;
+            // Имя сверху и подпись снизу — тоже поля: окно плеера рисуется
+            // поверх любых наших надписей, и под роликом их бы не было видно.
+            // Считаем по тексту, а не по видимости: погасший интерфейс вернётся
+            // на те же места.
+            if (h > 360 && _lblWho != null && !string.IsNullOrEmpty(_lblWho.Text))
+                top = _lblWho.Top + _lblWho.PreferredHeight + 6;
+            if (bottom > 0 && _lblCaption != null && !string.IsNullOrEmpty(_lblCaption.Text))
+                bottom += _lblCaption.Height + 10;
+            return new Rectangle(side, top,
                                  Math.Max(160, w - side * 2),
-                                 Math.Max(120, h - bottom - 8));
+                                 Math.Max(120, h - bottom - top));
         }
 
         private void DropVideo()

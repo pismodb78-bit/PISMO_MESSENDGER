@@ -84,6 +84,8 @@ namespace PISMO
             if (_btnPrev != null) yield return _btnPrev;
             if (_btnNext != null) yield return _btnNext;
             if (_lblInfo != null) yield return _lblInfo;
+            if (_lblWho != null) yield return _lblWho;
+            if (_lblCaption != null) yield return _lblCaption;
             if (_tools != null) yield return _tools;
             if (_lblZoom != null) yield return _lblZoom;
         }
@@ -166,6 +168,9 @@ namespace PISMO
                     // Стрелки — только там, где есть куда листать.
                     if (ReferenceEquals(c, _btnPrev)) c.Visible = _nav != null && _navIdx > 0;
                     else if (ReferenceEquals(c, _btnNext)) c.Visible = _nav != null && _navIdx < _nav.Count - 1;
+                    // Подписи — только когда есть что сказать.
+                    else if (ReferenceEquals(c, _lblWho) || ReferenceEquals(c, _lblCaption))
+                        c.Visible = !string.IsNullOrEmpty(c.Text);
                     else c.Visible = true;
                 }
                 catch { }

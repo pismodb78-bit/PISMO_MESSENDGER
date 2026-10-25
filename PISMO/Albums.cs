@@ -137,5 +137,66 @@ namespace PISMO
 
             return take;
         }
+
+        /// <summary>
+        /// Подпись каждого снимка и ролика страницы для ПРОСМОТРА: у пачки она
+        /// одна на всех — та, что ушла с первым вложением. Листая альбом,
+        /// человек видит её на каждом кадре, а не только на первом.
+        /// </summary>
+        public static Dictionary<int, string> Captions(DataTable dt)
+        {
+            var map = new Dictionary<int, string>();
+            if (dt == null) return map;
+            var rows = new List<DataRow>(dt.Rows.Count);
+            foreach (DataRow r in dt.Rows) rows.Add(r);
+            for (int i = 0; i < rows.Count;)
+            {
+                int len = 1;
+                string cap = "";
+                try
+                {
+                    len = Math.Max(1, Length(rows, i, null));
+                    cap = Strip(Crypto.Dec(rows[i]["text"] == DBNull.Value ? "" : rows[i]["text"].ToString())).Trim();
+                }
+                catch { }
+                for (int k = 0; k < len && i + k < rows.Count; k++)
+                {
+                    try { map[Convert.ToInt32(rows[i + k]["id"])] = cap; } catch { }
+                }
+                i += len;
+            }
+            return map;
+        }
+
+        /// <summary>
+        /// То же для готового списка вложений (лента просмотра по всей
+        /// переписке): строки пачки берут подпись у её первого.
+        /// </summary>
+        public static Dictionary<int, string> CaptionsOf(
+            IList<(int Id, int Sender, DateTime When, string Text)> rows)
+        {
+            var map = new Dictionary<int, string>();
+            if (rows == null) return map;
+            (int Id, int Sender, DateTime When, string Text)? head = null, prev = null;
+            string headCap = "";
+            foreach (var r in rows)
+            {
+                bool part = false;
+                if (head is { } h && prev is { } p)
+                {
+                    bool legacy = r.When.ToUniversalTime() < MarkSince && h.When.ToUniversalTime() < MarkSince
+                                  && string.IsNullOrWhiteSpace(r.Text) && r.When - p.When <= Gap;
+                    part = r.Sender == h.Sender && (IsPart(r.Text) || legacy);
+                }
+                if (!part)
+                {
+                    head = r;
+                    headCap = Strip(r.Text ?? "").Trim();
+                }
+                map[r.Id] = headCap;
+                prev = r;
+            }
+            return map;
+        }
     }
 }

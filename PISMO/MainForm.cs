@@ -3974,6 +3974,9 @@ namespace PISMO
             // Пропускаем повторную отрисовку, если та же группа и данные не изменились.
             string key = "g" + group,
                    sig = SigOf(dt) + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("g" + group);
+            // Пришли новые сообщения или отметки «прочитано» — дописываем и
+            // правим на месте, не пересобирая ленту (см. TryRefreshInPlace).
+            if (TryRefreshInPlace(dt, myId, true, false, false, key, sig)) return;
             // Данные другие, но в ленте играет ролик — подождём его конца.
             bool emptyOnScreen = dt.Rows.Count > 0 && pnlMessages.Controls.Count == 0;
             if (!emptyOnScreen && _renderedChatSig != sig && HoldRenderWhileWatching(key)) return;
@@ -4028,6 +4031,8 @@ namespace PISMO
                 // сорок. Кружки выделения по-прежнему добавляются сразу — они
                 // должны остаться ПОВЕРХ пузырей, а AddRange кладёт добавленное
                 // последним ниже по порядку окон.
+                // Сколько вложений уже в кеше — с этим ими лента и собрана.
+                int mediaAtRender = CachedMediaCount(dt);
                 // Лента собирается заново — старая карта пачек больше не о ней.
                 _albumOf.Clear();
                 var pendingBubbles = BuildRows(dt, myId, isGroup: true,
@@ -4040,6 +4045,7 @@ namespace PISMO
                 // текущих координат, ни от z-порядка.
                 _laidOut = pendingBubbles;
                 _pageDt = dt;
+                _renderedMedia = mediaAtRender;
                 _pageBlockedI = _pageBlockedThem = false;
                 _lastGroupMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
@@ -4324,6 +4330,9 @@ namespace PISMO
             string key = "d" + partner,
                    sig = SigOf(dt) + "|b" + (iBlocked ? 1 : 0) + (theyBlockedMe ? 1 : 0)
                        + "|m" + CachedMediaCount(dt) + "|p" + PageMetaSig("d" + partner);
+            // Пришли новые сообщения или отметки «прочитано» — дописываем и
+            // правим на месте, не пересобирая ленту (см. TryRefreshInPlace).
+            if (TryRefreshInPlace(dt, myId, false, iBlocked, theyBlockedMe, key, sig)) return;
             // Данные другие, но в ленте играет ролик — подождём его конца.
             bool emptyOnScreen = dt.Rows.Count > 0 && pnlMessages.Controls.Count == 0;
             if (!emptyOnScreen && _renderedChatSig != sig && HoldRenderWhileWatching(key)) return;
@@ -4406,6 +4415,8 @@ namespace PISMO
             {
                 int yOffset = (iBlocked || theyBlockedMe) ? 10 + 32 + 8 : 10;
                 // См. пояснение в RenderGroupMessages: копим пузыри и добавляем разом.
+                // Сколько вложений уже в кеше — с этим ими лента и собрана.
+                int mediaAtRender = CachedMediaCount(dt);
                 _albumOf.Clear();
                 var pendingBubbles = BuildRows(dt, myId, isGroup: false,
                                                iBlocked: iBlocked, theyBlockedMe: theyBlockedMe,
@@ -4417,6 +4428,7 @@ namespace PISMO
                 // текущих координат, ни от z-порядка.
                 _laidOut = pendingBubbles;
                 _pageDt = dt;
+                _renderedMedia = mediaAtRender;
                 _pageBlockedI = iBlocked; _pageBlockedThem = theyBlockedMe;
                 _lastMsgCount = dt.Rows.Count;
                 pnlMessages.ResumeLayout();
@@ -4581,6 +4593,14 @@ namespace PISMO
 
         /// <summary>Сообщение → номер первого сообщения его пачки (плитки).</summary>
         private readonly Dictionary<int, int> _albumOf = new Dictionary<int, int>();
+
+        /// <summary>Галочки пузыря: −1 — нет, 0 — отправка, 1 — доставлено, 2 — прочитано.</summary>
+        private sealed class ReadBox { public int State; public ReadBox(int s) { State = s; } }
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, ReadBox>
+            _readBoxes = new();
+
+        /// <summary>Сколько вложений показанной ленты лежало в кеше, когда её собирали.</summary>
+        private int _renderedMedia = -1;
 
         /// <summary>Запас под содержимым пузыря — место под время и галочки.</summary>
         private sealed class BubbleReserve { public readonly int Px; public BubbleReserve(int px) { Px = px; } }
@@ -5055,6 +5075,151 @@ namespace PISMO
             });
         }
 
+        /// <summary>
+        /// ЛЕНТА БЕЗ ПЕРЕСБОРКИ: новое сообщение дописывается вниз, отметка
+        /// «прочитано» меняет галочки прямо на месте.
+        ///
+        /// Раньше любое изменение страницы — пришло сообщение, собеседник
+        /// прочитал твоё — пересобирало ленту целиком: все пузыри с картинками,
+        /// плитками и плеерами разбирались и собирались заново. В живой
+        /// переписке это и есть подлагивания на каждом сообщении. Здесь — только
+        /// то, что действительно поменялось.
+        ///
+        /// Берёмся лишь за безопасный случай: прежние сообщения не тронуты
+        /// (тот же текст, правки и удаления те же), закрепы и реакции те же,
+        /// новое пришло строго снизу и не продолжает пачку альбома. Всё прочее —
+        /// false, и лента собирается как раньше.
+        /// </summary>
+        private bool TryRefreshInPlace(DataTable dt, int myId, bool isGroup, bool iB, bool tB,
+                                       string key, string sig)
+        {
+            try
+            {
+                var old = _pageDt;
+                if (old == null || dt == null || old.Rows.Count == 0 || dt.Rows.Count == 0) return false;
+                if (_renderedChatKey != key || string.IsNullOrEmpty(_renderedChatSig)) return false;
+                if (_drawingPage || _pendingJumpDate != null || _pendingJumpMsgId > 0
+                    || _dmRestoreFromBottom >= 0 || _dmLoadingOlder || _selectMode) return false;
+                if (_laidOut == null || _laidOut.Count == 0 || pnlMessages.Controls.Count == 0) return false;
+                if (!isGroup && (iB || tB || _pageBlockedI || _pageBlockedThem)) return false;
+
+                // Закрепы, реакции, цитаты — те же, иначе их надо перерисовать.
+                int pi = _renderedChatSig.LastIndexOf("|p", StringComparison.Ordinal);
+                string oldMeta = pi >= 0 ? _renderedChatSig.Substring(pi) : "";
+                if (oldMeta != "|p" + PageMetaSig(key)) return false;
+                // Вложения показанных сообщений с тех пор доехали — их надо
+                // нарисовать, это работа полной сборки.
+                if (_renderedMedia < 0 || CachedMediaCount(old) != _renderedMedia) return false;
+
+                int Id(DataRow r) => Convert.ToInt32(r["id"]);
+                string Content(DataRow r)
+                {
+                    var t = r.Table;
+                    string ed = t.Columns.Contains("edited_at") && r["edited_at"] != DBNull.Value ? r["edited_at"].ToString() : "";
+                    bool del = t.Columns.Contains("is_deleted") && r["is_deleted"] != DBNull.Value && Convert.ToBoolean(r["is_deleted"]);
+                    int len = t.Columns.Contains("text") && r["text"] != DBNull.Value ? r["text"].ToString().Length : 0;
+                    return ed + "|" + (del ? 1 : 0) + "|" + len;
+                }
+                int ReadOf(DataRow r) =>
+                    r.Table.Columns.Contains("is_read") && r["is_read"] != DBNull.Value
+                    && Convert.ToInt32(r["is_read"]) != 0 ? 2 : 1;
+
+                var oldById = new Dictionary<int, DataRow>(old.Rows.Count);
+                int oldMax = 0;
+                foreach (DataRow r in old.Rows) { int id = Id(r); oldById[id] = r; if (id > oldMax) oldMax = id; }
+
+                int newFirst = Id(dt.Rows[0]);
+                var newIds = new HashSet<int>();
+                var fresh = new List<DataRow>();
+                var reads = new List<(int id, int state)>();
+                foreach (DataRow r in dt.Rows)
+                {
+                    int id = Id(r);
+                    newIds.Add(id);
+                    if (oldById.TryGetValue(id, out var o))
+                    {
+                        if (Content(o) != Content(r)) return false;
+                        // Галочки — только у своих в личной переписке.
+                        if (!isGroup && Convert.ToInt32(r["sender_id"]) == myId && ReadOf(o) != ReadOf(r))
+                            reads.Add((id, ReadOf(r)));
+                    }
+                    else if (id > oldMax) fresh.Add(r);
+                    else return false;           // появилось что-то посередине
+                }
+                // Пропало сообщение, которое на экране, — пересборка.
+                foreach (var kv in oldById)
+                    if (kv.Key >= newFirst && !newIds.Contains(kv.Key)) return false;
+                if (fresh.Count == 0 && reads.Count == 0) return false;
+                if (fresh.Count > 12) return false;
+                // Новое — продолжение пачки альбома: его место в плитке.
+                foreach (var r in fresh)
+                {
+                    string raw = r["text"] == DBNull.Value ? "" : r["text"].ToString();
+                    string txt = "";
+                    try { txt = Crypto.Dec(raw); } catch { }
+                    if (Albums.IsPart(txt)) return false;
+                }
+
+                // Все галочки должны найтись — плитка альбома своих не меняет.
+                var boxes = new List<(Control c, ReadBox box, int state)>();
+                foreach (var (id, st) in reads)
+                {
+                    var found = pnlMessages.Controls.Find("msg" + id, false);
+                    if (found.Length == 0 || !_readBoxes.TryGetValue(found[0], out var box)) return false;
+                    boxes.Add((found[0], box, st));
+                }
+
+                bool wasAtBottom = AtFeedBottom();
+                foreach (var (c, box, st) in boxes)
+                {
+                    if (box.State == st) continue;
+                    box.State = st;
+                    try { c.Invalidate(); } catch { }
+                }
+
+                if (fresh.Count > 0)
+                {
+                    ApplyPageMeta(key);
+                    var add = dt.Clone();
+                    foreach (var r in fresh) add.ImportRow(r);
+                    var lastRow = old.Rows[old.Rows.Count - 1];
+                    string lastDate = ToViewerLocal(Convert.ToDateTime(lastRow["created_at"]))
+                        .ToString("d MMMM yyyy", new System.Globalization.CultureInfo("ru-RU"));
+                    var lastCtl = _laidOut[_laidOut.Count - 1];
+                    int y = lastCtl.Top + lastCtl.Height + (lastCtl.Tag is bool ? 8 : 4);
+
+                    var built = BuildRows(add, myId, isGroup, iB, tB, yStart: y, lastDate: lastDate).items;
+                    pnlMessages.SuspendLayout();
+                    try
+                    {
+                        pnlMessages.Controls.AddRange(built.ToArray());
+                        _laidOut.AddRange(built);
+                    }
+                    finally { pnlMessages.ResumeLayout(); }
+
+                    var merged = old.Copy();
+                    foreach (var r in fresh) AppendByName(merged, r);
+                    _pageDt = merged;
+                    if (isGroup) _lastGroupMsgCount = dt.Rows.Count; else _lastMsgCount = dt.Rows.Count;
+
+                    pnlMessages.PerformLayout();
+                    // Внизу стоял — внизу и остаётся; читающего историю не дёргаем.
+                    if (wasAtBottom)
+                        try { pnlMessages.AutoScrollPosition = new Point(0, int.MaxValue); } catch { }
+                    try { BeginInvoke(new Action(RestackBubbles)); } catch { }
+                    ArmRestackSettle();
+                }
+
+                // Подпись — та, что даст следующая такая же выборка: тогда она
+                // не сочтёт ленту изменившейся.
+                _renderedChatSig = sig;
+                _renderedMedia = CachedMediaCount(_pageDt);
+                UpdateScrollDownButton();
+                return true;
+            }
+            catch { return false; }
+        }
+
         /// <summary>Вставляет готовую порцию сверху. false — лента уже другая.</summary>
         private bool SplicePrepend(DataTable older, DataTable merged, DataTable basePage,
                                    bool grp, int chatId, int myId, bool iB, bool tB, string key)
@@ -5152,6 +5317,7 @@ namespace PISMO
                 _lastDmTop = -pnlMessages.AutoScrollPosition.Y;
 
                 _pageDt = merged;
+                _renderedMedia = CachedMediaCount(merged);
                 if (grp) { _groupMetaCache[chatId] = merged; _lastGroupMsgCount = merged.Rows.Count; }
                 else     { _msgMetaCache[chatId]   = merged; _lastMsgCount      = merged.Rows.Count; }
                 // Вливаем в историю переписки из фона: слияние читает и пишет
@@ -6651,7 +6817,10 @@ namespace PISMO
             if (readState >= 0)
                 stampW += 4 + TextRenderer.MeasureText(checkText, StampBoldFont).Width;
             int stampH = stampSize.Height;
-            int capRead = readState;
+            // Состояние галочек — в коробке при пузыре: «прочитано» меняется
+            // прямо на месте (см. TryRefreshInPlace), без пересборки ленты.
+            var readBox = new ReadBox(readState);
+            if (readState >= 0) _readBoxes.AddOrUpdate(bubble, readBox);
             // Что ещё встанет НИЖЕ подписи (закреп, чипы реакций) — на столько
             // поднимаем её от нижнего края. Замыкание держит переменную, а не
             // её значение, поэтому блоки ниже просто дописывают свою высоту.
@@ -6661,9 +6830,12 @@ namespace PISMO
                 int y = bubble.Height - PAD - stampH - stampTail;
                 TextRenderer.DrawText(e.Graphics, stampText, StampFont,
                     new Point(PAD, y), stampColor, TextFormatFlags.NoPadding);
-                if (capRead >= 0)
-                    TextRenderer.DrawText(e.Graphics, checkText, StampBoldFont,
-                        new Point(PAD + stampSize.Width + 4, y), checkColor,
+                int rs = readBox.State;
+                if (rs >= 0)
+                    TextRenderer.DrawText(e.Graphics, rs == 0 ? "✓" : "✓✓", StampBoldFont,
+                        new Point(PAD + stampSize.Width + 4, y),
+                        rs == 2 ? Color.FromArgb(88, 170, 255)     // прочитано — синие
+                                : Color.FromArgb(150, 160, 180),   // доставлено — серые
                         TextFormatFlags.NoPadding);
             };
 
@@ -8762,6 +8934,8 @@ namespace PISMO
             var list = new List<MediaRef>();
             var dt = _pageDt;
             if (dt == null) return list;
+            // Подпись у пачки одна на всех — та, что ушла с первым вложением.
+            var caps = Albums.Captions(dt);
             foreach (DataRow r in dt.Rows)
             {
                 try
@@ -8784,13 +8958,15 @@ namespace PISMO
                     if (string.IsNullOrWhiteSpace(who) && dt.Columns.Contains("login")
                         && r["login"] != DBNull.Value) who = r["login"].ToString();
 
+                    int rid = Convert.ToInt32(r["id"]);
                     list.Add(new MediaRef
                     {
-                        MsgId = Convert.ToInt32(r["id"]),
+                        MsgId = rid,
                         IsVideo = isVid,
                         FileName = fn,
                         Sender = who,
                         When = ToViewerLocal(Convert.ToDateTime(r["created_at"])),
+                        Caption = caps.TryGetValue(rid, out var cap) ? cap : "",
                     });
                 }
                 catch { }
@@ -8809,25 +8985,28 @@ namespace PISMO
         private List<MediaRef> AllChatMedia(bool isGroup, int chatId)
         {
             var list = new List<MediaRef>();
+            var capRows = new List<(int Id, int Sender, DateTime When, string Text)>();
             try
             {
                 using var conn = DBHelper.OpenConnection();
                 string sql = isGroup
-                    ? @"SELECT m.id, m.file_name, m.created_at,
+                    // ПОСЛЕДНИЕ шестьсот, а не первые: в длинной переписке
+                    // свежие снимки иначе в ленту просмотра не попадали вовсе.
+                    ? @"SELECT * FROM (SELECT m.id, m.file_name, m.created_at, m.sender_id, m.text,
                                (m.image_data IS NOT NULL) AS has_img,
                                (m.file_data IS NOT NULL OR m.file_url IS NOT NULL) AS has_file,
                                u.name AS sender_name, u.login
                           FROM group_messages m JOIN users u ON u.id = m.sender_id
                          WHERE m.group_id=@c AND m.is_deleted=0
-                         ORDER BY m.id ASC LIMIT 600"
-                    : @"SELECT m.id, m.file_name, m.created_at,
+                         ORDER BY m.id DESC LIMIT 600) sub ORDER BY id ASC"
+                    : @"SELECT * FROM (SELECT m.id, m.file_name, m.created_at, m.sender_id, m.text,
                                (m.image_data IS NOT NULL) AS has_img,
                                (m.file_data IS NOT NULL OR m.file_url IS NOT NULL) AS has_file,
                                u.name AS sender_name, u.login
                           FROM messages m JOIN users u ON u.id = m.sender_id
                          WHERE ((m.sender_id=@me AND m.receiver_id=@c)
                              OR (m.sender_id=@c AND m.receiver_id=@me)) AND m.is_deleted=0
-                         ORDER BY m.id ASC LIMIT 600";
+                         ORDER BY m.id DESC LIMIT 600) sub ORDER BY id ASC";
                 using var cmd = new MySqlCommand(sql, conn);
                 cmd.Parameters.AddWithValue("@c", chatId);
                 if (!isGroup) cmd.Parameters.AddWithValue("@me", UserSession.EffectiveId);
@@ -8846,15 +9025,26 @@ namespace PISMO
                     string who = rd["sender_name"] == DBNull.Value ? "" : rd["sender_name"].ToString().Trim();
                     if (string.IsNullOrWhiteSpace(who) && rd["login"] != DBNull.Value)
                         who = rd["login"].ToString();
+                    var when = ToViewerLocal(Convert.ToDateTime(rd["created_at"]));
+                    int rid = Convert.ToInt32(rd["id"]);
                     list.Add(new MediaRef
                     {
-                        MsgId = Convert.ToInt32(rd["id"]),
+                        MsgId = rid,
                         IsVideo = isVid,
                         FileName = fn,
                         Sender = who,
-                        When = ToViewerLocal(Convert.ToDateTime(rd["created_at"])),
+                        When = when,
                     });
+                    string txt = "";
+                    try { txt = rd["text"] == DBNull.Value ? "" : Crypto.Dec(rd["text"].ToString()); } catch { }
+                    int sid = 0;
+                    try { sid = Convert.ToInt32(rd["sender_id"]); } catch { }
+                    capRows.Add((rid, sid, Convert.ToDateTime(rd["created_at"]), txt));
                 }
+                // Подпись пачки — каждому её кадру.
+                var caps = Albums.CaptionsOf(capRows);
+                foreach (var m in list)
+                    m.Caption = caps.TryGetValue(m.MsgId, out var c) ? c : "";
             }
             catch { }
             return list;
