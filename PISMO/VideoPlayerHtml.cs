@@ -143,21 +143,46 @@ v.addEventListener('play',function(){play.innerHTML='&#10074;&#10074;';show();sa
 // HEVC без расширения кодека он не читает), а раз плеер ролик показывает —
 // кадр у нас уже есть. Снимаем его один раз, уменьшаем и отдаём окну: оно
 // дописывает обложку в сообщение, и её дальше видят все.
-var coverSent=false;
-function sendCover(){
+//
+// ЧЁРНЫЙ КАДР В ОБЛОЖКУ НЕ БЕРЁМ: у многих роликов начало — затемнение или
+// заставка, и обложка выходила чёрным квадратом. Пока ролик идёт, ждём первый
+// светлый кадр; не нашёлся за восемь секунд — отдаём самый светлый из виденных.
+var coverSent=false, coverBest=null, coverBestL=-1;
+function frameLum(){
+  try{
+    var c=document.createElement('canvas'); c.width=24; c.height=24;
+    var x=c.getContext('2d'); x.drawImage(v,0,0,24,24);
+    var d=x.getImageData(0,0,24,24).data, s=0;
+    for(var i=0;i<d.length;i+=4) s+=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+    return s/(d.length/4);
+  }catch(e){ return 255; }
+}
+function sendCover(force){
   if(coverSent||!v.videoWidth||!v.videoHeight) return;
   try{
+    var l=frameLum();
     var k=Math.min(1,640/Math.max(v.videoWidth,v.videoHeight));
     var c=document.createElement('canvas');
     c.width=Math.max(1,Math.round(v.videoWidth*k));
     c.height=Math.max(1,Math.round(v.videoHeight*k));
     c.getContext('2d').drawImage(v,0,0,c.width,c.height);
     var url=c.toDataURL('image/jpeg',0.72);
-    if(url&&url.length>64){coverSent=true;say('cover:'+url.substring(url.indexOf(',')+1));}
+    if(!url||url.length<=64) return;
+    if(l<22 && !force){
+      if(l>coverBestL){ coverBestL=l; coverBest=url; }
+      return;
+    }
+    coverSent=true;say('cover:'+url.substring(url.indexOf(',')+1));
   }catch(e){}
 }
-v.addEventListener('loadeddata',function(){setTimeout(sendCover,150);});
-v.addEventListener('timeupdate',function(){if(!coverSent&&v.currentTime>0.2)sendCover();});
+var lastCoverTry=0;
+v.addEventListener('loadeddata',function(){setTimeout(function(){sendCover(false);},150);});
+v.addEventListener('timeupdate',function(){
+  if(coverSent||v.currentTime<=0.2) return;
+  var now=Date.now(); if(now-lastCoverTry<400) return; lastCoverTry=now;
+  if(v.currentTime>=8&&coverBest){ coverSent=true; say('cover:'+coverBest.substring(coverBest.indexOf(',')+1)); return; }
+  sendCover(false);
+});
 v.addEventListener('pause',function(){play.innerHTML='&#9654;';show();});
 v.addEventListener('loadedmetadata',function(){
   dur.textContent=clock(v.duration);

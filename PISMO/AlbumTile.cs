@@ -55,6 +55,20 @@ namespace PISMO
         /// <summary>Нажали ячейку — открыть именно её.</summary>
         public event Action<Item> CellClicked;
 
+        /// <summary>
+        /// Как достать снимок ячейки, если его нет в кеше (из базы). Зовётся в
+        /// фоне. Без него ячейка ждала бы, пока снимок привезёт выборка всей
+        /// страницы, — а если та срывалась, «загрузка…» висела вечно.
+        /// </summary>
+        public Func<Item, byte[]> Loader { get; set; }
+
+        /// <summary>Ячейки, чей снимок сейчас едет или раскодируется.</summary>
+        private readonly HashSet<int> _pending = new();
+        /// <summary>Когда можно снова попробовать снимок, который не достался.</summary>
+        private readonly Dictionary<int, (DateTime retryAt, int tries)> _failed = new();
+        /// <summary>Не больше трёх снимков разом на всё приложение — диск и сеть не душим.</summary>
+        private static readonly System.Threading.SemaphoreSlim Gate = new(3);
+
         public AlbumTile(List<Item> items, string caption, string time, bool isMine,
                          int readState, int width)
         {
@@ -79,6 +93,7 @@ namespace PISMO
                 if (IsDisposed || !_items.Exists(x => x.MsgId == id)) return;
                 if (_thumbs.TryGetValue(id, out var stale)) { try { stale?.Dispose(); } catch { } }
                 _thumbs.Remove(id);
+                _failed.Remove(id);
                 try { Invalidate(); } catch { }
             };
             CoverGrabber.CoverReady += _onCover;
@@ -161,31 +176,83 @@ namespace PISMO
             return path;
         }
 
-        /// <summary>Миниатюра ячейки — из кеша страницы; чего нет, то дорисуется
-        /// после фоновой выборки и следующей перерисовки ленты.</summary>
+        /// <summary>
+        /// Миниатюра ячейки. Готовая — сразу; нет — везём и раскодируем В ФОНЕ
+        /// и перерисовываем ячейку, когда она готова.
+        ///
+        /// Раньше снимок читался только из кеша и прямо в отрисовке: чего в
+        /// кеше не было, то так и оставалось «загрузка…» — навсегда, если
+        /// выборка страницы сорвалась (десяток крупных снимков одним запросом
+        /// легко упирается в предел времени). А раскодирование десятка
+        /// снимков на потоке окна при прокрутке подтормаживало ленту.
+        /// </summary>
         private Bitmap ThumbFor(Item it, int side)
         {
             if (_thumbs.TryGetValue(it.MsgId, out var cached)) return cached;
-            Bitmap bmp = null;
-            try
+            if (side <= 0 || _pending.Contains(it.MsgId)) return null;
+            if (_failed.TryGetValue(it.MsgId, out var f))
             {
-                // У ролика картинка сообщения — это его обложка (см.
-                // VideoCover), поэтому пробуем её и для видео: раньше в пачке
-                // ролики были просто тёмными квадратами.
-                var bytes = MediaCache.Get(it.MsgId, it.CacheKind, it.FileName);
-                if (bytes != null && bytes.Length > 0)
-                {
-                    using var ms = new MemoryStream(bytes);
-                    using var src = Image.FromStream(ms);
-                    bmp = CropSquare(src, side);
-                }
+                // У ролика кадр снимают отдельно (CoverGrabber) — ждём его
+                // события, а не долбим базу.
+                if (it.IsVideo || DateTime.UtcNow < f.retryAt) return null;
             }
-            catch { bmp = null; }
-            // У ролика кадра может ещё не быть — его снимают в фоне
-            // (CoverGrabber). «Нет кадра» тогда не запоминаем, иначе плитка
-            // так и осталась бы тёмной, когда обложка появится.
-            if (bmp != null || !it.IsVideo) _thumbs[it.MsgId] = bmp;
-            return bmp;
+            if (!IsHandleCreated) return null;
+
+            _pending.Add(it.MsgId);
+            var item = it;
+            var loader = Loader;
+            System.Threading.Tasks.Task.Run(async () =>
+            {
+                Bitmap made = null;
+                await Gate.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    var bytes = MediaCache.Get(item.MsgId, item.CacheKind, item.FileName);
+                    if ((bytes == null || bytes.Length == 0) && loader != null)
+                    {
+                        try { bytes = loader(item); } catch { bytes = null; }
+                    }
+                    if (bytes is { Length: > 0 })
+                    {
+                        using var ms = new MemoryStream(bytes);
+                        using var src = Image.FromStream(ms);
+                        made = CropSquare(src, side);
+                    }
+                }
+                catch { made?.Dispose(); made = null; }
+                finally { Gate.Release(); }
+
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) { made?.Dispose(); return; }
+                    BeginInvoke(new Action(() =>
+                    {
+                        _pending.Remove(item.MsgId);
+                        if (IsDisposed) { made?.Dispose(); return; }
+                        if (made != null)
+                        {
+                            _thumbs[item.MsgId] = made;
+                            _failed.Remove(item.MsgId);
+                            Invalidate();
+                        }
+                        else
+                        {
+                            // Не досталось — попробуем позже, с растущей паузой.
+                            int tries = _failed.TryGetValue(item.MsgId, out var was) ? was.tries + 1 : 1;
+                            int wait = Math.Min(60, 5 * tries * tries);
+                            _failed[item.MsgId] = (DateTime.UtcNow.AddSeconds(wait), tries);
+                            if (!item.IsVideo)
+                            {
+                                var t = new System.Windows.Forms.Timer { Interval = wait * 1000 };
+                                t.Tick += (s2, e2) => { t.Stop(); t.Dispose(); if (!IsDisposed) Invalidate(); };
+                                t.Start();
+                            }
+                        }
+                    }));
+                }
+                catch { made?.Dispose(); }
+            });
+            return null;
         }
 
         /// <summary>Квадрат по центру — чтобы ячейки не разъезжались по высоте.</summary>

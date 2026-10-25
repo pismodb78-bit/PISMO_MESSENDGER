@@ -4714,14 +4714,21 @@ namespace PISMO
                         int kId = Convert.ToInt32(rk["id"]);
                         bool kHasImg = rk.Table.Columns.Contains("has_img") && rk["has_img"] != DBNull.Value
                                        && Convert.ToBoolean(rk["has_img"]);
-                        if (vidk && !kHasImg && !MediaCache.Has(kId, "img"))
+                        if (vidk)
                         {
                             long kSize = rk.Table.Columns.Contains("file_size") && rk["file_size"] != DBNull.Value
                                 ? Convert.ToInt64(rk["file_size"]) : 0;
                             string kName = fnk; bool kGroup = isGroup;
-                            CoverGrabber.Request(null, kGroup ? "group_messages" : "messages", kId, kName, "img",
-                                MediaCache.Has(kId, "file", kName), kSize,
-                                () => LoadFileBytes(kId, kName, kGroup));
+                            string kTable = kGroup ? "group_messages" : "messages";
+                            if (!kHasImg && !MediaCache.Has(kId, "img"))
+                                CoverGrabber.Request(null, kTable, kId, kName, "img",
+                                    MediaCache.Has(kId, "file", kName), kSize,
+                                    () => LoadFileBytes(kId, kName, kGroup));
+                            else
+                                // Обложка есть — но, может, чёрная: проверим в фоне.
+                                CoverGrabber.RecheckDarkCached(kTable, kId, kName, "img",
+                                    MediaCache.Has(kId, "file", kName), kSize,
+                                    () => LoadFileBytes(kId, kName, kGroup));
                         }
                     }
 
@@ -4754,6 +4761,10 @@ namespace PISMO
                     tile.Name = "msg" + msgId;
                     foreach (var it0 in tileItems) _albumOf[it0.MsgId] = msgId;
                     tile.CellClicked += it => OpenAlbumCell(it, tileGroup);
+                    // Снимок ячейки, которого нет в кеше, — из базы, в фоне (у
+                    // ролика это его обложка, если она есть).
+                    tile.Loader = it => LoadMediaForMessage(it.MsgId, it.FileName, true, false, false, false,
+                                                            tileGroup).img;
 
                     // АЛЬБОМ — ОДНО СООБЩЕНИЕ: правая кнопка по плитке даёт то
                     // же меню, что у обычного пузыря, и действует на всю пачку.
@@ -5915,84 +5926,131 @@ namespace PISMO
         }
 
         /// <summary>
-        /// Прячем пузыри, которых сейчас не видно.
-        ///
-        /// Windows при прокрутке двигает КАЖДОЕ дочернее окно: после пары
-        /// догрузок их в ленте сотни, и частота падает до полутора десятков
-        /// кадров — та самая «лагучая прокрутка». Скрытое окно не двигается и
-        /// не рисуется, поэтому держим живыми только то, что в окне, плюс
-        /// экран сверху и снизу на запас хода.
-        ///
-        /// Высоту содержимого при этом задаём сами (AutoScrollMinSize в
-        /// RestackBubbles): иначе полоса прокрутки, считающая по видимым
-        /// детям, схлопнула бы ленту.
+        /// Прячем пузыри далеко от экрана — см. пояснение у EnsureCullTimer ниже.
         /// </summary>
         private void CullFeed()
         {
-            // ВЫКЛЮЧЕНО НАМЕРЕННО.
-            //
-            // Задумка была верной — скрытое окно Windows при прокрутке не
-            // двигает, и на длинной ленте это заметный выигрыш, — но цена
-            // оказалась неприемлемой: показ и скрытие на каждом движении
-            // заставляли панель пересчитывать раскладку, лента мерцала, а на
-            // глубине и вовсе уходила в серое. Ускорение прокрутки осталось за
-            // теми правками, которые ничего не прячут: кеш миниатюр, более
-            // лёгкая перерисовка и меньшая порция догрузки.
-            //
-            // Если к этому возвращаться, то иначе: не скрывать, а не создавать
-            // лишние пузыри вовсе — держать в ленте окно сообщений и
-            // досоздавать их при подходе к краю.
-            if (true) return;
-#pragma warning disable CS0162
+            // Вызывается на каждом кадре прокрутки: ТОЛЬКО показывает то, что
+            // подъезжает. Прячет дальнее таймер — когда прокрутка утихла.
+            try { RevealNearFeed(); EnsureCullTimer(); } catch { }
+        }
+
+        // ── Дальние пузыри — спрятаны ────────────────────────────────────
+        //
+        // Каждый пузырь — окно Windows, и на каждом кадре прокрутки система
+        // пересчитывает видимые области всех ВИДИМЫХ окон ленты. Чем выше
+        // долистал, тем их больше — отсюда «чем выше, тем сильнее фризит».
+        // Спрятанное окно в этом не участвует.
+        //
+        // Первая попытка (выше, отключённая) прятала всё, что не на экране, и
+        // ломалась на двух вещах. Высота содержимого: панель считает её по
+        // видимым детям, и лента схлопывалась. И мигание: показ и скрытие на
+        // каждом движении гоняли раскладку. Здесь:
+        //   • крайние пузыри — первые и последние — видны ВСЕГДА, и высота
+        //     содержимого не меняется;
+        //   • прячем только через треть секунды покоя и с запасом в три экрана
+        //     в обе стороны; показываем заранее, за два экрана, прямо на кадре;
+        //   • раскладку на это не зовём (SuspendLayout / ResumeLayout(false)).
+        // На короткой ленте (меньше 80 пузырей) не делаем ничего.
+        private System.Windows.Forms.Timer _cullTimer;
+        private int _cullPos = int.MinValue;
+        private DateTime _cullMoved = DateTime.MinValue;
+        private bool _cullSettled;
+        private const int CullMinCount = 80;
+
+        private void EnsureCullTimer()
+        {
+            if (_cullTimer != null) return;
+            _cullTimer = new System.Windows.Forms.Timer { Interval = 80 };
+            _cullTimer.Tick += (s, e) => { try { CullTick(); } catch { } };
+            _cullTimer.Start();
+            FormClosed += (s, e) => { try { _cullTimer.Stop(); _cullTimer.Dispose(); } catch { } };
+        }
+
+        private void CullTick()
+        {
+            if (pnlMessages == null || pnlMessages.IsDisposed || !pnlMessages.IsHandleCreated) return;
+            var feed = _laidOut;
+            if (feed == null || feed.Count == 0) return;
+
+            // Сдвинулась лента (колесом, ползунком, переходом к сообщению) —
+            // показываем подъезжающее и ждём покоя.
+            int pos = -pnlMessages.AutoScrollPosition.Y;
+            if (pos != _cullPos)
+            {
+                _cullPos = pos;
+                _cullMoved = DateTime.UtcNow;
+                _cullSettled = false;
+                RevealNearFeed();
+                return;
+            }
+            if (_cullSettled) return;
+            if ((DateTime.UtcNow - _cullMoved).TotalMilliseconds < 350) return;
+            if (_drawingPage || ChatScroll.IsScrolling(pnlMessages)) return;
+            _cullSettled = true;
+
+            if (feed.Count < CullMinCount) { RevealAllFeed(); return; }
+            HideFarFeed(feed);
+        }
+
+        /// <summary>Лента пересобрана или выросла — пересчитать спрятанное заново.</summary>
+        private void RecullSoon() { _cullSettled = false; _cullMoved = DateTime.UtcNow; }
+
+        private void RevealNearFeed()
+        {
+            var feed = _laidOut;
+            if (feed == null || feed.Count == 0 || pnlMessages == null || pnlMessages.IsDisposed) return;
+            int vh = Math.Max(200, pnlMessages.ClientSize.Height);
+            int from = -vh * 2, to = vh * 3;
+            List<Control> show = null;
+            foreach (var c in feed)
+            {
+                if (c == null || c.IsDisposed || c.Visible || c.Parent != pnlMessages) continue;
+                if (c.Top <= to && c.Top + c.Height >= from) (show ??= new List<Control>()).Add(c);
+            }
+            if (show == null) return;
+            pnlMessages.SuspendLayout();
+            try { foreach (var c in show) c.Visible = true; }
+            finally { pnlMessages.ResumeLayout(false); }
+            _cullSettled = false;
+        }
+
+        private void RevealAllFeed()
+        {
+            var feed = _laidOut;
+            if (feed == null || pnlMessages == null || pnlMessages.IsDisposed) return;
+            bool any = false;
+            foreach (var c in feed) if (c != null && !c.IsDisposed && !c.Visible) { any = true; break; }
+            if (!any) return;
+            pnlMessages.SuspendLayout();
             try
             {
-                if (pnlMessages == null || pnlMessages.IsDisposed) return;
-                if (_laidOut == null || _laidOut.Count == 0) return;
+                foreach (var c in feed)
+                    if (c != null && !c.IsDisposed && !c.Visible && c.Parent == pnlMessages) c.Visible = true;
+            }
+            finally { pnlMessages.ResumeLayout(false); }
+        }
 
-                // КООРДИНАТЫ ЗДЕСЬ ЭКРАННЫЕ.
-                //
-                // У прокрученной панели Top ребёнка отсчитывается от сдвинутого
-                // начала — то есть это координата внутри ВИДИМОЙ области, уже с
-                // учётом прокрутки (ровно поэтому вставка порции сначала ставит
-                // AutoScrollPosition в ноль, см. PrependOlder). Сравнивать его с
-                // величиной прокрутки нельзя: окно видимости уезжало, и лента
-                // пряталась целиком — пустой чат.
-                int vh = Math.Max(200, pnlMessages.ClientSize.Height);
-                int from = -vh, to = vh * 2;
-
-                int visible = 0;
-                foreach (var c in _laidOut)
+        private void HideFarFeed(List<Control> feed)
+        {
+            int vh = Math.Max(200, pnlMessages.ClientSize.Height);
+            int from = -vh * 3, to = vh * 4;
+            pnlMessages.SuspendLayout();
+            try
+            {
+                for (int i = 0; i < feed.Count; i++)
                 {
+                    var c = feed[i];
                     if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
-                    bool want = c.Top <= to && c.Top + c.Height >= from;
+                    // Крайние видны всегда: по ним панель считает высоту ленты.
+                    bool edge = i < 2 || i >= feed.Count - 2;
+                    bool near = c.Top <= to && c.Top + c.Height >= from;
+                    // Пузырь с фокусом (в нём печатают или выделяют) не трогаем.
+                    bool want = edge || near || c.ContainsFocus;
                     if (c.Visible != want) c.Visible = want;
-                    if (want) visible++;
-                }
-
-                // Предохранитель: если по расчёту не видно НИЧЕГО, а лента не
-                // пуста — показываем всё. Пустой чат хуже тяжёлой прокрутки.
-                if (visible == 0)
-                {
-                    foreach (var c in _laidOut)
-                    {
-                        if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
-                        if (!c.Visible) c.Visible = true;
-                    }
-                }
-
-                // Кружки выделения живут рядом с пузырями — прячутся вместе.
-                if (_selMark != null)
-                {
-                    foreach (var mark in _selMark.Values)
-                    {
-                        if (mark == null || mark.IsDisposed) continue;
-                        if (mark.Tag is not Control b || b.IsDisposed) continue;
-                        if (mark.Visible != b.Visible) mark.Visible = b.Visible;
-                    }
                 }
             }
-            catch { }
-#pragma warning restore CS0162
+            finally { pnlMessages.ResumeLayout(false); }
         }
 
         /// <summary>Возвращает кружки выделения к своим пузырям после пересчёта.</summary>
@@ -6667,19 +6725,34 @@ namespace PISMO
                     vp.Poster = videoPoster ?? MediaCache.Get(msgId, "img", null);
                     // Обложки нет — снимаем кадр в фоне сами (CoverGrabber), а
                     // если ролик успеют запустить раньше — его снимет плеер.
-                    if (vp.Poster == null)
                     {
                         string coverTable = capturedGroup ? "group_messages" : "messages";
-                        vp.CoverCaptured = jpeg => VideoCover.Share(coverTable, capturedId, jpeg);
                         long sizeKnown = fileData is { Length: > 0 } ? fileData.LongLength : fileSize;
                         bool haveFile = fileData is { Length: > 0 }
                                         || MediaCache.Has(capturedId, "file", capturedName);
                         var dataNow = fileData;
-                        CoverGrabber.Request(vp, coverTable, capturedId, capturedName, "img",
-                            haveFile, sizeKnown,
-                            () => dataNow is { Length: > 0 }
-                                ? dataNow
-                                : LoadFileBytes(capturedId, capturedName, capturedGroup));
+                        Func<byte[]> videoLoader = () => dataNow is { Length: > 0 }
+                            ? dataNow
+                            : LoadFileBytes(capturedId, capturedName, capturedGroup);
+                        if (vp.Poster == null)
+                        {
+                            vp.CoverCaptured = jpeg => VideoCover.Share(coverTable, capturedId, jpeg);
+                            CoverGrabber.Request(vp, coverTable, capturedId, capturedName, "img",
+                                haveFile, sizeKnown, videoLoader);
+                        }
+                        else
+                        {
+                            // Обложка есть, но может быть ЧЁРНОЙ (снят был самый
+                            // первый кадр) — проверяем и, если так, переснимаем.
+                            var posterNow = vp.Poster;
+                            vp.CoverCaptured = jpeg =>
+                            {
+                                if (VideoCover.IsDark(posterNow) && !VideoCover.IsDark(jpeg))
+                                    VideoCover.Replace(coverTable, capturedId, jpeg);
+                            };
+                            CoverGrabber.RecheckDark(vp, posterNow, coverTable, capturedId, capturedName, "img",
+                                haveFile, sizeKnown, videoLoader);
+                        }
                     }
                     // ⛶ у плеера в ленте открывает окно просмотра: там
                     // соседние ролики стрелками, скорость и «по кругу».

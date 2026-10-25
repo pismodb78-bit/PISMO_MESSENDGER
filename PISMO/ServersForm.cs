@@ -2578,6 +2578,28 @@ namespace PISMO
             });
         }
 
+        /// <summary>Картинка сообщения канала (у ролика — обложка): кеш, затем база.</summary>
+        internal static byte[] LoadServerImageBytes(int msgId)
+        {
+            try
+            {
+                var cached = MediaCache.Get(msgId, "simg", null);
+                if (cached is { Length: > 0 }) return cached;
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand("SELECT image_data FROM server_messages WHERE id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", msgId);
+                cmd.CommandTimeout = 120;
+                var o = cmd.ExecuteScalar();
+                if (o is byte[] data && data.Length > 0)
+                {
+                    MediaCache.Put(msgId, "simg", data);
+                    return data;
+                }
+            }
+            catch { }
+            return null;
+        }
+
         internal static byte[] LoadServerFileBytes(int msgId, string fileName)
         {
             try
@@ -2646,23 +2668,36 @@ namespace PISMO
             }
             if (need.Count == 0) return;
 
-            var sb = new System.Text.StringBuilder();
-            foreach (var n in need) { if (sb.Length > 0) sb.Append(','); sb.Append(n.id); }
             // file_data в выборке НЕТ намеренно: иначе вложение каждого сообщения
             // страницы поднималось бы с диска только потому, что у соседней строки
             // не хватало картинки.
-            using var c2 = new MySqlCommand(
-                $"SELECT id, image_data, audio_data, video_data, file_name FROM server_messages WHERE id IN ({sb})", conn);
+            //
+            // Порциями по восемь: десяток крупных снимков одним ответом упирался
+            // в предел времени, и не доезжал ни один (см. то же в переписке).
             var fetched = new Dictionary<int, (byte[] i, byte[] a, byte[] v, string fn)>();
-            using (var rd = c2.ExecuteReader())
+            byte[] B(System.Data.IDataReader rr, int i) => rr.IsDBNull(i) ? null : (byte[])rr.GetValue(i);
+            for (int from = 0; from < need.Count; from += 8)
             {
-                byte[] B(System.Data.IDataReader rr, int i) => rr.IsDBNull(i) ? null : (byte[])rr.GetValue(i);
-                while (rd.Read())
+                var sb = new System.Text.StringBuilder();
+                for (int k = from; k < Math.Min(need.Count, from + 8); k++)
                 {
-                    int id = rd.GetInt32(0);
-                    string fn = rd.IsDBNull(4) ? null : rd.GetString(4);
-                    fetched[id] = (B(rd, 1), B(rd, 2), B(rd, 3), fn);
+                    if (sb.Length > 0) sb.Append(',');
+                    sb.Append(need[k].id);
                 }
+                try
+                {
+                    using var c2 = new MySqlCommand(
+                        $"SELECT id, image_data, audio_data, video_data, file_name FROM server_messages WHERE id IN ({sb})", conn)
+                    { CommandTimeout = 120 };
+                    using var rd = c2.ExecuteReader();
+                    while (rd.Read())
+                    {
+                        int id = rd.GetInt32(0);
+                        string fn = rd.IsDBNull(4) ? null : rd.GetString(4);
+                        fetched[id] = (B(rd, 1), B(rd, 2), B(rd, 3), fn);
+                    }
+                }
+                catch { }   // эта порция не доехала — остальные всё равно пробуем
             }
             foreach (var n in need)
             {
@@ -3069,12 +3104,18 @@ namespace PISMO
                         int kId = Convert.ToInt32(rk["id"]);
                         bool kHasImg = dt.Columns.Contains("has_img") && rk["has_img"] != DBNull.Value
                                        && Convert.ToBoolean(rk["has_img"]);
-                        if (vidk && !kHasImg && !MediaCache.Has(kId, "simg"))
+                        if (vidk)
                         {
                             string kName = fnk;
-                            CoverGrabber.Request(null, "server_messages", kId, kName, "simg",
-                                MediaCache.Has(kId, "sfile", kName), 0,
-                                () => LoadServerFileBytes(kId, kName));
+                            if (!kHasImg && !MediaCache.Has(kId, "simg"))
+                                CoverGrabber.Request(null, "server_messages", kId, kName, "simg",
+                                    MediaCache.Has(kId, "sfile", kName), 0,
+                                    () => LoadServerFileBytes(kId, kName));
+                            else
+                                // Обложка есть — но, может, чёрная: проверим в фоне.
+                                CoverGrabber.RecheckDarkCached("server_messages", kId, kName, "simg",
+                                    MediaCache.Has(kId, "sfile", kName), 0,
+                                    () => LoadServerFileBytes(kId, kName));
                         }
                     }
 
@@ -3086,6 +3127,8 @@ namespace PISMO
                                              Math.Max(360, Math.Min(640, msgWidth - 10)))
                     { Location = new Point(LEFT, y) };
                     tile.CellClicked += it => OpenChannelAlbumCell(it);
+                    // Снимок ячейки, которого нет в кеше, — из базы, в фоне.
+                    tile.Loader = it => LoadServerImageBytes(it.MsgId);
                     holder.Controls.Add(tile);
                     y += tile.Height + 6;
 
@@ -3242,17 +3285,32 @@ namespace PISMO
                                 // Обложки нет — снимаем кадр в фоне сами,
                                 // а запустят ролик раньше — снимет плеер.
                                 int capCover = id;
-                                if (vp.Poster == null)
                                 {
-                                    vp.CoverCaptured = jpeg =>
-                                        VideoCover.Share("server_messages", capCover, jpeg, "simg");
                                     var bytesNow = haveBytes ? sm.file : null;
                                     string nameNow = sm.fname;
                                     bool haveFile = bytesNow != null
                                                     || MediaCache.Has(capCover, "sfile", nameNow);
-                                    CoverGrabber.Request(vp, "server_messages", capCover, nameNow, "simg",
-                                        haveFile, bytesNow?.LongLength ?? 0,
-                                        () => bytesNow ?? LoadServerFileBytes(capCover, nameNow));
+                                    Func<byte[]> videoLoader = () => bytesNow ?? LoadServerFileBytes(capCover, nameNow);
+                                    if (vp.Poster == null)
+                                    {
+                                        vp.CoverCaptured = jpeg =>
+                                            VideoCover.Share("server_messages", capCover, jpeg, "simg");
+                                        CoverGrabber.Request(vp, "server_messages", capCover, nameNow, "simg",
+                                            haveFile, bytesNow?.LongLength ?? 0, videoLoader);
+                                    }
+                                    else
+                                    {
+                                        // Обложка есть, но может быть чёрной — проверяем
+                                        // и, если так, переснимаем.
+                                        var posterNow = vp.Poster;
+                                        vp.CoverCaptured = jpeg =>
+                                        {
+                                            if (VideoCover.IsDark(posterNow) && !VideoCover.IsDark(jpeg))
+                                                VideoCover.Replace("server_messages", capCover, jpeg, "simg");
+                                        };
+                                        CoverGrabber.RecheckDark(vp, posterNow, "server_messages", capCover, nameNow,
+                                            "simg", haveFile, bytesNow?.LongLength ?? 0, videoLoader);
+                                    }
                                 }
                                 // ⛶ — окно просмотра канала: стрелки по
                                 // соседним роликам, скорость, «по кругу».

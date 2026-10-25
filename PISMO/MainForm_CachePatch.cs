@@ -475,18 +475,32 @@ namespace PISMO
                 // Видео тоже забираем пачкой. video_data — это кружочки, они
                 // короткие; тянуть их по одному во время отрисовки, как было,
                 // означало отдельный поход к серверу на каждый.
-                string sql = $"SELECT id, image_data, audio_data, video_data, file_name FROM {table} " +
-                             $"WHERE id IN ({string.Join(",", ids)})";
+                //
+                // ПОРЦИЯМИ ПО ВОСЕМЬ, а не одним запросом на страницу: десяток
+                // крупных снимков альбома одним ответом упирался в предел
+                // времени, запрос падал целиком — и ни один снимок не доезжал,
+                // плитка так и висела «загрузка…». Сорвалась порция — остальные
+                // всё равно приедут.
                 using var conn = DBHelper.OpenConnection();
-                using var cmd = new MySqlCommand(sql, conn);
-                using var rd = cmd.ExecuteReader();
-                while (rd.Read())
+                for (int from = 0; from < ids.Count; from += 8)
                 {
-                    int id = rd.GetInt32(0);
-                    string fn = rd.IsDBNull(4) ? null : rd.GetString(4);
-                    if (!rd.IsDBNull(1)) MediaCache.Put(id, "img", (byte[])rd[1], fn);
-                    if (!rd.IsDBNull(2)) MediaCache.Put(id, "audio", (byte[])rd[2]);
-                    if (!rd.IsDBNull(3)) MediaCache.Put(id, "video", (byte[])rd[3]);
+                    var part = ids.GetRange(from, Math.Min(8, ids.Count - from));
+                    try
+                    {
+                        string sql = $"SELECT id, image_data, audio_data, video_data, file_name FROM {table} " +
+                                     $"WHERE id IN ({string.Join(",", part)})";
+                        using var cmd = new MySqlCommand(sql, conn) { CommandTimeout = 120 };
+                        using var rd = cmd.ExecuteReader();
+                        while (rd.Read())
+                        {
+                            int id = rd.GetInt32(0);
+                            string fn = rd.IsDBNull(4) ? null : rd.GetString(4);
+                            if (!rd.IsDBNull(1)) MediaCache.Put(id, "img", (byte[])rd[1], fn);
+                            if (!rd.IsDBNull(2)) MediaCache.Put(id, "audio", (byte[])rd[2]);
+                            if (!rd.IsDBNull(3)) MediaCache.Put(id, "video", (byte[])rd[3]);
+                        }
+                    }
+                    catch { }   // эта порция не доехала — следующие пробуем всё равно
                 }
             }
             catch { }   // не смогли — не беда, отрисовка догрузит по-старому

@@ -86,6 +86,54 @@ namespace PISMO
             });
         }
 
+        /// <summary>
+        /// Заменить обложку ролика, даже если она уже есть, — для ЧЁРНЫХ
+        /// обложек: раньше кадр брался самый первый, а он у многих роликов
+        /// чёрный. Звать только для сообщений-роликов: у снимка картинка — это
+        /// сам снимок.
+        /// </summary>
+        public static void Replace(string table, int msgId, byte[] jpeg, string cacheKind = "img")
+        {
+            if (msgId <= 0 || jpeg == null || jpeg.Length == 0 || string.IsNullOrEmpty(table)) return;
+            try { MediaCache.Put(msgId, cacheKind, jpeg, null); } catch { }
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    using var conn = DBHelper.OpenConnection();
+                    using var up = new MySqlConnector.MySqlCommand(
+                        $"UPDATE {table} SET image_data=@img WHERE id=@id", conn);
+                    up.Parameters.AddWithValue("@img", jpeg);
+                    up.Parameters.AddWithValue("@id", msgId);
+                    up.ExecuteNonQuery();
+                }
+                catch { }
+            });
+        }
+
+        /// <summary>Почти чёрная ли картинка — средняя яркость по копии 16×16.</summary>
+        public static bool IsDark(byte[] jpeg)
+        {
+            if (jpeg == null || jpeg.Length == 0) return false;
+            try
+            {
+                using var ms = new System.IO.MemoryStream(jpeg);
+                using var src = System.Drawing.Image.FromStream(ms);
+                using var small = new System.Drawing.Bitmap(16, 16);
+                using (var g = System.Drawing.Graphics.FromImage(small))
+                    g.DrawImage(src, 0, 0, 16, 16);
+                double sum = 0;
+                for (int y = 0; y < 16; y++)
+                    for (int x = 0; x < 16; x++)
+                    {
+                        var c = small.GetPixel(x, y);
+                        sum += 0.299 * c.R + 0.587 * c.G + 0.114 * c.B;
+                    }
+                return sum / 256.0 < 14.0;
+            }
+            catch { return false; }
+        }
+
         [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
         private static extern void SHCreateItemFromParsingName(
             string path, IntPtr pbc, ref Guid riid,

@@ -46,7 +46,7 @@ namespace PISMO
     internal static class CoverGrabber
     {
         /// <summary>До какого размера ролик докачиваем ради обложки.</summary>
-        private const long AutoDownloadLimit = 25L * 1024 * 1024;
+        private const long AutoDownloadLimit = 40L * 1024 * 1024;
 
         /// <summary>Сколько ждать кадр с одного ролика, прежде чем сдаться.</summary>
         private const int FrameTimeoutMs = 20000;
@@ -77,9 +77,11 @@ namespace PISMO
             public Func<byte[]> Loader;
             public bool Cached;
             public long Size;
+            /// <summary>Заменить имеющуюся (чёрную) обложку, а не только пустую.</summary>
+            public bool Replace;
         }
 
-        private static readonly Queue<Job> _queue = new();
+        private static readonly List<Job> _queue = new();
         /// <summary>Что уже пробовали в этой сессии — второй раз не берёмся.</summary>
         private static readonly HashSet<string> _tried = new();
         /// <summary>Плееры, которые ждут обложку своего ролика.</summary>
@@ -106,14 +108,15 @@ namespace PISMO
         /// <param name="size">Размер ролика в байтах; 0 — неизвестен.</param>
         /// <param name="loader">Как достать байты ролика (из кеша или с сервера).</param>
         public static void Request(InlineVideoPlayer player, string table, int msgId, string fileName,
-                                   string cacheKind, bool cached, long size, Func<byte[]> loader)
+                                   string cacheKind, bool cached, long size, Func<byte[]> loader,
+                                   bool replace = false)
         {
             if (msgId <= 0 || loader == null || string.IsNullOrEmpty(table)) return;
             // Очередь и невидимый движок живут на потоке интерфейса.
             var ui = MainForm.Current;
             if (ui != null && !ui.IsDisposed && ui.InvokeRequired)
             {
-                try { ui.BeginInvoke(new Action(() => Request(player, table, msgId, fileName, cacheKind, cached, size, loader))); }
+                try { ui.BeginInvoke(new Action(() => Request(player, table, msgId, fileName, cacheKind, cached, size, loader, replace))); }
                 catch { }
                 return;
             }
@@ -126,14 +129,55 @@ namespace PISMO
             }
             if (!_tried.Add(key)) return;
 
-            _queue.Enqueue(new Job
+            _queue.Add(new Job
             {
                 Key = key, Table = table, MsgId = msgId, FileName = fileName ?? "video.mp4",
                 CacheKind = cacheKind ?? "img", Loader = loader,
-                Cached = cached, Size = size,
+                Cached = cached, Size = size, Replace = replace,
             });
             _ = PumpAsync();
         }
+
+        /// <summary>
+        /// У ролика уже есть обложка, но она может оказаться ЧЁРНОЙ (снят был
+        /// самый первый кадр). Проверяем в фоне и, если чёрная, переснимаем
+        /// светлый кадр и заменяем.
+        /// </summary>
+        public static void RecheckDark(InlineVideoPlayer player, byte[] poster, string table, int msgId,
+                                       string fileName, string cacheKind, bool cached, long size,
+                                       Func<byte[]> loader)
+        {
+            if (poster == null || poster.Length == 0 || msgId <= 0) return;
+            if (_darkChecked.Contains(table + ":" + msgId)) return;
+            _darkChecked.Add(table + ":" + msgId);
+            Task.Run(() =>
+            {
+                if (!VideoCover.IsDark(poster)) return;
+                Request(player, table, msgId, fileName, cacheKind, cached, size, loader, replace: true);
+            });
+        }
+
+        /// <summary>
+        /// То же для ячейки альбома: обложку берём из кеша в фоне (её мог ещё не
+        /// привезти никто — тогда и проверять нечего).
+        /// </summary>
+        public static void RecheckDarkCached(string table, int msgId, string fileName, string cacheKind,
+                                             bool cached, long size, Func<byte[]> loader)
+        {
+            if (msgId <= 0) return;
+            if (_darkChecked.Contains(table + ":" + msgId)) return;
+            _darkChecked.Add(table + ":" + msgId);
+            Task.Run(() =>
+            {
+                byte[] poster = null;
+                try { poster = MediaCache.Get(msgId, cacheKind, null); } catch { }
+                if (poster == null || poster.Length == 0 || !VideoCover.IsDark(poster)) return;
+                Request(null, table, msgId, fileName, cacheKind, cached, size, loader, replace: true);
+            });
+        }
+
+        /// <summary>Чьи обложки уже проверены на черноту в этом запуске.</summary>
+        private static readonly HashSet<string> _darkChecked = new();
 
         private static async Task PumpAsync()
         {
@@ -143,7 +187,11 @@ namespace PISMO
             {
                 while (_queue.Count > 0)
                 {
-                    var job = _queue.Dequeue();
+                    // Сначала — запрошенное ПОСЛЕДНИМ: это то, что сейчас на
+                    // экране. Очередью «по порядку» человек ждал, пока
+                    // разберутся ролики, давно уехавшие из виду.
+                    var job = _queue[_queue.Count - 1];
+                    _queue.RemoveAt(_queue.Count - 1);
                     byte[] jpeg = null;
                     try { jpeg = await GrabAsync(job); } catch { jpeg = null; }
                     if (jpeg is { Length: > 0 }) Deliver(job, jpeg);
@@ -156,14 +204,15 @@ namespace PISMO
         private static void Deliver(Job job, byte[] jpeg)
         {
             // В кеш и в строку сообщения — дальше обложку видят все.
-            VideoCover.Share(job.Table, job.MsgId, jpeg, job.CacheKind);
+            if (job.Replace) VideoCover.Replace(job.Table, job.MsgId, jpeg, job.CacheKind);
+            else VideoCover.Share(job.Table, job.MsgId, jpeg, job.CacheKind);
             try { CoverReady?.Invoke(job.MsgId); } catch { }
 
             // И сразу в плееры, которые её ждали.
             if (_waiters.TryGetValue(job.Key, out var list))
             {
                 foreach (var w in list)
-                    if (w.TryGetTarget(out var p) && !p.IsDisposed && p.Poster == null)
+                    if (w.TryGetTarget(out var p) && !p.IsDisposed && (p.Poster == null || job.Replace))
                     {
                         try { p.Poster = jpeg; } catch { }
                     }
@@ -187,7 +236,27 @@ namespace PISMO
                     catch { return null; }
                 });
                 if (url != null) return await GrabRemoteAsync(job, url);
-                // Лежит в базе целиком: докачиваем только небольшие.
+                // Лежит в базе целиком: докачиваем только небольшие. Размер
+                // неизвестен (старые строки без file_size) — спрашиваем базу
+                // один раз: иначе такие ролики не получали обложку никогда,
+                // только после запуска.
+                if (job.Size <= 0)
+                {
+                    job.Size = await Task.Run(() =>
+                    {
+                        try
+                        {
+                            using var conn = DBHelper.OpenConnection();
+                            using var cmd = new MySqlConnector.MySqlCommand(
+                                $"SELECT OCTET_LENGTH(file_data) FROM {job.Table} WHERE id=@id", conn)
+                            { CommandTimeout = 60 };
+                            cmd.Parameters.AddWithValue("@id", job.MsgId);
+                            var o = cmd.ExecuteScalar();
+                            return o == null || o == DBNull.Value ? 0L : Convert.ToInt64(o);
+                        }
+                        catch { return 0L; }
+                    });
+                }
                 if (job.Size <= 0 || job.Size > AutoDownloadLimit) return null;
             }
 
@@ -400,8 +469,10 @@ namespace PISMO
                 _web = new WebView2
                 {
                     Visible = true,
-                    Size = new System.Drawing.Size(2, 2),
-                    MinimumSize = new System.Drawing.Size(2, 2),
+                    // Не точкой 2×2: ролик должен лечь в окно страницы целиком,
+                    // иначе движок считает его невидимым и кадры не готовит.
+                    Size = new System.Drawing.Size(160, 90),
+                    MinimumSize = new System.Drawing.Size(160, 90),
                     Location = new System.Drawing.Point(-3000, -3000),
                     Anchor = AnchorStyles.None,
                     TabStop = false,
@@ -457,42 +528,75 @@ namespace PISMO
         /// canvas и отдать JPEG.
         /// </summary>
         private static string PageFor(string video, bool remote = false) => @"<!doctype html><html><head><meta charset='utf-8'></head>
-<body style='margin:0;background:#000'>
-<video id='v' muted playsinline preload='" + (remote ? "metadata" : "auto") + @"' src='" + System.Net.WebUtility.HtmlEncode(video) + @"'></video>
+<body style='margin:0;background:#000;overflow:hidden'>
+<video id='v' muted playsinline preload='" + (remote ? "metadata" : "auto") + @"' src='" + System.Net.WebUtility.HtmlEncode(video) + @"'
+  style='position:fixed;left:0;top:0;width:100%;height:100%;object-fit:contain'></video>
 <script>
 var v=document.getElementById('v'), sent=false;
 function say(k){try{window.chrome.webview.postMessage(k);}catch(e){}}
-function grab(){
-  if(sent) return;
-  if(!v.videoWidth||!v.videoHeight){ sent=true; say('fail'); return; }
+// Яркость кадра: среднее по уменьшенной копии. Первый кадр у многих роликов
+// чёрный (затемнение в начале, заставка), и обложка выходила чёрным квадратом.
+function lum(){
   try{
-    var k=Math.min(1,640/Math.max(v.videoWidth,v.videoHeight));
-    var c=document.createElement('canvas');
-    c.width=Math.max(1,Math.round(v.videoWidth*k));
-    c.height=Math.max(1,Math.round(v.videoHeight*k));
-    c.getContext('2d').drawImage(v,0,0,c.width,c.height);
-    var u=c.toDataURL('image/jpeg',0.72);
-    sent=true;
-    if(u&&u.length>64) say('cover:'+u.substring(u.indexOf(',')+1)); else say('fail');
-  }catch(e){ sent=true; say('fail'); }
+    var c=document.createElement('canvas'); c.width=24; c.height=24;
+    var x=c.getContext('2d'); x.drawImage(v,0,0,24,24);
+    var d=x.getImageData(0,0,24,24).data, s=0;
+    for(var i=0;i<d.length;i+=4) s+=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+    return s/(d.length/4);
+  }catch(e){ return 255; }
+}
+function shot(){
+  var k=Math.min(1,640/Math.max(v.videoWidth,v.videoHeight));
+  var c=document.createElement('canvas');
+  c.width=Math.max(1,Math.round(v.videoWidth*k));
+  c.height=Math.max(1,Math.round(v.videoHeight*k));
+  c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+  return c.toDataURL('image/jpeg',0.72);
+}
+function finish(u){
+  if(sent) return; sent=true;
+  if(u&&u.length>64) say('cover:'+u.substring(u.indexOf(',')+1)); else say('fail');
   try{v.pause();}catch(e){}
 }
-// Кадр чуть дальше начала: первый у многих роликов чёрный. Перематываем,
-// как только известна длина, — с сервиса так читается меньше всего.
-var started=false;
-function go(){
-  if(started) return; started=true;
-  var t=Math.min(0.6,(isFinite(v.duration)&&v.duration>0)?v.duration/4:0.6);
-  try{ v.currentTime=t; }catch(e){ grab(); }
+// Несколько моментов ролика по очереди: берём первый НЕ тёмный кадр, а если
+// светлых нет вовсе — самый светлый из увиденных.
+var times=[], ti=0, best=null, bestL=-1;
+function plan(){
+  var d=(isFinite(v.duration)&&v.duration>0)?v.duration:0;
+  var cand=[0.6,1.5,3,d*0.1,d*0.25,d*0.5];
+  for(var i=0;i<cand.length;i++){
+    var t=cand[i]; if(d>0) t=Math.min(t,Math.max(0,d-0.1));
+    if(t<0) continue;
+    var dup=false; for(var j=0;j<times.length;j++) if(Math.abs(times[j]-t)<0.3) dup=true;
+    if(!dup) times.push(t);
+  }
+  times.sort(function(a,b){return a-b;});
 }
+function next(){
+  if(sent) return;
+  if(ti>=times.length){ finish(best); return; }
+  try{ v.currentTime=times[ti++]; }catch(e){ finish(best); }
+}
+function look(){
+  if(sent) return;
+  if(!v.videoWidth||!v.videoHeight){ finish(null); return; }
+  var l=lum();
+  try{
+    if(l>=22){ finish(shot()); return; }
+    if(l>bestL){ bestL=l; best=shot(); }
+  }catch(e){ finish(best); return; }
+  next();
+}
+var started=false;
+function go(){ if(started) return; started=true; plan(); next(); }
 v.addEventListener('loadedmetadata',go);
 v.addEventListener('loadeddata',go);
-v.addEventListener('seeked',function(){ setTimeout(grab,60); });
-v.addEventListener('error',function(){ if(!sent){ sent=true; say('fail'); } });
-// Запасной путь: если перемотка не сработала, берём кадр после короткого
+v.addEventListener('seeked',function(){ setTimeout(look,60); });
+v.addEventListener('error',function(){ finish(best); });
+// Запасной путь: перемотка не сработала — берём кадр после короткого
 // проигрывания без звука.
-setTimeout(function(){ if(!sent){ v.play().then(function(){ setTimeout(grab,300); }).catch(function(){}); } },4000);
-setTimeout(function(){ if(!sent){ sent=true; say('fail'); } },18000);
+setTimeout(function(){ if(!sent&&ti<=1){ v.play().then(function(){ setTimeout(look,600); }).catch(function(){}); } },4000);
+setTimeout(function(){ finish(best); },18000);
 </script></body></html>";
     }
 }
