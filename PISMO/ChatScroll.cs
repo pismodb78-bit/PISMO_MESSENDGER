@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -46,6 +46,11 @@ namespace PISMO
         /// скроллер принял бы сдвиг за чужое вмешательство и встал посреди
         /// движения — прокрутка вверх обрывалась бы на каждой догрузке.
         /// </summary>
+        public static void Cancel(Panel p)
+        {
+            if (p != null && _scrollers.TryGetValue(p, out var scroller)) scroller.Cancel();
+        }
+
         public static void ShiftBy(Panel p, int dy)
         {
             if (p == null || dy == 0) return;
@@ -229,6 +234,15 @@ namespace PISMO
             private int Current => -_p.AutoScrollPosition.Y;
 
             /// <summary>Над лентой вставили содержимое — цель едет вместе с ним.</summary>
+            public void Cancel()
+            {
+                _t.Stop();
+                _toEnd = false;
+                _lastSet = int.MinValue;
+                _target = Current;
+                _animating.Remove(_p);
+            }
+
             public void ShiftBy(int dy)
             {
                 if (!_t.Enabled) return;
@@ -432,11 +446,14 @@ namespace PISMO
                 // свою область целиком. Там, где стирание действительно нужно
                 // (смена чата, под удалёнными пузырями остаётся прошлое), для
                 // этого есть отдельный RepaintAfterSwitch.
-                // ВСЕГДА со всеми детьми: без этого пузыри перерисовываются
-                // вразнобой, и лента мерцает. Экономим не на полноте кадра, а
-                // на их частоте — см. minGap выше.
-                RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero,
-                    RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                // На длинной ленте не обходим каждого ребёнка на каждом кадре:
+                // это сводило на нет ограничение частоты выше. ScrollWindowEx
+                // уже перемещает дочерние окна вместе с панелью; в промежуточных
+                // кадрах обновляем только фон панели, а финальный кадр (force)
+                // полностью перерисовывает всех детей и убирает артефакты.
+                uint flags = RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW;
+                if (!heavy || force) flags |= RDW_ALLCHILDREN;
+                RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero, flags);
 
                 var parent = c.Parent;
                 if (parent == null) return;

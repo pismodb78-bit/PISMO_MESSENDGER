@@ -3811,7 +3811,11 @@ namespace PISMO
         private void OpenChat(int partnerId, string partnerName)
         {
             // Уходим из прошлой переписки — её страница больше не нужна.
-            if (_currentChatPartnerId != partnerId || _currentGroupId > 0) ReleaseChatMemory();
+            if (_currentChatPartnerId != partnerId || _currentGroupId > 0)
+            {
+                ChatScroll.Cancel(pnlMessages);
+                ReleaseChatMemory();
+            }
 
             _currentChatPartnerId = partnerId;
             _currentChatPartnerName = partnerName;
@@ -3857,7 +3861,11 @@ namespace PISMO
         private void OpenGroup(int groupId, string groupName)
         {
             // Та же уборка, что и при переходе в личную переписку.
-            if (_currentGroupId != groupId || _currentChatPartnerId > 0) ReleaseChatMemory();
+            if (_currentGroupId != groupId || _currentChatPartnerId > 0)
+            {
+                ChatScroll.Cancel(pnlMessages);
+                ReleaseChatMemory();
+            }
             _currentGroupId = groupId;
             _currentGroupName = groupName;
             _instanceGroupId = groupId;
@@ -3908,9 +3916,14 @@ namespace PISMO
             // Нечего показать — освобождаем экран, см. пояснение в LoadMessages.
             if ((cachedDt == null || _dmLoadingOlder) && _renderedChatKey != "g" + group)
             {
+                ChatScroll.Cancel(pnlMessages);
+                ChatScroll.SuspendDraw(pnlMessages);
+                try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
                 DisposeAndClear(pnlMessages);
-                ChatScroll.RepaintAfterSwitch(pnlMessages);   // пусто и чисто, пока ждём базу
+                _laidOut = new List<Control>();
+                _pageDt = null;
                 _renderedChatKey = null; _renderedChatSig = null;
+                ChatScroll.ResumeDraw(pnlMessages);   // пусто и чисто, пока ждём базу
             }
 
             if (cachedDt != null && !_dmLoadingOlder)
@@ -4018,8 +4031,10 @@ namespace PISMO
             // вниз на величину прокрутки и сверху появится большая пустота. На пустой
             // панели с приостановленной раскладкой сброс не срабатывает — начало
             // координат не пересчитывается, поэтому порядок важен.
+            // Сначала замораживаем кадр: сброс прокрутки до этого показывал,
+            // как старая переписка скачет к началу прямо перед очисткой.
+            ChatScroll.SuspendDraw(pnlMessages);
             try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
-            ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
 
@@ -4091,6 +4106,7 @@ namespace PISMO
                 _dmLoadingOlder = false;
                 ShowLoadingOlder(false);
                 UpdateScrollDownButton();
+                _lastDmTop = -pnlMessages.AutoScrollPosition.Y;
                 _drawingPage = false;
                 ChatScroll.ResumeDraw(pnlMessages);   // разморозка + показ собранного одним движением
             }
@@ -4156,6 +4172,7 @@ namespace PISMO
 
         private void ClearChat()
         {
+            ChatScroll.Cancel(pnlMessages);
             _currentChatPartnerId = -1;
             _currentChatPartnerName = "";
             _currentGroupId = -1;
@@ -4164,8 +4181,12 @@ namespace PISMO
             _lastGroupMsgCount = 0;
             lblChatTitle.Text = "# Выберите диалог";
             if (_lblChatPresence != null) _lblChatPresence.Visible = false;
+            ChatScroll.SuspendDraw(pnlMessages);
             DisposeAndClear(pnlMessages);
+            _laidOut = new List<Control>();
+            _pageDt = null;
             _renderedChatKey = null; _renderedChatSig = null;
+            ChatScroll.ResumeDraw(pnlMessages);
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -4204,9 +4225,14 @@ namespace PISMO
             // её ради того же содержимого — мигание на ровном месте.
             if ((cachedDt == null || _dmLoadingOlder) && _renderedChatKey != "d" + partner)
             {
+                ChatScroll.Cancel(pnlMessages);
+                ChatScroll.SuspendDraw(pnlMessages);
+                try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
                 DisposeAndClear(pnlMessages);
-                ChatScroll.RepaintAfterSwitch(pnlMessages);   // пусто и чисто, пока ждём базу
+                _laidOut = new List<Control>();
+                _pageDt = null;
                 _renderedChatKey = null; _renderedChatSig = null;
+                ChatScroll.ResumeDraw(pnlMessages);   // пусто и чисто, пока ждём базу
             }
 
             if (cachedDt != null && !_dmLoadingOlder)
@@ -4379,8 +4405,10 @@ namespace PISMO
             // вниз на величину прокрутки и сверху появится большая пустота. На пустой
             // панели с приостановленной раскладкой сброс не срабатывает — начало
             // координат не пересчитывается, поэтому порядок важен.
+            // Сначала замораживаем кадр: сброс прокрутки до этого показывал,
+            // как старая переписка скачет к началу прямо перед очисткой.
+            ChatScroll.SuspendDraw(pnlMessages);
             try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
-            ChatScroll.SuspendDraw(pnlMessages);   // заморозка отрисовки — без мигания «загрузки заново»
             pnlMessages.SuspendLayout();
             DisposeAndClear(pnlMessages);
 
@@ -4475,6 +4503,7 @@ namespace PISMO
                 _dmLoadingOlder = false;
                 ShowLoadingOlder(false);
                 UpdateScrollDownButton();
+                _lastDmTop = -pnlMessages.AutoScrollPosition.Y;
                 _drawingPage = false;
                 ChatScroll.ResumeDraw(pnlMessages);   // разморозка + показ собранного одним движением
             }
@@ -4508,6 +4537,15 @@ namespace PISMO
 
         private void OnChatScrolled()
         {
+            // Автопозиционирование при смене ленты не является жестом пользователя.
+            // Иначе переход со старого смещения к низу нового чата запускает
+            // догрузку истории и визуально перелистывает только что открытый чат.
+            if (pnlMessages == null || pnlMessages.IsDisposed) return;
+            if (_drawingPage)
+            {
+                _lastDmTop = -pnlMessages.AutoScrollPosition.Y;
+                return;
+            }
             // Проверка раскладки на каждой остановке прокрутки.
             //
             // Пузырь растёт уже после сборки — доезжает картинка, поднимается
@@ -5969,6 +6007,7 @@ namespace PISMO
 
         private void CullTick()
         {
+            if (_drawingPage) return;
             if (pnlMessages == null || pnlMessages.IsDisposed || !pnlMessages.IsHandleCreated) return;
             var feed = _laidOut;
             if (feed == null || feed.Count == 0) return;

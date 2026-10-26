@@ -47,15 +47,26 @@ namespace PISMO
             };
             var btnSend = new Button { Dock = DockStyle.Right, Width = 130, Text = "➤  Отправить", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(88, 101, 242), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnSend.FlatAppearance.BorderSize = 0;
+            btnSend.FlatAppearance.MouseOverBackColor = Color.FromArgb(106, 118, 255);
+            btnSend.FlatAppearance.MouseDownBackColor = Color.FromArgb(72, 84, 220);
             btnSend.Click += (s, e) => SendChannelMessage();
             var btnGif = new Button { Dock = DockStyle.Right, Width = 46, Text = "GIF", FlatStyle = FlatStyle.Flat, BackColor = Color.Transparent, ForeColor = Color.FromArgb(142, 146, 151), Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnGif.FlatAppearance.BorderSize = 0;
+            btnGif.FlatAppearance.MouseOverBackColor = Color.FromArgb(82, 85, 94);
+            btnGif.FlatAppearance.MouseDownBackColor = Color.FromArgb(71, 82, 196);
             btnGif.Click += (s, e) => OpenServerGifPicker();
 
             // Те же инструменты, что и в обычном чате: прикрепить файл, картинку,
             // записать голосовое (зажать), записать видео-кружок. Стиль иконок —
             // как в мессенджере: прозрачный фон, серый значок.
-            Button ToolBtn(string txt) => new Button { Dock = DockStyle.Right, Width = 40, Text = txt, FlatStyle = FlatStyle.Flat, BackColor = Color.Transparent, ForeColor = Color.FromArgb(142, 146, 151), Font = new Font("Segoe UI", 14f), Cursor = Cursors.Hand };
+            Button ToolBtn(string txt)
+            {
+                var b = new Button { Dock = DockStyle.Right, Width = 40, Text = txt, FlatStyle = FlatStyle.Flat, BackColor = Color.Transparent, ForeColor = Color.FromArgb(142, 146, 151), Font = new Font("Segoe UI", 14f), Cursor = Cursors.Hand };
+                b.FlatAppearance.BorderSize = 0;
+                b.FlatAppearance.MouseOverBackColor = Color.FromArgb(82, 85, 94);
+                b.FlatAppearance.MouseDownBackColor = Color.FromArgb(71, 82, 196);
+                return b;
+            }
             var btnAttach = ToolBtn("📎"); btnAttach.FlatAppearance.BorderSize = 0; btnAttach.Click += (s, e) => AttachChannelFile(false);
             var btnImage = ToolBtn("🖼"); btnImage.FlatAppearance.BorderSize = 0; btnImage.Click += (s, e) => AttachChannelFile(true);
             _btnChVoice = ToolBtn("🎤"); _btnChVoice.FlatAppearance.BorderSize = 0;

@@ -426,9 +426,7 @@ namespace PISMO
                 // фиксированный радиус: обычное состояние = squircle, выбранное = круг.
                 bool selected = (isHome && _railSelectedServerId == -1) ||
                                 (pnl.Tag is int tg && tg == _railSelectedServerId);
-                // Серверы остаются плитками со скруглёнными углами; при наведении
-                // и выборе форма становится мягче, но не схлопывается в кружок.
-                int radius = selected ? 22 : hover ? 30 : 18;
+                int radius = (selected || hover) ? d : 16;
 
                 // Кнопка «+» при наведении зеленеет целиком (как в Discord).
                 // Нейтральный фон кружка — через Theme.Map (кастомный Paint не
@@ -438,24 +436,11 @@ namespace PISMO
 
                 using (var path = RoundedRect(rect, radius / 2))
                 {
-                    if (selected || hover)
-                    {
-                        var shadowRect = rect; shadowRect.Offset(0, 2);
-                        using var shadowPath = RoundedRect(shadowRect, radius / 2);
-                        using var shadow = new SolidBrush(Color.FromArgb(selected ? 58 : 34, Color.Black));
-                        g.FillPath(shadow, shadowPath);
-                    }
-                    using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(
-                        rect, ControlPaint.Light(drawBack, 0.10f), drawBack, 45f))
+                    using (var br = new SolidBrush(drawBack))
                         g.FillPath(br, path);
 
-                    if (selected)
-                    {
-                        using var outline = new Pen(Color.FromArgb(92, Color.White), 1f);
-                        g.DrawPath(outline, path);
-                    }
-
-                    // Иконка обрезана по форме плитки.                    if (icon != null)
+                    // Иконка (логотип PISMO) — обрезаем по форме кружка.
+                    if (icon != null)
                     {
                         var st = g.Save();
                         g.SetClip(path);

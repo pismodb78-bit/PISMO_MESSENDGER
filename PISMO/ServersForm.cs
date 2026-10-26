@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Drawing;
@@ -2992,7 +2992,8 @@ namespace PISMO
                 const int PAD = 12;
                 const int AVA = 36;                 // диаметр аватарки
                 const int LEFT = PAD + AVA + 10;    // отступ контента правее аватара
-                Color bubbleBg = mine ? Color.FromArgb(47, 68, 55) : Color.FromArgb(48, 51, 58);
+                Color bubbleBg = mine ? Color.FromArgb(47, 68, 55)
+                    : isMe ? Color.FromArgb(58, 65, 112) : Color.FromArgb(48, 51, 58);
 
                 var holder = new Panel
                 {
@@ -3005,25 +3006,37 @@ namespace PISMO
                 _holderFill.AddOrUpdate(holder, new HolderFill(bubbleBg));
                 holder.Paint += (s, e) =>
                 {
-                    e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                    // Вспышка «показать в чате» красит САМ пузырь, а не панель
-                    // под ним: панель видна только в скруглённых углах.
+                    var g = e.Graphics;
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    var bounds = new Rectangle(0, 0, holder.Width - 1, holder.Height - 1);
+                    if (bounds.Width <= 1 || bounds.Height <= 1) return;
+
+                    // Мягкая тень и цветной акцент отделяют сообщение от фона,
+                    // не добавляя лишних дочерних окон в длинную ленту.
+                    using (var shadow = new SolidBrush(Color.FromArgb(24, Color.Black)))
+                        g.FillRoundedRectangle(shadow, 1, 2, bounds.Width - 1, bounds.Height - 1, 10);
                     var fill = _holderFill.TryGetValue(holder, out var hf) && hf.Flash
                         ? SrvFlashColor : Theme.Map(bubbleBg);
-                    using var br = new SolidBrush(fill);   // светлая тема: пузырь тоже светлеет
-                    e.Graphics.FillRoundedRectangle(br, 0, 0, holder.Width - 1, holder.Height - 1, 10);
-                    // Аватар отправителя (кружок) в левом верхнем углу бабла.
-                    if (!AvatarStore.DrawAvatar(e.Graphics, senderId, PAD, PAD, AVA - 1))
+                    using (var br = new SolidBrush(fill))
+                        g.FillRoundedRectangle(br, bounds.X, bounds.Y, bounds.Width, bounds.Height, 10);
+
+                    Color accent = mine ? Color.FromArgb(89, 205, 140)
+                        : isMe ? Color.FromArgb(132, 142, 255) : Color.FromArgb(88, 101, 242);
+                    using (var edge = new SolidBrush(Color.FromArgb(mine || isMe ? 210 : 80, accent)))
+                        g.FillRoundedRectangle(edge, 0, 12, 3, Math.Max(8, bounds.Height - 24), 2);
+
+                    // Аватар отправителя в левом верхнем углу бабла.
+                    if (!AvatarStore.DrawAvatar(g, senderId, PAD, PAD, AVA - 1))
                     {
                         int h = 0; foreach (char ch in nm) h = (h * 31 + ch) & 0x7fffffff;
                         Color[] pal = { Color.FromArgb(88,101,242), Color.FromArgb(235,69,158),
                             Color.FromArgb(59,165,93), Color.FromArgb(250,166,26), Color.FromArgb(0,176,244) };
                         using var ab = new SolidBrush(pal[h % pal.Length]);
-                        e.Graphics.FillEllipse(ab, PAD, PAD, AVA - 1, AVA - 1);
+                        g.FillEllipse(ab, PAD, PAD, AVA - 1, AVA - 1);
                         string letter = nm.Length > 0 ? nm.Substring(0, 1).ToUpper() : "?";
                         using var f = new Font("Segoe UI Black", 12f, FontStyle.Bold);
                         using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                        e.Graphics.DrawString(letter, f, Brushes.White, new RectangleF(PAD, PAD, AVA, AVA), sf);
+                        g.DrawString(letter, f, Brushes.White, new RectangleF(PAD, PAD, AVA, AVA), sf);
                     }
                 };
                 AvatarStore.EnsureLoaded(senderId);
@@ -3450,10 +3463,11 @@ namespace PISMO
                             string cntTxt = re.Count.ToString();
                             int txtW = TextRenderer.MeasureText(cntTxt, cntFontR).Width;
                             int imgW = reImg?.Width ?? emSz;
+                            Color chipBack = re.Mine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(64, 68, 75);
                             var chipR = new Panel
                             {
                                 Size = new Size(8 + imgW + 4 + txtW + 7, 28),
-                                BackColor = re.Mine ? Color.FromArgb(71, 82, 196) : Color.FromArgb(64, 68, 75),
+                                BackColor = chipBack,
                                 Location = new Point(rx, y),
                                 Cursor = Cursors.Hand
                             };
@@ -3477,6 +3491,8 @@ namespace PISMO
                             EmojiRender.Loaded += onLoad;
                             chipR.Disposed += (s, e) => { try { EmojiRender.Loaded -= onLoad; } catch { } };
                             MainForm.RoundCorners(chipR, 8);
+                            chipR.MouseEnter += (s, e) => { if (!re.Mine) chipR.BackColor = Color.FromArgb(79, 83, 94); };
+                            chipR.MouseLeave += (s, e) => chipR.BackColor = chipBack;
                             chipR.Click += (s, e) =>
                             {
                                 System.Threading.Tasks.Task.Run(() =>
@@ -3501,6 +3517,9 @@ namespace PISMO
                             Location = new Point(rx, y),
                             Cursor = Cursors.Hand
                         };
+                        MainForm.RoundCorners(addR, 8);
+                        addR.MouseEnter += (s, e) => addR.BackColor = Color.FromArgb(79, 83, 94);
+                        addR.MouseLeave += (s, e) => addR.BackColor = Color.FromArgb(64, 68, 75);
                         int midA = id;
                         addR.Click += (s, e) =>
                         {
