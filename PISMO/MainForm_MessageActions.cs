@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 //  MainForm — MessageActions + CallSupport (partial)
 //  Добавьте этот файл в проект рядом с MainForm.cs
 //  Это partial class — расширяет MainForm без правки оригинала
@@ -94,7 +94,7 @@ namespace PISMO
             _lblReplyInfo = new Label
             {
                 Font = new Font("Segoe UI", 9f),
-                ForeColor = Color.FromArgb(0, 176, 244),
+                ForeColor = Color.FromArgb(185, 190, 198),
                 AutoSize = false,
                 Dock = DockStyle.Fill,
                 TextAlign = System.Drawing.ContentAlignment.MiddleLeft,
@@ -1865,34 +1865,22 @@ namespace PISMO
 
                 if (string.IsNullOrEmpty(qText)) return 0;
 
-                // Полоска цитаты
-                var stripe = new Panel
-                {
-                    BackColor = Color.FromArgb(0, 176, 244),
-                    Size = new Size(3, 40),
-                    Location = new Point(pad, startY)
-                };
-
                 var lblQ = new Label
                 {
                     Text = $"{qSender}: {(qText.Length > 50 ? qText[..50] + "…" : qText)}",
                     Font = new Font("Segoe UI", 8.5f),
-                    ForeColor = Color.FromArgb(0, 176, 244),
+                    ForeColor = Color.FromArgb(185, 190, 198),
                     AutoSize = false,
-                    Size = new Size(innerW - 8, 38),
-                    Location = new Point(pad + 6, startY + 2),
+                    Size = new Size(innerW - 2, 38),
+                    Location = new Point(pad, startY + 2),
                     Padding = new Padding(0)
                 };
 
                 // Нажатие ведёт к исходному сообщению и подсвечивает его.
                 // Раньше цитата была просто надписью, и найти, на что
                 // отвечают, приходилось прокруткой вручную.
-                stripe.Cursor = Cursors.Hand;
                 lblQ.Cursor = Cursors.Hand;
-                stripe.Click += (s, e) => JumpToMessage(replyToId);
                 lblQ.Click += (s, e) => JumpToMessage(replyToId);
-
-                bubble.Controls.Add(stripe);
                 bubble.Controls.Add(lblQ);
 
                 return 46;

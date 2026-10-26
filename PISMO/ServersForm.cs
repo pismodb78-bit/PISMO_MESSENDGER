@@ -190,6 +190,27 @@ namespace PISMO
         /// <summary>Последнее сообщение каждого канала — для превью в списке.</summary>
         private readonly Dictionary<int, string> _channelPreviews = new();
 
+        private static string ChannelPreviewText(string rawText, string fileName,
+            bool hasImage, bool hasAudio, bool hasVideo, bool hasFile)
+        {
+            string text = "";
+            try { text = Albums.Strip(Crypto.Dec(rawText ?? "")); } catch { }
+
+            string ext = Path.GetExtension(fileName ?? "").TrimStart('.').ToLowerInvariant();
+            string kind = "";
+            if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase) || ext == "gif")
+                kind = "GIF";
+            else if (hasVideo || MediaPlayerForm.IsVideo(ext)) kind = "🎬 Видео";
+            else if (hasImage || ext is "png" or "jpg" or "jpeg" or "webp" or "bmp") kind = "🖼 Фото";
+            else if (hasAudio || MediaPlayerForm.IsAudio(ext)) kind = "🎤 Аудио";
+            else if (hasFile || !string.IsNullOrWhiteSpace(fileName))
+                kind = string.IsNullOrWhiteSpace(fileName) ? "📎 Файл" : "📎 " + Path.GetFileName(fileName);
+
+            if (kind.Length == 0) return text;
+            if (text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)) text = "";
+            return string.IsNullOrWhiteSpace(text) ? kind : kind + " · " + text;
+        }
+
         /// <summary>Короткая подпись карты реакций — чтобы отрисовка после фоновой
         /// выборки не пропускалась как «данные не изменились»: текст сообщений тот
         /// же, поменялись только реакции.</summary>
@@ -252,7 +273,7 @@ namespace PISMO
             // Ctrl+V — вставить картинку или файл из буфера. В мессенджере это было
             // с самого начала, до каналов не дошло: обработчика клавиш на поле ввода
             // здесь не было вовсе.
-            try { _txtInput.KeyDown += ChannelInput_KeyDown; } catch { }
+            try { _txtInput.KeyDown += ChannelInput_KeyDown; _txtInput.TextChanged += (s, e) => { if (!_switchingChannelDraft) SaveChannelDraft(); }; FormClosing += (s, e) => SaveChannelDraft(); } catch { }
             // Плавность отрисовки всего окна серверов (буферизация всех контролов).
             try { ChatScroll.EnableDoubleBufferDeep(this); } catch { }
 
@@ -1159,7 +1180,7 @@ namespace PISMO
                     {
                         string list = string.Join(",", ids);
                         using var pcmd = new MySqlCommand(
-                            "SELECT sm.channel_id, sm.text FROM server_messages sm " +
+                            "SELECT sm.channel_id, sm.text, sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video FROM server_messages sm " +
                             "JOIN (SELECT channel_id, MAX(id) AS id FROM server_messages " +
                             $"      WHERE channel_id IN ({list}) GROUP BY channel_id) t ON t.id = sm.id", conn);
                         using var prd = pcmd.ExecuteReader();
@@ -1167,9 +1188,11 @@ namespace PISMO
                         {
                             int cid = Convert.ToInt32(prd["channel_id"]);
                             string raw = prd["text"] == DBNull.Value ? "" : prd["text"].ToString();
-                            string txt = "";
-                            try { txt = Crypto.Dec(raw); } catch { }
-                            _channelPreviews[cid] = txt;
+                            string name = prd["file_name"] == DBNull.Value ? "" : prd["file_name"].ToString();
+                            bool img = Convert.ToBoolean(prd["has_img"]);
+                            bool aud = Convert.ToBoolean(prd["has_audio"]);
+                            bool vid = Convert.ToBoolean(prd["has_video"]);
+                            _channelPreviews[cid] = ChannelPreviewText(raw, name, img, aud, vid, !string.IsNullOrWhiteSpace(name));
                         }
                     }
                 }
@@ -1258,7 +1281,7 @@ namespace PISMO
                     string list = string.Join(",", ids);
                     using var conn = DBHelper.OpenConnection();
                     using var cmd = new MySqlCommand(
-                        "SELECT sm.channel_id, sm.text FROM server_messages sm " +
+                        "SELECT sm.channel_id, sm.text, sm.file_name, (sm.image_data IS NOT NULL) AS has_img, (sm.audio_data IS NOT NULL) AS has_audio, (sm.video_data IS NOT NULL) AS has_video FROM server_messages sm " +
                         "JOIN (SELECT channel_id, MAX(id) AS id FROM server_messages " +
                         $"      WHERE channel_id IN ({list}) GROUP BY channel_id) t ON t.id = sm.id", conn);
                     using var rd = cmd.ExecuteReader();
@@ -1266,9 +1289,11 @@ namespace PISMO
                     {
                         int cid = Convert.ToInt32(rd["channel_id"]);
                         string raw = rd["text"] == DBNull.Value ? "" : rd["text"].ToString();
-                        string txt = "";
-                        try { txt = Crypto.Dec(raw); } catch { }
-                        fresh[cid] = txt;
+                        string name = rd["file_name"] == DBNull.Value ? "" : rd["file_name"].ToString();
+                        bool img = Convert.ToBoolean(rd["has_img"]);
+                        bool aud = Convert.ToBoolean(rd["has_audio"]);
+                        bool vid = Convert.ToBoolean(rd["has_video"]);
+                        fresh[cid] = ChannelPreviewText(raw, name, img, aud, vid, !string.IsNullOrWhiteSpace(name));
                     }
                 }
                 catch { }
@@ -1342,6 +1367,7 @@ namespace PISMO
                     AutoEllipsis = true,
                 };
                 var pc = MainForm.MakePreviewControl(prev, new Point(10, 25), new Size(b.Width - 20, 16));
+                if (HasChannelDraft(cid)) { pc.Text = "Черновик"; pc.ForeColor = Color.FromArgb(235, 75, 85); }
 
                 // Клик по любой из строк открывает канал, правая кнопка — меню:
                 // иначе нажатие проваливается мимо кнопки.
@@ -1748,6 +1774,8 @@ namespace PISMO
 
         private void SelectChannel(int cid, string type, string name, bool joinVoice = true)
         {
+            SaveChannelDraft();
+            _switchingChannelDraft = true;
             ResetChannelVoiceNote();   // недописанное голосовое в другой канал не тащим
             _channelId = cid; _channelType = type; _channelName = name; _lastMsgCount = -1; _lastMaxId = 0; _lastPolledCount = -1;
             // Восстанавливаем столько сообщений, сколько было долистано в этом канале.
@@ -1764,6 +1792,10 @@ namespace PISMO
             _renderedKey = null; _renderedSig = null; // рисуем заново в любом случае
             CancelServerReply();
             ClearChannelPending();   // не тащим превью вложения между каналами
+            _txtInput.Clear();
+            RestoreChannelDraft();
+            _switchingChannelDraft = false;
+            SaveChannelDraft();
             try { UpdateForwardNotice(); } catch { }
 
             // И у текстового, И у голосового канала — полноценный чат (как в Discord):
@@ -2630,6 +2662,27 @@ namespace PISMO
             catch { return null; }
         }
 
+        private static void CacheServerThumbnail(int id, byte[] bytes)
+        {
+            if (id <= 0 || bytes == null || bytes.Length == 0 || ThumbCache.Get(id) != null) return;
+            try
+            {
+                using var ms = new MemoryStream(bytes);
+                using var source = Image.FromStream(ms);
+                int mw = 560, mh = 460;
+                double ratio = Math.Min(2.0, Math.Min((double)mw / source.Width, (double)mh / source.Height));
+                int w = Math.Max(1, (int)(source.Width * ratio));
+                int h = Math.Max(1, (int)(source.Height * ratio));
+                var thumb = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using (var g = Graphics.FromImage(thumb))
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    g.DrawImage(source, 0, 0, w, h);
+                }
+                ThumbCache.Put(id, thumb);
+            }
+            catch { }
+        }
         private void LoadChannelMedia(MySqlConnection conn, DataTable dt,
             Dictionary<int, (byte[] img, byte[] audio, byte[] video, byte[] file, string fname)> mediaOut)
         {
@@ -2708,7 +2761,7 @@ namespace PISMO
                 byte[] vid = n.nv ? fb.v : cur.video;
                 string fn = n.fn ?? fb.fn;
                 mediaOut[n.id] = (img, aud, vid, cur.file, fn);
-                if (n.ni && fb.i != null) MediaCache.Put(n.id, "simg", fb.i);
+                if (n.ni && fb.i != null) { MediaCache.Put(n.id, "simg", fb.i); CacheServerThumbnail(n.id, fb.i); }
                 if (n.na && fb.a != null) MediaCache.Put(n.id, "saudio", fb.a);
                 if (n.nv && fb.v != null) MediaCache.Put(n.id, "svideo", fb.v);
             }
@@ -3020,10 +3073,7 @@ namespace PISMO
                     using (var br = new SolidBrush(fill))
                         g.FillRoundedRectangle(br, bounds.X, bounds.Y, bounds.Width, bounds.Height, 10);
 
-                    Color accent = mine ? Color.FromArgb(89, 205, 140)
-                        : isMe ? Color.FromArgb(132, 142, 255) : Color.FromArgb(88, 101, 242);
-                    using (var edge = new SolidBrush(Color.FromArgb(mine || isMe ? 210 : 80, accent)))
-                        g.FillRoundedRectangle(edge, 0, 12, 3, Math.Max(8, bounds.Height - 24), 2);
+
 
                     // Аватар отправителя в левом верхнем углу бабла.
                     if (!AvatarStore.DrawAvatar(g, senderId, PAD, PAD, AVA - 1))
@@ -5278,6 +5328,8 @@ namespace PISMO
                 return;
             }
             _chPending.Add((bytes, fileName, isImg));
+            _channelDraftFilesDirty = true;
+            SaveChannelDraft();
 
             if (_chPreview != null && _chPreviewLbl != null)
             {

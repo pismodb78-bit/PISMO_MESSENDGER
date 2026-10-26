@@ -318,6 +318,7 @@ namespace PISMO
             });
 
             InitializeComponent();
+            InitializeDraftSaving();
 
             // Докинг в WinForms идёт в ОБРАТНОМ z-order: контрол сзади докается первым и
             // забирает всю клиентскую область, контрол с индексом 0 — последним и получает
@@ -3817,6 +3818,9 @@ namespace PISMO
                 ReleaseChatMemory();
             }
 
+            SaveCurrentDraft();
+            _pendingAttach.Clear();
+            txtMessage.Clear();
             _currentChatPartnerId = partnerId;
             _currentChatPartnerName = partnerName;
             _instancePartnerId = partnerId;
@@ -3852,6 +3856,7 @@ namespace PISMO
             _ = System.Threading.Tasks.Task.Run(() => { try { MarkAsRead(partnerForRead); } catch { } });
 
             Perf.Mark($"OpenChat partner={partnerId}");
+            RestoreCurrentDraft();
             LoadMessages();
         }
 
@@ -3866,6 +3871,9 @@ namespace PISMO
                 ChatScroll.Cancel(pnlMessages);
                 ReleaseChatMemory();
             }
+            SaveCurrentDraft();
+            _pendingAttach.Clear();
+            txtMessage.Clear();
             _currentGroupId = groupId;
             _currentGroupName = groupName;
             _instanceGroupId = groupId;
@@ -3894,6 +3902,7 @@ namespace PISMO
                 p.BackColor = Color.Transparent;
 
             ResetVoiceNote();
+            RestoreCurrentDraft();
             LoadGroupMessages();
         }
 
@@ -7505,6 +7514,9 @@ namespace PISMO
             try
             {
                 preview ??= "";
+                string draftKey = panels == _groupPanels ? $"group-{id}" : $"dm-{id}";
+                bool isDraft = File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PISMO", "Drafts", draftKey, "draft.json"));
+                if (isDraft) preview = "Черновик";
                 if (preview.Length > 42) preview = preview[..42] + "…";
                 foreach (var p in panels)
                     if (p.Tag is int t && t == id)
@@ -7521,6 +7533,7 @@ namespace PISMO
                                 host.Controls.Remove(c);
                                 try { c.Dispose(); } catch { }
                                 var fresh = MakePreviewControl(preview, loc, size);
+                                if (isDraft) fresh.ForeColor = Color.FromArgb(235, 75, 85);
                                 // Карточка вешает обработчики мыши на всех своих
                                 // детей при создании; подменённое превью их бы не
                                 // получило — по нему не работали бы ни подсветка,
@@ -8207,6 +8220,8 @@ namespace PISMO
         /// </summary>
         private void ShowPreview()
         {
+            _draftFilesDirty = true;
+            try { _draftSaveTimer.Stop(); _draftSaveTimer.Start(); } catch { }
             if (_pendingAttach.Count == 0)
             {
                 pnlPreview.Visible = false;
