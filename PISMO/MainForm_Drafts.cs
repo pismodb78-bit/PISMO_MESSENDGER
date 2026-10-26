@@ -22,7 +22,7 @@ namespace PISMO
             public string Cover { get; set; } = "";
         }
         private bool _draftFilesDirty = true;
-        private readonly Timer _draftSaveTimer = new() { Interval = 400 };
+        private readonly System.Windows.Forms.Timer _draftSaveTimer = new() { Interval = 400 };
         private string DraftKey => _currentGroupId > 0 ? $"group-{_currentGroupId}" :
             _currentChatPartnerId > 0 ? $"dm-{_currentChatPartnerId}" : null;
         private string DraftFolder(string key) => Path.Combine(
