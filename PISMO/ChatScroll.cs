@@ -165,24 +165,39 @@ namespace PISMO
         /// сообщений. Наша анимация с этим воевала — позицию тянуло туда-сюда. Теперь
         /// запоминаем, какое значение выставили сами; если на следующем кадре позиция
         /// оказалась другой (её сдвинул кто-то ещё) — анимацию прекращаем, а не боремся.
+        ///
+        /// КАДРЫ — ПО ОБНОВЛЕНИЮ ЭКРАНА, ДВИЖЕНИЕ — ПО ВРЕМЕНИ.
+        ///
+        /// Раньше кадры шли от таймера WinForms: он тикает с шагом системных
+        /// часов (15,6 мс), то через 15, то через 31 мс, а сдвиг считался «на тик».
+        /// Неровные тики давали неровную скорость — та самая ступенька при
+        /// листании. На длинной ленте таймер вдобавок замедляли до 30 кадров.
+        /// Теперь кадр рисуется, пока очередь сообщений пуста, и ждёт ближайшего
+        /// обновления экрана (DwmFlush) — на мониторе 144 Гц это 144 кадра. А
+        /// путь за кадр считается от прошедшего ВРЕМЕНИ: пропущенный кадр не
+        /// замедляет движение, а просто делает следующий шаг чуть длиннее.
         /// </summary>
         private sealed class SmoothScroller
         {
             private const int StepPx = 110;      // прокрутка за один щелчок колеса
-            // Чем меньше Ease, тем мягче: за кадр проходим лишь малую долю оставшегося
-            // пути, поэтому сдвиг между кадрами крошечный и движение «маслянистое».
-            private const double Ease = 0.09;
-            // ~65 кадров/с на обычной ленте. На длинной (сотни пузырей)
-            // столько кадров панель просто не успевает отрисовать, и попытка
-            // выдать их все делает движение рваным — там шагаем реже.
-            private const int MinFrameMs = 15;
-            private const int MinFrameMsHeavy = 30;
-            private const int MinStepPx = 6;     // минимальный сдвиг за кадр — чтобы хвост не полз
+            // Как быстро позиция догоняет цель: доля оставшегося пути за секунду
+            // (по экспоненте). Щелчок проходится за ~0,2 с — мягко, но без
+            // «киселя»; длинная серия щелчков разгоняет ленту.
+            private const double Rate = 12.0;
+            // Хвост замедления не ползёт: не медленнее стольких точек в секунду.
+            private const double MinSpeed = 260.0;
+            // Запасной путь (нет композиции окон): кадры от таймера.
+            private const int FallbackFrameMs = 10;
 
             private readonly Panel _p;
             private readonly System.Windows.Forms.Timer _t;
             private readonly Action _onScrolled;
+            private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
             private int _target;
+            private double _pos;                    // точная позиция, с долями точки
+            private double _lastFrame;
+            private bool _running;
+            private bool _idleHooked;
             private int _lastSet = int.MinValue;   // что выставили мы сами
             // Цель — «в самый низ». Тогда её нельзя запоминать числом: пока идёт
             // прокрутка, лента ещё растёт (дорисовываются картинки, подгружаются
@@ -195,9 +210,13 @@ namespace PISMO
             {
                 _p = p;
                 _onScrolled = onScrolled;
-                _t = new System.Windows.Forms.Timer { Interval = MinFrameMs };
-                _t.Tick += Tick;
-                p.Disposed += (s, e) => { try { _t.Stop(); _t.Dispose(); } catch { } };
+                _t = new System.Windows.Forms.Timer { Interval = FallbackFrameMs };
+                _t.Tick += (s, e) => Frame();
+                p.Disposed += (s, e) =>
+                {
+                    try { _t.Stop(); _t.Dispose(); } catch { }
+                    Unhook();
+                };
             }
 
             /// <summary>
@@ -214,7 +233,7 @@ namespace PISMO
             /// Поэтому берём БОЛЬШИЙ из двух пределов — свой и тот, по которому
             /// живёт сама полоса прокрутки (её максимум минус страница). Промах
             /// вверх безопасен: WinForms подрежет позицию сам, а кадр, который
-            /// ничего не сдвинул, мы считаем приездом (см. Tick).
+            /// ничего не сдвинул, мы считаем приездом (см. Frame).
             /// </summary>
             private int MaxOffset
             {
@@ -233,20 +252,22 @@ namespace PISMO
             }
             private int Current => -_p.AutoScrollPosition.Y;
 
-            /// <summary>Над лентой вставили содержимое — цель едет вместе с ним.</summary>
+            /// <summary>Остановить прокрутку там, где она сейчас.</summary>
             public void Cancel()
             {
-                _t.Stop();
+                Stop();
                 _toEnd = false;
                 _lastSet = int.MinValue;
                 _target = Current;
                 _animating.Remove(_p);
             }
 
+            /// <summary>Над лентой вставили содержимое — цель едет вместе с ним.</summary>
             public void ShiftBy(int dy)
             {
-                if (!_t.Enabled) return;
+                if (!_running) return;
                 _target += dy;
+                _pos += dy;
                 if (_lastSet != int.MinValue) _lastSet += dy;
             }
             private int Clamp(int v) => Math.Max(0, Math.Min(MaxOffset, v));
@@ -258,38 +279,82 @@ namespace PISMO
             {
                 if (MaxOffset <= 0) return false;   // прокручивать нечего — пусть решает панель
 
-                if (!_t.Enabled) _target = Current;              // старт с текущей позиции
-                _target = Clamp(_target - Math.Sign(delta) * StepPx);   // накопление
+                if (!_running) { _target = Current; _pos = Current; }   // старт с текущей позиции
+                // Шаг — по величине поворота, а не только по знаку: тачпад и колёса
+                // с плавным ходом шлют много мелких щелчков, и каждый раньше
+                // уносил ленту на полный шаг — она улетала.
+                int px = (int)Math.Round(delta / 120.0 * StepPx);
+                if (px == 0) px = Math.Sign(delta);
+                _target = Clamp(_target - px);                   // накопление
                 _toEnd = _target >= MaxOffset;                  // целимся ровно в конец
-                if (!_t.Enabled)
+                if (!_running)
                 {
-                    // Частота кадров — по длине ленты: на сотнях пузырей
-                    // шестьдесят пять кадров панель всё равно не отрисует, и
-                    // лишние попытки делают движение рваным.
-                    int want = MinFrameMs;
-                    try { if (_p.Controls.Count > 120) want = MinFrameMsHeavy; } catch { }
-                    if (_t.Interval != want) _t.Interval = want;
-
+                    _running = true;
                     _lastSet = Current;
+                    _lastFrame = _clock.Elapsed.TotalSeconds;
                     _animating.Add(_p);                 // прячем перекрывающие окна
                     try { _onScrolled?.Invoke(); } catch { }
-                    _t.Start();
+                    if (FramePacer.Available)
+                    {
+                        if (!_idleHooked) { Application.Idle += OnIdle; _idleHooked = true; }
+                    }
+                    else _t.Start();
                 }
                 return true;
+            }
+
+            /// <summary>
+            /// Кадры, пока очередь сообщений пуста. Пришло что-то (следующий
+            /// щелчок колеса, нажатие, таймер) — выходим, окно его обработает и
+            /// снова позовёт нас, когда освободится.
+            /// </summary>
+            private void OnIdle(object sender, EventArgs e)
+            {
+                try
+                {
+                    while (_running && FramePacer.QueueEmpty())
+                    {
+                        Frame();
+                        if (!_running) break;
+                        FramePacer.WaitForVBlank();
+                    }
+                }
+                catch { Finish(); }
+            }
+
+            private void Unhook()
+            {
+                if (!_idleHooked) return;
+                _idleHooked = false;
+                try { Application.Idle -= OnIdle; } catch { }
+            }
+
+            private void Stop()
+            {
+                _running = false;
+                try { _t.Stop(); } catch { }
+                Unhook();
             }
 
             /// <summary>Останавливает анимацию и возвращает перекрывающие окна (кнопка «вниз»).</summary>
             private void Finish()
             {
-                _t.Stop();
+                Stop();
                 _toEnd = false;
                 _animating.Remove(_p);
                 try { _onScrolled?.Invoke(); } catch { }
             }
 
-            private void Tick(object sender, EventArgs e)
+            private void Frame()
             {
+                if (!_running) return;
                 if (_p.IsDisposed || !_p.IsHandleCreated) { Finish(); return; }
+
+                double now = _clock.Elapsed.TotalSeconds;
+                // Время с прошлого кадра. Сверху подрезаем: после долгой паузы
+                // (окно было занято) лента не должна прыгать разом.
+                double dt = Math.Max(0.001, Math.Min(0.05, now - _lastFrame));
+                _lastFrame = now;
 
                 int cur = Current;
                 // Позицию сдвинул кто-то другой (перерисовка ленты / догрузка / ползунок).
@@ -301,34 +366,107 @@ namespace PISMO
                 {
                     if (!_toEnd) { Finish(); return; }
                     _lastSet = cur;
+                    _pos = cur;
                 }
 
                 _target = _toEnd ? MaxOffset : Clamp(_target);
-                int diff = _target - cur;
-                if (Math.Abs(diff) <= 1)
+                double diff = _target - _pos;
+                if (Math.Abs(diff) < 0.5)
                 {
-                    try { _p.AutoScrollPosition = new Point(0, _target); } catch { }
-                    RepaintNow(_p, force: true);   // финальный кадр — обязательно
+                    if (cur != _target)
+                    {
+                        try { _p.AutoScrollPosition = new Point(0, _target); } catch { }
+                        RepaintNow(_p);
+                    }
                     Finish();                       // снимаем флаг → кнопка «вниз» вернётся
                     return;
                 }
 
-                // Замедление к концу приятно смотрится, но хвост у него бесконечный:
-                // последние десятки пикселей ползли кадр за кадром по одному, и любая
-                // помеха оставляла ленту не доехавшей. Минимальный шаг делает конец
-                // движения коротким и предсказуемым, не портя саму плавность.
-                int step = (int)Math.Round(diff * Ease);
-                if (Math.Abs(step) < MinStepPx) step = Math.Sign(diff) * Math.Min(MinStepPx, Math.Abs(diff));
-                try { _p.AutoScrollPosition = new Point(0, cur + step); } catch { }
+                // Догоняем цель по экспоненте от прошедшего времени. Минимальная
+                // скорость делает конец движения коротким: без неё последние
+                // точки ползли бы кадр за кадром, и любая помеха оставляла ленту
+                // не доехавшей.
+                double step = diff * (1 - Math.Exp(-Rate * dt));
+                double minStep = MinSpeed * dt;
+                if (Math.Abs(step) < minStep) step = Math.Sign(diff) * Math.Min(minStep, Math.Abs(diff));
+                _pos += step;
+
+                int want = (int)Math.Round(_pos);
+                if (want == cur) return;            // доля точки — двигать пока нечего
+                try { _p.AutoScrollPosition = new Point(0, want); } catch { }
+                int got = Current;
                 // Просили сдвинуть, а лента не сдвинулась — значит приехали, дальше
                 // некуда. Это и страховка от завышенной цели: без неё кадры крутились
                 // бы вхолостую, снова и снова выставляя одно и то же значение.
-                if (Current == cur) { RepaintNow(_p, force: true); Finish(); return; }
-                // Кадр анимации двигает позицию напрямую и НЕ порождает WM_VSCROLL/
-                // WM_MOUSEWHEEL, поэтому перерисовываем сами (с ограничением частоты).
+                if (got == cur) { Finish(); return; }
+                if (got != want) _pos = got;
+                // Кадр двигает позицию напрямую и НЕ порождает WM_VSCROLL/WM_MOUSEWHEEL,
+                // поэтому открывшуюся полоску дорисовываем сами — сразу, в этом кадре.
                 RepaintNow(_p);
-                _lastSet = Current;   // фактическое (могло быть подрезано)
+                _lastSet = got;   // фактическое (могло быть подрезано)
                 try { _onScrolled?.Invoke(); } catch { }   // пагинация и кнопка «вниз»
+            }
+        }
+
+        /// <summary>
+        /// Темп кадров по обновлению экрана.
+        ///
+        /// DwmFlush ждёт ближайшего кадра композитора — то есть ровно того
+        /// момента, когда нарисованное попадёт на экран. Рисовать чаще
+        /// бессмысленно (лишнее просто не покажут), реже — заметно глазу.
+        /// </summary>
+        private static class FramePacer
+        {
+            [DllImport("dwmapi.dll")] private static extern int DwmFlush();
+            [DllImport("dwmapi.dll")] private static extern int DwmIsCompositionEnabled(out bool enabled);
+            [DllImport("user32.dll")]
+            private static extern bool PeekMessage(out NativeMsg msg, IntPtr hWnd, uint min, uint max, uint remove);
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct NativeMsg
+            {
+                public IntPtr hwnd;
+                public uint message;
+                public IntPtr wParam;
+                public IntPtr lParam;
+                public uint time;
+                public int ptX;
+                public int ptY;
+            }
+
+            private static bool? _available;
+            private static readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
+
+            /// <summary>Есть ли композиция окон (с Windows 8 — всегда).</summary>
+            public static bool Available
+            {
+                get
+                {
+                    if (_available == null)
+                    {
+                        try { _available = DwmIsCompositionEnabled(out bool on) == 0 && on; }
+                        catch { _available = false; }
+                    }
+                    return _available.Value;
+                }
+            }
+
+            /// <summary>Нет ли сообщений, которые окну пора обработать.</summary>
+            public static bool QueueEmpty()
+            {
+                try { return !PeekMessage(out _, IntPtr.Zero, 0, 0, 0); }
+                catch { return false; }
+            }
+
+            public static void WaitForVBlank()
+            {
+                long t0 = _sw.ElapsedTicks;
+                int hr = -1;
+                try { hr = DwmFlush(); } catch { _available = false; }
+                double ms = (_sw.ElapsedTicks - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                // Вернулся сразу (композиция недоступна или показывать было нечего) —
+                // не крутимся вхолостую на всё ядро.
+                if (hr != 0 || ms < 1.5) System.Threading.Thread.Sleep(4);
             }
         }
 
@@ -394,65 +532,34 @@ namespace PISMO
             catch { }
         }
 
-        /// <summary>Немедленная (синхронная) перерисовка контрола вместе со всеми дочерними
-        /// И с перекрывающими его СОСЕДЯМИ (плавающая кнопка «вниз к новым» — не ребёнок
-        /// панели, а её сосед поверх неё, поэтому ALLCHILDREN её не покрывает и в её
-        /// области картинка рвалась, как только кнопка появлялась).</summary>
+        /// <summary>
+        /// Дорисовать то, что открылось при прокрутке, — сразу, в этом же кадре.
+        ///
+        /// РАНЬШЕ НА КАЖДОМ КАДРЕ ПЕРЕРИСОВЫВАЛАСЬ ВСЯ ЛЕНТА: панель объявлялась
+        /// недействительной целиком, со всеми пузырями, и каждый видимый пузырь —
+        /// текст, картинки, превью роликов — рисовался заново шестьдесят раз в
+        /// секунду. Это и было главной просадкой: чем больше на экране картинок
+        /// и чем длиннее лента, тем ниже кадры. На длинной ленте пузыри вдобавок
+        /// пропускали, и посреди прокрутки могли оставаться недорисованные полосы.
+        ///
+        /// Но содержимое при прокрутке и так переезжает целиком: Windows сдвигает
+        /// уже нарисованное (ScrollWindowEx) и помечает недействительной только
+        /// открывшуюся полоску. Её и дорисовываем — синхронно, вместе с теми
+        /// пузырями, которые в неё въехали. Артефактов «не успела отрисоваться»
+        /// это не возвращает: дорисовка всё так же идёт сразу, а не в очередь.
+        /// </summary>
         public static void RepaintNow(Control c) => RepaintNow(c, false);
 
-        // Синхронная перерисовка ленты — дорогая операция (десятки пузырей со своими
-        // дочерними контролами). Без ограничения частоты она съедала CPU и приложение
-        // «фризило». Ограничиваем: не чаще ~50 раз в секунду; финальный кадр всегда
-        // рисуем принудительно (force), чтобы картинка гарантированно устоялась.
-        private static int _lastRepaintTick;
-        // Кнопку «вниз» убрали, второй полной перерисовки на кадр больше нет — можно
-        // рисовать на каждом кадре анимации (было ~30/с, из-за чего движение выглядело
-        // ступенчатым при мягком easing).
-        private const int RepaintMinIntervalMs = 15;   // ~65 синхронных перерисовок/с
-
+        /// <param name="force">Перерисовать ВСЁ видимое, а не только открывшееся.</param>
         public static void RepaintNow(Control c, bool force)
         {
             try
             {
                 if (c == null || !c.IsHandleCreated) return;
 
-                int now = Environment.TickCount;
-                // ДЛИННАЯ ЛЕНТА РИСУЕТСЯ ПО-ДРУГОМУ.
-                //
-                // Синхронная перерисовка с RDW_ALLCHILDREN обходит ВСЕХ детей
-                // панели — а их после нескольких догрузок сотни, и у каждого
-                // пузыря свои дети. На каждом кадре прокрутки это и роняло
-                // частоту до полутора десятков кадров в секунду.
-                //
-                // На короткой ленте оставляем как было: каждый кадр и со
-                // всеми детьми — движение мягкое, стоит это копейки. На
-                // длинной перерисовываем реже и БЕЗ обхода детей: пузыри
-                // буферизованы и едут вместе с панелью сами, а страховка от
-                // артефактов остаётся в финальном кадре (force), который
-                // рисуется полностью.
-                int childCount = 0;
-                try { childCount = c.Controls.Count; } catch { }
-                bool heavy = childCount > 120;
-                int minGap = heavy ? 32 : RepaintMinIntervalMs;
-                if (!force && unchecked(now - _lastRepaintTick) < minGap) return;
-                _lastRepaintTick = now;
-
-                // RDW_NOERASE — против мерцания при прокрутке.
-                //
-                // Без него каждый кадр прокрутки (до 65 в секунду) заставляет
-                // каждого ребёнка сначала залить свой фон, а потом нарисовать
-                // содержимое. Для текстовых полей это заметно глазом: буквы
-                // моргают. Стирать здесь и не нужно — содержимое перекрывает
-                // свою область целиком. Там, где стирание действительно нужно
-                // (смена чата, под удалёнными пузырями остаётся прошлое), для
-                // этого есть отдельный RepaintAfterSwitch.
-                // На длинной ленте не обходим каждого ребёнка на каждом кадре:
-                // это сводило на нет ограничение частоты выше. ScrollWindowEx
-                // уже перемещает дочерние окна вместе с панелью; в промежуточных
-                // кадрах обновляем только фон панели, а финальный кадр (force)
-                // полностью перерисовывает всех детей и убирает артефакты.
-                uint flags = RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW;
-                if (!heavy || force) flags |= RDW_ALLCHILDREN;
+                uint flags = force
+                    ? RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW | RDW_ALLCHILDREN
+                    : RDW_UPDATENOW | RDW_ALLCHILDREN;
                 RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero, flags);
 
                 var parent = c.Parent;
