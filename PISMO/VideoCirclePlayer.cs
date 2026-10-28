@@ -104,8 +104,51 @@ namespace PISMO
             _loader = null;
             try { Controls.Clear(); } catch { }
             try { _playIcon.Dispose(); _durationLabel.Dispose(); } catch { }
+            // Кадр-превью заглушки больше не нужен — под ним настоящий плеер.
+            try { var bgi = BackgroundImage; BackgroundImage = null; bgi?.Dispose(); } catch { }
             Build(data, _diameter);
             TogglePlay();
+        }
+
+        /// <summary>
+        /// Первый кадр и длительность на заглушке. Раскладывать весь кружок
+        /// ради этого незачем: хватает одного кадра из начала файла, и достаётся
+        /// он в фоне.
+        /// </summary>
+        public void ShowPreview(byte[] data)
+        {
+            if (data == null || data.Length == 0 || _loader == null) return;
+            bool started = false;
+            void Start()
+            {
+                if (started) return;
+                started = true;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    Bitmap frame = null; double sec = 0;
+                    try { (frame, sec) = VideoCircleCodec.Peek(data); } catch { }
+                    if (frame == null) return;
+                    try
+                    {
+                        if (IsDisposed || !IsHandleCreated) { frame.Dispose(); return; }
+                        BeginInvoke(new Action(() =>
+                        {
+                            // Уже раскрыт или умер — превью ни к чему.
+                            if (IsDisposed || _loader == null) { frame.Dispose(); return; }
+                            var old = BackgroundImage;
+                            BackgroundImageLayout = ImageLayout.Zoom;
+                            BackgroundImage = frame;
+                            try { old?.Dispose(); } catch { }
+                            if (sec > 0 && _durationLabel != null && !_durationLabel.IsDisposed)
+                                _durationLabel.Text = $"{(int)sec / 60}:{(int)sec % 60:00}";
+                        }));
+                    }
+                    catch { frame.Dispose(); }
+                });
+            }
+            if (IsHandleCreated) Start();
+            else HandleCreated += (s, e) => Start();
+            Disposed += (s, e) => { try { BackgroundImage?.Dispose(); } catch { } };
         }
 
         public VideoCirclePlayer(byte[] videoData, int diameter = 180)

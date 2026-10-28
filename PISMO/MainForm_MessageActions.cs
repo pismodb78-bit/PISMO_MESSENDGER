@@ -972,7 +972,8 @@ namespace PISMO
             // Отвечая на фото, кружок или файл, текста нет — и полоска
             // получалась «Ответ для X: » с пустотой после двоеточия. Спросим,
             // чем было сообщение: один короткий запрос на нажатие.
-            string preview = text ?? "";
+            // Пометка «Переслано от…» — не текст сообщения, в полоске она лишняя.
+            string preview = QuoteText.BodyOf(text).Replace('\n', ' ');
             if (string.IsNullOrWhiteSpace(preview)) preview = KindOfMessage(msgId);
             _replyToText = preview.Length > 60 ? preview[..60] + "…" : preview;
 
@@ -1149,7 +1150,7 @@ namespace PISMO
             {
                 foreach (Control ch in root.Controls)
                 {
-                    bool textish = ch is Label || ch is TextBoxBase;
+                    bool textish = ch is Label || ch is TextBoxBase || ch is QuoteBlock;
                     if (textish && ch.BackColor == original)
                     {
                         ch.BackColor = flash;
@@ -1204,32 +1205,6 @@ namespace PISMO
             _pnlReplyBar.Visible = false;
         }
 
-        // ── Вставляем reply_to_id при отправке — патч для SendMessage ────
-        /// <summary>
-        /// Дополнить INSERT в SendMessage и SendGroupMessage:
-        /// если _replyToId > 0 — добавить reply_to_id=@rid в запрос.
-        /// Вызывать после отправки.
-        /// </summary>
-        public void ApplyReplyToLastMessage(bool isGroup)
-        {
-            if (_replyToId < 0) return;
-            try
-            {
-                int myId = UserSession.EffectiveId;
-                using var conn = DBHelper.OpenConnection();
-                string table = isGroup ? "group_messages" : "messages";
-                // Обновляем последнее сообщение этого пользователя
-                using var cmd = new MySqlCommand(
-                    $"UPDATE {table} SET reply_to_id=@r " +
-                    $"WHERE sender_id=@me ORDER BY id DESC LIMIT 1", conn);
-                cmd.Parameters.AddWithValue("@r", _replyToId);
-                cmd.Parameters.AddWithValue("@me", myId);
-                cmd.ExecuteNonQuery();
-            }
-            catch { }
-            CancelReply();
-        }
-
         // ════════════════════════════════════════════════════════════════
         //  ПЕРЕСЛАТЬ
         // ════════════════════════════════════════════════════════════════
@@ -1245,7 +1220,10 @@ namespace PISMO
             _forwardSrcScope = isGroup ? 1 : 0;
             _forwardSrcId = msgId;         // для копии медиа SQL-ом
 
-            string preview = text?.Length > 50 ? text[..50] + "…" : (text ?? "[медиа]");
+            string body = QuoteText.BodyOf(text).Replace('\n', ' ');
+            if (string.IsNullOrWhiteSpace(body)) body = KindOfMessage(msgId);
+            if (string.IsNullOrWhiteSpace(body)) body = "[медиа]";
+            string preview = body.Length > 50 ? body[..50] + "…" : body;
             _lblForwardInfo.Text = $"↪ Пересылка от {senderName}: {preview}";
             _pnlForwardBar.Visible = true;
 
@@ -1745,43 +1723,17 @@ namespace PISMO
             }
             if (ids.Count == 0) return null;
 
-            var map = new Dictionary<int, (string text, string sender)>();
+            // Берём и признаки вложений, и альбом (см. QuoteText.Load): по
+            // одному тексту ответ на фото, кружок или пачку выглядел пустой
+            // полоской с одним именем. Сами вложения не тянем — только отметку
+            // о наличии, иначе цитата поднимала бы с диска весь файл.
             try
             {
-                string table = isGroup ? "group_messages" : "messages";
                 using var conn = DBHelper.OpenConnection();
-                // Берём и признаки вложений. Раньше выбирался ОДИН текст, и
-                // ответ на фото, кружок или файл выглядел пустой полоской с
-                // одним именем: по ней нельзя понять, на что отвечают. Сами
-                // вложения не тянем — только отметку о наличии, иначе цитата
-                // поднимала бы с диска весь файл.
-                using var cmd = new MySqlCommand($@"
-                    SELECT m.id, m.text, m.file_name,
-                           (m.image_data IS NOT NULL) AS has_img,
-                           (m.audio_data IS NOT NULL) AS has_audio,
-                           (m.video_data IS NOT NULL) AS has_video,
-                           TRIM(CONCAT(u.Name,' ',u.Surname)) AS sname, u.login
-                    FROM {table} m
-                    JOIN users u ON u.id = m.sender_id
-                    WHERE m.id IN ({string.Join(",", ids)})", conn);
-                using var rd = cmd.ExecuteReader();
-                while (rd.Read())
-                {
-                    int id = Convert.ToInt32(rd["id"]);
-                    string text = "";
-                    try { text = Crypto.Dec(rd["text"] == DBNull.Value ? "" : rd["text"].ToString()); } catch { }
-                    string sender = rd["sname"] == DBNull.Value ? "" : rd["sname"].ToString().Trim();
-                    if (string.IsNullOrWhiteSpace(sender))
-                        sender = rd["login"] == DBNull.Value ? "" : rd["login"].ToString();
-                    map[id] = (QuotePreview(text,
-                        Convert.ToBoolean(rd["has_img"]),
-                        Convert.ToBoolean(rd["has_audio"]),
-                        Convert.ToBoolean(rd["has_video"]),
-                        rd["file_name"] == DBNull.Value ? null : rd["file_name"].ToString()), sender);
-                }
+                return QuoteText.Load(conn, isGroup ? "group_messages" : "messages",
+                    isGroup ? "x.group_id = m.group_id" : "x.receiver_id = m.receiver_id", ids);
             }
-            catch { }
-            return map;
+            catch { return new Dictionary<int, (string text, string sender)>(); }
         }
 
         /// <summary>
@@ -1791,19 +1743,22 @@ namespace PISMO
         /// </summary>
         internal static string QuotePreview(string text, bool hasImage, bool hasAudio,
                                             bool hasVideo, string fileName)
-        {
-            if (!string.IsNullOrWhiteSpace(text)) return text;
-            if (hasImage) return "📷 Фото";
-            if (hasVideo) return "🎥 Видео";
-            if (hasAudio) return "🎤 Голосовое сообщение";
-            if (!string.IsNullOrWhiteSpace(fileName)) return "📎 " + fileName;
-            return "";
-        }
+            => QuoteText.Describe(text, hasImage, hasAudio, hasVideo, fileName);
 
         public int BuildReplyQuote(Panel bubble, int replyToId, bool isGroup,
             bool isMine, int startY, int innerW, int pad)
         {
-            if (replyToId <= 0) return 0;
+            var block = MakeReplyQuote(replyToId, isGroup, isMine, bubble.BackColor, innerW - 2);
+            if (block == null) return 0;
+            block.Location = new Point(pad, startY + 2);
+            bubble.Controls.Add(block);
+            return block.Height + 2;
+        }
+
+        /// <summary>Цитата ответа на <paramref name="replyToId"/>; null — показать нечего.</summary>
+        private QuoteBlock MakeReplyQuote(int replyToId, bool isGroup, bool isMine, Color back, int maxW)
+        {
+            if (replyToId <= 0) return null;
 
             try
             {
@@ -1827,65 +1782,34 @@ namespace PISMO
                     // тянем: это ровно тот запрос на каждое сообщение, из-за которого
                     // первая отрисовка стоила секунды. Цитата появится на следующей
                     // перерисовке, когда карта придёт.
-                    return 0;
+                    return null;
                 }
                 else
                 {
                     // Запасной путь: цитата понадобилась вне отрисовки страницы.
                     using var conn = DBHelper.OpenConnection();
-                    string table = isGroup ? "group_messages" : "messages";
-                    string sql = $@"
-                        SELECT m.text, m.file_name,
-                               (m.image_data IS NOT NULL) AS has_img,
-                               (m.audio_data IS NOT NULL) AS has_audio,
-                               (m.video_data IS NOT NULL) AS has_video,
-                               TRIM(CONCAT(u.Name,' ',u.Surname)) AS sname, u.login
-                        FROM {table} m
-                        JOIN users u ON u.id = m.sender_id
-                        WHERE m.id = @id";
-                    using var cmd = new MySqlCommand(sql, conn);
-                    cmd.Parameters.AddWithValue("@id", replyToId);
-                    var dt = new DataTable();
-                    new MySqlDataAdapter(cmd).Fill(dt);
-
-                    if (dt.Rows.Count > 0)
-                    {
-                        qText = QuotePreview(
-                            Crypto.Dec(dt.Rows[0]["text"].ToString()),
-                            Convert.ToBoolean(dt.Rows[0]["has_img"]),
-                            Convert.ToBoolean(dt.Rows[0]["has_audio"]),
-                            Convert.ToBoolean(dt.Rows[0]["has_video"]),
-                            dt.Rows[0]["file_name"] == DBNull.Value
-                                ? null : dt.Rows[0]["file_name"].ToString());
-                        qSender = dt.Rows[0]["sname"].ToString().Trim();
-                        if (string.IsNullOrWhiteSpace(qSender))
-                            qSender = dt.Rows[0]["login"].ToString();
-                    }
+                    var one = QuoteText.Load(conn, isGroup ? "group_messages" : "messages",
+                        isGroup ? "x.group_id = m.group_id" : "x.receiver_id = m.receiver_id",
+                        new List<int> { replyToId });
+                    if (one.TryGetValue(replyToId, out var q1)) { qText = q1.text; qSender = q1.sender; }
                 }
 
-                if (string.IsNullOrEmpty(qText)) return 0;
+                if (string.IsNullOrEmpty(qText) && string.IsNullOrEmpty(qSender)) return null;
 
-                var lblQ = new Label
-                {
-                    Text = $"{qSender}: {(qText.Length > 50 ? qText[..50] + "…" : qText)}",
-                    Font = new Font("Segoe UI", 8.5f),
-                    ForeColor = Color.FromArgb(185, 190, 198),
-                    AutoSize = false,
-                    Size = new Size(innerW - 2, 38),
-                    Location = new Point(pad, startY + 2),
-                    Padding = new Padding(0)
-                };
+                // Блок ровно по содержимому: имя и строка. Раньше здесь была
+                // надпись фиксированной высоты 38 при одной строке текста — под
+                // цитатой зияла пустая полоса.
+                var block = new QuoteBlock(qSender, qText, maxW, back,
+                    isMine ? Color.FromArgb(235, 238, 255) : Color.FromArgb(129, 140, 248),
+                    isMine ? Color.Black : Color.FromArgb(88, 101, 242));
 
                 // Нажатие ведёт к исходному сообщению и подсвечивает его.
                 // Раньше цитата была просто надписью, и найти, на что
                 // отвечают, приходилось прокруткой вручную.
-                lblQ.Cursor = Cursors.Hand;
-                lblQ.Click += (s, e) => JumpToMessage(replyToId);
-                bubble.Controls.Add(lblQ);
-
-                return 46;
+                block.Click += (s, e) => JumpToMessage(replyToId);
+                return block;
             }
-            catch { return 0; }
+            catch { return null; }
         }
 
         // ════════════════════════════════════════════════════════════════

@@ -2199,9 +2199,19 @@ namespace PISMO
         private void BeginServerReply(int id, string text)
         {
             _replyToId = id;
-            string preview = text.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)
-                ? "[GIF]" : (text.Length > 60 ? text.Substring(0, 60) + "…" : text);
-            _lblReply.Text = "↩ Ответ: " + preview;
+            // Чьё и чем было — как в цитате. У снимка без подписи полоска
+            // раньше обрывалась на «Ответ: », а у пересланного показывала
+            // пометку пересылки вместо текста.
+            (string text, string sender)? q = _srvQuotes.TryGetValue(id, out var known)
+                ? known : ServerQuoteFromPage(id, _shownDt);
+            string preview = q?.text;
+            if (string.IsNullOrWhiteSpace(preview))
+                preview = QuoteText.Describe(text ?? "", false, false, false, null);
+            if (preview.Length > 60) preview = preview.Substring(0, 60) + "…";
+            string who = q?.sender;
+            _lblReply.Text = string.IsNullOrWhiteSpace(who)
+                ? "↩ Ответ: " + preview
+                : $"↩ Ответ для {who}: {preview}";
             _replyBar.Height = 26;
             _replyBar.Visible = true;
             UpdateBottomHeight();
@@ -3085,8 +3095,11 @@ namespace PISMO
                 const int PAD = 12;
                 const int AVA = 36;                 // диаметр аватарки
                 const int LEFT = PAD + AVA + 10;    // отступ контента правее аватара
+                // Свои — плотным синим, а не полупрозрачным на вид: прежний
+                // приглушённый оттенок сливался с фоном, и пузыри будто
+                // просвечивали.
                 Color bubbleBg = mine ? Color.FromArgb(47, 68, 55)
-                    : isMe ? Color.FromArgb(58, 65, 112) : Color.FromArgb(48, 51, 58);
+                    : isMe ? Color.FromArgb(66, 78, 190) : Color.FromArgb(48, 51, 58);
 
                 var holder = new Panel
                 {
@@ -3137,27 +3150,15 @@ namespace PISMO
                     ? Convert.ToInt32(r["reply_to_id"]) : 0;
                 if (replyToId > 0)
                 {
-                    string rs = dt.Columns.Contains("r_sender") && r["r_sender"] != DBNull.Value ? r["r_sender"].ToString().Trim() : "";
-                    if (string.IsNullOrWhiteSpace(rs) && dt.Columns.Contains("r_login") && r["r_login"] != DBNull.Value) rs = r["r_login"].ToString();
-                    string rt = dt.Columns.Contains("r_text") && r["r_text"] != DBNull.Value ? Crypto.Dec(r["r_text"].ToString()) : "";
-                    if (rt.StartsWith("gif:", StringComparison.OrdinalIgnoreCase)) rt = "[GIF]";
-                    var quote = new Label
-                    {
-                        AutoSize = true,
-                        // По содержимому, но не шире потолка бабла — иначе пузырь
-                        // с ответом растягивался на всю ширину (AutoSize-holder
-                        // подгонялся под жёсткую ширину цитаты).
-                        MaximumSize = new Size(msgWidth - 14, 0),
-                        Location = new Point(LEFT, y),
-                        ForeColor = Color.FromArgb(0, 176, 244),
-                        Font = new Font("Segoe UI", 8f),
-                        Cursor = Cursors.Hand,
-                        Text = $"↩ {rs}: {(rt.Length > 60 ? rt.Substring(0, 60) + "…" : rt)}"
-                    };
+                    // Имя автора и чем было сообщение (см. ServersForm_Quotes).
+                    // По содержимому, но не шире потолка бабла — иначе пузырь
+                    // с ответом растягивался на всю ширину.
+                    var quote = MakeServerQuote(replyToId, r, dt, msgWidth - 14, Theme.Map(bubbleBg));
+                    quote.Location = new Point(LEFT, y);
                     int targetId = replyToId;
                     quote.Click += (s, e) => ScrollToServerMessage(targetId);
                     holder.Controls.Add(quote);
-                    y += quote.Height + 2;
+                    y += quote.Height + 4;
                 }
 
                 // Ник цветной (стабильный цвет по имени, как в Discord), фон прозрачный —
@@ -3253,6 +3254,28 @@ namespace PISMO
                     pending.Add(holder);
                     ri += albumLen - 1;
                     continue;
+                }
+
+                // Пометка пересылки — своей строкой над вложением, а не хвостом
+                // текста: у пересланного снимка без подписи она оставляла под
+                // собой пустую строку. Меню получает полный текст — перешлют
+                // дальше, и имя настоящего автора сохранится.
+                string fullText = text;
+                if (QuoteText.SplitForward(text, out var fwdHeader, out var fwdBody))
+                {
+                    var fwd = new Label
+                    {
+                        AutoSize = true,
+                        MaximumSize = new Size(msgWidth - 14, 0),
+                        BackColor = Color.Transparent,
+                        ForeColor = Color.FromArgb(129, 140, 248),
+                        Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
+                        Location = new Point(LEFT, y),
+                        Text = fwdHeader,
+                    };
+                    holder.Controls.Add(fwd);
+                    y += fwd.PreferredHeight + 2;
+                    text = fwdBody;
                 }
 
                 // Медиа канала (картинка / голосовое / кружок / видео / файл) — как в обычном чате.
@@ -3356,7 +3379,18 @@ namespace PISMO
                     }
                     if (sm.video is { Length: > 0 })
                     {
-                        try { var pl = new VideoCirclePlayer(sm.video, 180) { Location = new Point(LEFT, y) }; holder.Controls.Add(pl); y += 186; }
+                        // Заглушкой, раскрывается по нажатию. Раскрытый кружок —
+                        // это все его кадры картинками, и раньше каждый кружок
+                        // страницы раскладывался прямо при сборке ленты, на
+                        // потоке окна: чем выше пролистан канал, тем больше их
+                        // висело в памяти и тем сильнее тормозило всё приложение.
+                        var circleBytes = sm.video;
+                        try
+                        {
+                            var pl = new VideoCirclePlayer(() => circleBytes, 180) { Location = new Point(LEFT, y) };
+                            pl.ShowPreview(circleBytes);
+                            holder.Controls.Add(pl); y += 186;
+                        }
                         catch { }
                     }
                     if (!string.IsNullOrWhiteSpace(sm.fname))
@@ -3628,7 +3662,7 @@ namespace PISMO
                 }
                 catch { }
 
-                AttachServerMsgMenu(holder, head, id, senderId, text, nm);
+                AttachServerMsgMenu(holder, head, id, senderId, fullText, nm);
                 _msgControls[id] = holder;
                 pending.Add(holder);
             }
@@ -4107,7 +4141,7 @@ namespace PISMO
                 {
                     foreach (Control ch in root.Controls)
                     {
-                        bool textish = ch is Label || ch is TextBoxBase;
+                        bool textish = ch is Label || ch is TextBoxBase || ch is QuoteBlock;
                         if (textish && (ch.BackColor == hf.Back || ch.BackColor == Theme.Map(hf.Back)))
                         {
                             painted.Add((ch, ch.BackColor));
@@ -4688,19 +4722,25 @@ namespace PISMO
             try { data = await GiphyClient.DownloadAsync(url); }
             catch { return; }
             if (data == null || data.Length == 0 || placeholder.IsDisposed) return;
+            // Кадры раскладываем В ФОНЕ: на потоке окна раскладка гифки на сотню
+            // кадров стоила заметную паузу — и так на каждую гифку страницы.
+            AnimatedGif.Frames frames = null;
+            try { frames = await System.Threading.Tasks.Task.Run(() => AnimatedGif.Decode(data, 260, 200)); }
+            catch { }
+            if (frames == null) return;
             try
             {
-                if (IsDisposed || !IsHandleCreated) return;
+                if (IsDisposed || !IsHandleCreated || placeholder.IsDisposed) { frames.Dispose(); return; }
                 BeginInvoke(new Action(() =>
                 {
-                    if (placeholder.IsDisposed) return;
-                    var pb = AnimatedGif.Create(data, 260, 200);
+                    if (placeholder.IsDisposed) { frames.Dispose(); return; }
+                    var pb = AnimatedGif.Show(frames);
                     pb.Location = new Point(0, 0);
                     placeholder.Size = pb.Size;
                     placeholder.Controls.Add(pb);
                 }));
             }
-            catch { }
+            catch { frames.Dispose(); }
         }
 
         private void SendChannelMessage()

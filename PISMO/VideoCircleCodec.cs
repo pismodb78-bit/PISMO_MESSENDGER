@@ -93,6 +93,32 @@ namespace PISMO
             return result;
         }
 
+        /// <summary>
+        /// Первый кадр и длительность — без раскладки всего ролика: для
+        /// заглушки в ленте хватает одного JPEG из начала файла.
+        /// </summary>
+        public static (Bitmap frame, double seconds) Peek(byte[] data)
+        {
+            using var ms = new MemoryStream(data);
+            using var br = new BinaryReader(ms);
+            if (!MagicMatches(br.ReadBytes(8))) return (null, 0);
+            int audioLen = br.ReadInt32();
+            int frameCount = br.ReadInt32();
+            int fps = br.ReadInt32();
+            if (fps <= 0) fps = 10;
+            if (audioLen > 0) ms.Seek(audioLen, SeekOrigin.Current);
+            Bitmap first = null;
+            if (frameCount > 0)
+            {
+                int len = br.ReadInt32();
+                byte[] jpeg = br.ReadBytes(len);
+                using var fm = new MemoryStream(jpeg);
+                using var tmp = new Bitmap(fm);
+                first = new Bitmap(tmp);   // копия — поток JPEG закроется
+            }
+            return (first, frameCount / (double)fps);
+        }
+
         private static bool MagicMatches(byte[] candidate)
         {
             if (candidate.Length != Magic.Length) return false;

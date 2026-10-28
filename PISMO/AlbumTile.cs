@@ -41,6 +41,10 @@ namespace PISMO
         private readonly List<Item> _items;
         private readonly Dictionary<int, Bitmap> _thumbs = new();
         private readonly string _caption;
+        /// <summary>«↪ Переслано от…» — над мозаикой, а не строкой подписи.</summary>
+        private readonly string _fwdHeader;
+        private int _hdrHeight;
+        private readonly Font _hdrFont = new Font("Segoe UI", 8.5f, FontStyle.Italic);
         private readonly string _time;
         private readonly bool _isMine;
         private readonly int _readState;
@@ -73,7 +77,15 @@ namespace PISMO
                          int readState, int width)
         {
             _items = items ?? new List<Item>();
+            // Пересланный альбом несёт пометку в подписи первого снимка, с
+            // переводом строки на конце: подпись под мозаикой выходила пустой
+            // строкой. Пометку — наверх, подпись — без неё.
             _caption = caption ?? "";
+            if (QuoteText.SplitForward(_caption, out var hdr, out var body))
+            {
+                _fwdHeader = hdr;
+                _caption = body;
+            }
             _time = time ?? "";
             _isMine = isMine;
             _readState = readState;
@@ -101,6 +113,24 @@ namespace PISMO
 
         private readonly Action<int> _onCover;
 
+        /// <summary>Цитата, если альбом отправлен ответом, — над мозаикой.</summary>
+        private Control _quote;
+
+        /// <summary>
+        /// Показать над мозаикой цитату того, на что отвечает альбом. Раньше
+        /// у плитки места под неё не было, и ответ альбомом выглядел обычным
+        /// альбомом — на что он, оставалось только гадать.
+        /// </summary>
+        public void AttachQuote(Control quote)
+        {
+            if (quote == null) return;
+            _quote = quote;
+            quote.BackColor = BackColor;
+            Controls.Add(quote);
+            Layout0();
+            Invalidate();
+        }
+
         /// <summary>
         /// Пересчитать раскладку и высоту.
         ///
@@ -114,7 +144,13 @@ namespace PISMO
         {
             int gridW = Width - Pad * 2;
             _cells.Clear();
-            int y = Pad;
+            _hdrHeight = string.IsNullOrEmpty(_fwdHeader) ? 0 : _hdrFont.Height + 4;
+            int y = Pad + _hdrHeight;
+            if (_quote != null)
+            {
+                _quote.Location = new Point(Pad, y);
+                y += _quote.Height + 6;
+            }
             int i = 0;
             foreach (int count in RowSplit(_items.Count))
             {
@@ -295,6 +331,12 @@ namespace PISMO
             using (var br = new SolidBrush(BackColor))
                 g.FillRoundedRectangle(br, 0, 0, Width - 1, Height - 1, 14);
 
+            if (_hdrHeight > 0)
+                TextRenderer.DrawText(g, _fwdHeader, _hdrFont,
+                    new Rectangle(Pad, Pad - 2, Width - Pad * 2, _hdrFont.Height + 2),
+                    _isMine ? Color.FromArgb(225, 230, 255) : Color.FromArgb(129, 140, 248),
+                    TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
             // Внешние углы мозаики скругляем, внутренние стыки оставляем
             // прямыми — как в телеграме: альбом читается одной карточкой.
             var gridState = g.Save();
@@ -381,7 +423,7 @@ namespace PISMO
                 try { CoverGrabber.CoverReady -= _onCover; } catch { }
                 foreach (var kv in _thumbs) { try { kv.Value?.Dispose(); } catch { } }
                 _thumbs.Clear();
-                try { _capFont.Dispose(); _timeFont.Dispose(); } catch { }
+                try { _capFont.Dispose(); _timeFont.Dispose(); _hdrFont.Dispose(); } catch { }
             }
             base.Dispose(disposing);
         }

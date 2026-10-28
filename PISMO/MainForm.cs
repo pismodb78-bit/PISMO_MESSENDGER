@@ -4215,7 +4215,7 @@ namespace PISMO
 
         private void SendGroupMessage(string text, byte[] imageData,
             byte[] audioData = null, byte[] videoData = null,
-            byte[] fileData = null, string fileName = null)
+            byte[] fileData = null, string fileName = null, int replyTo = 0)
         {
             int myId = UserSession.EffectiveId;
 
@@ -4226,21 +4226,22 @@ namespace PISMO
                 // из кружка в шапке списка чатов.
                 SendFileInBackground(isGroup: true, target: _currentGroupId, myId: myId, text: text,
                     imageData: imageData, audioData: audioData, videoData: videoData,
-                    fileData: fileData, fileName: fileName);
+                    fileData: fileData, fileName: fileName, replyTo: replyTo);
             }
             else
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                const string sql =
+                string sql =
                     "INSERT INTO group_messages " +
-                    "(group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name) " +
-                    "VALUES (@g, @s, @t, @img, @aud, @vid, @fd, @fn)";
+                    "(group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name" + ReplyCol(replyTo) + ") " +
+                    "VALUES (@g, @s, @t, @img, @aud, @vid, @fd, @fn" + ReplyVal(replyTo) + ")";
 
                 using var cmd = new MySqlCommand(sql, conn);
                 cmd.Parameters.AddWithValue("@g", _currentGroupId);
                 cmd.Parameters.AddWithValue("@s", myId);
                 cmd.Parameters.AddWithValue("@t", Crypto.Enc(text ?? ""));
+                if (replyTo > 0) cmd.Parameters.AddWithValue("@rt", replyTo);
 
                 AddBlob(cmd, "@img", imageData);
                 AddBlob(cmd, "@aud", audioData);
@@ -4884,6 +4885,9 @@ namespace PISMO
                     int tileW = Math.Max(360, Math.Min(640,
                         (int)((pnlMessages.ClientSize.Width - 40) * 0.6)));
                     var tile = new AlbumTile(tileItems, text, tileTime, isMine, tileRead, tileW);
+                    // Альбом, отправленный ответом, — с цитатой над мозаикой.
+                    if (replyToId > 0 && !isDeleted)
+                        tile.AttachQuote(MakeReplyQuote(replyToId, isGroup, isMine, tile.BackColor, tileW - 20));
                     // Имя — как у обычного пузыря: по нему прыжки находят
                     // плитку в ленте. И запоминаем, какая плитка накрыла
                     // каждое сообщение пачки: «показать в чате» приходит с
@@ -5289,7 +5293,11 @@ namespace PISMO
                     string ed = t.Columns.Contains("edited_at") && r["edited_at"] != DBNull.Value ? r["edited_at"].ToString() : "";
                     bool del = t.Columns.Contains("is_deleted") && r["is_deleted"] != DBNull.Value && Convert.ToBoolean(r["is_deleted"]);
                     int len = t.Columns.Contains("text") && r["text"] != DBNull.Value ? r["text"].ToString().Length : 0;
-                    return ed + "|" + (del ? 1 : 0) + "|" + len;
+                    // Ответ могли дописать сообщению позже (старые клиенты так
+                    // и шлют) — пузырь тогда пересобирается вместе с цитатой.
+                    string rep = t.Columns.Contains("reply_to_id") && r["reply_to_id"] != DBNull.Value
+                        ? r["reply_to_id"].ToString() : "";
+                    return ed + "|" + (del ? 1 : 0) + "|" + len + "|" + rep;
                 }
                 int ReadOf(DataRow r) =>
                     r.Table.Columns.Contains("is_read") && r["is_read"] != DBNull.Value
@@ -6496,6 +6504,28 @@ namespace PISMO
                 innerY += lblHeader.PreferredHeight + 2;
             }
 
+            // Пометка пересылки — своей строкой над содержимым, как в Telegram.
+            // Раньше она шла частью текста: под снимком, да ещё с переводом
+            // строки на конце, и у пересланного фото без подписи под пометкой
+            // зияла пустая строка. Меню получает полный текст: перешлют дальше —
+            // пометка о настоящем авторе сохранится.
+            string fullText = text;
+            if (!isDeleted && QuoteText.SplitForward(text, out var fwdHeader, out var fwdBody))
+            {
+                var lblFwd = new Label
+                {
+                    Text = fwdHeader,
+                    Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
+                    ForeColor = isMine ? Color.FromArgb(225, 230, 255) : Color.FromArgb(129, 140, 248),
+                    AutoSize = true,
+                    MaximumSize = new Size(innerW, 0),
+                    Location = new Point(PAD, innerY),
+                };
+                bubble.Controls.Add(lblFwd);
+                innerY += lblFwd.PreferredHeight + 2;
+                text = fwdBody;
+            }
+
             // Цитата ответа (если сообщение является ответом)
             if (!isDeleted && replyToId > 0 && msgId > 0)
             {
@@ -6541,9 +6571,13 @@ namespace PISMO
                 {
                     const int circleD = 220;
                     int circleId = msgId; bool circleGroup = isGroup;
+                    // Всегда заглушкой: даже когда байты уже под рукой, раскрытый
+                    // кружок — это все его кадры в памяти, а смотрят обычно один.
+                    var circleBytes = videoBytes;
                     var player = videoBytes is { Length: > 0 }
-                        ? new VideoCirclePlayer(videoBytes, circleD)
+                        ? new VideoCirclePlayer(() => circleBytes, circleD)
                         : new VideoCirclePlayer(() => LoadVideoBytes(circleId, circleGroup), circleD);
+                    player.ShowPreview(circleBytes);
                     player.Location = new Point(PAD, innerY);
                     bubble.Controls.Add(player);
                     innerY += circleD + 6;
@@ -6704,6 +6738,8 @@ namespace PISMO
                             gifTimer.Tick += (s, e) =>
                             {
                                 if (disposed || pb.IsDisposed) { gifTimer.Stop(); return; }
+                                // Вне экрана кадры не крутим (см. AnimatedGif.OnScreen).
+                                if (!AnimatedGif.OnScreen(pb)) { gifTimer.Interval = 400; return; }
                                 frameIdx = (frameIdx + 1) % frameCount;
                                 var nf = frames[frameIdx];
                                 if (nf == null) return;
@@ -7228,7 +7264,7 @@ namespace PISMO
 
             // Контекстное меню (реакция/ответ/пересылка/копировать/редактировать/удалить)
             if (msgId > 0)
-                AttachBubbleContextMenu(bubble, msgId, isGroup, isMine, text, senderName,
+                AttachBubbleContextMenu(bubble, msgId, isGroup, isMine, fullText, senderName,
                                         imgBytes, audioBytes, videoBytes, fileData, fileName);
 
             return bubble;
@@ -7429,16 +7465,18 @@ namespace PISMO
             if (TrySaveEdit()) return;
 
             string text = txtMessage.Text.Trim();
+            // На что отвечаем — уходит в саму строку сообщения (см. ReplyCol).
+            int rt = _replyToId > 0 ? _replyToId : 0;
 
             // Записанное голосовое уходит ОТСЮДА — обычной кнопкой отправки, а
             // не отпусканием кнопки микрофона. Вместе с текстом, если набран.
             var voice = TakePendingVoice();
             if (voice != null)
             {
-                if (isGroup) SendGroupMessage(text, null, voice);
-                else SendMessage(text, null, voice);
+                if (isGroup) SendGroupMessage(text, null, voice, replyTo: rt);
+                else SendMessage(text, null, voice, replyTo: rt);
                 txtMessage.Clear();
-                ApplyReplyToLastMessage(isGroup);
+                CancelReply();
                 return;
             }
 
@@ -7475,35 +7513,38 @@ namespace PISMO
                     byte[] file = asImage ? null : att.Data;
                     string name = asImage ? null : att.FileName;
 
-                    if (isGroup) SendGroupMessage(caption, img, null, null, file, name);
-                    else SendMessage(caption, img, null, null, file, name);
+                    // Ответ — у первого вложения: у альбома он один на всю
+                    // пачку, а продолжение пачки с ответом её бы разорвало.
+                    int rti = i == 0 ? rt : 0;
+                    if (isGroup) SendGroupMessage(caption, img, null, null, file, name, rti);
+                    else SendMessage(caption, img, null, null, file, name, rti);
                 }
 
-                ApplyReplyToLastMessage(isGroup);
+                CancelReply();
                 return;
             }
 
             // Совместимость: старый _pendingImageBytes (Ctrl+V без _pendingAttach)
             if (_pendingImageBytes != null)
             {
-                if (isGroup) SendGroupMessage(text, _pendingImageBytes, null, null, null, null);
-                else SendMessage(text, _pendingImageBytes, null, null, null, null);
+                if (isGroup) SendGroupMessage(text, _pendingImageBytes, null, null, null, null, rt);
+                else SendMessage(text, _pendingImageBytes, null, null, null, null, rt);
 
                 _pendingImageBytes = null;
                 pnlPreview.Visible = false;
                 pnlPreview.Controls.Clear();
                 txtMessage.Clear();
-                ApplyReplyToLastMessage(isGroup);
+                CancelReply();
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(text)) return;
 
-            if (isGroup) SendGroupMessage(text, null, null, null, null, null);
-            else SendMessage(text, null, null, null, null, null);
+            if (isGroup) SendGroupMessage(text, null, null, null, null, null, rt);
+            else SendMessage(text, null, null, null, null, null, rt);
 
             txtMessage.Clear();
-            ApplyReplyToLastMessage(isGroup);
+            CancelReply();
         }
 
         /// <summary>Короткое превью для карточки чата по содержимому сообщения.</summary>
@@ -7654,7 +7695,7 @@ namespace PISMO
 
         private void SendMessage(string text, byte[] imageData,
     byte[] audioData = null, byte[] videoData = null,
-    byte[] fileData = null, string fileName = null)
+    byte[] fileData = null, string fileName = null, int replyTo = 0)
         {
             int myId = UserSession.EffectiveId;
             int themId = _currentChatPartnerId;
@@ -7695,21 +7736,22 @@ namespace PISMO
                 // Уходит в фон — см. пояснение в SendGroupMessage.
                 SendFileInBackground(isGroup: false, target: themId, myId: myId, text: text,
                     imageData: imageData, audioData: audioData, videoData: videoData,
-                    fileData: fileData, fileName: fileName);
+                    fileData: fileData, fileName: fileName, replyTo: replyTo);
             }
             else
             try
             {
                 using var conn = DBHelper.OpenConnection();
-                const string sql =
+                string sql =
                     "INSERT INTO messages " +
-                    "(sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name) " +
-                    "VALUES (@s, @r, @t, @img, @aud, @vid, @fd, @fn)";
+                    "(sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name" + ReplyCol(replyTo) + ") " +
+                    "VALUES (@s, @r, @t, @img, @aud, @vid, @fd, @fn" + ReplyVal(replyTo) + ")";
 
                 using var cmd = new MySqlCommand(sql, conn);
                 cmd.Parameters.AddWithValue("@s", myId);
                 cmd.Parameters.AddWithValue("@r", themId);
                 cmd.Parameters.AddWithValue("@t", Crypto.Enc(text ?? ""));
+                if (replyTo > 0) cmd.Parameters.AddWithValue("@rt", replyTo);
 
                 AddBlob(cmd, "@img", imageData);
                 AddBlob(cmd, "@aud", audioData);
@@ -7752,8 +7794,20 @@ namespace PISMO
         /// остаётся обычная работа после отправки — очистить поле и обновить
         /// список. Отмена удаляет строку, и пузырь исчезает сам.
         /// </summary>
+        /// <summary>
+        /// Ответ пишется В ТУ ЖЕ СТРОКУ, что и сообщение. Раньше его дописывали
+        /// отдельным запросом «последнему моему сообщению» уже после отправки:
+        /// собеседник успевал получить сообщение без цитаты (и видел её только
+        /// после переоткрытия чата), файл из очереди отправки ещё не доходил до
+        /// базы — и ответом становилось предыдущее сообщение, а у альбома ответ
+        /// доставался последнему снимку и рассыпал пачку.
+        /// </summary>
+        private static string ReplyCol(int replyTo) => replyTo > 0 ? ", reply_to_id" : "";
+        private static string ReplyVal(int replyTo) => replyTo > 0 ? ", @rt" : "";
+
         private void SendFileInBackground(bool isGroup, int target, int myId, string text,
-            byte[] imageData, byte[] audioData, byte[] videoData, byte[] fileData, string fileName)
+            byte[] imageData, byte[] audioData, byte[] videoData, byte[] fileData, string fileName,
+            int replyTo = 0)
         {
             long total = fileData.LongLength;
             string table = isGroup ? "group_messages" : "messages";
@@ -7785,7 +7839,7 @@ namespace PISMO
                 // отменённую — тем более.
                 retry: () => SendFileInBackground(isGroup, target, myId, text,
                                                   imageData, audioData, videoData,
-                                                  fileData, fileName));
+                                                  fileData, fileName, replyTo));
 
             string err = null;
 
@@ -7839,6 +7893,18 @@ namespace PISMO
                             if (copied > 0)
                             {
                                 rowId = copied;
+                                if (replyTo > 0)
+                                {
+                                    try
+                                    {
+                                        using var rq = new MySqlCommand(
+                                            $"UPDATE {table} SET reply_to_id=@rt WHERE id=@id", conn);
+                                        rq.Parameters.AddWithValue("@rt", replyTo);
+                                        rq.Parameters.AddWithValue("@id", copied);
+                                        rq.ExecuteNonQuery();
+                                    }
+                                    catch { }
+                                }
                                 Transfers.Progress(item, total);
                                 CacheOwnAttachment((int)copied, imageData, audioData,
                                     videoData, fileData, fileName, sha);
@@ -7886,8 +7952,8 @@ namespace PISMO
                         if (!string.IsNullOrEmpty(url))
                         {
                             string insUrl = isGroup
-                                ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name, file_url, file_size) VALUES (@g,@s,@t,@img,@aud,@vid,NULL,@fn,@url,@sz)"
-                                : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name, file_url, file_size) VALUES (@s,@r,@t,@img,@aud,@vid,NULL,@fn,@url,@sz)";
+                                ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name, file_url, file_size" + ReplyCol(replyTo) + ") VALUES (@g,@s,@t,@img,@aud,@vid,NULL,@fn,@url,@sz" + ReplyVal(replyTo) + ")"
+                                : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name, file_url, file_size" + ReplyCol(replyTo) + ") VALUES (@s,@r,@t,@img,@aud,@vid,NULL,@fn,@url,@sz" + ReplyVal(replyTo) + ")";
                             long urlId;
                             using (var ins = new MySqlCommand(insUrl, conn))
                             {
@@ -7900,6 +7966,7 @@ namespace PISMO
                                 ins.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
                                 ins.Parameters.AddWithValue("@url", url);
                                 ins.Parameters.AddWithValue("@sz", total);
+                                if (replyTo > 0) ins.Parameters.AddWithValue("@rt", replyTo);
                                 ins.ExecuteNonQuery();
                                 urlId = ins.LastInsertedId;
                                 rowId = urlId;
@@ -7923,8 +7990,8 @@ namespace PISMO
 
                     // 1) Строка метаданных, file_data пока NULL (получаем id).
                     string insSql = isGroup
-                        ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@g,@s,@t,@img,@aud,@vid,NULL,@fn)"
-                        : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name) VALUES (@s,@r,@t,@img,@aud,@vid,NULL,@fn)";
+                        ? "INSERT INTO group_messages (group_id, sender_id, text, image_data, audio_data, video_data, file_data, file_name" + ReplyCol(replyTo) + ") VALUES (@g,@s,@t,@img,@aud,@vid,NULL,@fn" + ReplyVal(replyTo) + ")"
+                        : "INSERT INTO messages (sender_id, receiver_id, text, image_data, audio_data, video_data, file_data, file_name" + ReplyCol(replyTo) + ") VALUES (@s,@r,@t,@img,@aud,@vid,NULL,@fn" + ReplyVal(replyTo) + ")";
                     long newId;
                     using (var ins = new MySqlCommand(insSql, conn))
                     {
@@ -7935,6 +8002,7 @@ namespace PISMO
                         AddBlob(ins, "@aud", audioData);
                         AddBlob(ins, "@vid", videoData);
                         ins.Parameters.AddWithValue("@fn", (object)fileName ?? DBNull.Value);
+                        if (replyTo > 0) ins.Parameters.AddWithValue("@rt", replyTo);
                         ins.ExecuteNonQuery();
                         newId = ins.LastInsertedId;
                         rowId = newId;
@@ -9139,6 +9207,13 @@ namespace PISMO
                         sb.Append(kv.Key).Append(':');
                         foreach (var r in kv.Value) sb.Append(r.Emoji).Append(r.Count).Append(',');
                     }
+                // Цитаты тоже входят в подпись: иначе ответ, чей источник
+                // доехал позже самого сообщения, оставался без цитаты до
+                // переоткрытия чата — «данные не изменились».
+                sb.Append('|');
+                if (meta.Quotes != null)
+                    foreach (var kv in meta.Quotes)
+                        sb.Append(kv.Key).Append(':').Append(kv.Value.sender).Append(kv.Value.text).Append(',');
                 meta.Sig = sb.Length + "_" + sb.ToString().GetHashCode().ToString("x");
                 lock (_pageMetaCache) _pageMetaCache[chatKey] = meta;
             });
