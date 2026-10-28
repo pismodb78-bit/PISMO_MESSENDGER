@@ -322,8 +322,10 @@ namespace PISMO
                                     && !muted.Contains(kv.Key))
                                 {
                                     string nm = _railServerNames.TryGetValue(kv.Key, out var n) ? n : "сервер";
+                                    int goSid = kv.Key;
                                     PushNotify("PISMO — упоминание",
-                                        $"Новые упоминания/ответы на сервере «{nm}»");
+                                        $"Новые упоминания/ответы на сервере «{nm}»",
+                                        () => OpenServerFromRail(goSid));
                                 }
                             }
                         }

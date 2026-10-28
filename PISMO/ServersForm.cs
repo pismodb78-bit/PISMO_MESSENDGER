@@ -273,7 +273,7 @@ namespace PISMO
             // Ctrl+V — вставить картинку или файл из буфера. В мессенджере это было
             // с самого начала, до каналов не дошло: обработчика клавиш на поле ввода
             // здесь не было вовсе.
-            try { _txtInput.KeyDown += ChannelInput_KeyDown; _txtInput.TextChanged += (s, e) => { if (!_switchingChannelDraft) SaveChannelDraft(); }; FormClosing += (s, e) => SaveChannelDraft(); } catch { }
+            try { _txtInput.KeyDown += ChannelInput_KeyDown; _txtInput.TextChanged += (s, e) => { if (!_switchingChannelDraft) ScheduleChannelDraftSave(); }; FormClosing += (s, e) => { try { _chDraftTimer?.Stop(); } catch { } SaveChannelDraft(); }; } catch { }
             // Плавность отрисовки всего окна серверов (буферизация всех контролов).
             try { ChatScroll.EnableDoubleBufferDeep(this); } catch { }
 
@@ -816,6 +816,37 @@ namespace PISMO
             SelectServerById(sid);
         }
 
+        /// <summary>
+        /// Открыть канал по нажатию на уведомление: сервер, затем канал — у
+        /// голосового это его чат, БЕЗ входа в звонок.
+        /// </summary>
+        public void OpenChannelFromNotification(int serverId, int channelId)
+        {
+            if (IsDisposed || channelId <= 0) return;
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action(() => OpenChannelFromNotification(serverId, channelId))); } catch { }
+                return;
+            }
+            if (_serverId != serverId) SelectServerById(serverId);
+            if (_serverId != serverId) return;   // на сервере нас уже нет
+            string type = "text", name = "";
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlCommand(
+                    "SELECT type, name FROM server_channels WHERE id=@c AND server_id=@s", conn);
+                cmd.Parameters.AddWithValue("@c", channelId);
+                cmd.Parameters.AddWithValue("@s", serverId);
+                using var r = cmd.ExecuteReader();
+                if (!r.Read()) return;
+                type = r["type"]?.ToString() ?? "text";
+                name = r["name"]?.ToString() ?? "";
+            }
+            catch { return; }
+            if (_channelId != channelId) SelectChannel(channelId, type, name, joinVoice: false);
+        }
+
         /// <summary>Подтянуть имя/владельца сервера и выбрать его.</summary>
         private void SelectServerById(int sid)
         {
@@ -1321,7 +1352,10 @@ namespace PISMO
                             var loc = ctl.Location; var size = ctl.Size;
                             host.Controls.Remove(ctl);
                             try { ctl.Dispose(); } catch { }
-                            var pc = MainForm.MakePreviewControl(txt, loc, size);
+                            // У закрытого канала с недописанным — метка остаётся.
+                            bool draft = cid != _channelId && HasChannelDraft(cid);
+                            var pc = MainForm.MakePreviewControl(draft ? "Черновик" : txt, loc, size);
+                            if (draft) pc.ForeColor = Color.FromArgb(235, 75, 85);
                             pc.Click += (s, e) => SelectChannel(cid, "text", host.AccessibleName ?? "");
                             host.Controls.Add(pc);
                             _channelPreviewCtl[cid] = pc;
@@ -1366,8 +1400,9 @@ namespace PISMO
                     Size = new Size(b.Width - 20, 18),
                     AutoEllipsis = true,
                 };
-                var pc = MainForm.MakePreviewControl(prev, new Point(10, 25), new Size(b.Width - 20, 16));
-                if (HasChannelDraft(cid)) { pc.Text = "Черновик"; pc.ForeColor = Color.FromArgb(235, 75, 85); }
+                bool chDraft = cid != _channelId && HasChannelDraft(cid);
+                var pc = MainForm.MakePreviewControl(chDraft ? "Черновик" : prev, new Point(10, 25), new Size(b.Width - 20, 16));
+                if (chDraft) pc.ForeColor = Color.FromArgb(235, 75, 85);
 
                 // Клик по любой из строк открывает канал, правая кнопка — меню:
                 // иначе нажатие проваливается мимо кнопки.
@@ -1774,6 +1809,10 @@ namespace PISMO
 
         private void SelectChannel(int cid, string type, string name, bool joinVoice = true)
         {
+            // Из какого канала уходим — у него после выхода может появиться
+            // метка «Черновик».
+            int leftChannel = _channelId;
+            try { _chDraftTimer?.Stop(); } catch { }
             SaveChannelDraft();
             _switchingChannelDraft = true;
             ResetChannelVoiceNote();   // недописанное голосовое в другой канал не тащим
@@ -1795,7 +1834,8 @@ namespace PISMO
             _txtInput.Clear();
             RestoreChannelDraft();
             _switchingChannelDraft = false;
-            SaveChannelDraft();
+            if (leftChannel != cid) UpdateChannelDraftPreview(leftChannel);
+            UpdateChannelDraftPreview(cid);
             try { UpdateForwardNotice(); } catch { }
 
             // И у текстового, И у голосового канала — полноценный чат (как в Discord):

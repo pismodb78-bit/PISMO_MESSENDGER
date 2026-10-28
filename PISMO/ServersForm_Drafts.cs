@@ -23,11 +23,44 @@ namespace PISMO
         private static string ChannelDraftDirectory(int channel) => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PISMO", "Drafts", $"server-{channel}");
         private bool HasChannelDraft(int channel) => File.Exists(Path.Combine(ChannelDraftDirectory(channel), "draft.json"));
-        private void UpdateChannelDraftPreview()
+        /// <summary>
+        /// Подпись канала в списке: «Черновик» — только у ЗАКРЫТОГО канала, где
+        /// что-то осталось недописанным; в открытом — обычное последнее
+        /// сообщение (черновик и так в поле ввода). Раньше метка ставилась на
+        /// каждое нажатие клавиши и сразу при входе в канал.
+        /// </summary>
+        private void UpdateChannelDraftPreview(int channel)
         {
-            if (_channelId <= 0 || !_channelPreviewCtl.TryGetValue(_channelId, out var ctl) || ctl.IsDisposed) return;
-            if (HasChannelDraft(_channelId)) { ctl.Text = "Черновик"; ctl.ForeColor = System.Drawing.Color.FromArgb(235, 75, 85); }
-            else { ctl.Text = _channelPreviews.TryGetValue(_channelId, out var text) ? text : ""; ctl.ForeColor = System.Drawing.Color.FromArgb(185, 190, 198); }
+            if (channel <= 0 || !_channelPreviewCtl.TryGetValue(channel, out var ctl) || ctl.IsDisposed) return;
+            bool draft = channel != _channelId && HasChannelDraft(channel);
+            string text = draft ? "Черновик" : (_channelPreviews.TryGetValue(channel, out var t) ? t : "");
+            // Подпись бывает картинкой (эмодзи рисуются ею) — меняем контрол
+            // целиком, а не его текст.
+            var host = ctl.Parent;
+            if (host == null) return;
+            var loc = ctl.Location; var size = ctl.Size;
+            var click = host.AccessibleName ?? "";
+            host.Controls.Remove(ctl);
+            try { ctl.Dispose(); } catch { }
+            var pc = MainForm.MakePreviewControl(text, loc, size);
+            pc.ForeColor = draft ? System.Drawing.Color.FromArgb(235, 75, 85) : System.Drawing.Color.FromArgb(185, 190, 198);
+            int cid = channel;
+            pc.Click += (s, e) => SelectChannel(cid, "text", click);
+            host.Controls.Add(pc);
+            _channelPreviewCtl[channel] = pc;
+        }
+
+        /// <summary>Сохранение по ходу набора — не на каждую букву, а когда набор утих.</summary>
+        private System.Windows.Forms.Timer _chDraftTimer;
+        private void ScheduleChannelDraftSave()
+        {
+            if (_chDraftTimer == null)
+            {
+                _chDraftTimer = new System.Windows.Forms.Timer { Interval = 500 };
+                _chDraftTimer.Tick += (s, e) => { _chDraftTimer.Stop(); SaveChannelDraft(); };
+            }
+            _chDraftTimer.Stop();
+            _chDraftTimer.Start();
         }
         private bool _channelDraftFilesDirty = true;
         private bool _switchingChannelDraft;
@@ -41,7 +74,6 @@ namespace PISMO
                 {
                     if (Directory.Exists(dir)) Directory.Delete(dir, true);
                     _channelDraftFilesDirty = false;
-                    UpdateChannelDraftPreview();
                     return;
                 }
                 Directory.CreateDirectory(dir);
@@ -56,7 +88,6 @@ namespace PISMO
                 }
                 File.WriteAllText(Path.Combine(dir, "draft.json"), JsonSerializer.Serialize(draft));
                 _channelDraftFilesDirty = false;
-                UpdateChannelDraftPreview();
             }
             catch { }
         }

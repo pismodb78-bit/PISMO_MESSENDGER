@@ -1461,13 +1461,13 @@ namespace PISMO
                         }
                         else if (type == "mention")
                         {
-                            // payload: serverId|serverName|channelName
-                            HandleMentionNotification(payload);
+                            // payload: serverId|serverName|channelName; sessionId — канал.
+                            HandleMentionNotification(payload, channelId: sessionId);
                         }
                         else if (type == "reply")
                         {
                             // Кто-то ответил на моё сообщение в канале сервера.
-                            HandleMentionNotification(payload, isReply: true);
+                            HandleMentionNotification(payload, isReply: true, channelId: sessionId);
                         }
                         else if (type == "profile_updated")
                         {
@@ -1495,7 +1495,7 @@ namespace PISMO
 
         /// <summary>Трей-уведомление об упоминании на сервере (если сервер не
         /// заглушён). payload: "serverId|serverName|channelName".</summary>
-        private void HandleMentionNotification(string payload, bool isReply = false)
+        private void HandleMentionNotification(string payload, bool isReply = false, int channelId = 0)
         {
             try
             {
@@ -1525,9 +1525,11 @@ namespace PISMO
                         BeginInvoke(new Action(() =>
                         {
                             try { Sounds.Message(); } catch { }
+                            int goServer = serverId, goChannel = channelId;
                             PushNotify(isReply ? "PISMO — ответ" : "PISMO — упоминание",
                                 isReply ? $"Ответ на ваше сообщение: {parts[1]} · #{parts[2]}"
-                                        : $"Вас упомянули: {parts[1]} · #{parts[2]}");
+                                        : $"Вас упомянули: {parts[1]} · #{parts[2]}",
+                                () => OpenChannelFromPush(goServer, goChannel));
                             try { FlashWindow(this.Handle, true); } catch { }
                         }));
                     }
@@ -1535,6 +1537,39 @@ namespace PISMO
                 });
             }
             catch { }
+        }
+
+        // ── Переход по нажатию на уведомление ───────────────────────────
+
+        /// <summary>Открыть личную переписку из уведомления.</summary>
+        private void OpenDmFromPush(int uid)
+        {
+            if (uid <= 0) return;
+            try { SelectRailHome(); } catch { }
+            string nm = GetNameFromCards(uid);
+            if (string.IsNullOrWhiteSpace(nm)) nm = BuildNameById(uid);
+            OpenChat(uid, nm);
+        }
+
+        /// <summary>Открыть группу из уведомления.</summary>
+        private void OpenGroupFromPush(int gid, string name)
+        {
+            if (gid <= 0) return;
+            try { SelectRailHome(); } catch { }
+            OpenGroup(gid, name ?? "");
+        }
+
+        /// <summary>
+        /// Открыть канал сервера из уведомления — текстовый или чат голосового
+        /// (без входа в звонок). Канал неизвестен (старый отправитель) — хотя бы
+        /// сам сервер.
+        /// </summary>
+        private void OpenChannelFromPush(int serverId, int channelId)
+        {
+            if (serverId <= 0) return;
+            OpenServerFromRail(serverId);
+            if (channelId > 0)
+                try { _serversForm?.OpenChannelFromNotification(serverId, channelId); } catch { }
         }
 
         /// <summary>Перерисовать аватар в карточке пользователя uid (после
@@ -2060,14 +2095,14 @@ namespace PISMO
             if (current == null) return;
             if (_groupMaxInit)
             {
-                int totalNew = 0; string lastName = null;
+                int totalNew = 0; string lastName = null; int lastGid = 0;
                 foreach (var kv in current)
                 {
                     if (kv.Key == _currentGroupId) continue;
                     _prevGroupMax.TryGetValue(kv.Key, out var prev);
                     if (kv.Value.maxId > prev.maxId && prev.maxId >= 0)
                     {
-                        totalNew++; lastName = kv.Value.name;
+                        totalNew++; lastName = kv.Value.name; lastGid = kv.Key;
                     }
                 }
                 if (totalNew > 0)
@@ -2076,7 +2111,8 @@ namespace PISMO
                     string body = totalNew == 1
                         ? $"Новое сообщение в группе «{lastName}»"
                         : $"Новые сообщения в {totalNew} {RuPlural(totalNew, "группе", "группах", "группах")}";
-                    PushNotify("PISMO — сообщение", body);
+                    int goGid = lastGid; string goName = lastName;
+                    PushNotify("PISMO — сообщение", body, () => OpenGroupFromPush(goGid, goName));
                     if (!this.ContainsFocus) { try { FlashWindow(this.Handle, true); } catch { } }
                 }
             }
@@ -2299,11 +2335,32 @@ namespace PISMO
             return System.Drawing.SystemIcons.Application;
         }
 
-        internal void PushNotify(string title, string body)
+        /// <summary>
+        /// Куда вести по нажатию на ПОСЛЕДНЮЮ всплывашку. Раньше нажатие не
+        /// делало ничего: окно не разворачивалось, и чат, о котором сообщали,
+        /// приходилось искать самому.
+        /// </summary>
+        private Action _pushClick;
+        private bool _pushClickHooked;
+
+        internal void PushNotify(string title, string body, Action onClick = null)
         {
             try
             {
                 if (_trayIcon == null) return;
+                _pushClick = onClick;
+                if (!_pushClickHooked)
+                {
+                    _pushClickHooked = true;
+                    _trayIcon.BalloonTipClicked += (s, e) =>
+                    {
+                        var go = _pushClick;
+                        _pushClick = null;
+                        // Сначала — окно на экран (оно могло быть в трее).
+                        try { TrayMenuOpen_Click(null, EventArgs.Empty); } catch { }
+                        try { go?.Invoke(); } catch { }
+                    };
+                }
                 // Без Icon у иконки в трее ShowBalloonTip молча ничего не показывает.
                 // Раньше пробовали только pismo.ico рядом с exe и ExtractAssociatedIcon:
                 // в сборке с GitHub файла может не быть, а извлечение из exe вернуть
@@ -2358,7 +2415,10 @@ namespace PISMO
                      + $" оставили вам {totalMsgs} {msgWord}";
             }
 
-            PushNotify("PISMO — новые сообщения", body);
+            // Нажатие — в переписку с тем, кто написал (при нескольких — с
+            // первым из них).
+            int goSid = grew[0].sid;
+            PushNotify("PISMO — новые сообщения", body, () => OpenDmFromPush(goSid));
 
             if (!this.ContainsFocus)
                 FlashWindow(this.Handle, true);
@@ -3230,13 +3290,16 @@ namespace PISMO
             // вразнобой: где-то состав, где-то обрывок переписки. Последнее
             // сообщение остаётся у личных чатов, где оно и полезно.
             string preview = $"{memberCount} участник(ов)";
+            _realPreview[DraftKeyOf(true, gid)] = preview;
+            bool groupDraft = !IsOpenChat(true, gid) && HasDraft(true, gid);
 
             var lblLast = new Label
             {
                 Name = "lastPreview",   // чтобы обновлять превью локально (без перезагрузки списка)
-                Text = preview,
+                Text = groupDraft ? "Черновик" : preview,
+                Tag = groupDraft ? "Черновик" : preview,
                 Font = new Font("Segoe UI", 8.5f),
-                ForeColor = Color.FromArgb(114, 118, 125),
+                ForeColor = groupDraft ? Color.FromArgb(235, 75, 85) : Color.FromArgb(114, 118, 125),
                 Location = new Point(56, 32),
                 Size = new Size(pnl.Width - 90, 18),
                 AutoEllipsis = true
@@ -3500,8 +3563,11 @@ namespace PISMO
                 AutoEllipsis = true
             };
 
+            _realPreview[DraftKeyOf(false, uid)] = lastMsg ?? "";
+            bool draftHere = !IsOpenChat(false, uid) && HasDraft(false, uid);
             var lblLast = MakePreviewControl(
-                lastMsg, new Point(56, 32), new Size(pnl.Width - 90, 18));
+                draftHere ? "Черновик" : lastMsg, new Point(56, 32), new Size(pnl.Width - 90, 18));
+            if (draftHere) lblLast.ForeColor = Color.FromArgb(235, 75, 85);
 
             pnl.Controls.Add(avatar);
             pnl.Controls.Add(lblName);
@@ -3591,7 +3657,14 @@ namespace PISMO
             // нельзя. Роль в запасе нужна, чтобы строка не оставалась пустой —
             // иначе карточка выглядит недогруженной.
             string sub = string.IsNullOrWhiteSpace(lastMsg) ? (role ?? "") : lastMsg;
-            if (!string.IsNullOrWhiteSpace(sub))
+            _realPreview[DraftKeyOf(false, uid)] = sub;
+            if (!IsOpenChat(false, uid) && HasDraft(false, uid))
+            {
+                var dl = MakePreviewControl("Черновик", new Point(56, 32), new Size(pnl.Width - 90, 18));
+                dl.ForeColor = Color.FromArgb(235, 75, 85);
+                pnl.Controls.Add(dl);
+            }
+            else if (!string.IsNullOrWhiteSpace(sub))
                 pnl.Controls.Add(MakePreviewControl(
                     sub, new Point(56, 32), new Size(pnl.Width - 90, 18)));
 
@@ -3818,6 +3891,10 @@ namespace PISMO
                 ReleaseChatMemory();
             }
 
+            // Из какой переписки уходим — у неё после выхода может появиться
+            // метка «Черновик».
+            bool leftGroup = _currentGroupId > 0;
+            int leftId = leftGroup ? _currentGroupId : _currentChatPartnerId;
             SaveCurrentDraft();
             _pendingAttach.Clear();
             txtMessage.Clear();
@@ -3857,6 +3934,10 @@ namespace PISMO
 
             Perf.Mark($"OpenChat partner={partnerId}");
             RestoreCurrentDraft();
+            // Вышли — у прошлой переписки метка, если что-то осталось; вошли —
+            // у этой метка убирается (черновик теперь в поле ввода).
+            if (leftId > 0 && !(leftId == partnerId && !leftGroup)) RefreshDraftCard(leftGroup, leftId);
+            RefreshDraftCard(false, partnerId);
             LoadMessages();
         }
 
@@ -3871,6 +3952,8 @@ namespace PISMO
                 ChatScroll.Cancel(pnlMessages);
                 ReleaseChatMemory();
             }
+            bool leftGroup = _currentGroupId > 0;
+            int leftId = leftGroup ? _currentGroupId : _currentChatPartnerId;
             SaveCurrentDraft();
             _pendingAttach.Clear();
             txtMessage.Clear();
@@ -3903,6 +3986,8 @@ namespace PISMO
 
             ResetVoiceNote();
             RestoreCurrentDraft();
+            if (leftId > 0 && !(leftId == groupId && leftGroup)) RefreshDraftCard(leftGroup, leftId);
+            RefreshDraftCard(true, groupId);
             LoadGroupMessages();
         }
 
@@ -7514,8 +7599,11 @@ namespace PISMO
             try
             {
                 preview ??= "";
-                string draftKey = panels == _groupPanels ? $"group-{id}" : $"dm-{id}";
-                bool isDraft = File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PISMO", "Drafts", draftKey, "draft.json"));
+                bool grp = panels == _groupPanels;
+                _realPreview[DraftKeyOf(grp, id)] = preview;
+                // Метка — только у закрытой переписки: в открытой черновик и так
+                // перед глазами, в поле ввода.
+                bool isDraft = !IsOpenChat(grp, id) && HasDraft(grp, id);
                 if (isDraft) preview = "Черновик";
                 if (preview.Length > 42) preview = preview[..42] + "…";
                 foreach (var p in panels)

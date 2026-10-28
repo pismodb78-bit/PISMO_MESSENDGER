@@ -46,7 +46,6 @@ namespace PISMO
                 {
                     if (Directory.Exists(dir)) Directory.Delete(dir, true);
                     _draftFilesDirty = false;
-                    RefreshDraftListPreview();
                     return;
                 }
                 Directory.CreateDirectory(dir);
@@ -70,15 +69,36 @@ namespace PISMO
                 }
                 File.WriteAllText(Path.Combine(dir, "draft.json"), JsonSerializer.Serialize(manifest));
                 _draftFilesDirty = false;
-                RefreshDraftListPreview();
             }
             catch { }
         }
 
-        private void RefreshDraftListPreview()
+        // ── Метка «Черновик» в списке ───────────────────────────────────
+        //
+        // Метка — только у ЗАКРЫТОЙ переписки, где что-то осталось недописанным,
+        // и появляется в момент выхода из неё. Раньше при сохранении (а оно идёт
+        // по ходу набора и сразу при входе в чат) в карточку писалось само слово
+        // «Черновик» — даже когда поле было пустым и черновик удалялся.
+
+        /// <summary>Последний НАСТОЯЩИЙ текст под именем — чтобы вернуть его вместо метки.</summary>
+        private readonly Dictionary<string, string> _realPreview = new();
+
+        private static string DraftKeyOf(bool group, int id) => group ? $"group-{id}" : $"dm-{id}";
+
+        private bool HasDraft(bool group, int id) => id > 0 && File.Exists(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PISMO", "Drafts", DraftKeyOf(group, id), "draft.json"));
+
+        private bool IsOpenChat(bool group, int id) =>
+            group ? _currentGroupId == id : (_currentGroupId <= 0 && _currentChatPartnerId == id);
+
+        /// <summary>Перерисовать подпись карточки: метка — если есть черновик и чат закрыт.</summary>
+        private void RefreshDraftCard(bool group, int id)
         {
-            if (_currentGroupId > 0) UpdateCardPreview(_groupPanels, _currentGroupId, "Черновик");
-            else if (_currentChatPartnerId > 0) UpdateCardPreview(_userPanels, _currentChatPartnerId, "Черновик");
+            if (id <= 0) return;
+            if (!_realPreview.TryGetValue(DraftKeyOf(group, id), out var real)) real = null;
+            if (real == null && !HasDraft(group, id)) return;
+            UpdateCardPreview(group ? _groupPanels : _userPanels, id, real ?? "");
         }
         private void RestoreCurrentDraft()
         {
