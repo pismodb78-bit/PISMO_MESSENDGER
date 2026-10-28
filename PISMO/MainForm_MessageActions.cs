@@ -1098,6 +1098,8 @@ namespace PISMO
         /// </summary>
         private bool ScrollAndFlash(int msgId)
         {
+            // Вынутые далеко пузыри — обратно: прыжок может вести к любому.
+            UnparkAll();
             var found = pnlMessages.Controls.Find("msg" + msgId, false);
             // Снимок из пачки своего пузыря не имеет — он показан плиткой.
             // Прыгаем к ней: иначе «показать в чате» для любого фото из

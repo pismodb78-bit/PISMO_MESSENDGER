@@ -434,6 +434,7 @@ namespace PISMO
             // карточка оставила бы на своём месте строку-заглушку навсегда.
             if (_drawingPage) { RetrySoon(() => ApplyLinkPreview(url)); return; }
             string tag = LinkSources.TagOf(url);
+            UnparkAll();
 
             try
             {
@@ -765,6 +766,7 @@ namespace PISMO
                 query = (query ?? "").Trim();
                 _searchMatches.Clear();
                 _searchIndex = -1;
+                UnparkAll();
                 foreach (Control c in pnlMessages.Controls)
                 {
                     if (c is not Panel b || b.AccessibleDescription == null) continue;
@@ -1389,7 +1391,7 @@ namespace PISMO
                             if (_currentGroupId == sessionId)
                             {
                                 _currentGroupId = -1;
-                                try { MainForm.DisposeAndClear(pnlMessages); } catch { }
+                                try { DropParked(); MainForm.DisposeAndClear(pnlMessages); } catch { }
                                 try { pnlInputBar.Visible = false; } catch { }
                                 try { lblChatTitle.Text = "# Выберите диалог"; } catch { }
                             }
@@ -2683,7 +2685,7 @@ namespace PISMO
                 if (_currentGroupId == groupId)
                 {
                     _currentGroupId = -1;
-                    try { MainForm.DisposeAndClear(pnlMessages); } catch { }
+                    try { DropParked(); MainForm.DisposeAndClear(pnlMessages); } catch { }
                     try { pnlInputBar.Visible = false; } catch { }
                     try { lblChatTitle.Text = ""; } catch { }
                 }
@@ -4013,7 +4015,7 @@ namespace PISMO
                 ChatScroll.Cancel(pnlMessages);
                 ChatScroll.SuspendDraw(pnlMessages);
                 try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
-                DisposeAndClear(pnlMessages);
+                DropParked(); DisposeAndClear(pnlMessages);
                 _laidOut = new List<Control>();
                 _pageDt = null;
                 _renderedChatKey = null; _renderedChatSig = null;
@@ -4130,7 +4132,7 @@ namespace PISMO
             ChatScroll.SuspendDraw(pnlMessages);
             try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
             pnlMessages.SuspendLayout();
-            DisposeAndClear(pnlMessages);
+            DropParked(); DisposeAndClear(pnlMessages);
 
             try
             {
@@ -4277,7 +4279,7 @@ namespace PISMO
             lblChatTitle.Text = "# Выберите диалог";
             if (_lblChatPresence != null) _lblChatPresence.Visible = false;
             ChatScroll.SuspendDraw(pnlMessages);
-            DisposeAndClear(pnlMessages);
+            DropParked(); DisposeAndClear(pnlMessages);
             _laidOut = new List<Control>();
             _pageDt = null;
             _renderedChatKey = null; _renderedChatSig = null;
@@ -4323,7 +4325,7 @@ namespace PISMO
                 ChatScroll.Cancel(pnlMessages);
                 ChatScroll.SuspendDraw(pnlMessages);
                 try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
-                DisposeAndClear(pnlMessages);
+                DropParked(); DisposeAndClear(pnlMessages);
                 _laidOut = new List<Control>();
                 _pageDt = null;
                 _renderedChatKey = null; _renderedChatSig = null;
@@ -4505,7 +4507,7 @@ namespace PISMO
             ChatScroll.SuspendDraw(pnlMessages);
             try { pnlMessages.AutoScrollPosition = new Point(0, 0); } catch { }
             pnlMessages.SuspendLayout();
-            DisposeAndClear(pnlMessages);
+            DropParked(); DisposeAndClear(pnlMessages);
 
             // Если кто-то заблокирован — показываем уведомление и блокируем отправку
             if (iBlocked || theyBlockedMe)
@@ -5343,9 +5345,9 @@ namespace PISMO
                 var boxes = new List<(Control c, ReadBox box, int state)>();
                 foreach (var (id, st) in reads)
                 {
-                    var found = pnlMessages.Controls.Find("msg" + id, false);
-                    if (found.Length == 0 || !_readBoxes.TryGetValue(found[0], out var box)) return false;
-                    boxes.Add((found[0], box, st));
+                    var found = FindInFeed("msg" + id);
+                    if (found == null || !_readBoxes.TryGetValue(found, out var box)) return false;
+                    boxes.Add((found, box, st));
                 }
 
                 bool wasAtBottom = AtFeedBottom();
@@ -5444,7 +5446,7 @@ namespace PISMO
                     || pnlMessages.IsDisposed)
                     return false;
                 foreach (var c in feed)
-                    if (c == null || c.IsDisposed || c.Parent != pnlMessages) return false;
+                    if (!InFeed(c)) return false;
 
                 ChatScroll.SuspendDraw(pnlMessages); drawFrozen = true;
                 pnlMessages.SuspendLayout(); suspended = true;
@@ -5480,11 +5482,15 @@ namespace PISMO
 
                 // Расставляем по порядку сборки — тем же правилом, что и обычный
                 // пересчёт: сначала порция, за ней прежняя лента.
+                // Прокрутка сейчас в нуле, так что место на экране и место в
+                // содержимом совпадают — вынутым пузырям пишем его же.
                 int y = blockTop;
                 foreach (var c in feed)
                 {
-                    if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
-                    if (c.Top != y) c.Top = y;
+                    if (c == null || c.IsDisposed) continue;
+                    if (_parked.ContainsKey(c)) _parked[c] = y;
+                    else if (c.Parent != pnlMessages) continue;
+                    else if (c.Top != y) c.Top = y;
                     y += c.Height + (c.Tag is bool ? 8 : 4);
                 }
 
@@ -6003,7 +6009,7 @@ namespace PISMO
                 // Порядок сборки хронологический и испортиться не может.
                 var list = new List<Control>();
                 foreach (var c in _laidOut)
-                    if (c != null && !c.IsDisposed && c.Parent == pnlMessages) list.Add(c);
+                    if (InFeed(c)) list.Add(c);
                 if (list.Count < 2) return;
 
                 // Были ли мы внизу ленты. Если да — там и останемся: сдвиг
@@ -6019,7 +6025,8 @@ namespace PISMO
                 }
                 catch { }
 
-                int y = list[0].Top;
+                int y = FeedTop(list[0]);
+                int sy = pnlMessages.AutoScrollPosition.Y;
                 bool moved = false;
                 foreach (var c in list)
                 {
@@ -6029,7 +6036,9 @@ namespace PISMO
                     // поправить забыл, — и содержимое вылезает за край пузыря
                     // на соседа. Видно это как «картинка шире своего пузыря».
                     int h = FitBubble(c);
-                    if (c.Top != y) { c.Top = y; moved = true; }
+                    // Вынутому пузырю — только запомнить новое место.
+                    if (_parked.ContainsKey(c)) _parked[c] = y - sy;
+                    else if (c.Top != y) { c.Top = y; moved = true; }
                     // Пузырь помечен Tag = isMine; всё прочее (разделители дат,
                     // плашка блокировки) идёт с меньшим отступом — так же, как
                     // при первичной расстановке.
@@ -6137,15 +6146,101 @@ namespace PISMO
         /// <summary>Лента пересобрана или выросла — пересчитать спрятанное заново.</summary>
         private void RecullSoon() { _cullSettled = false; _cullMoved = DateTime.UtcNow; }
 
+        // ── Дальние пузыри — ВНЕ ленты ───────────────────────────────────
+        //
+        // Спрятанный пузырь (Visible = false) всё равно остаётся окном внутри
+        // ленты: на каждом кадре прокрутки Windows сдвигает и его, а WinForms
+        // для каждого переспрашивает координаты. Чем выше пролистано, тем
+        // больше таких окон, и тем дороже каждый кадр — отсюда «чем больше
+        // прогружено, тем сильнее проседает».
+        //
+        // Поэтому дальние пузыри теперь ВЫНИМАЮТСЯ из ленты целиком, а их место
+        // в содержимом запоминается. Окно и всё нарисованное в нём живы —
+        // вернуть пузырь стоит одного переноса, без пересборки.
+        //   • крайние пузыри (первые и последние) не вынимаются никогда: по ним
+        //     панель считает высоту ленты, и полоса прокрутки не меняется;
+        //   • вынимаем через треть секунды покоя, дальше трёх экранов;
+        //     возвращаем заранее, за два экрана, прямо на кадре прокрутки;
+        //   • пузырь с фокусом и с живым браузерным проигрывателем не трогаем;
+        //   • выделение и поиск по ленте работают со всеми пузырями — пока они
+        //     включены, в ленте лежит всё.
+
+        /// <summary>Вынутые пузыри: где они стоят в СОДЕРЖИМОМ ленты (не на экране).</summary>
+        private readonly Dictionary<Control, int> _parked = new();
+
+        /// <summary>Где элемент ленты сейчас — в координатах панели, вынут он или нет.</summary>
+        private int FeedTop(Control c) =>
+            _parked.TryGetValue(c, out int y) ? y + pnlMessages.AutoScrollPosition.Y : c.Top;
+
+        /// <summary>Элемент ленты: лежит в панели или вынут.</summary>
+        private bool InFeed(Control c) =>
+            c != null && !c.IsDisposed && (c.Parent == pnlMessages || _parked.ContainsKey(c));
+
+        /// <summary>Сообщение по имени «msg…» — и среди вынутых тоже.</summary>
+        private Control FindInFeed(string name)
+        {
+            var found = pnlMessages.Controls.Find(name, false);
+            if (found.Length > 0) return found[0];
+            foreach (var c in _parked.Keys)
+                if (!c.IsDisposed && c.Name == name) return c;
+            return null;
+        }
+
+        /// <summary>Вернуть пузырь на его место. Раскладку приостанавливает вызывающий.</summary>
+        private void Unpark(Control c)
+        {
+            if (!_parked.TryGetValue(c, out int y)) return;
+            _parked.Remove(c);
+            if (c.IsDisposed) return;
+            // Место — ДО возвращения: иначе окно мелькнуло бы там, где стояло,
+            // когда его вынимали.
+            int want = y + pnlMessages.AutoScrollPosition.Y;
+            c.Top = want;
+            pnlMessages.Controls.Add(c);
+            if (c.Top != want) c.Top = want;
+        }
+
+        /// <summary>
+        /// Вернуть в ленту всё вынутое. Перед всем, что работает с пузырями
+        /// напрямую: поиском, переходом к сообщению, выделением, сменой ширины.
+        /// </summary>
+        private void UnparkAll()
+        {
+            if (_parked.Count == 0 || pnlMessages == null || pnlMessages.IsDisposed) return;
+            pnlMessages.SuspendLayout();
+            try { foreach (var c in new List<Control>(_parked.Keys)) Unpark(c); }
+            finally { pnlMessages.ResumeLayout(false); }
+            _cullSettled = false;
+        }
+
+        /// <summary>Лента уходит целиком — вынутые уходят вместе с ней.</summary>
+        private void DropParked()
+        {
+            foreach (var c in _parked.Keys) { try { c.Dispose(); } catch { } }
+            _parked.Clear();
+        }
+
+        /// <summary>Есть ли в пузыре браузерный проигрыватель: его окно переносить нельзя.</summary>
+        private static bool HoldsBrowser(Control c)
+        {
+            foreach (Control ch in c.Controls)
+            {
+                if (ch.GetType().Name.StartsWith("WebView2", StringComparison.Ordinal)) return true;
+                if (ch.HasChildren && HoldsBrowser(ch)) return true;
+            }
+            return false;
+        }
+
         private void RevealNearFeed()
         {
+            if (_parked.Count == 0) return;
             var feed = _laidOut;
             if (feed == null || feed.Count == 0 || pnlMessages == null || pnlMessages.IsDisposed) return;
             int vh = Math.Max(200, pnlMessages.ClientSize.Height);
             int from = -vh * 2, to = vh * 3;
 
-            // _laidOut хранится в порядке ленты, и Top у его элементов
-            // монотонно растёт. При прокрутке ленты в глубину полный проход
+            // _laidOut хранится в порядке ленты, и места у его элементов
+            // монотонно растут. При прокрутке ленты в глубину полный проход
             // по тысячам пузырей на каждом колёсном событии сам становился
             // источником рывков. Бинарным поиском находим первый пузырь у
             // окна, затем проверяем только небольшую окрестность экрана.
@@ -6154,7 +6249,7 @@ namespace PISMO
             {
                 int mid = lo + ((hi - lo) >> 1);
                 var c = feed[mid];
-                if (c == null || c.IsDisposed || c.Top + c.Height < from) lo = mid + 1;
+                if (c == null || c.IsDisposed || FeedTop(c) + c.Height < from) lo = mid + 1;
                 else hi = mid;
             }
 
@@ -6163,18 +6258,22 @@ namespace PISMO
             {
                 var c = feed[i];
                 if (c == null || c.IsDisposed) continue;
-                if (c.Top > to) break;
-                if (c.Parent != pnlMessages || c.Visible || c.Top + c.Height < from) continue;
+                int top = FeedTop(c);
+                if (top > to) break;
+                if (!_parked.ContainsKey(c) || top + c.Height < from) continue;
                 (show ??= new List<Control>()).Add(c);
             }
             if (show == null) return;
             pnlMessages.SuspendLayout();
-            try { foreach (var c in show) c.Visible = true; }
+            try { foreach (var c in show) Unpark(c); }
             finally { pnlMessages.ResumeLayout(false); }
             _cullSettled = false;
         }
+
         private void RevealAllFeed()
         {
+            UnparkAll();
+            // Прежний способ прятал пузыри скрытием — вдруг что-то осталось.
             var feed = _laidOut;
             if (feed == null || pnlMessages == null || pnlMessages.IsDisposed) return;
             bool any = false;
@@ -6191,21 +6290,36 @@ namespace PISMO
 
         private void HideFarFeed(List<Control> feed)
         {
+            // Выделение и подсветка поиска работают со всеми пузырями сразу.
+            if (_selectMode || _searchMatches.Count > 0) { UnparkAll(); return; }
             int vh = Math.Max(200, pnlMessages.ClientSize.Height);
             int from = -vh * 3, to = vh * 4;
+            int sy = pnlMessages.AutoScrollPosition.Y;
+            List<Control> park = null;
+            for (int i = 0; i < feed.Count; i++)
+            {
+                var c = feed[i];
+                if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
+                // Крайние — всегда в ленте: по ним панель считает высоту ленты.
+                if (i < 2 || i >= feed.Count - 2) continue;
+                if (c.Top <= to && c.Top + c.Height >= from) continue;
+                // Пузырь с фокусом (в нём печатают или выделяют) и с браузерным
+                // проигрывателем (его окно не переживает переноса) не трогаем.
+                if (c.ContainsFocus || HoldsBrowser(c)) continue;
+                (park ??= new List<Control>()).Add(c);
+            }
+            if (park == null) return;
             pnlMessages.SuspendLayout();
             try
             {
-                for (int i = 0; i < feed.Count; i++)
+                foreach (var c in park)
                 {
-                    var c = feed[i];
-                    if (c == null || c.IsDisposed || c.Parent != pnlMessages) continue;
-                    // Крайние видны всегда: по ним панель считает высоту ленты.
-                    bool edge = i < 2 || i >= feed.Count - 2;
-                    bool near = c.Top <= to && c.Top + c.Height >= from;
-                    // Пузырь с фокусом (в нём печатают или выделяют) не трогаем.
-                    bool want = edge || near || c.ContainsFocus;
-                    if (c.Visible != want) c.Visible = want;
+                    int logical = c.Top - sy;
+                    pnlMessages.Controls.Remove(c);
+                    _parked[c] = logical;
+                    // Спрятанный прежним способом — вернуть видимость: в ленту
+                    // он вернётся уже переносом.
+                    if (!c.Visible) c.Visible = true;
                 }
             }
             finally { pnlMessages.ResumeLayout(false); }
@@ -6364,6 +6478,7 @@ namespace PISMO
         {
             if (_pendingJumpDate == null) return;
             var day = _pendingJumpDate.Value;
+            UnparkAll();
 
             Panel target = null;
             foreach (Control c in pnlMessages.Controls)
@@ -7413,6 +7528,7 @@ namespace PISMO
 
         private void RefreshBubblePositions()
         {
+            UnparkAll();
             foreach (Control c in pnlMessages.Controls)
                 if (c is Panel bubble && bubble.Tag is bool isMine)
                     PositionBubble(bubble, isMine);

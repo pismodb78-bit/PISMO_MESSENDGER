@@ -893,7 +893,7 @@ namespace PISMO
             _lastMsgCount = -1; _lastMaxId = 0; _lastPolledCount = -1;
             _renderedKey = null; _renderedSig = null;
             try { _lblTitle.Text = ""; } catch { }
-            try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
+            try { SrvDropParked(); MainForm.DisposeAndClear(_pnlMessages); } catch { }
             try { _pnlInput.Visible = false; } catch { }
             try { _pnlChannels.Controls.Clear(); } catch { }
             try { _pnlMembers.Controls.Clear(); } catch { }
@@ -968,7 +968,7 @@ namespace PISMO
         {
             _serverId = sid; _serverName = name; _isOwner = owner; _channelId = -1; _lastMsgCount = -1; _lastMaxId = 0; _lastPolledCount = -1;
             _lblTitle.Text = name;
-            MainForm.DisposeAndClear(_pnlMessages);
+            SrvDropParked(); MainForm.DisposeAndClear(_pnlMessages);
             _renderedKey = null; _renderedSig = null;
             _pnlInput.Visible = false;
             ComputePerms();
@@ -1982,7 +1982,7 @@ namespace PISMO
                 if (ctype == "voice") { try { _joinedVoice.Remove(cid); } catch { } }
                 _channelId = -1; _channelType = null; _channelName = null;
                 _renderedKey = null; _renderedSig = null;
-                try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
+                try { SrvDropParked(); MainForm.DisposeAndClear(_pnlMessages); } catch { }
                 try { _lblTitle.Text = "Выберите канал"; } catch { }
             }
 
@@ -2018,7 +2018,7 @@ namespace PISMO
             if (stillExists) return;
             _channelId = -1; _channelType = null; _channelName = null;
             _renderedKey = null; _renderedSig = null;
-            try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
+            try { SrvDropParked(); MainForm.DisposeAndClear(_pnlMessages); } catch { }
             try { _lblTitle.Text = "Канал удалён"; } catch { }
         }
 
@@ -2298,7 +2298,7 @@ namespace PISMO
             // перезагрузку открытого, и гасить её незачем.
             if ((cachedDt == null || _srvLoadingOlder) && _renderedKey != "c" + channel)
             {
-                try { MainForm.DisposeAndClear(_pnlMessages); } catch { }
+                try { SrvDropParked(); MainForm.DisposeAndClear(_pnlMessages); } catch { }
                 ChatScroll.RepaintAfterSwitch(_pnlMessages);   // пусто и чисто, пока ждём базу
                 _renderedKey = null; _renderedSig = null;
             }
@@ -2922,7 +2922,7 @@ namespace PISMO
 
                 ChatScroll.SuspendDraw(_pnlMessages);   // заморозка — без мигания «загрузки заново»
                 _pnlMessages.SuspendLayout();
-                MainForm.DisposeAndClear(_pnlMessages);
+                SrvDropParked(); MainForm.DisposeAndClear(_pnlMessages);
                 _msgControls.Clear();
                 _srvAlbumIds.Clear();
                 _srvSelMark.Clear();
@@ -3689,6 +3689,8 @@ namespace PISMO
 
         private void OnSrvScrolled()
         {
+            // Подъезжающие сообщения — обратно в ленту (см. ServersForm_Virtual).
+            SrvFeedOnScrolled();
             int top = -_pnlMessages.AutoScrollPosition.Y;
             // Событие Scroll приходит и не от пользователя (фокус, раскладка,
             // пересборка ленты), поэтому догрузку будит только заметный сдвиг
@@ -3868,6 +3870,9 @@ namespace PISMO
             catch { return false; }
             if (items.Count == 0) return false;
 
+            // Вставка смотрит на самое верхнее сообщение ленты — вынутые
+            // далеко возвращаем на место (см. ServersForm_Virtual).
+            SrvUnparkAll();
             int curTop = -_pnlMessages.AutoScrollPosition.Y;
             int oldHeight = _pnlMessages.DisplayRectangle.Height;
             ChatScroll.SuspendDraw(_pnlMessages);
@@ -4050,6 +4055,7 @@ namespace PISMO
             _srvBtnScrollDown.Paint += (s, e) => MainForm.PaintScrollDownCircle(e.Graphics, _srvBtnScrollDown.Width, _srvBtnScrollDown.Height);
             _srvBtnScrollDown.Click += (s, e) =>
             {
+                SrvUnparkAll();
                 try { _pnlMessages.ScrollToExplicit(_pnlMessages.Controls.Count > 0 ? _pnlMessages.Controls[_pnlMessages.Controls.Count - 1] : null); } catch { }
                 UpdateSrvScrollDownButton();
             };
@@ -4103,6 +4109,8 @@ namespace PISMO
         private void ScrollToServerMessage(int id)
         {
             if (!_msgControls.TryGetValue(id, out var ctrl) || ctrl.IsDisposed) return;
+            // Сообщение могло быть вынуто из ленты — переход ведёт к любому.
+            SrvUnparkAll();
             try
             {
                 // ScrollControlIntoView считает сдвиг по ТЕКУЩЕЙ раскладке и промахивается,
