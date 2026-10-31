@@ -23,6 +23,31 @@ namespace PISMO
             return Path.Combine(Dir, key + ".xml");
         }
 
+        // ── Версия содержимого ───────────────────────────────────────────
+        //
+        // 2 — время страниц от релея пишется временем сервера, как у страниц
+        // из базы. Раньше оно ложилось местным, и такие строки в кеше
+        // показывались сдвинутыми на разницу поясов (на три часа вперёд).
+        // Отличить их от верных нельзя, поэтому кеш текста переписок
+        // сбрасывается один раз: он сам наполнится при открытии чатов, а
+        // вложения (MediaCache) остаются на месте.
+        private const string ContentVersion = "2";
+
+        static MessageCache()
+        {
+            try
+            {
+                string root = Path.GetDirectoryName(Dir)!;
+                string mark = Path.Combine(root, "msgcache.ver");
+                if (File.Exists(mark) && File.ReadAllText(mark).Trim() == ContentVersion) return;
+                Clear();
+                OfflineStore.DropMessagePages();
+                Directory.CreateDirectory(root);
+                File.WriteAllText(mark, ContentVersion);
+            }
+            catch { }
+        }
+
         public static string DirectKey(int me, int them) => $"d_{me}_{them}";
         public static string GroupKey(int gid) => $"g_{gid}";
         public static string ChannelKey(int channelId) => $"s_{channelId}";

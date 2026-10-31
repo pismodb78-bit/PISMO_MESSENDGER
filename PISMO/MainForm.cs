@@ -221,25 +221,117 @@ namespace PISMO
 
         private void ForceMessageRerender() { _renderedChatKey = null; _renderedChatSig = null; }
 
-        // created_at хранится во времени СЕРВЕРА БД (CURRENT_TIMESTAMP). Показываем во
-        // времени ЗРИТЕЛЯ: сдвигаем на разницу поясов (смещение зрителя минус смещение
-        // сервера от UTC). Смещение сервера узнаём один раз и кэшируем.
-        private static int? _serverUtcOffsetSec;
+        // ── Время сообщений ──────────────────────────────────────────────
+        //
+        // created_at хранится во времени СЕРВЕРА БД (CURRENT_TIMESTAMP), без
+        // пояса. Показываем во времени ЗРИТЕЛЯ: переводим в UTC по поясу
+        // сервера, а из UTC — в местное.
+        //
+        // Пояс сервера узнаём у базы и запоминаем на диске. Раньше он жил
+        // только в памяти и, пока база не ответила, каждый пузырь заново
+        // лез в неё за ним — прямо из потока интерфейса. А страница, пришедшая
+        // через релей, хранила время уже местным, и сдвиг накладывался на неё
+        // второй раз: сообщения показывались на три часа вперёд.
+
+        /// <summary>Смещение пояса сервера от UTC, сек. MinValue — пока не знаем.</summary>
+        private static int _srvOffSec = int.MinValue;
+        private static volatile bool _srvOffVerified;
+        private static long _srvOffRetryAt;
+
+        private static string SrvOffFile => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PISMO", "server_tz.txt");
+
+        /// <summary>
+        /// Смещение пояса сервера БД от UTC, в секундах; null — неизвестно.
+        /// Запомненное с прошлого раза отдаётся сразу, а сверка с базой идёт
+        /// в фоне: пояс сервера не меняется, ждать её незачем.
+        /// </summary>
+        internal static int? ServerUtcOffsetSec()
+        {
+            int v = System.Threading.Volatile.Read(ref _srvOffSec);
+            if (v != int.MinValue && _srvOffVerified) return v;
+
+            if (v == int.MinValue)
+            {
+                try
+                {
+                    if (File.Exists(SrvOffFile)
+                        && int.TryParse(File.ReadAllText(SrvOffFile).Trim(), out int saved)
+                        && Math.Abs(saved) <= 14 * 3600)
+                    {
+                        System.Threading.Interlocked.CompareExchange(ref _srvOffSec, saved, int.MinValue);
+                        v = System.Threading.Volatile.Read(ref _srvOffSec);
+                    }
+                }
+                catch { }
+            }
+
+            // К базе — раз за запуск; не ответила — не чаще раза в полминуты.
+            long now = Environment.TickCount64;
+            long due = System.Threading.Interlocked.Read(ref _srvOffRetryAt);
+            if (now >= due
+                && System.Threading.Interlocked.CompareExchange(ref _srvOffRetryAt, now + 30_000, due) == due)
+            {
+                if (v != int.MinValue) System.Threading.Tasks.Task.Run(QueryServerOffset);
+                else
+                {
+                    QueryServerOffset();
+                    v = System.Threading.Volatile.Read(ref _srvOffSec);
+                }
+            }
+            return v == int.MinValue ? null : v;
+        }
+
+        private static void QueryServerOffset()
+        {
+            try
+            {
+                using var conn = DBHelper.OpenConnection();
+                using var cmd = new MySqlConnector.MySqlCommand(
+                    "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())", conn);
+                // Пояса кратны четверти часа — округляем, чтобы секунда между
+                // двумя вызовами часов не стала частью смещения.
+                int off = (int)Math.Round(Convert.ToInt32(cmd.ExecuteScalar()) / 900.0) * 900;
+                System.Threading.Volatile.Write(ref _srvOffSec, off);
+                _srvOffVerified = true;
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(SrvOffFile)!);
+                    File.WriteAllText(SrvOffFile, off.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
+                catch { }
+            }
+            catch { }
+        }
+
         internal static DateTime ToViewerLocal(DateTime dbServerTime)
         {
             try
             {
-                if (_serverUtcOffsetSec == null)
-                {
-                    using var conn = DBHelper.OpenConnection();
-                    using var cmd = new MySqlConnector.MySqlCommand(
-                        "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())", conn);
-                    _serverUtcOffsetSec = Convert.ToInt32(cmd.ExecuteScalar());
-                }
-                int viewerOffsetSec = (int)DateTimeOffset.Now.Offset.TotalSeconds;
-                return dbServerTime.AddSeconds(viewerOffsetSec - _serverUtcOffsetSec.Value);
+                int? srv = ServerUtcOffsetSec();
+                if (srv == null) return dbServerTime;
+                // Через UTC, а не сдвигом на нынешнюю разницу: так и летнее
+                // время зрителя учитывается на дату самого сообщения.
+                return DateTime.SpecifyKind(dbServerTime.AddSeconds(-srv.Value), DateTimeKind.Utc)
+                    .ToLocalTime();
             }
             catch { return dbServerTime; }
+        }
+
+        /// <summary>
+        /// Отметка UNIX-времени — во время сервера БД, то есть ровно так, как
+        /// created_at лежит в базе. Для строк от релея: дальше с ними
+        /// обращаются как со строками из базы, в том числе в кеше переписки,
+        /// где те и другие лежат вперемешку.
+        /// </summary>
+        internal static DateTime UnixToDbTime(long ts)
+        {
+            var utc = DateTimeOffset.FromUnixTimeSeconds(ts).UtcDateTime;
+            int? srv = ServerUtcOffsetSec();
+            // Пояс сервера неизвестен — ToViewerLocal тоже ничего не сдвинет,
+            // поэтому сразу местное время зрителя.
+            return DateTime.SpecifyKind(srv == null ? utc.ToLocalTime() : utc.AddSeconds(srv.Value),
+                                        DateTimeKind.Unspecified);
         }
 
         /// <summary>Дешёвая «подпись» переписки (без создания контролов) для сравнения.</summary>

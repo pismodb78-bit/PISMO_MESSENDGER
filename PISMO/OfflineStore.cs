@@ -148,6 +148,26 @@ namespace PISMO
             catch { return null; }
         }
 
+        /// <summary>
+        /// Стереть сохранённые страницы переписок у всех пользователей этого
+        /// компьютера (списки чатов и серверов остаются). См. MessageCache.
+        /// </summary>
+        public static void DropMessagePages()
+        {
+            try
+            {
+                string root = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "PISMO", "offline");
+                if (!Directory.Exists(root)) return;
+                foreach (var user in Directory.GetDirectories(root))
+                    foreach (var mask in new[] { "dm_*.json", "grp_*.json", "chan_*.json" })
+                        foreach (var f in Directory.GetFiles(user, mask))
+                            try { File.Delete(f); } catch { }
+            }
+            catch { }
+        }
+
         /// <summary>Ключи выборок — в одном месте, чтобы читали и писали одно и то же.</summary>
         public static string DmKey(int partnerId) => "dm_" + partnerId;
         public static string GroupKey(int groupId) => "grp_" + groupId;

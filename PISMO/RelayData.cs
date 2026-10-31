@@ -163,10 +163,12 @@ namespace PISMO
                 row["edited_at"] = string.IsNullOrEmpty(edited) ? (object)DBNull.Value : edited;
 
                 // Время приходит отметкой в секундах — так оно не зависит ни от
-                // часового пояса сервера, ни от настроек соединения.
+                // часового пояса сервера, ни от настроек соединения. Кладём его
+                // временем сервера, как в строках из базы: показ сам переводит
+                // его в местное. Местным оно уже было — и сдвигалось дважды.
                 long ts = Long(r, "created_ts");
                 row["created_at"] = ts > 0
-                    ? DateTimeOffset.FromUnixTimeSeconds(ts).LocalDateTime
+                    ? MainForm.UnixToDbTime(ts)
                     : (object)DBNull.Value;
                 row["age_sec"] = ts > 0 ? Math.Max(0, nowTs - ts) : 0;
 
